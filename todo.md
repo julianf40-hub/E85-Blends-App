@@ -21,3 +21,7 @@
 - [x] Update app branding in app.config.ts
 - [x] Polish UI with iOS 26 Liquid Glass inspired design
 - [x] Add haptic feedback on interactions
+- [x] Integrate AFDC API for real E85 station data
+- [x] Show nearby stations based on user's actual GPS location
+- [x] Remove hardcoded sample station data
+- [x] Handle API errors gracefully with fallback

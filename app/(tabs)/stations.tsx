@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Text,
   View,
@@ -8,7 +8,7 @@ import {
   Linking,
   ActivityIndicator,
   StyleSheet,
-  Dimensions,
+  TextInput,
 } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
@@ -17,17 +17,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import {
-  E85Station,
-  SAMPLE_STATIONS,
-  getStationsByDistance,
-} from "@/lib/station-data";
-
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
-
-interface StationWithDistance extends E85Station {
-  distance: number;
-}
+import { E85Station, fetchNearbyStations } from "@/lib/station-data";
 
 export default function StationsScreen() {
   const colors = useColors();
@@ -35,23 +25,40 @@ export default function StationsScreen() {
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [stations, setStations] = useState<StationWithDistance[]>([]);
+  const [stations, setStations] = useState<E85Station[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [selectedStation, setSelectedStation] =
-    useState<StationWithDistance | null>(null);
+  const [selectedStation, setSelectedStation] = useState<E85Station | null>(null);
+  const [searchRadius, setSearchRadius] = useState(25);
+
+  const loadStations = useCallback(
+    async (lat: number, lon: number, radius: number = searchRadius) => {
+      try {
+        const results = await fetchNearbyStations(lat, lon, radius, 30);
+        setStations(results);
+        if (results.length === 0) {
+          setErrorMsg(`No E85 stations found within ${radius} miles. Try increasing the search radius.`);
+        } else {
+          setErrorMsg(null);
+        }
+      } catch {
+        setErrorMsg("Failed to load stations. Check your connection.");
+      }
+    },
+    [searchRadius]
+  );
 
   useEffect(() => {
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
-          setErrorMsg("Location permission denied");
-          // Use default location (center of US)
-          const defaultLat = 39.8283;
-          const defaultLon = -98.5795;
+          setErrorMsg("Location permission denied. Showing stations near Phoenix, AZ.");
+          const defaultLat = 33.4484;
+          const defaultLon = -112.074;
           setLocation({ latitude: defaultLat, longitude: defaultLon });
-          setStations(getStationsByDistance(defaultLat, defaultLon));
+          await loadStations(defaultLat, defaultLon);
           setLoading(false);
           return;
         }
@@ -59,24 +66,44 @@ export default function StationsScreen() {
         const loc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
-        setLocation({
+        const coords = {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
-        });
-        setStations(
-          getStationsByDistance(loc.coords.latitude, loc.coords.longitude)
-        );
+        };
+        setLocation(coords);
+        await loadStations(coords.latitude, coords.longitude);
       } catch {
-        // Fallback to default location
-        const defaultLat = 39.8283;
-        const defaultLon = -98.5795;
+        const defaultLat = 33.4484;
+        const defaultLon = -112.074;
         setLocation({ latitude: defaultLat, longitude: defaultLon });
-        setStations(getStationsByDistance(defaultLat, defaultLon));
+        await loadStations(defaultLat, defaultLon);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
+
+  const handleRefresh = useCallback(async () => {
+    if (!location) return;
+    setRefreshing(true);
+    await loadStations(location.latitude, location.longitude);
+    setRefreshing(false);
+  }, [location, loadStations]);
+
+  const handleRadiusChange = useCallback(
+    async (newRadius: number) => {
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      setSearchRadius(newRadius);
+      if (location) {
+        setLoading(true);
+        await loadStations(location.latitude, location.longitude, newRadius);
+        setLoading(false);
+      }
+    },
+    [location, loadStations]
+  );
 
   const openDirections = useCallback((station: E85Station) => {
     if (Platform.OS !== "web") {
@@ -91,8 +118,8 @@ export default function StationsScreen() {
   }, []);
 
   const renderStationCard = useCallback(
-    ({ item, index }: { item: StationWithDistance; index: number }) => (
-      <Animated.View entering={FadeInDown.duration(250).delay(index * 50)}>
+    ({ item, index }: { item: E85Station; index: number }) => (
+      <Animated.View entering={FadeInDown.duration(250).delay(Math.min(index * 40, 400))}>
         <Pressable
           onPress={() => {
             if (Platform.OS !== "web") {
@@ -165,20 +192,6 @@ export default function StationsScreen() {
             </Text>
 
             <View style={styles.stationMeta}>
-              {item.pricePerGallon && (
-                <View
-                  style={[
-                    styles.priceBadge,
-                    { backgroundColor: colors.primary + "15" },
-                  ]}
-                >
-                  <Text
-                    style={[styles.priceText, { color: colors.primary }]}
-                  >
-                    ${item.pricePerGallon.toFixed(2)}/gal
-                  </Text>
-                </View>
-              )}
               {item.hours && (
                 <View
                   style={[
@@ -188,8 +201,37 @@ export default function StationsScreen() {
                 >
                   <Text
                     style={[styles.hoursText, { color: colors.muted }]}
+                    numberOfLines={1}
                   >
                     {item.hours}
+                  </Text>
+                </View>
+              )}
+              {item.hasBlenderPump && (
+                <View
+                  style={[
+                    styles.blenderBadge,
+                    { backgroundColor: colors.primary + "15" },
+                  ]}
+                >
+                  <Text
+                    style={[styles.blenderText, { color: colors.primary }]}
+                  >
+                    Blender Pump
+                  </Text>
+                </View>
+              )}
+              {item.facilityType && (
+                <View
+                  style={[
+                    styles.hoursBadge,
+                    { backgroundColor: colors.muted + "15" },
+                  ]}
+                >
+                  <Text
+                    style={[styles.hoursText, { color: colors.muted }]}
+                  >
+                    {item.facilityType}
                   </Text>
                 </View>
               )}
@@ -242,6 +284,12 @@ export default function StationsScreen() {
               )}
             </Animated.View>
           )}
+
+          {selectedStation?.id === item.id && item.lastConfirmed && (
+            <Text style={[styles.confirmedText, { color: colors.muted }]}>
+              Last confirmed: {item.lastConfirmed}
+            </Text>
+          )}
         </Pressable>
       </Animated.View>
     ),
@@ -261,61 +309,101 @@ export default function StationsScreen() {
           >
             <IconSymbol name="map.fill" size={22} color={colors.primary} />
           </View>
-          <View>
+          <View style={styles.headerTextCol}>
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>
               E85 Stations
             </Text>
             <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
-              {stations.length} stations found
-              {location && !errorMsg ? " near you" : ""}
+              {loading
+                ? "Searching..."
+                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found nearby`}
             </Text>
           </View>
-        </View>
-      </View>
-
-      {/* Map Placeholder / Info Banner */}
-      <View style={styles.mapContainer}>
-        <LinearGradient
-          colors={[colors.primary + "20", colors.primary + "08"]}
-          style={styles.mapPlaceholder}
-        >
-          <IconSymbol name="map.fill" size={40} color={colors.primary} />
-          <Text style={[styles.mapPlaceholderTitle, { color: colors.foreground }]}>
-            Station Map
-          </Text>
-          <Text style={[styles.mapPlaceholderText, { color: colors.muted }]}>
-            {Platform.OS === "web"
-              ? "Map view available on iOS and Android devices"
-              : "Tap a station below for directions"}
-          </Text>
-          {errorMsg && (
-            <View
-              style={[
-                styles.locationWarning,
-                { backgroundColor: colors.warning + "20" },
+          {!loading && (
+            <Pressable
+              onPress={handleRefresh}
+              style={({ pressed }) => [
+                styles.refreshButton,
+                { backgroundColor: colors.primary + "15" },
+                pressed && { opacity: 0.7 },
               ]}
             >
               <IconSymbol
-                name="info.circle.fill"
-                size={14}
-                color={colors.warning}
+                name="arrow.clockwise"
+                size={18}
+                color={colors.primary}
               />
-              <Text
-                style={[styles.locationWarningText, { color: colors.warning }]}
-              >
-                {errorMsg}. Showing all stations.
-              </Text>
-            </View>
+            </Pressable>
           )}
-        </LinearGradient>
+        </View>
       </View>
+
+      {/* Search Radius Selector */}
+      <View style={styles.radiusContainer}>
+        <Text style={[styles.radiusLabel, { color: colors.muted }]}>
+          Search radius:
+        </Text>
+        <View style={styles.radiusChips}>
+          {[10, 25, 50, 100].map((radius) => (
+            <Pressable
+              key={radius}
+              onPress={() => handleRadiusChange(radius)}
+              style={({ pressed }) => [
+                styles.radiusChip,
+                {
+                  backgroundColor:
+                    searchRadius === radius
+                      ? colors.primary
+                      : colors.background,
+                  borderColor:
+                    searchRadius === radius ? colors.primary : colors.border,
+                },
+                pressed && { transform: [{ scale: 0.97 }] },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.radiusChipText,
+                  {
+                    color:
+                      searchRadius === radius ? "#FFFFFF" : colors.foreground,
+                  },
+                ]}
+              >
+                {radius} mi
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      {/* Error/Info Banner */}
+      {errorMsg && !loading && (
+        <View style={styles.bannerContainer}>
+          <View
+            style={[
+              styles.infoBanner,
+              { backgroundColor: colors.warning + "18" },
+            ]}
+          >
+            <IconSymbol
+              name="info.circle.fill"
+              size={16}
+              color={colors.warning}
+            />
+            <Text style={[styles.infoBannerText, { color: colors.warning }]}>
+              {errorMsg}
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* Station List */}
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={[styles.loadingText, { color: colors.muted }]}>
-            Finding nearby stations...
+            Finding E85 stations near you...
           </Text>
         </View>
       ) : (
@@ -326,7 +414,47 @@ export default function StationsScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          ListEmptyComponent={
+            !errorMsg ? (
+              <View style={styles.emptyState}>
+                <View
+                  style={[
+                    styles.emptyIconBg,
+                    { backgroundColor: colors.primary + "15" },
+                  ]}
+                >
+                  <IconSymbol
+                    name="map.fill"
+                    size={40}
+                    color={colors.primary}
+                  />
+                </View>
+                <Text
+                  style={[styles.emptyTitle, { color: colors.foreground }]}
+                >
+                  No Stations Found
+                </Text>
+                <Text
+                  style={[styles.emptySubtitle, { color: colors.muted }]}
+                >
+                  Try increasing the search radius or check your internet
+                  connection.
+                </Text>
+              </View>
+            ) : null
+          }
         />
+      )}
+
+      {/* Data Attribution */}
+      {stations.length > 0 && (
+        <View style={styles.attribution}>
+          <Text style={[styles.attributionText, { color: colors.muted }]}>
+            Data from U.S. Department of Energy AFDC
+          </Text>
+        </View>
       )}
     </ScreenContainer>
   );
@@ -336,7 +464,7 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     paddingTop: 8,
-    paddingBottom: 16,
+    paddingBottom: 12,
   },
   headerRow: {
     flexDirection: "row",
@@ -350,6 +478,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  headerTextCol: {
+    flex: 1,
+  },
   headerTitle: {
     fontSize: 26,
     fontWeight: "800",
@@ -360,35 +491,53 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     marginTop: 2,
   },
-  mapContainer: {
-    paddingHorizontal: 20,
-    marginBottom: 16,
+  refreshButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  mapPlaceholder: {
-    borderRadius: 20,
-    padding: 28,
+  radiusContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  mapPlaceholderTitle: {
-    fontSize: 18,
-    fontWeight: "700",
+  radiusLabel: {
+    fontSize: 13,
+    fontWeight: "500",
   },
-  mapPlaceholderText: {
-    fontSize: 14,
-    textAlign: "center",
+  radiusChips: {
+    flexDirection: "row",
+    gap: 8,
+    flex: 1,
   },
-  locationWarning: {
+  radiusChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  radiusChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  bannerContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  infoBanner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    marginTop: 8,
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
   },
-  locationWarningText: {
-    fontSize: 12,
+  infoBannerText: {
+    flex: 1,
+    fontSize: 13,
     fontWeight: "500",
   },
   loadingContainer: {
@@ -404,6 +553,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 100,
+    flexGrow: 1,
   },
   separator: {
     height: 10,
@@ -460,17 +610,9 @@ const styles = StyleSheet.create({
   },
   stationMeta: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     marginLeft: 46,
-  },
-  priceBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  priceText: {
-    fontSize: 13,
-    fontWeight: "700",
   },
   hoursBadge: {
     paddingHorizontal: 10,
@@ -478,8 +620,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   hoursText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "500",
+  },
+  blenderBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  blenderText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   stationActions: {
     flexDirection: "row",
@@ -514,5 +665,45 @@ const styles = StyleSheet.create({
   callButtonText: {
     fontSize: 14,
     fontWeight: "700",
+  },
+  confirmedText: {
+    fontSize: 11,
+    fontWeight: "400",
+    marginLeft: 46,
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 40,
+    gap: 14,
+    paddingTop: 60,
+  },
+  emptyIconBg: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  emptySubtitle: {
+    fontSize: 15,
+    textAlign: "center",
+    lineHeight: 22,
+  },
+  attribution: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+  attributionText: {
+    fontSize: 11,
+    fontWeight: "400",
   },
 });

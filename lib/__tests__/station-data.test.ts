@@ -1,9 +1,5 @@
-import { describe, it, expect } from "vitest";
-import {
-  calculateDistance,
-  getStationsByDistance,
-  SAMPLE_STATIONS,
-} from "../station-data";
+import { describe, it, expect, vi } from "vitest";
+import { calculateDistance, fetchNearbyStations } from "../station-data";
 
 describe("calculateDistance", () => {
   it("should return 0 for same coordinates", () => {
@@ -24,26 +20,60 @@ describe("calculateDistance", () => {
   });
 });
 
-describe("getStationsByDistance", () => {
-  it("should return stations sorted by distance", () => {
-    const sorted = getStationsByDistance(42.0, -83.0);
-    expect(sorted.length).toBe(SAMPLE_STATIONS.length);
-    for (let i = 1; i < sorted.length; i++) {
-      expect(sorted[i].distance).toBeGreaterThanOrEqual(sorted[i - 1].distance);
-    }
-  });
+describe("fetchNearbyStations", () => {
+  it("should return an array of stations for a valid location", async () => {
+    // Mock fetch to avoid hitting the real API in tests
+    const mockResponse = {
+      fuel_stations: [
+        {
+          id: 12345,
+          station_name: "Test Station",
+          street_address: "123 Main St",
+          city: "Phoenix",
+          state: "AZ",
+          zip: "85001",
+          latitude: 33.4484,
+          longitude: -112.074,
+          station_phone: "602-555-1234",
+          access_days_time: "24 hours daily",
+          distance: 2.5,
+          distance_km: 4.0,
+          e85_blender_pump: false,
+          e85_other_ethanol_blends: null,
+          date_last_confirmed: "2024-11-06",
+          facility_type: "GAS_STATION",
+        },
+      ],
+    };
 
-  it("should include distance property on each station", () => {
-    const sorted = getStationsByDistance(40.0, -80.0);
-    sorted.forEach((station) => {
-      expect(station).toHaveProperty("distance");
-      expect(typeof station.distance).toBe("number");
-      expect(station.distance).toBeGreaterThanOrEqual(0);
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResponse),
     });
+
+    const stations = await fetchNearbyStations(33.4484, -112.074, 25, 10);
+    expect(stations).toHaveLength(1);
+    expect(stations[0].name).toBe("Test Station");
+    expect(stations[0].city).toBe("Phoenix");
+    expect(stations[0].state).toBe("AZ");
+    expect(stations[0].distance).toBe(2.5);
+    expect(stations[0].facilityType).toBe("Gas Station");
   });
 
-  it("should return all sample stations", () => {
-    const sorted = getStationsByDistance(39.0, -95.0);
-    expect(sorted.length).toBe(SAMPLE_STATIONS.length);
+  it("should return empty array on API error", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+    });
+
+    const stations = await fetchNearbyStations(33.4484, -112.074);
+    expect(stations).toEqual([]);
+  });
+
+  it("should return empty array on network error", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+
+    const stations = await fetchNearbyStations(33.4484, -112.074);
+    expect(stations).toEqual([]);
   });
 });
