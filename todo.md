@@ -1,0 +1,23 @@
+# Project TODO
+
+- [x] Update theme colors to green/amber fuel-inspired palette
+- [x] Add tab icons for Calculator, Stations, My Blends
+- [x] Build Calculator screen with blend ratio inputs
+- [x] Implement E85 blend calculation logic
+- [x] Add quick-select chips for common blends (E30, E40, E50, E60)
+- [x] Display calculation results (gallons E85, gallons gas, octane, ethanol %)
+- [x] Add visual blend ratio gauge
+- [x] Implement save blend functionality with AsyncStorage
+- [x] Build Stations screen with map view
+- [x] Install and configure react-native-maps
+- [x] Install and configure expo-location
+- [x] Add E85 station data/API integration
+- [x] Show station markers on map
+- [x] Add station list below map
+- [x] Build My Blends screen with saved calculations list
+- [x] Add delete/swipe functionality for saved blends
+- [x] Add re-load saved blend into calculator
+- [x] Generate app logo
+- [x] Update app branding in app.config.ts
+- [x] Polish UI with iOS 26 Liquid Glass inspired design
+- [x] Add haptic feedback on interactions
