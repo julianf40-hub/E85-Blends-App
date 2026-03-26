@@ -25,3 +25,18 @@
 - [x] Show nearby stations based on user's actual GPS location
 - [x] Remove hardcoded sample station data
 - [x] Handle API errors gracefully with fallback
+
+## Phase 2: High-Impact Features
+
+- [x] Build Settings screen with user preferences
+- [x] Create preferences storage utility (AsyncStorage)
+- [x] Build Fuel Log screen with fuel-up tracking
+- [x] Create fuel log storage and retrieval utilities
+- [x] Implement Station Favorites feature
+- [x] Add Station History tracking
+- [x] Build Station Reviews & Ratings system
+- [x] Add review storage and retrieval
+- [x] Update tab layout with 6 tabs (Calculator, Stations, My Blends, Fuel Log, Settings)
+- [ ] Integrate real-time fuel prices API
+- [ ] Build Analytics dashboard with MPG trends
+- [ ] Add charts for fuel economy visualization

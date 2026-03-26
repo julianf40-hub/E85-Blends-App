@@ -51,7 +51,25 @@ export default function TabLayout() {
         options={{
           title: "My Blends",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="bookmark.fill" color={color} />
+            <IconSymbol size={28} name="bookmark.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="fuel-log"
+        options={{
+          title: "Fuel Log",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="list.bullet.clipboard.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: "Settings",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="gear" color={color} />
           ),
         }}
       />
