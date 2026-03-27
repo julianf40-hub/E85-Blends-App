@@ -161,6 +161,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.textInput,
                   {
@@ -190,6 +191,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.textInput,
                   {
@@ -224,6 +226,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.numberInput,
                   {
@@ -254,6 +257,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.numberInput,
                   {
@@ -262,7 +266,7 @@ export default function SettingsScreen() {
                     backgroundColor: colors.background,
                   },
                 ]}
-                placeholder="18"
+                placeholder="25"
                 placeholderTextColor={colors.muted}
                 keyboardType="decimal-pad"
                 value={prefs.mpgE85?.toString() || ""}
@@ -302,6 +306,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.numberInput,
                   {
@@ -310,12 +315,12 @@ export default function SettingsScreen() {
                     backgroundColor: colors.background,
                   },
                 ]}
-                placeholder="16"
+                placeholder="30"
                 placeholderTextColor={colors.muted}
                 keyboardType="decimal-pad"
-                value={prefs.tankSize.toString()}
+                value={prefs.defaultBlend.toString()}
                 onChangeText={(value) =>
-                  handleSavePreference("tankSize", parseFloat(value) || 16)
+                  handleSavePreference("defaultBlend", parseFloat(value) || 30)
                 }
               />
             </View>
@@ -381,6 +386,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.numberInput,
                   {
@@ -411,6 +417,7 @@ export default function SettingsScreen() {
                 </Text>
               </View>
               <TextInput
+                editable
                 style={[
                   styles.numberInput,
                   {
@@ -426,8 +433,7 @@ export default function SettingsScreen() {
                 onChangeText={(value) =>
                   handleSavePreference("searchRadius", parseFloat(value) || 25)
                 }
-              />
-            </View>
+              />           </View>
           </View>
         </Animated.View>
 

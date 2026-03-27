@@ -40,3 +40,9 @@
 - [ ] Integrate real-time fuel prices API
 - [ ] Build Analytics dashboard with MPG trends
 - [ ] Add charts for fuel economy visualization
+
+## Bug Fixes
+
+- [x] Enable decimal input support for tank size (e.g., 18.5 gallons)
+- [x] Enable decimal input support for fuel calculations
+- [x] Fix vehicle information text inputs in Settings tab (unable to type)
