@@ -50,6 +50,12 @@ const MAPPING: Record<string, MaterialIconName> = {
   "map": "map",
   "location.circle.fill": "my-location",
   "pin.fill": "push-pin",
+  "sun.max.fill": "wb-sunny",
+  "moon.fill": "nightlight-round",
+  "circle.lefthalf.filled": "brightness-medium",
+  "star": "star-outline",
+  "heart.fill": "favorite",
+  "heart": "favorite-border",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

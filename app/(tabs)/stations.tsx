@@ -33,6 +33,13 @@ import {
   invalidateStationCache,
   getStationCacheAge,
 } from "@/lib/station-cache";
+import {
+  loadFavorites,
+  addFavorite,
+  removeFavorite,
+  isFavorited,
+  type StationFavorite,
+} from "@/lib/station-favorites";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -87,6 +94,43 @@ export default function StationsScreen() {
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [cacheAgeMin, setCacheAgeMin] = useState<number | null>(null);
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+
+  // Load favorites on mount
+  useEffect(() => {
+    loadFavorites().then((favs) => {
+      setFavoriteIds(new Set(favs.map((f) => f.stationId)));
+    });
+  }, []);
+
+  const handleToggleFavorite = useCallback(
+    async (station: E85Station) => {
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+      const alreadyFav = favoriteIds.has(station.id);
+      if (alreadyFav) {
+        await removeFavorite(station.id);
+        setFavoriteIds((prev) => {
+          const next = new Set(prev);
+          next.delete(station.id);
+          return next;
+        });
+      } else {
+        await addFavorite({
+          stationId: station.id,
+          stationName: station.name,
+          city: station.city,
+          state: station.state,
+          latitude: station.latitude,
+          longitude: station.longitude,
+          addedDate: new Date().toISOString(),
+        });
+        setFavoriteIds((prev) => new Set([...prev, station.id]));
+      }
+    },
+    [favoriteIds]
+  );
 
   const loadStations = useCallback(
     async (
@@ -341,6 +385,20 @@ export default function StationsScreen() {
                     : `${item.distance.toFixed(1)} mi`}
                 </Text>
               </View>
+              <Pressable
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  handleToggleFavorite(item);
+                }}
+                style={({ pressed }) => [styles.starBtn, pressed && { opacity: 0.6 }]}
+                hitSlop={8}
+              >
+                <IconSymbol
+                  name={favoriteIds.has(item.id) ? "star.fill" : "star"}
+                  size={20}
+                  color={favoriteIds.has(item.id) ? "#F59E0B" : colors.muted}
+                />
+              </Pressable>
             </View>
 
             <Text
@@ -776,7 +834,11 @@ export default function StationsScreen() {
       ) : (
         /* ── LIST VIEW ── */
         <FlatList
-          data={stations}
+          data={[...stations].sort((a, b) => {
+            const aFav = favoriteIds.has(a.id) ? 0 : 1;
+            const bFav = favoriteIds.has(b.id) ? 0 : 1;
+            return aFav - bFav;
+          })}
           renderItem={renderStationCard}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
@@ -1213,5 +1275,9 @@ const styles = StyleSheet.create({
   attributionText: {
     fontSize: 11,
     fontWeight: "400",
+  },
+  starBtn: {
+    padding: 4,
+    marginLeft: 4,
   },
 });

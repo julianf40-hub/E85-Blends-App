@@ -25,6 +25,7 @@ import { clearFuelLog } from "@/lib/fuel-log";
 import { clearHistory, clearFavorites } from "@/lib/station-favorites";
 import { clearReviews } from "@/lib/station-reviews";
 import { getActiveCar, CarProfile, clearGarage } from "@/lib/garage";
+import { useThemeContext } from "@/lib/theme-provider";
 
 /** Only allow digits, one decimal point, and comma (auto-replaced with dot) */
 function sanitizeDecimal(text: string): string {
@@ -113,6 +114,7 @@ function NumericField({
 
 export default function SettingsScreen() {
   const colors = useColors();
+  const { colorScheme, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeCar, setActiveCar] = useState<CarProfile | null>(null);
@@ -299,6 +301,57 @@ export default function SettingsScreen() {
               </View>
             )}
           </Pressable>
+        </Animated.View>
+
+        {/* Appearance Section */}
+        <Animated.View
+          entering={FadeInDown.duration(300).delay(80)}
+          style={styles.section}
+        >
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
+            Appearance
+          </Text>
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Theme</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Choose light, dark, or follow system</Text>
+              </View>
+            </View>
+            <View style={styles.themeToggleRow}>
+              {(["light", "dark", "system"] as const).map((mode) => {
+                const isActive = colorScheme === mode || (mode === "system" && false);
+                const label = mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System";
+                const iconName = mode === "light" ? "sun.max.fill" : mode === "dark" ? "moon.fill" : "circle.lefthalf.filled";
+                return (
+                  <Pressable
+                    key={mode}
+                    onPress={() => {
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setColorScheme(mode === "system" ? (colorScheme === "dark" ? "light" : "dark") : mode);
+                    }}
+                    style={({ pressed }) => [
+                      styles.themeOption,
+                      {
+                        backgroundColor: colorScheme === mode ? colors.primary : colors.background,
+                        borderColor: colorScheme === mode ? colors.primary : colors.border,
+                      },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <IconSymbol
+                      name={iconName}
+                      size={18}
+                      color={colorScheme === mode ? "#FFFFFF" : colors.muted}
+                    />
+                    <Text style={[styles.themeOptionText, { color: colorScheme === mode ? "#FFFFFF" : colors.foreground }]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
         </Animated.View>
 
         {/* Fuel Preferences Section */}
@@ -801,5 +854,25 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "800",
     lineHeight: 26,
+  },
+  themeToggleRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  themeOption: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  themeOptionText: {
+    fontSize: 13,
+    fontWeight: "600",
   },
 });

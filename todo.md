@@ -135,3 +135,10 @@
 - [x] Add ACCESS_FINE_LOCATION and ACCESS_COARSE_LOCATION to Android permissions
 - [x] Add expo-location plugin to app.config.ts for iOS NSLocationWhenInUseUsageDescription
 - [x] Guard showsUserLocation behind location permission state
+
+## New Features Batch 2
+
+- [x] Light/dark mode manual toggle in Settings tab
+- [x] 3-screen onboarding flow on first launch (add car, find stations, log fill-up)
+- [x] Favorite stations (star/unstar, pinned to top of list, persisted in AsyncStorage)
+- [x] Android App Shortcuts (long-press app icon to quick-launch Calculator or Stations via expo-quick-actions)

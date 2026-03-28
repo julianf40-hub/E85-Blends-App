@@ -91,6 +91,33 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
+      "expo-quick-actions",
+      {
+        androidIcons: {
+          calculator_icon: {
+            foregroundImage: "./assets/images/android-icon-foreground.png",
+            backgroundColor: "#00C853",
+          },
+        },
+        items: [
+          {
+            id: "open_calculator",
+            title: "E85 Calculator",
+            subtitle: "Calculate your blend",
+            icon: "calculator_icon",
+            params: { href: "/(tabs)/" },
+          },
+          {
+            id: "open_stations",
+            title: "Find Stations",
+            subtitle: "E85 near you",
+            icon: "calculator_icon",
+            params: { href: "/(tabs)/stations" },
+          },
+        ],
+      },
+    ],
+    [
       "expo-location",
       {
         locationAlwaysAndWhenInUsePermission: "Allow E85 Blend to use your location to find nearby stations.",
