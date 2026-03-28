@@ -64,7 +64,11 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    permissions: [
+      "POST_NOTIFICATIONS",
+      "ACCESS_FINE_LOCATION",
+      "ACCESS_COARSE_LOCATION",
+    ],
     intentFilters: [
       {
         action: "VIEW",
@@ -86,6 +90,19 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    [
+      "expo-location",
+      {
+        locationAlwaysAndWhenInUsePermission: "Allow E85 Blend to use your location to find nearby stations.",
+        locationWhenInUsePermission: "Allow E85 Blend to use your location to find nearby stations.",
+      },
+    ],
+    [
+      "react-native-maps",
+      {
+        // Using PROVIDER_DEFAULT with OpenStreetMap tiles — no Google API key needed
+      },
+    ],
     [
       "expo-audio",
       {

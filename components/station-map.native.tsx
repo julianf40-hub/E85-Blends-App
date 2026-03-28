@@ -1,10 +1,12 @@
 /**
  * StationMap — native (iOS/Android) implementation
- * Uses react-native-maps which is not available on web.
+ * Uses react-native-maps with OpenStreetMap tiles (no Google API key required).
+ * PROVIDER_DEFAULT uses Apple Maps on iOS and the built-in map on Android,
+ * then UrlTile overlays OpenStreetMap tiles on top for a consistent look.
  */
 import React from "react";
 import { StyleSheet, View, Pressable } from "react-native";
-import MapView, { Marker, Circle } from "react-native-maps";
+import MapView, { Marker, Circle, UrlTile, PROVIDER_DEFAULT } from "react-native-maps";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 
 export interface StationMapStation {
@@ -37,6 +39,7 @@ interface StationMapProps {
   primaryColor: string;
   surfaceColor: string;
   borderColor: string;
+  hasLocationPermission: boolean;
   onMarkerPress: (station: StationMapStation) => void;
   onRecenter: () => void;
 }
@@ -50,6 +53,7 @@ export function StationMap({
   primaryColor,
   surfaceColor,
   borderColor,
+  hasLocationPermission,
   onMarkerPress,
   onRecenter,
 }: StationMapProps) {
@@ -57,12 +61,27 @@ export function StationMap({
     <View style={styles.container}>
       <MapView
         ref={mapRef}
+        provider={PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
-        showsUserLocation
+        // Only enable showsUserLocation when permission is confirmed to avoid SecurityException
+        showsUserLocation={hasLocationPermission}
         showsMyLocationButton={false}
+        // Disable Google-specific features that require an API key
+        showsTraffic={false}
+        showsIndoors={false}
       >
-        {userLocation && (
+        {/* OpenStreetMap tile overlay — free, no API key needed */}
+        <UrlTile
+          urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          maximumZ={19}
+          flipY={false}
+          tileSize={256}
+          zIndex={-1}
+        />
+
+        {/* User accuracy circle (shown even without showsUserLocation for visual feedback) */}
+        {userLocation && hasLocationPermission && (
           <Circle
             center={userLocation}
             radius={800}
@@ -71,6 +90,8 @@ export function StationMap({
             strokeWidth={1.5}
           />
         )}
+
+        {/* Station pins */}
         {stations.map((station) => (
           <Marker
             key={station.id}

@@ -36,6 +36,7 @@ interface StationMapProps {
   primaryColor: string;
   surfaceColor: string;
   borderColor: string;
+  hasLocationPermission: boolean;
   onMarkerPress: (station: StationMapStation) => void;
   onRecenter: () => void;
 }

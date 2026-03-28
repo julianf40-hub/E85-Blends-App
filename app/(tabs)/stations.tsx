@@ -86,6 +86,7 @@ export default function StationsScreen() {
   const [submittingPrice, setSubmittingPrice] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [cacheAgeMin, setCacheAgeMin] = useState<number | null>(null);
+  const [hasLocationPermission, setHasLocationPermission] = useState(false);
 
   const loadStations = useCallback(
     async (
@@ -148,6 +149,7 @@ export default function StationsScreen() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
+          setHasLocationPermission(false);
           setErrorMsg("Location permission denied. Showing stations near Phoenix, AZ.");
           const defaultLat = 33.4484;
           const defaultLon = -112.074;
@@ -156,6 +158,7 @@ export default function StationsScreen() {
           setLoading(false);
           return;
         }
+        setHasLocationPermission(true);
 
         const loc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
@@ -670,6 +673,7 @@ export default function StationsScreen() {
             primaryColor={colors.primary}
             surfaceColor={colors.surface}
             borderColor={colors.border}
+            hasLocationPermission={hasLocationPermission}
             onMarkerPress={handleMarkerPress}
             onRecenter={() => {
               if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

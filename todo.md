@@ -124,3 +124,14 @@
 
 - [x] Update dark theme to true OLED black (background #000000, surface #0A0A0A, etc.)
 - [x] Add inline price freshness ("Updated 5m ago") next to price value in station cards
+
+## Bug Fixes
+
+- [x] Fix crash when switching to Map view in Stations tab
+
+## Map Crash Fix
+
+- [x] Switch MapView to OpenStreetMap tiles (PROVIDER_DEFAULT + UrlTile) — no Google API key needed
+- [x] Add ACCESS_FINE_LOCATION and ACCESS_COARSE_LOCATION to Android permissions
+- [x] Add expo-location plugin to app.config.ts for iOS NSLocationWhenInUseUsageDescription
+- [x] Guard showsUserLocation behind location permission state
