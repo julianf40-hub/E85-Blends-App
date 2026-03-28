@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   Modal,
   View,
@@ -6,8 +6,8 @@ import {
   TextInput,
   Pressable,
   StyleSheet,
-  KeyboardAvoidingView,
   Platform,
+  KeyboardAvoidingView,
   ScrollView,
 } from "react-native";
 import { useColors } from "@/hooks/use-colors";
@@ -17,16 +17,34 @@ export interface PriceUpdateModalProps {
   visible: boolean;
   stationName: string;
   onClose: () => void;
-  onSubmit: (e85Price?: number, octane87Price?: number, octane89Price?: number, octane9194Price?: number) => void;
+  onSubmit: (
+    e85Price?: number,
+    octane87Price?: number,
+    octane89Price?: number,
+    octane9194Price?: number
+  ) => void;
   isLoading?: boolean;
 }
 
 const FUEL_GRADES = [
-  { id: "e85", label: "E85", color: "#10B981" },
-  { id: "octane87", label: "87 Octane", color: "#3B82F6" },
-  { id: "octane89", label: "89 Octane", color: "#F59E0B" },
-  { id: "octane9194", label: "91/94 Octane", color: "#EF4444" },
-];
+  { id: "e85", label: "E85", color: "#10B981", placeholder: "2.63" },
+  { id: "octane87", label: "87 Octane", color: "#3B82F6", placeholder: "3.14" },
+  { id: "octane89", label: "89 Octane", color: "#F59E0B", placeholder: "3.29" },
+  { id: "octane9194", label: "91/94 Oct", color: "#EF4444", placeholder: "3.49" },
+] as const;
+
+/** Only allow digits and one decimal point */
+function sanitizePrice(text: string): string {
+  let cleaned = text.replace(/,/g, ".");
+  cleaned = cleaned.replace(/[^\d.]/g, "");
+  const dotIndex = cleaned.indexOf(".");
+  if (dotIndex !== -1) {
+    cleaned =
+      cleaned.substring(0, dotIndex + 1) +
+      cleaned.substring(dotIndex + 1).replace(/\./g, "");
+  }
+  return cleaned;
+}
 
 export function PriceUpdateModal({
   visible,
@@ -43,35 +61,48 @@ export function PriceUpdateModal({
     octane9194: "",
   });
 
-  const handleSubmit = () => {
+  // Refs for each input to manage focus
+  const inputRefs = useRef<Record<string, TextInput | null>>({});
+
+  const handleSubmit = useCallback(() => {
     const e85 = prices.e85 ? parseFloat(prices.e85) : undefined;
     const octane87 = prices.octane87 ? parseFloat(prices.octane87) : undefined;
     const octane89 = prices.octane89 ? parseFloat(prices.octane89) : undefined;
-    const octane9194 = prices.octane9194 ? parseFloat(prices.octane9194) : undefined;
+    const octane9194 = prices.octane9194
+      ? parseFloat(prices.octane9194)
+      : undefined;
 
-    if (!e85 && !octane87 && !octane89 && !octane9194) {
-      alert("Please enter at least one price");
-      return;
-    }
+    if (!e85 && !octane87 && !octane89 && !octane9194) return;
 
     onSubmit(e85, octane87, octane89, octane9194);
     setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
-  };
+  }, [prices, onSubmit]);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
     onClose();
-  };
+  }, [onClose]);
 
-  const handlePriceChange = (fuelType: string, text: string) => {
-    // Allow only numbers and one decimal point
-    if (/^\d*\.?\d*$/.test(text) || text === "") {
-      setPrices((prev) => ({
-        ...prev,
-        [fuelType]: text,
-      }));
-    }
-  };
+  const handlePriceChange = useCallback((fuelType: string, text: string) => {
+    const sanitized = sanitizePrice(text);
+    setPrices((prev) => ({ ...prev, [fuelType]: sanitized }));
+  }, []);
+
+  /** Insert decimal point into the active input field */
+  const handleDecimalPress = useCallback(
+    (gradeId: string) => {
+      const currentVal = prices[gradeId as keyof typeof prices] || "";
+      if (!currentVal.includes(".")) {
+        const newVal = currentVal === "" ? "0." : currentVal + ".";
+        setPrices((prev) => ({ ...prev, [gradeId]: newVal }));
+        // Re-focus the input
+        inputRefs.current[gradeId]?.focus();
+      }
+    },
+    [prices]
+  );
+
+  if (!visible) return null;
 
   return (
     <Modal
@@ -81,148 +112,183 @@ export function PriceUpdateModal({
       onRequestClose={handleClose}
     >
       <KeyboardAvoidingView
+        style={styles.keyboardView}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={[styles.container, { backgroundColor: colors.background + "CC" }]}
       >
-        <View
-          style={[
-            styles.content,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.headerContent}>
-              <Text style={[styles.title, { color: colors.foreground }]}>
-                Update Fuel Prices
-              </Text>
-              <Text style={[styles.subtitle, { color: colors.muted }]}>
-                {stationName}
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleClose}
-              style={({ pressed }) => [
-                styles.closeButton,
-                {
-                  backgroundColor: colors.background,
-                  opacity: pressed ? 0.7 : 1,
-                },
-              ]}
-            >
-              <IconSymbol name="xmark" size={18} color={colors.foreground} />
-            </Pressable>
-          </View>
+        <View style={styles.overlay}>
+          <Pressable style={styles.overlayTouchable} onPress={handleClose} />
 
-          {/* Fuel Grade Selector */}
-          <ScrollView
-            style={styles.scrollContent}
-            contentContainerStyle={styles.scrollContentContainer}
-            showsVerticalScrollIndicator={false}
+          <View
+            style={[
+              styles.sheet,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+              },
+            ]}
           >
-            {FUEL_GRADES.map((grade) => (
-              <View key={grade.id} style={styles.priceInputGroup}>
-                {/* Grade Label */}
-                <View style={styles.gradeHeader}>
-                  <View
-                    style={[
-                      styles.colorIndicator,
-                      { backgroundColor: grade.color },
-                    ]}
-                  />
-                  <Text style={[styles.gradeLabel, { color: colors.foreground }]}>
-                    {grade.label}
-                  </Text>
-                </View>
-
-                {/* Price Input */}
-                <View
-                  style={[
-                    styles.priceInputContainer,
-                    { borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
+            {/* Header */}
+            <View style={[styles.header, { borderBottomColor: colors.border }]}>
+              <View style={styles.headerLeft}>
+                <Text style={[styles.title, { color: colors.foreground }]}>
+                  Update Fuel Prices
+                </Text>
+                <Text
+                  style={[styles.subtitle, { color: colors.muted }]}
+                  numberOfLines={1}
                 >
-                  <Text style={[styles.currencySymbol, { color: colors.muted }]}>
-                    $
-                  </Text>
-                  <TextInput
-                    style={[styles.priceInput, { color: colors.foreground }]}
-                    placeholder={
-                      grade.id === "e85"
-                        ? "2.63"
-                        : grade.id === "octane87"
-                          ? "3.14"
-                          : grade.id === "octane89"
-                            ? "3.29"
-                            : "3.49"
-                    }
-                    placeholderTextColor={colors.muted}
-                    keyboardType="decimal-pad"
-                    value={prices[grade.id as keyof typeof prices]}
-                    onChangeText={(text) => handlePriceChange(grade.id, text)}
-                    editable={!isLoading}
-                    maxLength={6}
-                  />
-                  <Text style={[styles.unitLabel, { color: colors.muted }]}>
-                    /gal
-                  </Text>
-                </View>
+                  {stationName}
+                </Text>
               </View>
-            ))}
-
-            {/* Info Box */}
-            <View
-              style={[
-                styles.infoBox,
-                { backgroundColor: colors.primary + "15", borderColor: colors.primary },
-              ]}
-            >
-              <IconSymbol
-                name="info.circle.fill"
-                size={16}
-                color={colors.primary}
-              />
-              <Text style={[styles.infoText, { color: colors.muted }]}>
-                Your prices help other drivers find the best fuel deals
-              </Text>
+              <Pressable
+                onPress={handleClose}
+                style={({ pressed }) => [
+                  styles.closeBtn,
+                  {
+                    backgroundColor: colors.background,
+                    opacity: pressed ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <IconSymbol name="xmark" size={16} color={colors.foreground} />
+              </Pressable>
             </View>
-          </ScrollView>
 
-          {/* Action Buttons */}
-          <View style={[styles.footer, { borderTopColor: colors.border }]}>
-            <Pressable
-              onPress={handleClose}
-              disabled={isLoading}
-              style={({ pressed }) => [
-                styles.cancelButton,
-                {
-                  backgroundColor: colors.background,
-                  borderColor: colors.border,
-                  opacity: pressed ? 0.7 : 1,
-                },
-              ]}
+            {/* Scrollable content area for fuel grade inputs */}
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
             >
-              <Text style={[styles.cancelButtonText, { color: colors.foreground }]}>
-                Cancel
-              </Text>
-            </Pressable>
+              {/* Fuel Grade Inputs */}
+              {FUEL_GRADES.map((grade) => (
+                <View key={grade.id} style={styles.gradeRow}>
+                  <View style={styles.gradeLabel}>
+                    <View
+                      style={[styles.dot, { backgroundColor: grade.color }]}
+                    />
+                    <Text
+                      style={[styles.gradeName, { color: colors.foreground }]}
+                    >
+                      {grade.label}
+                    </Text>
+                  </View>
+                  <View style={styles.inputGroup}>
+                    <View
+                      style={[
+                        styles.priceField,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.background,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.dollar, { color: colors.muted }]}>
+                        $
+                      </Text>
+                      <TextInput
+                        ref={(ref) => {
+                          inputRefs.current[grade.id] = ref;
+                        }}
+                        style={[styles.priceInput, { color: colors.foreground }]}
+                        placeholder={grade.placeholder}
+                        placeholderTextColor={colors.muted}
+                        keyboardType="default"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        value={prices[grade.id as keyof typeof prices]}
+                        onChangeText={(text) =>
+                          handlePriceChange(grade.id, text)
+                        }
+                        editable={!isLoading}
+                        maxLength={6}
+                        returnKeyType="done"
+                      />
+                      <Text style={[styles.perGal, { color: colors.muted }]}>
+                        /gal
+                      </Text>
+                    </View>
+                    {/* Decimal point button */}
+                    <Pressable
+                      onPress={() => handleDecimalPress(grade.id)}
+                      style={({ pressed }) => [
+                        styles.decimalBtn,
+                        {
+                          backgroundColor: grade.color + "20",
+                          borderColor: grade.color + "40",
+                        },
+                        pressed && { opacity: 0.6 },
+                      ]}
+                    >
+                      <Text
+                        style={[styles.decimalBtnText, { color: grade.color }]}
+                      >
+                        .
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
 
-            <Pressable
-              onPress={handleSubmit}
-              disabled={isLoading}
-              style={({ pressed }) => [
-                styles.submitButton,
-                {
-                  backgroundColor: colors.primary,
-                  opacity: pressed || isLoading ? 0.7 : 1,
-                },
-              ]}
-            >
-              <IconSymbol name="checkmark" size={18} color="#fff" />
-              <Text style={styles.submitButtonText}>
-                {isLoading ? "Saving..." : "Save Prices"}
-              </Text>
-            </Pressable>
+              {/* Info */}
+              <View
+                style={[
+                  styles.infoRow,
+                  {
+                    backgroundColor: colors.primary + "12",
+                    borderColor: colors.primary + "30",
+                  },
+                ]}
+              >
+                <IconSymbol
+                  name="info.circle.fill"
+                  size={14}
+                  color={colors.primary}
+                />
+                <Text style={[styles.infoText, { color: colors.muted }]}>
+                  Enter prices you see at the pump. Leave blank to skip a grade.
+                </Text>
+              </View>
+            </ScrollView>
+
+            {/* Buttons */}
+            <View style={[styles.footer, { borderTopColor: colors.border }]}>
+              <Pressable
+                onPress={handleClose}
+                disabled={isLoading}
+                style={({ pressed }) => [
+                  styles.cancelBtn,
+                  {
+                    backgroundColor: colors.background,
+                    borderColor: colors.border,
+                    opacity: pressed ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <Text
+                  style={[styles.cancelText, { color: colors.foreground }]}
+                >
+                  Cancel
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSubmit}
+                disabled={isLoading}
+                style={({ pressed }) => [
+                  styles.saveBtn,
+                  {
+                    backgroundColor: colors.primary,
+                    opacity: pressed || isLoading ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <IconSymbol name="checkmark" size={16} color="#fff" />
+                <Text style={styles.saveText}>
+                  {isLoading ? "Saving..." : "Save Prices"}
+                </Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -231,15 +297,24 @@ export function PriceUpdateModal({
 }
 
 const styles = StyleSheet.create({
-  container: {
+  keyboardView: {
+    flex: 1,
+  },
+  overlay: {
     flex: 1,
     justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.5)",
   },
-  content: {
+  overlayTouchable: {
+    flex: 1,
+  },
+  sheet: {
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "90%",
     borderTopWidth: 1,
+    minHeight: 420,
+    maxHeight: "85%",
+    paddingBottom: Platform.OS === "ios" ? 34 : 16,
   },
   header: {
     flexDirection: "row",
@@ -247,62 +322,76 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 12,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
   },
-  headerContent: {
+  headerLeft: {
     flex: 1,
+    marginRight: 12,
   },
   title: {
     fontSize: 18,
-    fontWeight: "600",
-    marginBottom: 4,
+    fontWeight: "700",
   },
   subtitle: {
-    fontSize: 14,
-    fontWeight: "400",
+    fontSize: 13,
+    marginTop: 2,
   },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     justifyContent: "center",
     alignItems: "center",
   },
-  scrollContent: {
+  scrollArea: {
     flex: 1,
+    minHeight: 200,
   },
-  scrollContentContainer: {
+  scrollContent: {
     paddingHorizontal: 20,
-    paddingVertical: 16,
-    gap: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
+    gap: 14,
   },
-  priceInputGroup: {
+  gradeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
   },
-  gradeHeader: {
+  gradeLabel: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    minWidth: 90,
   },
-  colorIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+  dot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
-  gradeLabel: {
-    fontSize: 14,
-    fontWeight: "500",
+  gradeName: {
+    fontSize: 13,
+    fontWeight: "600",
   },
-  priceInputContainer: {
+  inputGroup: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  priceField: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 44,
-    gap: 6,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    height: 42,
+    gap: 4,
   },
-  currencySymbol: {
+  dollar: {
     fontSize: 16,
     fontWeight: "600",
   },
@@ -310,56 +399,69 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     fontWeight: "500",
+    paddingVertical: 0,
   },
-  unitLabel: {
-    fontSize: 12,
+  perGal: {
+    fontSize: 11,
     fontWeight: "500",
   },
-  infoBox: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
+  decimalBtn: {
+    width: 36,
+    height: 42,
+    borderRadius: 10,
     borderWidth: 1,
-    marginTop: 8,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  decimalBtnText: {
+    fontSize: 22,
+    fontWeight: "800",
+    lineHeight: 26,
+  },
+  infoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
   },
   infoText: {
     flex: 1,
     fontSize: 12,
-    fontWeight: "400",
     lineHeight: 16,
   },
   footer: {
     flexDirection: "row",
     gap: 12,
     paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingTop: 12,
     borderTopWidth: 1,
   },
-  cancelButton: {
+  cancelBtn: {
     flex: 1,
-    height: 48,
+    height: 46,
     borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
   },
-  cancelButtonText: {
-    fontSize: 16,
+  cancelText: {
+    fontSize: 15,
     fontWeight: "600",
   },
-  submitButton: {
+  saveBtn: {
     flex: 1,
-    height: 48,
+    height: 46,
     borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
   },
-  submitButtonText: {
-    fontSize: 16,
+  saveText: {
+    fontSize: 15,
     fontWeight: "600",
     color: "#fff",
   },

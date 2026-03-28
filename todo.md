@@ -81,5 +81,8 @@
 ## Current Bug Fix
 
 - [x] Fix decimal keyboard showing period-underscore instead of decimal point
-- [x] Change keyboardType from "decimal-pad" to "numbers-and-punctuation" in all numeric inputs (16 occurrences fixed)
+- [x] Change keyboardType to "default" with dedicated "." buttons for Samsung compatibility
+- [x] Rewrite calculator with string-based state to preserve trailing decimal points
+- [x] Fix price modal layout - fuel grade inputs now visible with minHeight
+- [x] Add decimal "." buttons to all numeric inputs across all screens
 - [x] All 58 tests passing

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ScrollView,
   Text,
@@ -35,9 +35,64 @@ import { saveBlend, getSettings } from "@/lib/blend-storage";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
+/**
+ * String-based input state for all text fields.
+ * This allows users to type "18." without it being converted to "18".
+ * Numbers are only parsed when the user presses Calculate.
+ */
+interface InputTexts {
+  tankSize: string;
+  currentEthanolPercent: string;
+  targetEthanolPercent: string;
+  e85EthanolPercent: string;
+  gasEthanolPercent: string;
+  e85Octane: string;
+  gasOctane: string;
+}
+
+function toInputTexts(inputs: BlendInputs): InputTexts {
+  return {
+    tankSize: inputs.tankSize.toString(),
+    currentEthanolPercent: inputs.currentEthanolPercent.toString(),
+    targetEthanolPercent: inputs.targetEthanolPercent.toString(),
+    e85EthanolPercent: inputs.e85EthanolPercent.toString(),
+    gasEthanolPercent: inputs.gasEthanolPercent.toString(),
+    e85Octane: inputs.e85Octane.toString(),
+    gasOctane: inputs.gasOctane.toString(),
+  };
+}
+
+function textsToInputs(texts: InputTexts, currentFuelLevel: number): BlendInputs {
+  return {
+    tankSize: parseFloat(texts.tankSize) || 0,
+    currentFuelLevel,
+    currentEthanolPercent: parseFloat(texts.currentEthanolPercent) || 0,
+    targetEthanolPercent: parseFloat(texts.targetEthanolPercent) || 0,
+    e85EthanolPercent: parseFloat(texts.e85EthanolPercent) || 0,
+    gasEthanolPercent: parseFloat(texts.gasEthanolPercent) || 0,
+    e85Octane: parseFloat(texts.e85Octane) || 0,
+    gasOctane: parseFloat(texts.gasOctane) || 0,
+  };
+}
+
+/** Only allow digits, one decimal point, and comma (auto-replaced with dot) */
+function sanitizeDecimalInput(text: string): string {
+  // Replace comma with dot for locale support
+  let cleaned = text.replace(",", ".");
+  // Allow only digits and one dot
+  const parts = cleaned.split(".");
+  if (parts.length > 2) {
+    cleaned = parts[0] + "." + parts.slice(1).join("");
+  }
+  // Remove non-numeric non-dot characters
+  cleaned = cleaned.replace(/[^\d.]/g, "");
+  return cleaned;
+}
+
 export default function CalculatorScreen() {
   const colors = useColors();
-  const [inputs, setInputs] = useState<BlendInputs>(DEFAULT_INPUTS);
+  const [inputTexts, setInputTexts] = useState<InputTexts>(toInputTexts(DEFAULT_INPUTS));
+  const [currentFuelLevel, setCurrentFuelLevel] = useState(0);
   const [result, setResult] = useState<BlendResult | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const resultScale = useSharedValue(1);
@@ -46,14 +101,15 @@ export default function CalculatorScreen() {
   useEffect(() => {
     (async () => {
       const settings = await getSettings();
-      setInputs((prev) => ({
-        ...prev,
+      const inputs: BlendInputs = {
+        ...DEFAULT_INPUTS,
         tankSize: settings.defaultTankSize,
         e85EthanolPercent: settings.defaultE85Ethanol,
         gasEthanolPercent: settings.defaultGasEthanol,
         gasOctane: settings.defaultGasOctane,
         e85Octane: settings.defaultE85Octane,
-      }));
+      };
+      setInputTexts(toInputTexts(inputs));
     })();
   }, []);
 
@@ -61,13 +117,14 @@ export default function CalculatorScreen() {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
+    const inputs = textsToInputs(inputTexts, currentFuelLevel);
     const blendResult = calculateBlend(inputs);
     setResult(blendResult);
     resultScale.value = withSequence(
       withTiming(0.97, { duration: 80 }),
       withTiming(1, { duration: 200, easing: Easing.out(Easing.quad) })
     );
-  }, [inputs, resultScale]);
+  }, [inputTexts, currentFuelLevel, resultScale]);
 
   const handleSaveBlend = useCallback(async () => {
     if (!result) return;
@@ -75,36 +132,29 @@ export default function CalculatorScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
     try {
+      const inputs = textsToInputs(inputTexts, currentFuelLevel);
       await saveBlend(inputs, result);
       Alert.alert("Saved", "Blend saved to My Blends");
     } catch {
       Alert.alert("Error", "Failed to save blend");
     }
-  }, [inputs, result]);
+  }, [inputTexts, currentFuelLevel, result]);
 
   const handleBlendChipPress = useCallback(
     (value: number) => {
       if (Platform.OS !== "web") {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
-      setInputs((prev) => ({ ...prev, targetEthanolPercent: value }));
+      setInputTexts((prev) => ({ ...prev, targetEthanolPercent: value.toString() }));
     },
     []
   );
 
-  const updateInput = useCallback(
-    (key: keyof BlendInputs, value: string) => {
-      if (value === '') {
-        setInputs((prev) => ({ ...prev, [key]: 0 }));
-        return;
-      }
-      // Allow only numbers and one decimal point
-      if (/^\d*\.?\d*$/.test(value)) {
-        const num = parseFloat(value);
-        if (!isNaN(num) || value.endsWith('.')) {
-          setInputs((prev) => ({ ...prev, [key]: num }));
-        }
-      }
+  /** Update a text field - keeps raw string so decimals work */
+  const updateText = useCallback(
+    (key: keyof InputTexts, value: string) => {
+      const sanitized = sanitizeDecimalInput(value);
+      setInputTexts((prev) => ({ ...prev, [key]: sanitized }));
     },
     []
   );
@@ -113,20 +163,29 @@ export default function CalculatorScreen() {
     transform: [{ scale: resultScale.value }],
   }));
 
+  const targetEthanolNum = parseFloat(inputTexts.targetEthanolPercent) || 0;
+
   return (
     <ScreenContainer>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
+        <View style={styles.header}>
           <View style={styles.headerRow}>
             <View
-              style={[styles.headerIconBg, { backgroundColor: colors.primary + "18" }]}
+              style={[
+                styles.headerIconBg,
+                { backgroundColor: colors.primary + "18" },
+              ]}
             >
-              <IconSymbol name="fuelpump.fill" size={22} color={colors.primary} />
+              <IconSymbol
+                name="fuelpump.fill"
+                size={24}
+                color={colors.primary}
+              />
             </View>
             <View>
               <Text style={[styles.headerTitle, { color: colors.foreground }]}>
@@ -137,7 +196,7 @@ export default function CalculatorScreen() {
               </Text>
             </View>
           </View>
-        </Animated.View>
+        </View>
 
         {/* Tank Size Input */}
         <Animated.View
@@ -152,15 +211,33 @@ export default function CalculatorScreen() {
                 styles.inputLarge,
                 { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
               ]}
-              value={inputs.tankSize === 0 ? '' : inputs.tankSize.toString()}
-              onChangeText={(v) => updateInput("tankSize", v)}
-              keyboardType="decimal-pad"
+              value={inputTexts.tankSize}
+              onChangeText={(v) => updateText("tankSize", v)}
+              keyboardType="default"
+              autoCapitalize="none"
+              autoCorrect={false}
               returnKeyType="done"
-              placeholder="16"
+              placeholder="16.5"
               placeholderTextColor={colors.muted}
               selectTextOnFocus
               maxLength={10}
             />
+            <Pressable
+              onPress={() => {
+                const cur = inputTexts.tankSize;
+                if (!cur.includes(".")) {
+                  updateText("tankSize", cur === "" ? "0." : cur + ".");
+                  tankInputRef.current?.focus();
+                }
+              }}
+              style={({ pressed }) => [
+                styles.decimalBtn,
+                { backgroundColor: colors.primary + "20" },
+                pressed && { opacity: 0.6 },
+              ]}
+            >
+              <Text style={[styles.decimalBtnText, { color: colors.primary }]}>.</Text>
+            </Pressable>
             <Text style={[styles.unitLabel, { color: colors.muted }]}>gallons</Text>
           </View>
         </Animated.View>
@@ -181,21 +258,17 @@ export default function CalculatorScreen() {
                   if (Platform.OS !== "web") {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   }
-                  setInputs((prev) => ({
-                    ...prev,
-                    currentFuelLevel: level,
-                    currentEthanolPercent: level === 0 ? 0 : prev.currentEthanolPercent,
-                  }));
+                  setCurrentFuelLevel(level);
                 }}
                 style={({ pressed }) => [
                   styles.fuelLevelChip,
                   {
                     backgroundColor:
-                      inputs.currentFuelLevel === level
+                      currentFuelLevel === level
                         ? colors.primary
                         : colors.background,
                     borderColor:
-                      inputs.currentFuelLevel === level
+                      currentFuelLevel === level
                         ? colors.primary
                         : colors.border,
                   },
@@ -207,7 +280,7 @@ export default function CalculatorScreen() {
                     styles.fuelLevelText,
                     {
                       color:
-                        inputs.currentFuelLevel === level
+                        currentFuelLevel === level
                           ? "#FFFFFF"
                           : colors.foreground,
                     },
@@ -218,23 +291,42 @@ export default function CalculatorScreen() {
               </Pressable>
             ))}
           </View>
-          {inputs.currentFuelLevel > 0 && (
+          {currentFuelLevel > 0 && (
             <View style={styles.subInputRow}>
               <Text style={[styles.subLabel, { color: colors.muted }]}>
                 Current ethanol %
               </Text>
-              <TextInput
-                style={[
-                  styles.inputSmall,
-                  { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-                value={inputs.currentEthanolPercent.toString()}
-                onChangeText={(v) => updateInput("currentEthanolPercent", v)}
-                keyboardType="decimal-pad"
-                returnKeyType="done"
-                selectTextOnFocus
-                maxLength={6}
-              />
+              <View style={styles.inlineInputGroup}>
+                <TextInput
+                  style={[
+                    styles.inputSmall,
+                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                  ]}
+                  value={inputTexts.currentEthanolPercent}
+                  onChangeText={(v) => updateText("currentEthanolPercent", v)}
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  selectTextOnFocus
+                  maxLength={6}
+                />
+                <Pressable
+                  onPress={() => {
+                    const cur = inputTexts.currentEthanolPercent;
+                    if (!cur.includes(".")) {
+                      updateText("currentEthanolPercent", cur === "" ? "0." : cur + ".");
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.decimalBtnSmall,
+                    { backgroundColor: colors.primary + "20" },
+                    pressed && { opacity: 0.6 },
+                  ]}
+                >
+                  <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+                </Pressable>
+              </View>
             </View>
           )}
         </Animated.View>
@@ -256,11 +348,11 @@ export default function CalculatorScreen() {
                   styles.blendChip,
                   {
                     backgroundColor:
-                      inputs.targetEthanolPercent === blend.value
+                      targetEthanolNum === blend.value
                         ? colors.primary
                         : colors.background,
                     borderColor:
-                      inputs.targetEthanolPercent === blend.value
+                      targetEthanolNum === blend.value
                         ? colors.primary
                         : colors.border,
                   },
@@ -272,11 +364,11 @@ export default function CalculatorScreen() {
                     styles.blendChipText,
                     {
                       color:
-                        inputs.targetEthanolPercent === blend.value
+                        targetEthanolNum === blend.value
                           ? "#FFFFFF"
                           : colors.foreground,
                       fontWeight:
-                        inputs.targetEthanolPercent === blend.value ? "700" : "500",
+                        targetEthanolNum === blend.value ? "700" : "500",
                     },
                   ]}
                 >
@@ -289,18 +381,37 @@ export default function CalculatorScreen() {
             <Text style={[styles.subLabel, { color: colors.muted }]}>
               Custom target %
             </Text>
-            <TextInput
-              style={[
-                styles.inputSmall,
-                { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-              ]}
-              value={inputs.targetEthanolPercent.toString()}
-              onChangeText={(v) => updateInput("targetEthanolPercent", v)}
-              keyboardType="decimal-pad"
-              returnKeyType="done"
-              selectTextOnFocus
-              maxLength={6}
-            />
+            <View style={styles.inlineInputGroup}>
+              <TextInput
+                style={[
+                  styles.inputSmall,
+                  { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                ]}
+                value={inputTexts.targetEthanolPercent}
+                onChangeText={(v) => updateText("targetEthanolPercent", v)}
+                keyboardType="default"
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="done"
+                selectTextOnFocus
+                maxLength={6}
+              />
+              <Pressable
+                onPress={() => {
+                  const cur = inputTexts.targetEthanolPercent;
+                  if (!cur.includes(".")) {
+                    updateText("targetEthanolPercent", cur === "" ? "0." : cur + ".");
+                  }
+                }}
+                style={({ pressed }) => [
+                  styles.decimalBtnSmall,
+                  { backgroundColor: colors.primary + "20" },
+                  pressed && { opacity: 0.6 },
+                ]}
+              >
+                <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+              </Pressable>
+            </View>
           </View>
         </Animated.View>
 
@@ -338,61 +449,137 @@ export default function CalculatorScreen() {
                 <Text style={[styles.subLabel, { color: colors.muted }]}>
                   E85 Ethanol %
                 </Text>
-                <TextInput
-                  style={[
-                    styles.inputSmall,
-                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
-                  value={inputs.e85EthanolPercent.toString()}
-                  onChangeText={(v) => updateInput("e85EthanolPercent", v)}
-                  keyboardType="decimal-pad"
-                  returnKeyType="done"
-                />
+                <View style={styles.inlineInputGroup}>
+                  <TextInput
+                    style={[
+                      styles.inputSmall,
+                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                    ]}
+                    value={inputTexts.e85EthanolPercent}
+                    onChangeText={(v) => updateText("e85EthanolPercent", v)}
+                    keyboardType="default"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const cur = inputTexts.e85EthanolPercent;
+                      if (!cur.includes(".")) {
+                        updateText("e85EthanolPercent", cur === "" ? "0." : cur + ".");
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.decimalBtnSmall,
+                      { backgroundColor: colors.primary + "20" },
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+                  </Pressable>
+                </View>
               </View>
               <View style={styles.advancedItem}>
                 <Text style={[styles.subLabel, { color: colors.muted }]}>
                   Gas Ethanol %
                 </Text>
-                <TextInput
-                  style={[
-                    styles.inputSmall,
-                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
-                  value={inputs.gasEthanolPercent.toString()}
-                  onChangeText={(v) => updateInput("gasEthanolPercent", v)}
-                  keyboardType="decimal-pad"
-                  returnKeyType="done"
-                />
+                <View style={styles.inlineInputGroup}>
+                  <TextInput
+                    style={[
+                      styles.inputSmall,
+                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                    ]}
+                    value={inputTexts.gasEthanolPercent}
+                    onChangeText={(v) => updateText("gasEthanolPercent", v)}
+                    keyboardType="default"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const cur = inputTexts.gasEthanolPercent;
+                      if (!cur.includes(".")) {
+                        updateText("gasEthanolPercent", cur === "" ? "0." : cur + ".");
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.decimalBtnSmall,
+                      { backgroundColor: colors.primary + "20" },
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+                  </Pressable>
+                </View>
               </View>
               <View style={styles.advancedItem}>
                 <Text style={[styles.subLabel, { color: colors.muted }]}>
                   E85 Octane
                 </Text>
-                <TextInput
-                  style={[
-                    styles.inputSmall,
-                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
-                  value={inputs.e85Octane.toString()}
-                  onChangeText={(v) => updateInput("e85Octane", v)}
-                  keyboardType="decimal-pad"
-                  returnKeyType="done"
-                />
+                <View style={styles.inlineInputGroup}>
+                  <TextInput
+                    style={[
+                      styles.inputSmall,
+                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                    ]}
+                    value={inputTexts.e85Octane}
+                    onChangeText={(v) => updateText("e85Octane", v)}
+                    keyboardType="default"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const cur = inputTexts.e85Octane;
+                      if (!cur.includes(".")) {
+                        updateText("e85Octane", cur === "" ? "0." : cur + ".");
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.decimalBtnSmall,
+                      { backgroundColor: colors.primary + "20" },
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+                  </Pressable>
+                </View>
               </View>
               <View style={styles.advancedItem}>
                 <Text style={[styles.subLabel, { color: colors.muted }]}>
                   Gas Octane
                 </Text>
-                <TextInput
-                  style={[
-                    styles.inputSmall,
-                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
-                  value={inputs.gasOctane.toString()}
-                  onChangeText={(v) => updateInput("gasOctane", v)}
-                  keyboardType="decimal-pad"
-                  returnKeyType="done"
-                />
+                <View style={styles.inlineInputGroup}>
+                  <TextInput
+                    style={[
+                      styles.inputSmall,
+                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
+                    ]}
+                    value={inputTexts.gasOctane}
+                    onChangeText={(v) => updateText("gasOctane", v)}
+                    keyboardType="default"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    returnKeyType="done"
+                  />
+                  <Pressable
+                    onPress={() => {
+                      const cur = inputTexts.gasOctane;
+                      if (!cur.includes(".")) {
+                        updateText("gasOctane", cur === "" ? "0." : cur + ".");
+                      }
+                    }}
+                    style={({ pressed }) => [
+                      styles.decimalBtnSmall,
+                      { backgroundColor: colors.primary + "20" },
+                      pressed && { opacity: 0.6 },
+                    ]}
+                  >
+                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
+                  </Pressable>
+                </View>
               </View>
             </View>
           </Animated.View>
@@ -818,5 +1005,34 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: 20,
+  },
+  decimalBtn: {
+    width: 44,
+    height: 52,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  decimalBtnText: {
+    fontSize: 28,
+    fontWeight: "800",
+    lineHeight: 32,
+  },
+  decimalBtnSmall: {
+    width: 32,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  decimalBtnSmallText: {
+    fontSize: 22,
+    fontWeight: "800",
+    lineHeight: 26,
+  },
+  inlineInputGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
 });

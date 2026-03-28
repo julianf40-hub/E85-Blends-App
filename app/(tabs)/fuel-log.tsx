@@ -438,12 +438,29 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="30"
                   placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={formData.blendRatio}
                   onChangeText={(value) =>
-                    setFormData({ ...formData, blendRatio: value })
+                    setFormData({ ...formData, blendRatio: value.replace(/[^\d.]/g, "") })
                   }
                 />
+                <Pressable
+                  onPress={() => {
+                    const cur = formData.blendRatio;
+                    if (!cur.includes(".")) {
+                      setFormData({ ...formData, blendRatio: cur === "" ? "0." : cur + "." });
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.fuelLogDecimalBtn,
+                    { backgroundColor: colors.primary + "20" },
+                    pressed && { opacity: 0.6 },
+                  ]}
+                >
+                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
+                </Pressable>
               </View>
 
               <View style={styles.formGroup}>
@@ -461,12 +478,29 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="12.5"
                   placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={formData.gallonsAdded}
                   onChangeText={(value) =>
-                    setFormData({ ...formData, gallonsAdded: value })
+                    setFormData({ ...formData, gallonsAdded: value.replace(/[^\d.]/g, "") })
                   }
                 />
+                <Pressable
+                  onPress={() => {
+                    const cur = formData.gallonsAdded;
+                    if (!cur.includes(".")) {
+                      setFormData({ ...formData, gallonsAdded: cur === "" ? "0." : cur + "." });
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.fuelLogDecimalBtn,
+                    { backgroundColor: colors.primary + "20" },
+                    pressed && { opacity: 0.6 },
+                  ]}
+                >
+                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
+                </Pressable>
               </View>
 
               <View style={styles.formGroup}>
@@ -484,12 +518,29 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="3.49"
                   placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={formData.pricePerGallon}
                   onChangeText={(value) =>
-                    setFormData({ ...formData, pricePerGallon: value })
+                    setFormData({ ...formData, pricePerGallon: value.replace(/[^\d.]/g, "") })
                   }
                 />
+                <Pressable
+                  onPress={() => {
+                    const cur = formData.pricePerGallon;
+                    if (!cur.includes(".")) {
+                      setFormData({ ...formData, pricePerGallon: cur === "" ? "0." : cur + "." });
+                    }
+                  }}
+                  style={({ pressed }) => [
+                    styles.fuelLogDecimalBtn,
+                    { backgroundColor: colors.primary + "20" },
+                    pressed && { opacity: 0.6 },
+                  ]}
+                >
+                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
+                </Pressable>
               </View>
 
               <View style={styles.formGroup}>
@@ -507,10 +558,12 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="45230"
                   placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   value={formData.odometer}
                   onChangeText={(value) =>
-                    setFormData({ ...formData, odometer: value })
+                    setFormData({ ...formData, odometer: value.replace(/[^\d.]/g, "") })
                   }
                 />
               </View>
@@ -813,5 +866,19 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "700",
+  },
+  fuelLogDecimalBtn: {
+    width: 36,
+    height: 42,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 4,
+    alignSelf: "flex-end",
+  },
+  fuelLogDecimalBtnText: {
+    fontSize: 22,
+    fontWeight: "800",
+    lineHeight: 26,
   },
 });

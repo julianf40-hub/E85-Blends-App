@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Text,
   View,
@@ -25,6 +25,91 @@ import {
 import { clearFuelLog } from "@/lib/fuel-log";
 import { clearHistory, clearFavorites } from "@/lib/station-favorites";
 import { clearReviews } from "@/lib/station-reviews";
+
+/** Only allow digits, one decimal point, and comma (auto-replaced with dot) */
+function sanitizeDecimal(text: string): string {
+  let cleaned = text.replace(",", ".");
+  const parts = cleaned.split(".");
+  if (parts.length > 2) {
+    cleaned = parts[0] + "." + parts.slice(1).join("");
+  }
+  cleaned = cleaned.replace(/[^\d.]/g, "");
+  return cleaned;
+}
+
+/**
+ * A numeric input that stores text as a string while editing,
+ * and only converts to number on blur.
+ */
+function NumericField({
+  value,
+  onSave,
+  placeholder,
+  colors,
+  style,
+}: {
+  value: number;
+  onSave: (n: number) => void;
+  placeholder: string;
+  colors: any;
+  style?: any;
+}) {
+  const [text, setText] = useState(value.toString());
+  const inputRef = useRef<TextInput>(null);
+
+  // Sync from parent when value changes externally (e.g., reset)
+  useEffect(() => {
+    setText(value.toString());
+  }, [value]);
+
+  return (
+    <View style={styles.numericFieldRow}>
+      <TextInput
+        ref={inputRef}
+        editable
+        style={[
+          style || styles.numberInput,
+          {
+            color: colors.foreground,
+            borderColor: colors.border,
+            backgroundColor: colors.background,
+          },
+        ]}
+        placeholder={placeholder}
+        placeholderTextColor={colors.muted}
+        keyboardType="default"
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="done"
+        value={text}
+        onChangeText={(v) => setText(sanitizeDecimal(v))}
+        onBlur={() => {
+          const num = parseFloat(text);
+          if (!isNaN(num)) {
+            onSave(num);
+          }
+        }}
+        selectTextOnFocus
+        maxLength={10}
+      />
+      <Pressable
+        onPress={() => {
+          if (!text.includes(".")) {
+            setText(text === "" ? "0." : text + ".");
+            inputRef.current?.focus();
+          }
+        }}
+        style={({ pressed }) => [
+          styles.settingsDecimalBtn,
+          { backgroundColor: colors.primary + "20" },
+          pressed && { opacity: 0.6 },
+        ]}
+      >
+        <Text style={[styles.settingsDecimalBtnText, { color: colors.primary }]}>.</Text>
+      </Pressable>
+    </View>
+  );
+}
 
 export default function SettingsScreen() {
   const colors = useColors();
@@ -112,7 +197,10 @@ export default function SettingsScreen() {
 
   return (
     <ScreenContainer>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Header */}
         <Animated.View entering={FadeInDown.duration(300)} style={styles.header}>
           <View
@@ -225,23 +313,11 @@ export default function SettingsScreen() {
                   Typical fuel economy
                 </Text>
               </View>
-              <TextInput
-                editable
-                style={[
-                  styles.numberInput,
-                  {
-                    color: colors.foreground,
-                    borderColor: colors.border,
-                    backgroundColor: colors.background,
-                  },
-                ]}
+              <NumericField
+                value={prefs.mpgRegularGas || 0}
+                onSave={(n) => handleSavePreference("mpgRegularGas", n)}
                 placeholder="20"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={prefs.mpgRegularGas?.toString() || ""}
-                onChangeText={(value) =>
-                  handleSavePreference("mpgRegularGas", parseFloat(value) || 0)
-                }
+                colors={colors}
               />
             </View>
 
@@ -256,23 +332,11 @@ export default function SettingsScreen() {
                   Typical fuel economy on E85
                 </Text>
               </View>
-              <TextInput
-                editable
-                style={[
-                  styles.numberInput,
-                  {
-                    color: colors.foreground,
-                    borderColor: colors.border,
-                    backgroundColor: colors.background,
-                  },
-                ]}
+              <NumericField
+                value={prefs.mpgE85 || 0}
+                onSave={(n) => handleSavePreference("mpgE85", n)}
                 placeholder="25"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={prefs.mpgE85?.toString() || ""}
-                onChangeText={(value) =>
-                  handleSavePreference("mpgE85", parseFloat(value) || 0)
-                }
+                colors={colors}
               />
             </View>
           </View>
@@ -305,23 +369,11 @@ export default function SettingsScreen() {
                   Gallons
                 </Text>
               </View>
-              <TextInput
-                editable
-                style={[
-                  styles.numberInput,
-                  {
-                    color: colors.foreground,
-                    borderColor: colors.border,
-                    backgroundColor: colors.background,
-                  },
-                ]}
-                placeholder="30"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={prefs.defaultBlend.toString()}
-                onChangeText={(value) =>
-                  handleSavePreference("defaultBlend", parseFloat(value) || 30)
-                }
+              <NumericField
+                value={prefs.tankSize || 16}
+                onSave={(n) => handleSavePreference("tankSize", n)}
+                placeholder="16.5"
+                colors={colors}
               />
             </View>
 
@@ -385,23 +437,11 @@ export default function SettingsScreen() {
                   E20-E85
                 </Text>
               </View>
-              <TextInput
-                editable
-                style={[
-                  styles.numberInput,
-                  {
-                    color: colors.foreground,
-                    borderColor: colors.border,
-                    backgroundColor: colors.background,
-                  },
-                ]}
+              <NumericField
+                value={prefs.defaultBlend}
+                onSave={(n) => handleSavePreference("defaultBlend", n)}
                 placeholder="30"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={prefs.defaultBlend.toString()}
-                onChangeText={(value) =>
-                  handleSavePreference("defaultBlend", parseFloat(value) || 30)
-                }
+                colors={colors}
               />
             </View>
 
@@ -416,24 +456,13 @@ export default function SettingsScreen() {
                   Miles for station search
                 </Text>
               </View>
-              <TextInput
-                editable
-                style={[
-                  styles.numberInput,
-                  {
-                    color: colors.foreground,
-                    borderColor: colors.border,
-                    backgroundColor: colors.background,
-                  },
-                ]}
+              <NumericField
+                value={prefs.searchRadius}
+                onSave={(n) => handleSavePreference("searchRadius", n)}
                 placeholder="25"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={prefs.searchRadius.toString()}
-                onChangeText={(value) =>
-                  handleSavePreference("searchRadius", parseFloat(value) || 25)
-                }
-              />           </View>
+                colors={colors}
+              />
+            </View>
           </View>
         </Animated.View>
 
@@ -734,5 +763,22 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     textAlign: "center",
     marginTop: 40,
+  },
+  numericFieldRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  settingsDecimalBtn: {
+    width: 34,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  settingsDecimalBtnText: {
+    fontSize: 22,
+    fontWeight: "800",
+    lineHeight: 26,
   },
 });
