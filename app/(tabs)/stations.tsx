@@ -26,6 +26,7 @@ import {
   getLatestStationPrice,
   addStationPrice,
   formatPriceAge,
+  isPriceStale,
 } from "@/lib/station-prices";
 import {
   getCachedStations,
@@ -455,8 +456,18 @@ export default function StationsScreen() {
                       <Text style={[styles.priceValue, { color: "#10B981" }]}>
                         ${userPrices[item.id].e85Price.toFixed(2)}
                       </Text>
-                      <Text style={[styles.priceFreshness, { color: colors.muted }]}>
-                        · {formatPriceAge(userPrices[item.id].timestamp)}
+                      <Text
+                        style={[
+                          styles.priceFreshness,
+                          {
+                            color: isPriceStale(userPrices[item.id].timestamp)
+                              ? colors.warning
+                              : colors.muted,
+                          },
+                        ]}
+                      >
+                        {isPriceStale(userPrices[item.id].timestamp) ? "⚠ " : "· "}
+                        {formatPriceAge(userPrices[item.id].timestamp)}
                       </Text>
                     </View>
                   </View>

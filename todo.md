@@ -148,3 +148,7 @@
 - [x] Install expo-updates and configure EAS Update channel
 - [x] Add silent background update check on app launch
 - [x] Add update notification banner when new version is available
+
+## Stale Price Warning
+
+- [x] Show price freshness in amber when user-submitted price is older than 7 days

@@ -138,6 +138,14 @@ export async function getAverageStationPrices(
 }
 
 /**
+ * Returns true if a price timestamp is older than 7 days
+ */
+export function isPriceStale(timestamp: number): boolean {
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  return Date.now() - timestamp > SEVEN_DAYS_MS;
+}
+
+/**
  * Format timestamp as human-readable string
  */
 export function formatPriceAge(timestamp: number): string {
