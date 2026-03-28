@@ -56,3 +56,14 @@
 - [x] Integrate E85 fuel prices display at stations
 - [x] Add fuel price comparison (E85 vs gas savings %)
 - [x] Create fuel-prices utility module with cost comparison calculations
+
+
+## Crowdsourced Pricing Feature
+
+- [x] Create station-prices utility for storing user-submitted prices
+- [x] Build price update modal component
+- [x] Add "Update Price" button to station cards
+- [x] Display user-submitted prices with timestamps
+- [x] Show price history (last 10 updates per station)
+- [x] Add price age indicator (e.g., "Updated 2 hours ago")
+- [x] Test crowdsourced pricing feature (10 new tests passing)

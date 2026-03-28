@@ -19,6 +19,13 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { E85Station, fetchNearbyStations } from "@/lib/station-data";
 import { FuelPrices, fetchFuelPrices } from "@/lib/fuel-prices";
+import { PriceUpdateModal } from "@/components/price-update-modal";
+import {
+  getLatestStationPrice,
+  getAverageStationPrices,
+  addStationPrice,
+  formatPriceAge,
+} from "@/lib/station-prices";
 
 export default function StationsScreen() {
   const colors = useColors();
@@ -33,6 +40,10 @@ export default function StationsScreen() {
   const [selectedStation, setSelectedStation] = useState<E85Station | null>(null);
   const [searchRadius, setSearchRadius] = useState(25);
   const [fuelPrices, setFuelPrices] = useState<FuelPrices | null>(null);
+  const [priceModalVisible, setPriceModalVisible] = useState(false);
+  const [priceModalStation, setPriceModalStation] = useState<E85Station | null>(null);
+  const [userPrices, setUserPrices] = useState<Record<string, any>>({}); // stationId -> latest price
+  const [submittingPrice, setSubmittingPrice] = useState(false);
 
   const loadStations = useCallback(
     async (lat: number, lon: number, radius: number = searchRadius) => {
@@ -122,6 +133,48 @@ export default function StationsScreen() {
     });
     if (url) Linking.openURL(url);
   }, []);
+
+  const handlePriceUpdate = useCallback(
+    (station: E85Station) => {
+      setPriceModalStation(station);
+      setPriceModalVisible(true);
+    },
+    []
+  );
+
+  const handlePriceSubmit = useCallback(
+    async (e85Price?: number, gasolinePrice?: number) => {
+      if (!priceModalStation) return;
+
+      setSubmittingPrice(true);
+      try {
+        await addStationPrice({
+          stationId: priceModalStation.id,
+          e85Price,
+          gasolinePrice,
+        });
+
+        const latestPrice = await getLatestStationPrice(priceModalStation.id);
+        if (latestPrice) {
+          setUserPrices((prev) => ({
+            ...prev,
+            [priceModalStation.id]: latestPrice,
+          }));
+        }
+
+        setPriceModalVisible(false);
+        if (Platform.OS !== "web") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } catch (error) {
+        console.error("Failed to submit price:", error);
+        alert("Failed to save price. Please try again.");
+      } finally {
+        setSubmittingPrice(false);
+      }
+    },
+    [priceModalStation]
+  );
 
   const renderStationCard = useCallback(
     ({ item, index }: { item: E85Station; index: number }) => (
@@ -244,7 +297,43 @@ export default function StationsScreen() {
             </View>
           </View>
 
-          {/* Fuel Prices Section */}
+          {/* User-Submitted Prices Section */}
+          {userPrices[item.id] && (
+            <View
+              style={[
+                styles.pricesSection,
+                { backgroundColor: colors.primary + "10", borderTopColor: colors.primary },
+              ]}
+            >
+              <View style={styles.priceRow}>
+                {userPrices[item.id].e85Price && (
+                  <View style={styles.priceItem}>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                      E85 (User)
+                    </Text>
+                    <Text style={[styles.priceValue, { color: colors.primary }]}>
+                      ${userPrices[item.id].e85Price.toFixed(2)}/gal
+                    </Text>
+                  </View>
+                )}
+                {userPrices[item.id].gasolinePrice && (
+                  <View style={styles.priceItem}>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                      Gas (User)
+                    </Text>
+                    <Text style={[styles.priceValue, { color: colors.foreground }]}>
+                      ${userPrices[item.id].gasolinePrice.toFixed(2)}/gal
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={[styles.priceSource, { color: colors.muted }]}>
+                {formatPriceAge(userPrices[item.id].timestamp)}
+              </Text>
+            </View>
+          )}
+
+          {/* AFDC National Average Prices */}
           {fuelPrices && (
             <View
               style={[
@@ -255,7 +344,7 @@ export default function StationsScreen() {
               <View style={styles.priceRow}>
                 <View style={styles.priceItem}>
                   <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                    E85 Price
+                    E85 Avg
                   </Text>
                   <Text style={[styles.priceValue, { color: colors.primary }]}>
                     ${fuelPrices.e85Price.toFixed(2)}/gal
@@ -263,7 +352,7 @@ export default function StationsScreen() {
                 </View>
                 <View style={styles.priceItem}>
                   <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                    Gas Price
+                    Gas Avg
                   </Text>
                   <Text style={[styles.priceValue, { color: colors.foreground }]}>
                     ${fuelPrices.gasolinePrice.toFixed(2)}/gal
@@ -309,6 +398,25 @@ export default function StationsScreen() {
                   />
                   <Text style={styles.directionText}>Get Directions</Text>
                 </LinearGradient>
+              </Pressable>
+              <Pressable
+                onPress={() => handlePriceUpdate(item)}
+                style={({ pressed }) => [
+                  styles.callButton,
+                  { borderColor: colors.primary },
+                  pressed && { opacity: 0.7 },
+                ]}
+              >
+                <IconSymbol
+                  name="dollarsign.circle.fill"
+                  size={16}
+                  color={colors.primary}
+                />
+                <Text
+                  style={[styles.callButtonText, { color: colors.primary }]}
+                >
+                  Update Price
+                </Text>
               </Pressable>
               {item.phone && (
                 <Pressable
@@ -502,6 +610,15 @@ export default function StationsScreen() {
           </Text>
         </View>
       )}
+
+      {/* Price Update Modal */}
+      <PriceUpdateModal
+        visible={priceModalVisible}
+        stationName={priceModalStation?.name || "Station"}
+        onClose={() => setPriceModalVisible(false)}
+        onSubmit={handlePriceSubmit}
+        isLoading={submittingPrice}
+      />
     </ScreenContainer>
   );
 }
