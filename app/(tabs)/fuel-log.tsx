@@ -438,7 +438,7 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="30"
                   placeholderTextColor={colors.muted}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={formData.blendRatio}
                   onChangeText={(value) =>
                     setFormData({ ...formData, blendRatio: value })
@@ -461,7 +461,7 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="12.5"
                   placeholderTextColor={colors.muted}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={formData.gallonsAdded}
                   onChangeText={(value) =>
                     setFormData({ ...formData, gallonsAdded: value })
@@ -484,7 +484,7 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="3.49"
                   placeholderTextColor={colors.muted}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={formData.pricePerGallon}
                   onChangeText={(value) =>
                     setFormData({ ...formData, pricePerGallon: value })
@@ -507,7 +507,7 @@ export default function FuelLogScreen() {
                   ]}
                   placeholder="45230"
                   placeholderTextColor={colors.muted}
-                  keyboardType="numeric"
+                  keyboardType="decimal-pad"
                   value={formData.odometer}
                   onChangeText={(value) =>
                     setFormData({ ...formData, odometer: value })

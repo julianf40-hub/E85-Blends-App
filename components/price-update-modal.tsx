@@ -12,7 +12,6 @@ import {
 } from "react-native";
 import { useColors } from "@/hooks/use-colors";
 import { IconSymbol } from "./ui/icon-symbol";
-import { FUEL_GRADES } from "@/lib/station-prices";
 
 export interface PriceUpdateModalProps {
   visible: boolean;
@@ -21,6 +20,13 @@ export interface PriceUpdateModalProps {
   onSubmit: (e85Price?: number, octane87Price?: number, octane89Price?: number, octane9194Price?: number) => void;
   isLoading?: boolean;
 }
+
+const FUEL_GRADES = [
+  { id: "e85", label: "E85", color: "#10B981" },
+  { id: "octane87", label: "87 Octane", color: "#3B82F6" },
+  { id: "octane89", label: "89 Octane", color: "#F59E0B" },
+  { id: "octane9194", label: "91/94 Octane", color: "#EF4444" },
+];
 
 export function PriceUpdateModal({
   visible,
@@ -48,16 +54,6 @@ export function PriceUpdateModal({
       return;
     }
 
-    if (
-      (e85 && isNaN(e85)) ||
-      (octane87 && isNaN(octane87)) ||
-      (octane89 && isNaN(octane89)) ||
-      (octane9194 && isNaN(octane9194))
-    ) {
-      alert("Please enter valid prices");
-      return;
-    }
-
     onSubmit(e85, octane87, octane89, octane9194);
     setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
   };
@@ -65,6 +61,16 @@ export function PriceUpdateModal({
   const handleClose = () => {
     setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
     onClose();
+  };
+
+  const handlePriceChange = (fuelType: string, text: string) => {
+    // Allow only numbers and one decimal point
+    if (/^\d*\.?\d*$/.test(text) || text === "") {
+      setPrices((prev) => ({
+        ...prev,
+        [fuelType]: text,
+      }));
+    }
   };
 
   return (
@@ -78,11 +84,9 @@ export function PriceUpdateModal({
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={[styles.container, { backgroundColor: colors.background + "CC" }]}
       >
-        <Pressable style={styles.backdrop} onPress={handleClose} />
-
         <View
           style={[
-            styles.modal,
+            styles.content,
             { backgroundColor: colors.surface, borderColor: colors.border },
           ]}
         >
@@ -110,20 +114,31 @@ export function PriceUpdateModal({
             </Pressable>
           </View>
 
-          {/* Input Fields */}
+          {/* Fuel Grade Selector */}
           <ScrollView
-            style={styles.content}
-            contentContainerStyle={styles.contentContainer}
+            style={styles.scrollContent}
+            contentContainerStyle={styles.scrollContentContainer}
             showsVerticalScrollIndicator={false}
           >
             {FUEL_GRADES.map((grade) => (
-              <View key={grade.id} style={styles.inputGroup}>
-                <Text style={[styles.label, { color: colors.foreground }]}>
-                  {grade.label} ($/gal)
-                </Text>
+              <View key={grade.id} style={styles.priceInputGroup}>
+                {/* Grade Label */}
+                <View style={styles.gradeHeader}>
+                  <View
+                    style={[
+                      styles.colorIndicator,
+                      { backgroundColor: grade.color },
+                    ]}
+                  />
+                  <Text style={[styles.gradeLabel, { color: colors.foreground }]}>
+                    {grade.label}
+                  </Text>
+                </View>
+
+                {/* Price Input */}
                 <View
                   style={[
-                    styles.inputContainer,
+                    styles.priceInputContainer,
                     { borderColor: colors.border, backgroundColor: colors.background },
                   ]}
                 >
@@ -131,29 +146,40 @@ export function PriceUpdateModal({
                     $
                   </Text>
                   <TextInput
-                    style={[styles.input, { color: colors.foreground }]}
-                    placeholder={grade.id === "e85" ? "2.63" : grade.id === "octane87" ? "3.14" : grade.id === "octane89" ? "3.29" : "3.49"}
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numeric"
-                    value={prices[grade.id as keyof typeof prices]}
-                    onChangeText={(text) =>
-                      setPrices((prev) => ({
-                        ...prev,
-                        [grade.id]: text,
-                      }))
+                    style={[styles.priceInput, { color: colors.foreground }]}
+                    placeholder={
+                      grade.id === "e85"
+                        ? "2.63"
+                        : grade.id === "octane87"
+                          ? "3.14"
+                          : grade.id === "octane89"
+                            ? "3.29"
+                            : "3.49"
                     }
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    value={prices[grade.id as keyof typeof prices]}
+                    onChangeText={(text) => handlePriceChange(grade.id, text)}
                     editable={!isLoading}
                     maxLength={6}
                   />
+                  <Text style={[styles.unitLabel, { color: colors.muted }]}>
+                    /gal
+                  </Text>
                 </View>
               </View>
             ))}
 
-            {/* Info Text */}
-            <View style={styles.infoBox}>
+            {/* Info Box */}
+            <View
+              style={[
+                styles.infoBox,
+                { backgroundColor: colors.primary + "15", borderColor: colors.primary },
+              ]}
+            >
               <IconSymbol
                 name="info.circle.fill"
-                size={14}
+                size={16}
                 color={colors.primary}
               />
               <Text style={[styles.infoText, { color: colors.muted }]}>
@@ -163,15 +189,16 @@ export function PriceUpdateModal({
           </ScrollView>
 
           {/* Action Buttons */}
-          <View style={styles.footer}>
+          <View style={[styles.footer, { borderTopColor: colors.border }]}>
             <Pressable
               onPress={handleClose}
               disabled={isLoading}
               style={({ pressed }) => [
                 styles.cancelButton,
                 {
+                  backgroundColor: colors.background,
                   borderColor: colors.border,
-                  opacity: pressed || isLoading ? 0.7 : 1,
+                  opacity: pressed ? 0.7 : 1,
                 },
               ]}
             >
@@ -187,10 +214,11 @@ export function PriceUpdateModal({
                 styles.submitButton,
                 {
                   backgroundColor: colors.primary,
-                  opacity: pressed || isLoading ? 0.8 : 1,
+                  opacity: pressed || isLoading ? 0.7 : 1,
                 },
               ]}
             >
+              <IconSymbol name="checkmark" size={18} color="#fff" />
               <Text style={styles.submitButtonText}>
                 {isLoading ? "Saving..." : "Save Prices"}
               </Text>
@@ -207,121 +235,132 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "flex-end",
   },
-  backdrop: {
-    flex: 1,
-  },
-  modal: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderWidth: 1,
-    maxHeight: "85%",
+  content: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "90%",
+    borderTopWidth: 1,
   },
   header: {
     flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
+    alignItems: "center",
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
+    paddingTop: 16,
+    paddingBottom: 12,
   },
   headerContent: {
     flex: 1,
   },
   title: {
     fontSize: 18,
-    fontWeight: "700",
+    fontWeight: "600",
     marginBottom: 4,
   },
   subtitle: {
-    fontSize: 13,
-    fontWeight: "500",
+    fontSize: 14,
+    fontWeight: "400",
   },
   closeButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     justifyContent: "center",
+    alignItems: "center",
   },
-  content: {
+  scrollContent: {
     flex: 1,
   },
-  contentContainer: {
+  scrollContentContainer: {
     paddingHorizontal: 20,
     paddingVertical: 16,
     gap: 16,
   },
-  inputGroup: {
+  priceInputGroup: {
     gap: 8,
   },
-  label: {
-    fontSize: 14,
-    fontWeight: "600",
+  gradeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
-  inputContainer: {
+  colorIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+  },
+  gradeLabel: {
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  priceInputContainer: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 12,
-    height: 48,
+    height: 44,
+    gap: 6,
   },
   currencySymbol: {
     fontSize: 16,
     fontWeight: "600",
-    marginRight: 4,
   },
-  input: {
+  priceInput: {
     flex: 1,
     fontSize: 16,
     fontWeight: "500",
   },
+  unitLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
   infoBox: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+    padding: 12,
     borderRadius: 12,
-    marginTop: 4,
+    borderWidth: 1,
+    marginTop: 8,
   },
   infoText: {
     flex: 1,
     fontSize: 12,
-    fontWeight: "500",
+    fontWeight: "400",
     lineHeight: 16,
   },
   footer: {
     flexDirection: "row",
     gap: 12,
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 20,
+    paddingVertical: 12,
     borderTopWidth: 1,
   },
   cancelButton: {
     flex: 1,
-    paddingVertical: 12,
+    height: 48,
     borderRadius: 12,
-    borderWidth: 1.5,
-    alignItems: "center",
     justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
   },
   cancelButtonText: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "600",
   },
   submitButton: {
     flex: 1,
-    paddingVertical: 12,
+    height: 48,
     borderRadius: 12,
-    alignItems: "center",
     justifyContent: "center",
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8,
   },
   submitButtonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#fff",
   },
 });
