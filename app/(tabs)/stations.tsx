@@ -10,7 +10,8 @@ import {
   StyleSheet,
   Dimensions,
 } from "react-native";
-import MapView, { Marker, Circle, Region } from "react-native-maps";
+import { StationMap } from "@/components/station-map";
+type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
@@ -66,7 +67,7 @@ function computeRegion(
 
 export default function StationsScreen() {
   const colors = useColors();
-  const mapRef = useRef<MapView>(null);
+  const mapRef = useRef<any>(null);
 
   const [location, setLocation] = useState<{
     latitude: number;
@@ -649,59 +650,33 @@ export default function StationsScreen() {
       ) : viewMode === "map" ? (
         /* ── MAP VIEW ── */
         <View style={styles.mapContainer}>
-          {Platform.OS !== "web" ? (
-            <MapView
-              ref={mapRef}
-              style={StyleSheet.absoluteFillObject}
-              initialRegion={
-                location
-                  ? computeRegion(location.latitude, location.longitude, stations)
-                  : {
-                      latitude: 33.4484,
-                      longitude: -112.074,
-                      latitudeDelta: 0.5,
-                      longitudeDelta: 0.5,
-                    }
-              }
-              showsUserLocation
-              showsMyLocationButton={false}
-            >
-              {/* User accuracy circle */}
-              {location && (
-                <Circle
-                  center={location}
-                  radius={800}
-                  strokeColor={colors.primary + "60"}
-                  fillColor={colors.primary + "15"}
-                  strokeWidth={1.5}
-                />
-              )}
-
-              {/* Station pins */}
-              {stations.map((station) => (
-                <Marker
-                  key={station.id}
-                  coordinate={{
-                    latitude: station.latitude,
-                    longitude: station.longitude,
-                  }}
-                  title={station.name}
-                  description={`${station.distance.toFixed(1)} mi · ${station.address}`}
-                  pinColor={
-                    selectedStation?.id === station.id ? "#F59E0B" : colors.primary
+          <StationMap
+            mapRef={mapRef}
+            initialRegion={
+              location
+                ? computeRegion(location.latitude, location.longitude, stations)
+                : {
+                    latitude: 33.4484,
+                    longitude: -112.074,
+                    latitudeDelta: 0.5,
+                    longitudeDelta: 0.5,
                   }
-                  onPress={() => handleMarkerPress(station)}
-                />
-              ))}
-            </MapView>
-          ) : (
-            <View style={styles.mapWebFallback}>
-              <IconSymbol name="map.fill" size={48} color={colors.muted} />
-              <Text style={[styles.mapWebText, { color: colors.muted }]}>
-                Map view is available on iOS and Android
-              </Text>
-            </View>
-          )}
+            }
+            userLocation={location}
+            stations={stations}
+            selectedStationId={selectedStation?.id ?? null}
+            primaryColor={colors.primary}
+            surfaceColor={colors.surface}
+            borderColor={colors.border}
+            onMarkerPress={handleMarkerPress}
+            onRecenter={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              if (location) {
+                const region = computeRegion(location.latitude, location.longitude, stations);
+                mapRef.current?.animateToRegion(region, 600);
+              }
+            }}
+          />
 
           {/* Selected station card overlay */}
           {selectedStation && (
