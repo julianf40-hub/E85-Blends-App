@@ -94,15 +94,16 @@ export default function CalculatorScreen() {
 
   const updateInput = useCallback(
     (key: keyof BlendInputs, value: string) => {
-      // Allow empty string, decimal point, and numbers
-      if (value === '' || value === '.') {
+      if (value === '') {
         setInputs((prev) => ({ ...prev, [key]: 0 }));
         return;
       }
-      const num = parseFloat(value);
-      // Only update if it's a valid number
-      if (!isNaN(num)) {
-        setInputs((prev) => ({ ...prev, [key]: num }));
+      // Allow only numbers and one decimal point
+      if (/^\d*\.?\d*$/.test(value)) {
+        const num = parseFloat(value);
+        if (!isNaN(num) || value.endsWith('.')) {
+          setInputs((prev) => ({ ...prev, [key]: num }));
+        }
       }
     },
     []
@@ -153,7 +154,7 @@ export default function CalculatorScreen() {
               ]}
               value={inputs.tankSize === 0 ? '' : inputs.tankSize.toString()}
               onChangeText={(v) => updateInput("tankSize", v)}
-              keyboardType="decimal"
+              keyboardType="numeric"
               returnKeyType="done"
               placeholder="16"
               placeholderTextColor={colors.muted}
@@ -229,7 +230,7 @@ export default function CalculatorScreen() {
                 ]}
                 value={inputs.currentEthanolPercent.toString()}
                 onChangeText={(v) => updateInput("currentEthanolPercent", v)}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 returnKeyType="done"
                 selectTextOnFocus
                 maxLength={6}
@@ -295,7 +296,7 @@ export default function CalculatorScreen() {
               ]}
               value={inputs.targetEthanolPercent.toString()}
               onChangeText={(v) => updateInput("targetEthanolPercent", v)}
-              keyboardType="decimal"
+              keyboardType="numeric"
               returnKeyType="done"
               selectTextOnFocus
               maxLength={6}
@@ -344,7 +345,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.e85EthanolPercent.toString()}
                   onChangeText={(v) => updateInput("e85EthanolPercent", v)}
-                  keyboardType="decimal"
+                  keyboardType="numeric"
                   returnKeyType="done"
                 />
               </View>
@@ -359,7 +360,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.gasEthanolPercent.toString()}
                   onChangeText={(v) => updateInput("gasEthanolPercent", v)}
-                  keyboardType="decimal"
+                  keyboardType="numeric"
                   returnKeyType="done"
                 />
               </View>
@@ -374,7 +375,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.e85Octane.toString()}
                   onChangeText={(v) => updateInput("e85Octane", v)}
-                  keyboardType="decimal"
+                  keyboardType="numeric"
                   returnKeyType="done"
                 />
               </View>
@@ -389,7 +390,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.gasOctane.toString()}
                   onChangeText={(v) => updateInput("gasOctane", v)}
-                  keyboardType="decimal"
+                  keyboardType="numeric"
                   returnKeyType="done"
                 />
               </View>

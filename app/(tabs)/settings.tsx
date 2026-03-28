@@ -237,7 +237,7 @@ export default function SettingsScreen() {
                 ]}
                 placeholder="20"
                 placeholderTextColor={colors.muted}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 value={prefs.mpgRegularGas?.toString() || ""}
                 onChangeText={(value) =>
                   handleSavePreference("mpgRegularGas", parseFloat(value) || 0)
@@ -268,7 +268,7 @@ export default function SettingsScreen() {
                 ]}
                 placeholder="25"
                 placeholderTextColor={colors.muted}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 value={prefs.mpgE85?.toString() || ""}
                 onChangeText={(value) =>
                   handleSavePreference("mpgE85", parseFloat(value) || 0)
@@ -317,7 +317,7 @@ export default function SettingsScreen() {
                 ]}
                 placeholder="30"
                 placeholderTextColor={colors.muted}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 value={prefs.defaultBlend.toString()}
                 onChangeText={(value) =>
                   handleSavePreference("defaultBlend", parseFloat(value) || 30)
@@ -397,7 +397,7 @@ export default function SettingsScreen() {
                 ]}
                 placeholder="30"
                 placeholderTextColor={colors.muted}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 value={prefs.defaultBlend.toString()}
                 onChangeText={(value) =>
                   handleSavePreference("defaultBlend", parseFloat(value) || 30)
@@ -428,7 +428,7 @@ export default function SettingsScreen() {
                 ]}
                 placeholder="25"
                 placeholderTextColor={colors.muted}
-                keyboardType="decimal"
+                keyboardType="numeric"
                 value={prefs.searchRadius.toString()}
                 onChangeText={(value) =>
                   handleSavePreference("searchRadius", parseFloat(value) || 25)
