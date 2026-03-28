@@ -115,3 +115,7 @@
 - [x] Tap pin to highlight station card / show detail callout
 - [x] Center map on user location with accuracy circle
 - [x] Animate map to fit all station pins on load
+
+## Layout Bug Fix
+
+- [x] Fix station card action buttons (Get Directions / Update Price / Call) being clipped horizontally
