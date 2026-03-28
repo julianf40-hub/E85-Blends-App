@@ -201,3 +201,11 @@
 - [x] E85 Calculator button navigates to My Blends instead of showing calculator UI
 - [x] Fix odometer priority: manual update should take precedence over fuel log
 - [x] Build calculator modal with blend calculation inputs and results
+
+## Calculator Modal Redesign
+
+- [x] Rebuild calculator modal with full-featured design
+- [x] Add advanced inputs: E85 ethanol %, gas ethanol %, gas octane, current fuel ethanol %
+- [x] Fix decimal input bug (string-based state with decimal-safe sanitizer)
+- [x] Add Save Blend button to modal footer and header
+- [x] Match original calculator screen design with result card and color-coded blend label

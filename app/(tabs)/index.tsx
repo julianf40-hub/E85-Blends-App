@@ -240,6 +240,18 @@ export default function HomeScreen() {
   const [calculatorModalVisible, setCalculatorModalVisible] = useState(false);
   const [blendInputs, setBlendInputs] = useState<BlendInputs>(DEFAULT_INPUTS);
   const [blendResult, setBlendResult] = useState<BlendResult | null>(null);
+  // String-based input state to allow decimal typing without losing trailing dots
+  const [calcStrings, setCalcStrings] = useState({
+    tankSize: DEFAULT_INPUTS.tankSize.toString(),
+    currentFuelLevel: DEFAULT_INPUTS.currentFuelLevel.toString(),
+    currentEthanolPercent: DEFAULT_INPUTS.currentEthanolPercent.toString(),
+    targetEthanolPercent: DEFAULT_INPUTS.targetEthanolPercent.toString(),
+    e85EthanolPercent: DEFAULT_INPUTS.e85EthanolPercent.toString(),
+    gasEthanolPercent: DEFAULT_INPUTS.gasEthanolPercent.toString(),
+    gasOctane: DEFAULT_INPUTS.gasOctane.toString(),
+  });
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [blendName, setBlendName] = useState("");
 
   const loadData = useCallback(async () => {
     try {
@@ -314,31 +326,63 @@ export default function HomeScreen() {
 
   const handleCalculatePress = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Pre-fill calculator with active car's tank size and default blend
-    if (activeCar) {
-      const inputs: BlendInputs = {
-        ...DEFAULT_INPUTS,
-        tankSize: activeCar.tankSize,
-        targetEthanolPercent: activeCar.defaultBlend,
-        gasOctane: activeCar.requiredOctane,
-      };
-      setBlendInputs(inputs);
-      const result = calculateBlend(inputs);
-      setBlendResult(result);
-    }
+    const inputs: BlendInputs = activeCar ? {
+      ...DEFAULT_INPUTS,
+      tankSize: activeCar.tankSize,
+      targetEthanolPercent: activeCar.defaultBlend,
+      gasOctane: activeCar.requiredOctane,
+    } : DEFAULT_INPUTS;
+    setBlendInputs(inputs);
+    setCalcStrings({
+      tankSize: inputs.tankSize.toString(),
+      currentFuelLevel: inputs.currentFuelLevel.toString(),
+      currentEthanolPercent: inputs.currentEthanolPercent.toString(),
+      targetEthanolPercent: inputs.targetEthanolPercent.toString(),
+      e85EthanolPercent: inputs.e85EthanolPercent.toString(),
+      gasEthanolPercent: inputs.gasEthanolPercent.toString(),
+      gasOctane: inputs.gasOctane.toString(),
+    });
+    setBlendResult(calculateBlend(inputs));
+    setBlendName("");
+    setShowAdvanced(false);
     setCalculatorModalVisible(true);
   }, [activeCar]);
+
+  // Decimal-safe input handler: keep raw string for display, parse for calculation
+  const handleCalcStringChange = useCallback((key: keyof typeof calcStrings, text: string) => {
+    // Allow digits, one decimal point, and leading minus (not needed but safe)
+    const sanitized = text.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1");
+    setCalcStrings((prev) => ({ ...prev, [key]: sanitized }));
+    const num = parseFloat(sanitized);
+    if (!isNaN(num)) {
+      const updated = { ...blendInputs, [key]: num };
+      setBlendInputs(updated);
+      setBlendResult(calculateBlend(updated));
+    }
+  }, [blendInputs]);
 
   const handleBlendInputChange = useCallback((key: keyof BlendInputs, value: number) => {
     const updated = { ...blendInputs, [key]: value };
     setBlendInputs(updated);
-    const result = calculateBlend(updated);
-    setBlendResult(result);
+    setCalcStrings((prev) => ({ ...prev, [key]: value.toString() }));
+    setBlendResult(calculateBlend(updated));
   }, [blendInputs]);
 
   const handleQuickBlend = useCallback((targetEthanol: number) => {
     handleBlendInputChange("targetEthanolPercent", targetEthanol);
   }, [handleBlendInputChange]);
+
+  const handleSaveBlend = useCallback(async () => {
+    if (!blendResult) return;
+    try {
+      const { saveBlend } = await import("@/lib/blend-storage");
+      await saveBlend(blendInputs, blendResult, blendName.trim() || undefined);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Saved!", `${blendResult.blendLabel} blend saved to My Blends.`);
+    } catch (e) {
+      Alert.alert("Error", "Failed to save blend.");
+    }
+  }, [blendInputs, blendResult, blendName]);
 
   const handleUpdateOdometer = useCallback(() => {
     setOdometerInput(currentMileage.toString());
@@ -381,6 +425,7 @@ export default function HomeScreen() {
         onRequestClose={() => setCalculatorModalVisible(false)}
       >
         <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          {/* Header */}
           <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
             <Pressable
               onPress={() => setCalculatorModalVisible(false)}
@@ -390,107 +435,227 @@ export default function HomeScreen() {
             </Pressable>
             <Text style={[styles.modalTitle, { color: colors.foreground }]}>E85 Calculator</Text>
             <Pressable
-              onPress={() => setCalculatorModalVisible(false)}
+              onPress={handleSaveBlend}
               style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
             >
-              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Done</Text>
+              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Save</Text>
             </Pressable>
           </View>
-          <ScrollView style={styles.modalContent} contentContainerStyle={{ paddingBottom: 24 }}>
-            {/* Quick blend buttons */}
-            <View style={{ marginBottom: 20 }}>
-              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Quick Blends</Text>
-              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-                {COMMON_BLENDS.map((blend) => (
-                  <Pressable
-                    key={blend.value}
-                    onPress={() => handleQuickBlend(blend.value)}
-                    style={({ pressed }) => [{
-                      flex: 1,
-                      minWidth: "30%",
-                      paddingVertical: 10,
-                      paddingHorizontal: 12,
-                      borderRadius: 8,
-                      backgroundColor: blendInputs.targetEthanolPercent === blend.value ? colors.primary : colors.surface,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      opacity: pressed ? 0.7 : 1,
-                    }]}
-                  >
-                    <Text style={[{ fontSize: 14, fontWeight: "600", textAlign: "center", color: blendInputs.targetEthanolPercent === blend.value ? "#fff" : colors.foreground }]}>
-                      {blend.label}
-                    </Text>
-                  </Pressable>
-                ))}
+
+          <ScrollView style={styles.calcScroll} contentContainerStyle={styles.calcScrollContent} keyboardShouldPersistTaps="handled">
+
+            {/* Quick Blend Presets */}
+            <View style={styles.calcSection}>
+              <Text style={[styles.calcSectionTitle, { color: colors.foreground }]}>Target Blend</Text>
+              <View style={styles.quickBlendRow}>
+                {COMMON_BLENDS.map((blend) => {
+                  const isActive = blendInputs.targetEthanolPercent === blend.value;
+                  return (
+                    <Pressable
+                      key={blend.value}
+                      onPress={() => handleQuickBlend(blend.value)}
+                      style={({ pressed }) => [styles.quickBlendBtn, {
+                        backgroundColor: isActive ? colors.primary : colors.surface,
+                        borderColor: isActive ? colors.primary : colors.border,
+                        opacity: pressed ? 0.75 : 1,
+                      }]}
+                    >
+                      <Text style={[styles.quickBlendText, { color: isActive ? "#fff" : colors.foreground }]}>{blend.label}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
 
-            {/* Input fields */}
-            <View style={{ marginBottom: 20 }}>
-              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Tank Size (gal)</Text>
-              <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
-                placeholder="16"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={blendInputs.tankSize.toString()}
-                onChangeText={(text) => handleBlendInputChange("tankSize", parseFloat(text) || 16)}
-              />
+            {/* Core Inputs */}
+            <View style={styles.calcSection}>
+              <Text style={[styles.calcSectionTitle, { color: colors.foreground }]}>Tank Info</Text>
+              <View style={styles.calcInputRow}>
+                <View style={styles.calcInputHalf}>
+                  <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Tank Size (gal)</Text>
+                  <TextInput
+                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                    keyboardType="decimal-pad"
+                    placeholder="16"
+                    placeholderTextColor={colors.muted}
+                    value={calcStrings.tankSize}
+                    onChangeText={(t) => handleCalcStringChange("tankSize", t)}
+                    returnKeyType="done"
+                  />
+                </View>
+                <View style={styles.calcInputHalf}>
+                  <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Current Level (%)</Text>
+                  <TextInput
+                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
+                    placeholderTextColor={colors.muted}
+                    value={calcStrings.currentFuelLevel}
+                    onChangeText={(t) => handleCalcStringChange("currentFuelLevel", t)}
+                    returnKeyType="done"
+                  />
+                </View>
+              </View>
+              <View style={styles.calcInputRow}>
+                <View style={styles.calcInputHalf}>
+                  <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Current Fuel Ethanol %</Text>
+                  <TextInput
+                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                    keyboardType="decimal-pad"
+                    placeholder="10"
+                    placeholderTextColor={colors.muted}
+                    value={calcStrings.currentEthanolPercent}
+                    onChangeText={(t) => handleCalcStringChange("currentEthanolPercent", t)}
+                    returnKeyType="done"
+                  />
+                </View>
+                <View style={styles.calcInputHalf}>
+                  <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Target Ethanol %</Text>
+                  <TextInput
+                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                    keyboardType="decimal-pad"
+                    placeholder="30"
+                    placeholderTextColor={colors.muted}
+                    value={calcStrings.targetEthanolPercent}
+                    onChangeText={(t) => handleCalcStringChange("targetEthanolPercent", t)}
+                    returnKeyType="done"
+                  />
+                </View>
+              </View>
             </View>
 
-            <View style={{ marginBottom: 20 }}>
-              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Current Fuel Level (%)</Text>
-              <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
-                placeholder="0"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={blendInputs.currentFuelLevel.toString()}
-                onChangeText={(text) => handleBlendInputChange("currentFuelLevel", parseFloat(text) || 0)}
-              />
-            </View>
+            {/* Advanced Toggle */}
+            <Pressable
+              onPress={() => setShowAdvanced((v) => !v)}
+              style={({ pressed }) => [styles.advancedToggle, { borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}
+            >
+              <Text style={[styles.advancedToggleText, { color: colors.primary }]}>
+                {showAdvanced ? "Hide Advanced Settings" : "Show Advanced Settings"}
+              </Text>
+              <IconSymbol name={showAdvanced ? "chevron.up" : "chevron.down"} size={14} color={colors.primary} />
+            </Pressable>
 
-            <View style={{ marginBottom: 20 }}>
-              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Target Ethanol %</Text>
-              <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
-                placeholder="30"
-                placeholderTextColor={colors.muted}
-                keyboardType="decimal-pad"
-                value={blendInputs.targetEthanolPercent.toString()}
-                onChangeText={(text) => handleBlendInputChange("targetEthanolPercent", parseFloat(text) || 30)}
-              />
-            </View>
-
-            {/* Results */}
-            {blendResult && (
-              <View style={[{ backgroundColor: colors.surface, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: colors.border }]}>
-                <Text style={[{ fontSize: 18, fontWeight: "700", color: colors.foreground, marginBottom: 12 }]}>
-                  {blendResult.blendLabel} Blend
-                </Text>
-                <View style={{ gap: 8 }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={[{ color: colors.muted }]}>E85 to add:</Text>
-                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.e85Gallons.toFixed(2)} gal</Text>
+            {/* Advanced Inputs */}
+            {showAdvanced && (
+              <View style={styles.calcSection}>
+                <Text style={[styles.calcSectionTitle, { color: colors.foreground }]}>Fuel Properties</Text>
+                <View style={styles.calcInputRow}>
+                  <View style={styles.calcInputHalf}>
+                    <Text style={[styles.calcInputLabel, { color: colors.muted }]}>E85 Ethanol %</Text>
+                    <TextInput
+                      style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                      keyboardType="decimal-pad"
+                      placeholder="85"
+                      placeholderTextColor={colors.muted}
+                      value={calcStrings.e85EthanolPercent}
+                      onChangeText={(t) => handleCalcStringChange("e85EthanolPercent", t)}
+                      returnKeyType="done"
+                    />
                   </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={[{ color: colors.muted }]}>Gas to add:</Text>
-                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.gasGallons.toFixed(2)} gal</Text>
-                  </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={[{ color: colors.muted }]}>Final Ethanol %:</Text>
-                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.finalEthanolPercent.toFixed(1)}%</Text>
-                  </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={[{ color: colors.muted }]}>Est. Octane:</Text>
-                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.estimatedOctane.toFixed(1)}</Text>
+                  <View style={styles.calcInputHalf}>
+                    <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Gas Ethanol %</Text>
+                    <TextInput
+                      style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                      keyboardType="decimal-pad"
+                      placeholder="10"
+                      placeholderTextColor={colors.muted}
+                      value={calcStrings.gasEthanolPercent}
+                      onChangeText={(t) => handleCalcStringChange("gasEthanolPercent", t)}
+                      returnKeyType="done"
+                    />
                   </View>
                 </View>
+                <View style={styles.calcInputRow}>
+                  <View style={styles.calcInputHalf}>
+                    <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Gas Octane</Text>
+                    <TextInput
+                      style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                      keyboardType="decimal-pad"
+                      placeholder="93"
+                      placeholderTextColor={colors.muted}
+                      value={calcStrings.gasOctane}
+                      onChangeText={(t) => handleCalcStringChange("gasOctane", t)}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+              </View>
+            )}
+
+            {/* Results Card */}
+            {blendResult && (
+              <View style={[styles.calcResultCard, { backgroundColor: colors.surface, borderColor: blendResult.isValid ? colors.primary : colors.warning }]}>
+                {/* Blend Label Badge */}
+                <View style={styles.calcResultHeader}>
+                  <LinearGradient
+                    colors={blendResult.isValid ? [colors.primary, "#15803D"] : ["#D97706", "#92400E"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.calcResultBadge}
+                  >
+                    <Text style={styles.calcResultBadgeText}>{blendResult.blendLabel}</Text>
+                  </LinearGradient>
+                  <Text style={[styles.calcResultTitle, { color: colors.foreground }]}>Blend Result</Text>
+                </View>
+
+                {/* Stats Row */}
+                <View style={styles.calcResultStats}>
+                  <View style={[styles.calcResultStat, { backgroundColor: colors.primary + "14" }]}>
+                    <Text style={[styles.calcResultStatValue, { color: colors.foreground }]}>{blendResult.e85Gallons.toFixed(2)}</Text>
+                    <Text style={[styles.calcResultStatLabel, { color: colors.muted }]}>gal E85</Text>
+                  </View>
+                  <View style={[styles.calcResultStat, { backgroundColor: "#D97706" + "14" }]}>
+                    <Text style={[styles.calcResultStatValue, { color: colors.foreground }]}>{blendResult.gasGallons.toFixed(2)}</Text>
+                    <Text style={[styles.calcResultStatLabel, { color: colors.muted }]}>gal Gas</Text>
+                  </View>
+                  <View style={[styles.calcResultStat, { backgroundColor: colors.primary + "14" }]}>
+                    <Text style={[styles.calcResultStatValue, { color: colors.foreground }]}>{blendResult.estimatedOctane.toFixed(1)}</Text>
+                    <Text style={[styles.calcResultStatLabel, { color: colors.muted }]}>Octane</Text>
+                  </View>
+                </View>
+
+                {/* Detail rows */}
+                <View style={[styles.calcResultDetails, { borderTopColor: colors.border }]}>
+                  <View style={styles.calcResultDetailRow}>
+                    <Text style={[styles.calcResultDetailLabel, { color: colors.muted }]}>Final Ethanol</Text>
+                    <Text style={[styles.calcResultDetailValue, { color: colors.foreground }]}>{blendResult.finalEthanolPercent.toFixed(1)}%</Text>
+                  </View>
+                  <View style={styles.calcResultDetailRow}>
+                    <Text style={[styles.calcResultDetailLabel, { color: colors.muted }]}>Total to Add</Text>
+                    <Text style={[styles.calcResultDetailValue, { color: colors.foreground }]}>{(blendResult.e85Gallons + blendResult.gasGallons).toFixed(2)} gal</Text>
+                  </View>
+                </View>
+
                 {blendResult.errorMessage && (
-                  <Text style={[{ color: "#EF4444", marginTop: 12, fontSize: 12 }]}>{blendResult.errorMessage}</Text>
+                  <View style={[styles.calcResultWarning, { backgroundColor: colors.warning + "18" }]}>
+                    <Text style={[styles.calcResultWarningText, { color: colors.warning }]}>{blendResult.errorMessage}</Text>
+                  </View>
                 )}
               </View>
             )}
+
+            {/* Save Blend Name */}
+            <View style={styles.calcSection}>
+              <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Blend Name (optional)</Text>
+              <TextInput
+                style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                placeholder="e.g. Track Day E50"
+                placeholderTextColor={colors.muted}
+                value={blendName}
+                onChangeText={setBlendName}
+                returnKeyType="done"
+              />
+            </View>
+
+            {/* Save Button */}
+            <Pressable
+              onPress={handleSaveBlend}
+              style={({ pressed }) => [styles.calcSaveBtn, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}
+            >
+              <IconSymbol name="bookmark.fill" size={18} color="#fff" />
+              <Text style={styles.calcSaveBtnText}>Save Blend</Text>
+            </Pressable>
+
           </ScrollView>
         </View>
       </Modal>
@@ -1025,6 +1190,172 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     lineHeight: 18,
+  },
+
+  // Calculator modal
+  calcScroll: {
+    flex: 1,
+  },
+  calcScrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 40,
+    gap: 4,
+  },
+  calcSection: {
+    marginBottom: 20,
+  },
+  calcSectionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: 10,
+    letterSpacing: -0.2,
+  },
+  quickBlendRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  quickBlendBtn: {
+    flex: 1,
+    minWidth: "30%",
+    paddingVertical: 11,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    alignItems: "center",
+  },
+  quickBlendText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  calcInputRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 10,
+  },
+  calcInputHalf: {
+    flex: 1,
+  },
+  calcInputLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    marginBottom: 5,
+  },
+  calcInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  advancedToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+    marginBottom: 16,
+  },
+  advancedToggleText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  calcResultCard: {
+    borderRadius: 16,
+    borderWidth: 1.5,
+    overflow: "hidden",
+    marginBottom: 20,
+  },
+  calcResultHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 16,
+    paddingBottom: 12,
+  },
+  calcResultBadge: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  calcResultBadgeText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  calcResultTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  calcResultStats: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  calcResultStat: {
+    flex: 1,
+    borderRadius: 10,
+    padding: 10,
+    alignItems: "center",
+  },
+  calcResultStatValue: {
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  calcResultStatLabel: {
+    fontSize: 11,
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  calcResultDetails: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 6,
+  },
+  calcResultDetailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  calcResultDetailLabel: {
+    fontSize: 13,
+  },
+  calcResultDetailValue: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  calcResultWarning: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 8,
+    padding: 10,
+  },
+  calcResultWarningText: {
+    fontSize: 12,
+    fontWeight: "500",
+    lineHeight: 17,
+  },
+  calcSaveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 15,
+    borderRadius: 14,
+    marginTop: 4,
+  },
+  calcSaveBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
   },
 
   // Odometer modal
