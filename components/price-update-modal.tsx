@@ -134,7 +134,7 @@ export function PriceUpdateModal({
                     style={[styles.input, { color: colors.foreground }]}
                     placeholder={grade.id === "e85" ? "2.63" : grade.id === "octane87" ? "3.14" : grade.id === "octane89" ? "3.29" : "3.49"}
                     placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
+                    keyboardType="decimal"
                     value={prices[grade.id as keyof typeof prices]}
                     onChangeText={(text) =>
                       setPrices((prev) => ({
