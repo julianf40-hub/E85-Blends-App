@@ -36,6 +36,16 @@ const MAPPING: Record<string, MaterialIconName> = {
   "arrow.clockwise": "refresh",
   "square.and.arrow.up": "share",
   "navigation.fill": "navigation",
+  "car.fill": "directions-car",
+  "car.2.fill": "garage",
+  "wrench.fill": "build",
+  "pencil": "edit",
+  "checkmark": "check",
+  "chevron.down": "expand-more",
+  "chevron.up": "expand-less",
+  "ellipsis": "more-horiz",
+  "crown.fill": "star",
+  "gear": "settings",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

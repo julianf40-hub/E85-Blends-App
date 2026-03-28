@@ -32,6 +32,8 @@ import {
   calculateBlend,
 } from "@/lib/blend-calculator";
 import { saveBlend, getSettings } from "@/lib/blend-storage";
+import { getActiveCar, CarProfile } from "@/lib/garage";
+import { useFocusEffect } from "expo-router";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -95,23 +97,29 @@ export default function CalculatorScreen() {
   const [currentFuelLevel, setCurrentFuelLevel] = useState(0);
   const [result, setResult] = useState<BlendResult | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [activeCar, setActiveCar] = useState<CarProfile | null>(null);
   const resultScale = useSharedValue(1);
   const tankInputRef = useRef<TextInput>(null);
 
-  useEffect(() => {
-    (async () => {
-      const settings = await getSettings();
-      const inputs: BlendInputs = {
-        ...DEFAULT_INPUTS,
-        tankSize: settings.defaultTankSize,
-        e85EthanolPercent: settings.defaultE85Ethanol,
-        gasEthanolPercent: settings.defaultGasEthanol,
-        gasOctane: settings.defaultGasOctane,
-        e85Octane: settings.defaultE85Octane,
-      };
-      setInputTexts(toInputTexts(inputs));
-    })();
-  }, []);
+  // Reload active car and settings whenever this tab is focused
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const [settings, car] = await Promise.all([getSettings(), getActiveCar()]);
+        setActiveCar(car);
+        const inputs: BlendInputs = {
+          ...DEFAULT_INPUTS,
+          tankSize: car ? car.tankSize : settings.defaultTankSize,
+          targetEthanolPercent: car ? car.defaultBlend : DEFAULT_INPUTS.targetEthanolPercent,
+          e85EthanolPercent: settings.defaultE85Ethanol,
+          gasEthanolPercent: settings.defaultGasEthanol,
+          gasOctane: car ? car.requiredOctane : settings.defaultGasOctane,
+          e85Octane: settings.defaultE85Octane,
+        };
+        setInputTexts(toInputTexts(inputs));
+      })();
+    }, [])
+  );
 
   const handleCalculate = useCallback(() => {
     if (Platform.OS !== "web") {
@@ -197,6 +205,30 @@ export default function CalculatorScreen() {
             </View>
           </View>
         </View>
+
+        {/* Active Car Banner */}
+        {activeCar && (
+          <Animated.View
+            entering={FadeIn.duration(300)}
+            style={[
+              styles.carBanner,
+              { backgroundColor: activeCar.color + "18", borderColor: activeCar.color + "40" },
+            ]}
+          >
+            <Text style={styles.carBannerEmoji}>{activeCar.icon}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.carBannerName, { color: colors.foreground }]}>
+                {activeCar.nickname || `${activeCar.year} ${activeCar.make} ${activeCar.model}`.trim() || "Active Car"}
+              </Text>
+              <Text style={[styles.carBannerSub, { color: colors.muted }]}>
+                {activeCar.tankSize} gal tank · E{activeCar.defaultBlend} default
+              </Text>
+            </View>
+            <View style={[styles.carBannerBadge, { backgroundColor: activeCar.color + "30" }]}>
+              <Text style={[styles.carBannerBadgeText, { color: activeCar.color }]}>Active</Text>
+            </View>
+          </Animated.View>
+        )}
 
         {/* Tank Size Input */}
         <Animated.View
@@ -1034,5 +1066,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+  },
+  carBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 14,
+  },
+  carBannerEmoji: {
+    fontSize: 28,
+  },
+  carBannerName: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  carBannerSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  carBannerBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  carBannerBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

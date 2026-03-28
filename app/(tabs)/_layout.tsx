@@ -65,11 +65,20 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="garage"
+        options={{
+          title: "Garage",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="car.2.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="gear" color={color} />
+            <IconSymbol size={26} name="gearshape.fill" color={color} />
           ),
         }}
       />

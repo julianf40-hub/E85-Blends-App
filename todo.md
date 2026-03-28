@@ -86,3 +86,20 @@
 - [x] Fix price modal layout - fuel grade inputs now visible with minHeight
 - [x] Add decimal "." buttons to all numeric inputs across all screens
 - [x] All 58 tests passing
+
+
+## Garage Tab & Car Profiles
+
+- [ ] Create car profile data model (year, make, model, trim, tank size, MPG, octane, flex-fuel flag)
+- [ ] Create garage storage utility with AsyncStorage (CRUD for car profiles)
+- [ ] Build Garage tab screen with car profile cards
+- [ ] Add "Add Car" button and form with all vehicle fields
+- [ ] Add "Edit Car" functionality for existing profiles
+- [ ] Add "Delete Car" with confirmation dialog
+- [ ] Add "Set Active" to select which car is used for calculations
+- [ ] Show active car badge/indicator on profile card
+- [ ] Update Settings to pull vehicle info from active car profile
+- [ ] Update Calculator to auto-fill tank size from active car profile
+- [ ] Update tab layout to include Garage tab
+- [ ] Add Garage tab icon mapping
+- [ ] Test all Garage features end-to-end
