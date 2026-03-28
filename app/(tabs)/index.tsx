@@ -153,7 +153,7 @@ export default function CalculatorScreen() {
               ]}
               value={inputs.tankSize === 0 ? '' : inputs.tankSize.toString()}
               onChangeText={(v) => updateInput("tankSize", v)}
-              keyboardType="decimal-pad"
+              keyboardType="numbers-and-punctuation"
               returnKeyType="done"
               placeholder="16"
               placeholderTextColor={colors.muted}
@@ -229,7 +229,7 @@ export default function CalculatorScreen() {
                 ]}
                 value={inputs.currentEthanolPercent.toString()}
                 onChangeText={(v) => updateInput("currentEthanolPercent", v)}
-                keyboardType="decimal-pad"
+                keyboardType="numbers-and-punctuation"
                 returnKeyType="done"
                 selectTextOnFocus
                 maxLength={6}
@@ -295,7 +295,7 @@ export default function CalculatorScreen() {
               ]}
               value={inputs.targetEthanolPercent.toString()}
               onChangeText={(v) => updateInput("targetEthanolPercent", v)}
-              keyboardType="decimal-pad"
+              keyboardType="numbers-and-punctuation"
               returnKeyType="done"
               selectTextOnFocus
               maxLength={6}
@@ -344,7 +344,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.e85EthanolPercent.toString()}
                   onChangeText={(v) => updateInput("e85EthanolPercent", v)}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
                   returnKeyType="done"
                 />
               </View>
@@ -359,7 +359,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.gasEthanolPercent.toString()}
                   onChangeText={(v) => updateInput("gasEthanolPercent", v)}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
                   returnKeyType="done"
                 />
               </View>
@@ -374,7 +374,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.e85Octane.toString()}
                   onChangeText={(v) => updateInput("e85Octane", v)}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
                   returnKeyType="done"
                 />
               </View>
@@ -389,7 +389,7 @@ export default function CalculatorScreen() {
                   ]}
                   value={inputs.gasOctane.toString()}
                   onChangeText={(v) => updateInput("gasOctane", v)}
-                  keyboardType="decimal-pad"
+                  keyboardType="numbers-and-punctuation"
                   returnKeyType="done"
                 />
               </View>

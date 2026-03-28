@@ -29,7 +29,9 @@ describe("Station Prices Module", () => {
       await addStationPrice({
         stationId: "station-1",
         e85Price: 2.63,
-        gasolinePrice: 3.14,
+        octane87Price: 3.14,
+        octane89Price: 3.29,
+        octane9194Price: 3.49,
       });
 
       expect(AsyncStorage.setItem).toHaveBeenCalled();
@@ -37,14 +39,16 @@ describe("Station Prices Module", () => {
       const parsed = JSON.parse(data as string);
       expect(parsed["station-1"]).toBeDefined();
       expect(parsed["station-1"][0].e85Price).toBe(2.63);
-      expect(parsed["station-1"][0].gasolinePrice).toBe(3.14);
+      expect(parsed["station-1"][0].octane87Price).toBe(3.14);
     });
 
     it("should keep only the 10 most recent prices", async () => {
       const existingPrices = Array.from({ length: 10 }, (_, i) => ({
         stationId: "station-1",
         e85Price: 2.0 + i * 0.1,
-        gasolinePrice: 3.0 + i * 0.1,
+        octane87Price: 3.0 + i * 0.1,
+        octane89Price: 3.2 + i * 0.1,
+        octane9194Price: 3.5 + i * 0.1,
         timestamp: Date.now() - i * 1000,
       }));
 
@@ -55,7 +59,9 @@ describe("Station Prices Module", () => {
       await addStationPrice({
         stationId: "station-1",
         e85Price: 2.99,
-        gasolinePrice: 3.99,
+        octane87Price: 3.99,
+        octane89Price: 4.19,
+        octane9194Price: 4.49,
       });
 
       const [, data] = vi.mocked(AsyncStorage.setItem).mock.calls[0];
@@ -78,7 +84,9 @@ describe("Station Prices Module", () => {
           {
             stationId: "station-1",
             e85Price: 2.63,
-            gasolinePrice: 3.14,
+            octane87Price: 3.14,
+            octane89Price: 3.29,
+            octane9194Price: 3.49,
             timestamp: Date.now(),
           },
         ],
@@ -100,13 +108,17 @@ describe("Station Prices Module", () => {
           {
             stationId: "station-1",
             e85Price: 2.50,
-            gasolinePrice: 3.00,
+            octane87Price: 3.00,
+            octane89Price: 3.20,
+            octane9194Price: 3.50,
             timestamp: now - 10000,
           },
           {
             stationId: "station-1",
             e85Price: 2.63,
-            gasolinePrice: 3.14,
+            octane87Price: 3.14,
+            octane89Price: 3.29,
+            octane9194Price: 3.49,
             timestamp: now,
           },
         ],
@@ -134,13 +146,17 @@ describe("Station Prices Module", () => {
           {
             stationId: "station-1",
             e85Price: 2.50,
-            gasolinePrice: 3.00,
+            octane87Price: 3.00,
+            octane89Price: 3.20,
+            octane9194Price: 3.50,
             timestamp: Date.now(),
           },
           {
             stationId: "station-1",
             e85Price: 2.76,
-            gasolinePrice: 3.28,
+            octane87Price: 3.28,
+            octane89Price: 3.38,
+            octane9194Price: 3.48,
             timestamp: Date.now(),
           },
         ],
@@ -150,7 +166,7 @@ describe("Station Prices Module", () => {
 
       const avg = await getAverageStationPrices("station-1");
       expect(avg?.e85Price).toBeCloseTo(2.63, 1);
-      expect(avg?.gasolinePrice).toBeCloseTo(3.14, 1);
+      expect(avg?.octane87Price).toBeCloseTo(3.14, 1);
     });
 
     it("should handle partial prices", async () => {
@@ -159,13 +175,13 @@ describe("Station Prices Module", () => {
           {
             stationId: "station-1",
             e85Price: 2.63,
-            gasolinePrice: undefined,
+            octane87Price: undefined,
             timestamp: Date.now(),
           },
           {
             stationId: "station-1",
             e85Price: undefined,
-            gasolinePrice: 3.14,
+            octane87Price: 3.14,
             timestamp: Date.now(),
           },
         ],
@@ -175,7 +191,7 @@ describe("Station Prices Module", () => {
 
       const avg = await getAverageStationPrices("station-1");
       expect(avg?.e85Price).toBe(2.63);
-      expect(avg?.gasolinePrice).toBe(3.14);
+      expect(avg?.octane87Price).toBe(3.14);
     });
   });
 
@@ -193,8 +209,8 @@ describe("Station Prices Module", () => {
   describe("clearStationPrices", () => {
     it("should remove prices for a specific station", async () => {
       const mockData = {
-        "station-1": [{ stationId: "station-1", e85Price: 2.63, timestamp: Date.now() }],
-        "station-2": [{ stationId: "station-2", e85Price: 2.50, timestamp: Date.now() }],
+        "station-1": [{ stationId: "station-1", e85Price: 2.63, octane87Price: 3.14, timestamp: Date.now() }],
+        "station-2": [{ stationId: "station-2", e85Price: 2.50, octane87Price: 3.00, timestamp: Date.now() }],
       };
 
       vi.mocked(AsyncStorage.getItem).mockResolvedValue(JSON.stringify(mockData));

@@ -67,3 +67,19 @@
 - [x] Show price history (last 10 updates per station)
 - [x] Add price age indicator (e.g., "Updated 2 hours ago")
 - [x] Test crowdsourced pricing feature (10 new tests passing)
+
+
+## Multi-Fuel-Grade Pricing Feature
+
+- [x] Update station-prices module to support E85, 87, 89, 91/94 octane
+- [x] Update price update modal with inputs for all fuel grades
+- [x] Update stations screen to display all fuel grades with prices
+- [x] Update fuel price tests for multi-grade support
+- [x] All 58 tests passing
+
+
+## Current Bug Fix
+
+- [x] Fix decimal keyboard showing period-underscore instead of decimal point
+- [x] Change keyboardType from "decimal-pad" to "numbers-and-punctuation" in all numeric inputs (16 occurrences fixed)
+- [x] All 58 tests passing

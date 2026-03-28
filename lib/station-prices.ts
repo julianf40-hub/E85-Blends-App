@@ -8,10 +8,19 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export interface StationPrice {
   stationId: string;
   e85Price?: number;
-  gasolinePrice?: number;
+  octane87Price?: number;
+  octane89Price?: number;
+  octane9194Price?: number;
   timestamp: number; // milliseconds since epoch
   userId?: string; // Anonymous by default
 }
+
+export const FUEL_GRADES = [
+  { id: "e85", label: "E85", color: "#10B981" },
+  { id: "octane87", label: "87 Octane", color: "#3B82F6" },
+  { id: "octane89", label: "89 Octane", color: "#F59E0B" },
+  { id: "octane9194", label: "91/94 Octane", color: "#EF4444" },
+] as const;
 
 export interface StationPriceHistory {
   stationId: string;
@@ -85,29 +94,46 @@ export async function addStationPrice(price: Omit<StationPrice, "timestamp">): P
  */
 export async function getAverageStationPrices(
   stationId: string
-): Promise<{ e85Price?: number; gasolinePrice?: number } | null> {
+): Promise<{
+  e85Price?: number;
+  octane87Price?: number;
+  octane89Price?: number;
+  octane9194Price?: number;
+} | null> {
   const prices = await getStationPrices(stationId);
   if (prices.length === 0) return null;
 
-  let e85Sum = 0;
-  let e85Count = 0;
-  let gasSum = 0;
-  let gasCount = 0;
+  const sums = {
+    e85: { sum: 0, count: 0 },
+    octane87: { sum: 0, count: 0 },
+    octane89: { sum: 0, count: 0 },
+    octane9194: { sum: 0, count: 0 },
+  };
 
   prices.forEach((price) => {
     if (price.e85Price !== undefined) {
-      e85Sum += price.e85Price;
-      e85Count++;
+      sums.e85.sum += price.e85Price;
+      sums.e85.count++;
     }
-    if (price.gasolinePrice !== undefined) {
-      gasSum += price.gasolinePrice;
-      gasCount++;
+    if (price.octane87Price !== undefined) {
+      sums.octane87.sum += price.octane87Price;
+      sums.octane87.count++;
+    }
+    if (price.octane89Price !== undefined) {
+      sums.octane89.sum += price.octane89Price;
+      sums.octane89.count++;
+    }
+    if (price.octane9194Price !== undefined) {
+      sums.octane9194.sum += price.octane9194Price;
+      sums.octane9194.count++;
     }
   });
 
   return {
-    e85Price: e85Count > 0 ? Math.round((e85Sum / e85Count) * 100) / 100 : undefined,
-    gasolinePrice: gasCount > 0 ? Math.round((gasSum / gasCount) * 100) / 100 : undefined,
+    e85Price: sums.e85.count > 0 ? Math.round((sums.e85.sum / sums.e85.count) * 100) / 100 : undefined,
+    octane87Price: sums.octane87.count > 0 ? Math.round((sums.octane87.sum / sums.octane87.count) * 100) / 100 : undefined,
+    octane89Price: sums.octane89.count > 0 ? Math.round((sums.octane89.sum / sums.octane89.count) * 100) / 100 : undefined,
+    octane9194Price: sums.octane9194.count > 0 ? Math.round((sums.octane9194.sum / sums.octane9194.count) * 100) / 100 : undefined,
   };
 }
 

@@ -143,7 +143,7 @@ export default function StationsScreen() {
   );
 
   const handlePriceSubmit = useCallback(
-    async (e85Price?: number, gasolinePrice?: number) => {
+    async (e85Price?: number, octane87Price?: number, octane89Price?: number, octane9194Price?: number) => {
       if (!priceModalStation) return;
 
       setSubmittingPrice(true);
@@ -151,7 +151,9 @@ export default function StationsScreen() {
         await addStationPrice({
           stationId: priceModalStation.id,
           e85Price,
-          gasolinePrice,
+          octane87Price,
+          octane89Price,
+          octane9194Price,
         });
 
         const latestPrice = await getLatestStationPrice(priceModalStation.id);
@@ -309,26 +311,46 @@ export default function StationsScreen() {
                 {userPrices[item.id].e85Price && (
                   <View style={styles.priceItem}>
                     <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      E85 (User)
+                      E85
                     </Text>
-                    <Text style={[styles.priceValue, { color: colors.primary }]}>
-                      ${userPrices[item.id].e85Price.toFixed(2)}/gal
+                    <Text style={[styles.priceValue, { color: "#10B981" }]}>
+                      ${userPrices[item.id].e85Price.toFixed(2)}
                     </Text>
                   </View>
                 )}
-                {userPrices[item.id].gasolinePrice && (
+                {userPrices[item.id].octane87Price && (
                   <View style={styles.priceItem}>
                     <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      Gas (User)
+                      87
                     </Text>
-                    <Text style={[styles.priceValue, { color: colors.foreground }]}>
-                      ${userPrices[item.id].gasolinePrice.toFixed(2)}/gal
+                    <Text style={[styles.priceValue, { color: "#3B82F6" }]}>
+                      ${userPrices[item.id].octane87Price.toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+                {userPrices[item.id].octane89Price && (
+                  <View style={styles.priceItem}>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                      89
+                    </Text>
+                    <Text style={[styles.priceValue, { color: "#F59E0B" }]}>
+                      ${userPrices[item.id].octane89Price.toFixed(2)}
+                    </Text>
+                  </View>
+                )}
+                {userPrices[item.id].octane9194Price && (
+                  <View style={styles.priceItem}>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                      91/94
+                    </Text>
+                    <Text style={[styles.priceValue, { color: "#EF4444" }]}>
+                      ${userPrices[item.id].octane9194Price.toFixed(2)}
                     </Text>
                   </View>
                 )}
               </View>
               <Text style={[styles.priceSource, { color: colors.muted }]}>
-                {formatPriceAge(userPrices[item.id].timestamp)}
+                Updated {formatPriceAge(userPrices[item.id].timestamp)}
               </Text>
             </View>
           )}

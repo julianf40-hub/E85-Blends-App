@@ -8,15 +8,17 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from "react-native";
 import { useColors } from "@/hooks/use-colors";
 import { IconSymbol } from "./ui/icon-symbol";
+import { FUEL_GRADES } from "@/lib/station-prices";
 
 export interface PriceUpdateModalProps {
   visible: boolean;
   stationName: string;
   onClose: () => void;
-  onSubmit: (e85Price?: number, gasolinePrice?: number) => void;
+  onSubmit: (e85Price?: number, octane87Price?: number, octane89Price?: number, octane9194Price?: number) => void;
   isLoading?: boolean;
 }
 
@@ -28,31 +30,40 @@ export function PriceUpdateModal({
   isLoading = false,
 }: PriceUpdateModalProps) {
   const colors = useColors();
-  const [e85Price, setE85Price] = useState("");
-  const [gasolinePrice, setGasolinePrice] = useState("");
+  const [prices, setPrices] = useState({
+    e85: "",
+    octane87: "",
+    octane89: "",
+    octane9194: "",
+  });
 
   const handleSubmit = () => {
-    const e85 = e85Price ? parseFloat(e85Price) : undefined;
-    const gas = gasolinePrice ? parseFloat(gasolinePrice) : undefined;
+    const e85 = prices.e85 ? parseFloat(prices.e85) : undefined;
+    const octane87 = prices.octane87 ? parseFloat(prices.octane87) : undefined;
+    const octane89 = prices.octane89 ? parseFloat(prices.octane89) : undefined;
+    const octane9194 = prices.octane9194 ? parseFloat(prices.octane9194) : undefined;
 
-    if (!e85 && !gas) {
+    if (!e85 && !octane87 && !octane89 && !octane9194) {
       alert("Please enter at least one price");
       return;
     }
 
-    if ((e85 && isNaN(e85)) || (gas && isNaN(gas))) {
+    if (
+      (e85 && isNaN(e85)) ||
+      (octane87 && isNaN(octane87)) ||
+      (octane89 && isNaN(octane89)) ||
+      (octane9194 && isNaN(octane9194))
+    ) {
       alert("Please enter valid prices");
       return;
     }
 
-    onSubmit(e85, gas);
-    setE85Price("");
-    setGasolinePrice("");
+    onSubmit(e85, octane87, octane89, octane9194);
+    setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
   };
 
   const handleClose = () => {
-    setE85Price("");
-    setGasolinePrice("");
+    setPrices({ e85: "", octane87: "", octane89: "", octane9194: "" });
     onClose();
   };
 
@@ -100,60 +111,43 @@ export function PriceUpdateModal({
           </View>
 
           {/* Input Fields */}
-          <View style={styles.content}>
-            {/* E85 Price Input */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { color: colors.foreground }]}>
-                E85 Price ($/gal)
-              </Text>
-              <View
-                style={[
-                  styles.inputContainer,
-                  { borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-              >
-                <Text style={[styles.currencySymbol, { color: colors.muted }]}>
-                  $
+          <ScrollView
+            style={styles.content}
+            contentContainerStyle={styles.contentContainer}
+            showsVerticalScrollIndicator={false}
+          >
+            {FUEL_GRADES.map((grade) => (
+              <View key={grade.id} style={styles.inputGroup}>
+                <Text style={[styles.label, { color: colors.foreground }]}>
+                  {grade.label} ($/gal)
                 </Text>
-                <TextInput
-                  style={[styles.input, { color: colors.foreground }]}
-                  placeholder="2.63"
-                  placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
-                  value={e85Price}
-                  onChangeText={setE85Price}
-                  editable={!isLoading}
-                  maxLength={6}
-                />
+                <View
+                  style={[
+                    styles.inputContainer,
+                    { borderColor: colors.border, backgroundColor: colors.background },
+                  ]}
+                >
+                  <Text style={[styles.currencySymbol, { color: colors.muted }]}>
+                    $
+                  </Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground }]}
+                    placeholder={grade.id === "e85" ? "2.63" : grade.id === "octane87" ? "3.14" : grade.id === "octane89" ? "3.29" : "3.49"}
+                    placeholderTextColor={colors.muted}
+                    keyboardType="numbers-and-punctuation"
+                    value={prices[grade.id as keyof typeof prices]}
+                    onChangeText={(text) =>
+                      setPrices((prev) => ({
+                        ...prev,
+                        [grade.id]: text,
+                      }))
+                    }
+                    editable={!isLoading}
+                    maxLength={6}
+                  />
+                </View>
               </View>
-            </View>
-
-            {/* Gasoline Price Input */}
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { color: colors.foreground }]}>
-                Gasoline Price ($/gal)
-              </Text>
-              <View
-                style={[
-                  styles.inputContainer,
-                  { borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-              >
-                <Text style={[styles.currencySymbol, { color: colors.muted }]}>
-                  $
-                </Text>
-                <TextInput
-                  style={[styles.input, { color: colors.foreground }]}
-                  placeholder="3.14"
-                  placeholderTextColor={colors.muted}
-                  keyboardType="decimal-pad"
-                  value={gasolinePrice}
-                  onChangeText={setGasolinePrice}
-                  editable={!isLoading}
-                  maxLength={6}
-                />
-              </View>
-            </View>
+            ))}
 
             {/* Info Text */}
             <View style={styles.infoBox}>
@@ -163,10 +157,10 @@ export function PriceUpdateModal({
                 color={colors.primary}
               />
               <Text style={[styles.infoText, { color: colors.muted }]}>
-                Your prices help other drivers find the best E85 deals
+                Your prices help other drivers find the best fuel deals
               </Text>
             </View>
-          </View>
+          </ScrollView>
 
           {/* Action Buttons */}
           <View style={styles.footer}>
@@ -220,7 +214,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderWidth: 1,
-    paddingBottom: 20,
+    maxHeight: "85%",
   },
   header: {
     flexDirection: "row",
@@ -251,6 +245,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   content: {
+    flex: 1,
+  },
+  contentContainer: {
     paddingHorizontal: 20,
     paddingVertical: 16,
     gap: 16,
@@ -300,6 +297,7 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 20,
     paddingTop: 16,
+    paddingBottom: 20,
     borderTopWidth: 1,
   },
   cancelButton: {
