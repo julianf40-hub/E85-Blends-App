@@ -168,3 +168,12 @@
 - [x] Remove standalone Garage tab from tab layout
 - [x] Update all router.push("/(tabs)/garage") references to point to settings tab
 - [x] Rename Settings tab to "More" with ellipsis icon
+
+## Saved Blends in More Screen
+
+- [x] Read blends storage model and understand SavedBlend type
+- [x] Add Saved Blends section to More screen (below Garage, above Appearance)
+- [x] Show blend cards with ethanol %, octane, gallons info
+- [x] Add favorite/bookmark toggle action per blend card
+- [x] Add "Delete" action with confirmation
+- [x] Show empty state when no blends saved

@@ -42,6 +42,13 @@ import {
   clearGarage,
 } from "@/lib/garage";
 import { useThemeContext } from "@/lib/theme-provider";
+import {
+  SavedBlend,
+  getSavedBlends,
+  deleteBlend,
+  toggleFavorite,
+  clearAllBlends,
+} from "@/lib/blend-storage";
 
 // ─── Decimal sanitizer ───────────────────────────────────────────────────────
 function sanitizeDecimal(text: string): string {
@@ -365,6 +372,78 @@ const cc = StyleSheet.create({
   actionText: { fontSize: 12, fontWeight: "600" },
 });
 
+// ─── Blends: Inline Blend Card ───────────────────────────────────────────────
+function InlineBlendCard({ blend, onDelete, onToggleFavorite, colors }: {
+  blend: SavedBlend;
+  onDelete: () => void;
+  onToggleFavorite: () => void;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const label = blend.name || blend.result.blendLabel;
+  const dateStr = new Date(blend.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+  // Pick a tint color based on ethanol %
+  const ethanol = blend.result.finalEthanolPercent;
+  const tint = ethanol >= 60 ? "#10B981" : ethanol >= 40 ? "#F59E0B" : colors.primary;
+
+  return (
+    <View style={[
+      bc.container,
+      {
+        backgroundColor: blend.isFavorite ? tint + "10" : colors.background,
+        borderColor: blend.isFavorite ? tint + "55" : colors.border,
+        borderWidth: blend.isFavorite ? 1.5 : StyleSheet.hairlineWidth,
+      },
+    ]}>
+      <View style={bc.row}>
+        {/* Badge */}
+        <View style={[bc.badge, { backgroundColor: tint + "22" }]}>
+          <Text style={[bc.badgeText, { color: tint }]}>{blend.result.blendLabel}</Text>
+        </View>
+        {/* Info */}
+        <View style={bc.info}>
+          <Text style={[bc.name, { color: colors.foreground }]} numberOfLines={1}>{label}</Text>
+          <Text style={[bc.sub, { color: colors.muted }]}>
+            {blend.result.e85Gallons} gal E85 · {blend.result.gasGallons} gal Gas · {blend.result.estimatedOctane} oct
+          </Text>
+          <Text style={[bc.date, { color: colors.muted }]}>{dateStr}</Text>
+        </View>
+      </View>
+      <View style={[bc.actions, { borderTopColor: colors.border }]}>
+        <Pressable
+          onPress={onToggleFavorite}
+          style={({ pressed }) => [bc.actionBtn, { backgroundColor: blend.isFavorite ? tint + "18" : colors.surface, opacity: pressed ? 0.7 : 1 }]}
+        >
+          <IconSymbol name="bookmark.fill" size={13} color={blend.isFavorite ? tint : colors.muted} />
+          <Text style={[bc.actionText, { color: blend.isFavorite ? tint : colors.muted }]}>
+            {blend.isFavorite ? "Saved" : "Save"}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={onDelete}
+          style={({ pressed }) => [bc.actionBtn, { backgroundColor: "#EF444415", opacity: pressed ? 0.7 : 1 }]}
+        >
+          <IconSymbol name="trash.fill" size={13} color="#EF4444" />
+          <Text style={[bc.actionText, { color: "#EF4444" }]}>Delete</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+const bc = StyleSheet.create({
+  container: { borderRadius: 14, overflow: "hidden", marginBottom: 10 },
+  row: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
+  badge: { width: 52, height: 52, borderRadius: 12, justifyContent: "center", alignItems: "center" },
+  badgeText: { fontSize: 13, fontWeight: "800", letterSpacing: -0.3 },
+  info: { flex: 1 },
+  name: { fontSize: 15, fontWeight: "700" },
+  sub: { fontSize: 12, marginTop: 2 },
+  date: { fontSize: 11, marginTop: 2 },
+  actions: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8, gap: 6 },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingVertical: 7, borderRadius: 8 },
+  actionText: { fontSize: 12, fontWeight: "600" },
+});
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function MoreScreen() {
   const colors = useColors();
@@ -378,11 +457,23 @@ export default function MoreScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editProfile, setEditProfile] = useState<CarProfile | null>(null);
 
+  // Blends state
+  const [blends, setBlends] = useState<SavedBlend[]>([]);
+
   const loadAll = useCallback(async () => {
-    const [loaded, cars, aid] = await Promise.all([loadPreferences(), loadGarage(), getActiveCarId()]);
+    const [loaded, cars, aid, savedBlends] = await Promise.all([
+      loadPreferences(), loadGarage(), getActiveCarId(), getSavedBlends(),
+    ]);
     setPrefs(loaded);
     setProfiles(cars);
     setActiveId(aid);
+    // Sort: favorites first, then newest
+    savedBlends.sort((a, b) => {
+      if (a.isFavorite && !b.isFavorite) return -1;
+      if (!a.isFavorite && b.isFavorite) return 1;
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+    setBlends(savedBlends);
     setLoading(false);
   }, []);
 
@@ -434,6 +525,35 @@ export default function MoreScreen() {
     );
   }, [loadAll]);
 
+  // Blend handlers
+  const handleDeleteBlend = useCallback((id: string) => {
+    Alert.alert("Delete Blend", "Remove this saved blend?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete", style: "destructive",
+        onPress: async () => {
+          await deleteBlend(id);
+          setBlends((prev) => prev.filter((b) => b.id !== id));
+          if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        },
+      },
+    ]);
+  }, []);
+
+  const handleToggleBlendFavorite = useCallback(async (id: string) => {
+    await toggleFavorite(id);
+    setBlends((prev) => {
+      const updated = prev.map((b) => b.id === id ? { ...b, isFavorite: !b.isFavorite } : b);
+      updated.sort((a, b) => {
+        if (a.isFavorite && !b.isFavorite) return -1;
+        if (!a.isFavorite && b.isFavorite) return 1;
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
+      });
+      return updated;
+    });
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
+
   const handleResetPreferences = useCallback(() => {
     Alert.alert("Reset Preferences?", "This will restore all settings to defaults.", [
       { text: "Cancel" },
@@ -462,8 +582,10 @@ export default function MoreScreen() {
             await clearFavorites();
             await clearReviews();
             await clearGarage();
+            await clearAllBlends();
             setProfiles([]);
             setActiveId(null);
+            setBlends([]);
             if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             Alert.alert("Success", "All data has been cleared.");
           },
@@ -529,8 +651,55 @@ export default function MoreScreen() {
           )}
         </Animated.View>
 
+        {/* ── Saved Blends Section ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(40)} style={styles.section}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Saved Blends</Text>
+            {blends.length > 0 && (
+              <Pressable
+                onPress={() => {
+                  Alert.alert("Clear All Blends", "Permanently delete all saved blends?", [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Clear All", style: "destructive",
+                      onPress: async () => {
+                        await clearAllBlends();
+                        setBlends([]);
+                        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                      },
+                    },
+                  ]);
+                }}
+                style={({ pressed }) => [styles.clearAllBtn, { opacity: pressed ? 0.7 : 1 }]}
+              >
+                <Text style={[styles.clearAllBtnText, { color: colors.error }]}>Clear All</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {blends.length === 0 ? (
+            <View style={[styles.emptyGarageCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={styles.emptyGarageEmoji}>⚗️</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.emptyGarageTitle, { color: colors.foreground }]}>No saved blends</Text>
+                <Text style={[styles.emptyGarageSub, { color: colors.muted }]}>Calculate a blend and tap Save to store it here</Text>
+              </View>
+            </View>
+          ) : (
+            blends.map((blend) => (
+              <InlineBlendCard
+                key={blend.id}
+                blend={blend}
+                onDelete={() => handleDeleteBlend(blend.id)}
+                onToggleFavorite={() => handleToggleBlendFavorite(blend.id)}
+                colors={colors}
+              />
+            ))
+          )}
+        </Animated.View>
+
         {/* ── Appearance ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(60)} style={styles.section}>
+        <Animated.View entering={FadeInDown.duration(300).delay(80)}style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Appearance</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.settingRow}>
@@ -564,7 +733,7 @@ export default function MoreScreen() {
         </Animated.View>
 
         {/* ── Fuel Preferences ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(100)} style={styles.section}>
+        <Animated.View entering={FadeInDown.duration(300).delay(120)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Fuel Preferences</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.settingRow}>
@@ -614,7 +783,7 @@ export default function MoreScreen() {
         </Animated.View>
 
         {/* ── Data & Privacy ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(140)} style={styles.section}>
+        <Animated.View entering={FadeInDown.duration(300).delay(160)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Data & Privacy</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Pressable onPress={handleResetPreferences} style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.8 }]}>
@@ -646,7 +815,7 @@ export default function MoreScreen() {
         </Animated.View>
 
         {/* ── About ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(180)} style={styles.section}>
+        <Animated.View entering={FadeInDown.duration(300).delay(200)} style={styles.section}>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.aboutContent}>
               <Text style={[styles.aboutTitle, { color: colors.foreground }]}>E85 Blend Calculator</Text>
@@ -740,4 +909,6 @@ const styles = StyleSheet.create({
   aboutTitle: { fontSize: 16, fontWeight: "700" },
   aboutVersion: { fontSize: 13 },
   aboutDesc: { fontSize: 13, textAlign: "center", lineHeight: 18, marginTop: 4 },
+  clearAllBtn: { paddingHorizontal: 10, paddingVertical: 4 },
+  clearAllBtnText: { fontSize: 13, fontWeight: "600" },
 });
