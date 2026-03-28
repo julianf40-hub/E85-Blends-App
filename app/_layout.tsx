@@ -21,6 +21,8 @@ import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-run
 import { hasCompletedOnboarding } from "@/app/onboarding";
 import { router } from "expo-router";
 import { useQuickActionRouting } from "expo-quick-actions/router";
+import { useAppUpdate } from "@/hooks/use-app-update";
+import { Pressable, Text, StyleSheet } from "react-native";
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -28,6 +30,31 @@ const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
 export const unstable_settings = {
   anchor: "(tabs)",
 };
+
+const layoutStyles = StyleSheet.create({
+  updateBanner: {
+    position: "absolute",
+    bottom: 90,
+    left: 16,
+    right: 16,
+    backgroundColor: "#10B981",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    zIndex: 9999,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  updateBannerText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+});
 
 export default function RootLayout() {
   const initialInsets = initialWindowMetrics?.insets ?? DEFAULT_WEB_INSETS;
@@ -43,6 +70,9 @@ export default function RootLayout() {
 
   // Handle Android App Shortcuts (long-press app icon)
   useQuickActionRouting();
+
+  // OTA update check
+  const { status: updateStatus, applyUpdate } = useAppUpdate();
 
   // Redirect to onboarding on first launch
   useEffect(() => {
@@ -94,6 +124,20 @@ export default function RootLayout() {
     };
   }, [initialInsets, initialFrame]);
 
+  const updateBanner = updateStatus === "ready" ? (
+    <Pressable
+      onPress={applyUpdate}
+      style={({ pressed }) => [
+        layoutStyles.updateBanner,
+        pressed && { opacity: 0.85 },
+      ]}
+    >
+      <Text style={layoutStyles.updateBannerText}>
+        🎉 Update available — tap to restart
+      </Text>
+    </Pressable>
+  ) : null;
+
   const content = (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
@@ -109,6 +153,7 @@ export default function RootLayout() {
           <StatusBar style="auto" />
         </QueryClientProvider>
       </trpc.Provider>
+      {updateBanner}
     </GestureHandlerRootView>
   );
 

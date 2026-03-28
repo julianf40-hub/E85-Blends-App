@@ -90,6 +90,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    "expo-updates",
     [
       "expo-quick-actions",
       {
@@ -99,22 +100,6 @@ const config: ExpoConfig = {
             backgroundColor: "#00C853",
           },
         },
-        items: [
-          {
-            id: "open_calculator",
-            title: "E85 Calculator",
-            subtitle: "Calculate your blend",
-            icon: "calculator_icon",
-            params: { href: "/(tabs)/" },
-          },
-          {
-            id: "open_stations",
-            title: "Find Stations",
-            subtitle: "E85 near you",
-            icon: "calculator_icon",
-            params: { href: "/(tabs)/stations" },
-          },
-        ],
       },
     ],
     [
@@ -124,12 +109,7 @@ const config: ExpoConfig = {
         locationWhenInUsePermission: "Allow E85 Blend to use your location to find nearby stations.",
       },
     ],
-    [
-      "react-native-maps",
-      {
-        // Using PROVIDER_DEFAULT with OpenStreetMap tiles — no Google API key needed
-      },
-    ],
+    // react-native-maps uses PROVIDER_DEFAULT with OpenStreetMap tiles (no config plugin needed)
     [
       "expo-audio",
       {
@@ -165,6 +145,15 @@ const config: ExpoConfig = {
       },
     ],
   ],
+  updates: {
+    url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID ?? ""}`,
+    enabled: true,
+    checkAutomatically: "ON_LOAD",
+    fallbackToCacheTimeout: 0,
+  },
+  runtimeVersion: {
+    policy: "appVersion",
+  },
   experiments: {
     typedRoutes: true,
     reactCompiler: true,

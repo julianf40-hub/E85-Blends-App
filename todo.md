@@ -142,3 +142,9 @@
 - [x] 3-screen onboarding flow on first launch (add car, find stations, log fill-up)
 - [x] Favorite stations (star/unstar, pinned to top of list, persisted in AsyncStorage)
 - [x] Android App Shortcuts (long-press app icon to quick-launch Calculator or Stations via expo-quick-actions)
+
+## OTA Updates
+
+- [x] Install expo-updates and configure EAS Update channel
+- [x] Add silent background update check on app launch
+- [x] Add update notification banner when new version is available
