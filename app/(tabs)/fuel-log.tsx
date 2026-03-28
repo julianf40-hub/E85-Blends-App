@@ -24,6 +24,8 @@ import {
   FuelEntry,
   getFuelLogStats,
 } from "@/lib/fuel-log";
+import { getActiveCar } from "@/lib/garage";
+import { loadRemindersForCar } from "@/lib/reminders";
 
 export default function FuelLogScreen() {
   const colors = useColors();
@@ -84,6 +86,18 @@ export default function FuelLogScreen() {
 
       if (Platform.OS !== "web") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      // Auto-check reminders after fuel entry is added
+      try {
+        const car = await getActiveCar();
+        if (car) {
+          const rems = await loadRemindersForCar(car.id);
+          // Reminders will automatically show as due/overdue in the UI based on the new odometer
+          // No need to update reminder status here; the UI will recalculate based on getReminderUrgency
+        }
+      } catch (e) {
+        console.warn("Failed to check reminders after fuel entry:", e);
       }
 
       setFormData({

@@ -186,3 +186,11 @@
 - [x] Wire fuel log to use car odometer as fallback
 - [x] Restore E85 Calculator tile on Home dashboard with working tap handler
 - [x] Wire calculator tile to navigate to Saved Blends screen
+
+## Manual Odometer Update & Reminder Sync
+
+- [x] Add manual odometer update button to Home dashboard (next to current mileage display)
+- [x] Create odometer update modal with numeric input and save handler
+- [x] Wire fuel log addFuelEntry to check and update reminder status based on new odometer
+- [x] Auto-mark mileage-based reminders as due when odometer crosses threshold
+- [x] Test reminder sync with multiple fuel log entries

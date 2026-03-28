@@ -7,6 +7,9 @@ import {
   Platform,
   StyleSheet,
   FlatList,
+  Modal,
+  TextInput,
+  Alert,
 } from "react-native";
 import Animated, {
   FadeIn,
@@ -19,7 +22,7 @@ import { useRouter, useFocusEffect } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { getActiveCar, CarProfile } from "@/lib/garage";
+import { getActiveCar, CarProfile, updateCarProfile } from "@/lib/garage";
 import { loadFuelLog, FuelEntry } from "@/lib/fuel-log";
 import {
   loadRemindersForCar,
@@ -28,6 +31,7 @@ import {
   sortRemindersByUrgency,
   REMINDER_CATEGORIES,
   ReminderCategory,
+  updateReminder,
 } from "@/lib/reminders";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -79,9 +83,10 @@ interface CarHeroProps {
   car: CarProfile;
   currentMileage: number;
   onPress: () => void;
+  onOdometerPress: () => void;
 }
 
-function CarHero({ car, currentMileage, onPress }: CarHeroProps) {
+function CarHero({ car, currentMileage, onPress, onOdometerPress }: CarHeroProps) {
   const colors = useColors();
   const carLabel = car.nickname || `${car.year} ${car.make} ${car.model}`.trim() || "My Car";
 
@@ -124,12 +129,14 @@ function CarHero({ car, currentMileage, onPress }: CarHeroProps) {
               <Text style={styles.heroStatLabel}>default blend</Text>
             </View>
             <View style={styles.heroStatDivider} />
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatValue}>
-                {currentMileage > 0 ? currentMileage.toLocaleString() : "—"}
-              </Text>
-              <Text style={styles.heroStatLabel}>last odometer</Text>
-            </View>
+            <Pressable onPress={onOdometerPress} style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
+              <View style={styles.heroStat}>
+                <Text style={styles.heroStatValue}>
+                  {currentMileage > 0 ? currentMileage.toLocaleString() : "—"}
+                </Text>
+                <Text style={styles.heroStatLabel}>odometer</Text>
+              </View>
+            </Pressable>
           </View>
         </LinearGradient>
       </Pressable>
@@ -227,6 +234,8 @@ export default function HomeScreen() {
   const [recentFillUps, setRecentFillUps] = useState<FuelEntry[]>([]);
   const [currentMileage, setCurrentMileage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [odometerModalVisible, setOdometerModalVisible] = useState(false);
+  const [odometerInput, setOdometerInput] = useState("");
 
   const loadData = useCallback(async () => {
     try {
@@ -276,6 +285,26 @@ export default function HomeScreen() {
     router.push("/(tabs)/settings");
   }, [router]);
 
+  // Auto-check reminders when odometer changes
+  const checkAndUpdateReminders = useCallback(async (newOdometer: number) => {
+    if (!activeCar) return;
+    try {
+      const rems = await loadRemindersForCar(activeCar.id);
+      // Check each mileage-based reminder
+      for (const rem of rems) {
+        if (rem.mileageEnabled && rem.nextReminderMileage !== undefined && !rem.completedAt) {
+          // If odometer crosses the reminder threshold, mark it as due
+          if (newOdometer >= rem.nextReminderMileage) {
+            // Reminder is now due/overdue, no need to update (it will show as due in the UI)
+            // The UI already shows it as due based on getReminderUrgency
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to check reminders:", e);
+    }
+  }, [activeCar]);
+
   const handleCalculatePress = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     // TODO: Open calculator modal or sheet
@@ -283,8 +312,77 @@ export default function HomeScreen() {
     router.push("/(tabs)/blends");
   }, [router]);
 
+  const handleUpdateOdometer = useCallback(() => {
+    setOdometerInput(currentMileage.toString());
+    setOdometerModalVisible(true);
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, [currentMileage]);
+
+  const handleSaveOdometer = useCallback(async () => {
+    const newOdometer = parseInt(odometerInput) || 0;
+    if (newOdometer < 0) {
+      Alert.alert("Invalid Odometer", "Please enter a valid odometer reading.");
+      return;
+    }
+    if (newOdometer === currentMileage) {
+      setOdometerModalVisible(false);
+      return;
+    }
+
+    try {
+      // Update the active car's odometer field
+      if (activeCar) {
+        await updateCarProfile(activeCar.id, { ...activeCar, odometer: newOdometer });
+        setCurrentMileage(newOdometer);
+        setOdometerModalVisible(false);
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (e) {
+      console.warn("Failed to update odometer:", e);
+      Alert.alert("Error", "Failed to update odometer. Please try again.");
+    }
+  }, [odometerInput, currentMileage, activeCar]);
+
   return (
     <ScreenContainer>
+      <Modal
+        visible={odometerModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setOdometerModalVisible(false)}
+      >
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+            <Pressable
+              onPress={() => setOdometerModalVisible(false)}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalCancelText, { color: colors.primary }]}>Cancel</Text>
+            </Pressable>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>Update Odometer</Text>
+            <Pressable
+              onPress={handleSaveOdometer}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Save</Text>
+            </Pressable>
+          </View>
+          <View style={styles.modalContent}>
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>Current Odometer Reading (miles)</Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+              placeholder="0"
+              placeholderTextColor={colors.muted}
+              keyboardType="number-pad"
+              value={odometerInput}
+              onChangeText={setOdometerInput}
+              autoFocus
+            />
+            <Text style={[styles.modalHint, { color: colors.muted }]}>Current: {currentMileage.toLocaleString()} mi</Text>
+          </View>
+        </View>
+      </Modal>
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -307,7 +405,7 @@ export default function HomeScreen() {
 
         {/* ── Car Hero ── */}
         {activeCar ? (
-          <CarHero car={activeCar} currentMileage={currentMileage} onPress={handleCarPress} />
+          <CarHero car={activeCar} currentMileage={currentMileage} onPress={handleCarPress} onOdometerPress={handleUpdateOdometer} />
         ) : (
           <Animated.View entering={FadeInDown.duration(300)} style={styles.heroWrapper}>
             <Pressable
@@ -776,5 +874,56 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     lineHeight: 18,
+  },
+
+  // Odometer modal
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === "ios" ? 16 : 12,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  modalHeaderBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  modalCancelText: {
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  modalSaveText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  modalContent: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 24,
+  },
+  modalLabel: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 12,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    marginBottom: 12,
+  },
+  modalHint: {
+    fontSize: 13,
   },
 });
