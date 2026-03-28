@@ -12,7 +12,7 @@ export interface BlendInputs {
   currentEthanolPercent: number; // Ethanol % of current fuel in tank (0-100)
   targetEthanolPercent: number; // Desired ethanol % (0-85)
   e85EthanolPercent: number; // Ethanol content of E85 at pump (51-85, default 85)
-  gasEthanolPercent: number; // Ethanol content of regular gas (0-15, default 10)
+  gasEthanolPercent: number; // Ethanol content of regular gas (0-15, default 0 for pure 91/93 octane)
   e85Octane: number; // Octane of E85 (default 105)
   gasOctane: number; // Octane of regular gas (87, 91, 93)
 }
@@ -34,7 +34,7 @@ export const DEFAULT_INPUTS: BlendInputs = {
   currentEthanolPercent: 10,
   targetEthanolPercent: 30,
   e85EthanolPercent: 85,
-  gasEthanolPercent: 10,
+  gasEthanolPercent: 0,
   e85Octane: 105,
   gasOctane: 93,
 };

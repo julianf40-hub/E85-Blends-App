@@ -213,3 +213,10 @@
 ## Bug Fix: Repeating Mileage Reminder Completion
 
 - [x] Fix next mileage target after completion: should be current odometer + interval, not just interval value
+
+## Calculator Accuracy Verification
+
+- [x] Verified blend math: formula is correct, root cause was gasEthanolPercent default of 10% vs actual 0% for pure 91/93 octane
+- [x] Fixed default gasEthanolPercent from 10% to 0% in blend-calculator.ts
+- [x] Added helper hint "0% for pure 91/93 oct" below Gas Ethanol % field in calculator modal
+- [x] Real result explained: 13.15 gal E85 + 1.601 gal gas (pump shutoff early) → 68% (expected ~70% with full fill)

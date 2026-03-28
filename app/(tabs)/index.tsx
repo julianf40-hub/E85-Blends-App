@@ -557,12 +557,13 @@ export default function HomeScreen() {
                     <TextInput
                       style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
                       keyboardType="decimal-pad"
-                      placeholder="10"
+                      placeholder="0"
                       placeholderTextColor={colors.muted}
                       value={calcStrings.gasEthanolPercent}
                       onChangeText={(t) => handleCalcStringChange("gasEthanolPercent", t)}
                       returnKeyType="done"
                     />
+                    <Text style={[styles.modalHint, { color: colors.muted }]}>0% for pure 91/93 oct</Text>
                   </View>
                 </View>
                 <View style={styles.calcInputRow}>
