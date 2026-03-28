@@ -94,8 +94,16 @@ export default function CalculatorScreen() {
 
   const updateInput = useCallback(
     (key: keyof BlendInputs, value: string) => {
-      const num = parseFloat(value) || 0;
-      setInputs((prev) => ({ ...prev, [key]: num }));
+      // Allow empty string, decimal point, and numbers
+      if (value === '' || value === '.') {
+        setInputs((prev) => ({ ...prev, [key]: 0 }));
+        return;
+      }
+      const num = parseFloat(value);
+      // Only update if it's a valid number
+      if (!isNaN(num)) {
+        setInputs((prev) => ({ ...prev, [key]: num }));
+      }
     },
     []
   );
@@ -143,7 +151,7 @@ export default function CalculatorScreen() {
                 styles.inputLarge,
                 { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
               ]}
-              value={inputs.tankSize.toString()}
+              value={inputs.tankSize === 0 ? '' : inputs.tankSize.toString()}
               onChangeText={(v) => updateInput("tankSize", v)}
               keyboardType="decimal-pad"
               returnKeyType="done"

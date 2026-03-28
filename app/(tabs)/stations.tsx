@@ -18,6 +18,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { E85Station, fetchNearbyStations } from "@/lib/station-data";
+import { FuelPrices, fetchFuelPrices } from "@/lib/fuel-prices";
 
 export default function StationsScreen() {
   const colors = useColors();
@@ -31,6 +32,7 @@ export default function StationsScreen() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [selectedStation, setSelectedStation] = useState<E85Station | null>(null);
   const [searchRadius, setSearchRadius] = useState(25);
+  const [fuelPrices, setFuelPrices] = useState<FuelPrices | null>(null);
 
   const loadStations = useCallback(
     async (lat: number, lon: number, radius: number = searchRadius) => {
@@ -51,6 +53,10 @@ export default function StationsScreen() {
 
   useEffect(() => {
     (async () => {
+      // Fetch fuel prices
+      const prices = await fetchFuelPrices();
+      setFuelPrices(prices);
+
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
@@ -237,6 +243,46 @@ export default function StationsScreen() {
               )}
             </View>
           </View>
+
+          {/* Fuel Prices Section */}
+          {fuelPrices && (
+            <View
+              style={[
+                styles.pricesSection,
+                { backgroundColor: colors.background, borderTopColor: colors.border },
+              ]}
+            >
+              <View style={styles.priceRow}>
+                <View style={styles.priceItem}>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                    E85 Price
+                  </Text>
+                  <Text style={[styles.priceValue, { color: colors.primary }]}>
+                    ${fuelPrices.e85Price.toFixed(2)}/gal
+                  </Text>
+                </View>
+                <View style={styles.priceItem}>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                    Gas Price
+                  </Text>
+                  <Text style={[styles.priceValue, { color: colors.foreground }]}>
+                    ${fuelPrices.gasolinePrice.toFixed(2)}/gal
+                  </Text>
+                </View>
+                <View style={styles.priceItem}>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
+                    Savings
+                  </Text>
+                  <Text style={[styles.priceValue, { color: colors.success }]}>
+                    {((1 - fuelPrices.e85Price / fuelPrices.gasolinePrice) * 100).toFixed(0)}%
+                  </Text>
+                </View>
+              </View>
+              <Text style={[styles.priceSource, { color: colors.muted }]}>
+                {fuelPrices.source}
+              </Text>
+            </View>
+          )}
 
           {selectedStation?.id === item.id && (
             <Animated.View
@@ -696,6 +742,34 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: "center",
     lineHeight: 22,
+  },
+  pricesSection: {
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginTop: 8,
+  },
+  priceRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginBottom: 8,
+  },
+  priceItem: {
+    alignItems: "center",
+    gap: 4,
+  },
+  priceLabel: {
+    fontSize: 11,
+    fontWeight: "500",
+  },
+  priceValue: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  priceSource: {
+    fontSize: 10,
+    fontWeight: "400",
+    textAlign: "center",
   },
   attribution: {
     paddingHorizontal: 20,

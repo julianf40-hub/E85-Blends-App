@@ -49,3 +49,10 @@
 
 - [x] Fix splash screen to show correct app icon instead of old one
 - [x] Fix decimal input parsing - "18.5" not working in tank size field
+
+## Current Work
+
+- [x] Debug decimal input - improved parseFloat logic and input handling
+- [x] Integrate E85 fuel prices display at stations
+- [x] Add fuel price comparison (E85 vs gas savings %)
+- [x] Create fuel-prices utility module with cost comparison calculations
