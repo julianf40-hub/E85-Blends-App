@@ -19,6 +19,7 @@ import Animated, {
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter, useFocusEffect } from "expo-router";
+import { calculateBlend, DEFAULT_INPUTS, COMMON_BLENDS, type BlendInputs, type BlendResult } from "@/lib/blend-calculator";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
@@ -236,6 +237,9 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [odometerModalVisible, setOdometerModalVisible] = useState(false);
   const [odometerInput, setOdometerInput] = useState("");
+  const [calculatorModalVisible, setCalculatorModalVisible] = useState(false);
+  const [blendInputs, setBlendInputs] = useState<BlendInputs>(DEFAULT_INPUTS);
+  const [blendResult, setBlendResult] = useState<BlendResult | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -245,8 +249,11 @@ export default function HomeScreen() {
       const logs = await loadFuelLog();
       const recent = logs.slice(0, 5);
       setRecentFillUps(recent);
-      // Use latest fuel log odometer, or fall back to car's odometer field
-      const latestMileage = logs.length > 0 ? logs[0].odometer : (car?.odometer ?? 0);
+      // Use the higher of: latest fuel log odometer or car's manual odometer
+      // This ensures manual updates persist and aren't overridden by older fuel logs
+      const fuelLogOdometer = logs.length > 0 ? logs[0].odometer : 0;
+      const carOdometer = car?.odometer ?? 0;
+      const latestMileage = Math.max(fuelLogOdometer, carOdometer);
       setCurrentMileage(latestMileage);
 
       if (car) {
@@ -307,10 +314,31 @@ export default function HomeScreen() {
 
   const handleCalculatePress = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // TODO: Open calculator modal or sheet
-    // For now, navigate to blends screen which shows saved blends
-    router.push("/(tabs)/blends");
-  }, [router]);
+    // Pre-fill calculator with active car's tank size and default blend
+    if (activeCar) {
+      const inputs: BlendInputs = {
+        ...DEFAULT_INPUTS,
+        tankSize: activeCar.tankSize,
+        targetEthanolPercent: activeCar.defaultBlend,
+        gasOctane: activeCar.requiredOctane,
+      };
+      setBlendInputs(inputs);
+      const result = calculateBlend(inputs);
+      setBlendResult(result);
+    }
+    setCalculatorModalVisible(true);
+  }, [activeCar]);
+
+  const handleBlendInputChange = useCallback((key: keyof BlendInputs, value: number) => {
+    const updated = { ...blendInputs, [key]: value };
+    setBlendInputs(updated);
+    const result = calculateBlend(updated);
+    setBlendResult(result);
+  }, [blendInputs]);
+
+  const handleQuickBlend = useCallback((targetEthanol: number) => {
+    handleBlendInputChange("targetEthanolPercent", targetEthanol);
+  }, [handleBlendInputChange]);
 
   const handleUpdateOdometer = useCallback(() => {
     setOdometerInput(currentMileage.toString());
@@ -345,6 +373,129 @@ export default function HomeScreen() {
 
   return (
     <ScreenContainer>
+      {/* ── Calculator Modal ── */}
+      <Modal
+        visible={calculatorModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setCalculatorModalVisible(false)}
+      >
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+            <Pressable
+              onPress={() => setCalculatorModalVisible(false)}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalCancelText, { color: colors.primary }]}>Close</Text>
+            </Pressable>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>E85 Calculator</Text>
+            <Pressable
+              onPress={() => setCalculatorModalVisible(false)}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Done</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.modalContent} contentContainerStyle={{ paddingBottom: 24 }}>
+            {/* Quick blend buttons */}
+            <View style={{ marginBottom: 20 }}>
+              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Quick Blends</Text>
+              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                {COMMON_BLENDS.map((blend) => (
+                  <Pressable
+                    key={blend.value}
+                    onPress={() => handleQuickBlend(blend.value)}
+                    style={({ pressed }) => [{
+                      flex: 1,
+                      minWidth: "30%",
+                      paddingVertical: 10,
+                      paddingHorizontal: 12,
+                      borderRadius: 8,
+                      backgroundColor: blendInputs.targetEthanolPercent === blend.value ? colors.primary : colors.surface,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      opacity: pressed ? 0.7 : 1,
+                    }]}
+                  >
+                    <Text style={[{ fontSize: 14, fontWeight: "600", textAlign: "center", color: blendInputs.targetEthanolPercent === blend.value ? "#fff" : colors.foreground }]}>
+                      {blend.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {/* Input fields */}
+            <View style={{ marginBottom: 20 }}>
+              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Tank Size (gal)</Text>
+              <TextInput
+                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                placeholder="16"
+                placeholderTextColor={colors.muted}
+                keyboardType="decimal-pad"
+                value={blendInputs.tankSize.toString()}
+                onChangeText={(text) => handleBlendInputChange("tankSize", parseFloat(text) || 16)}
+              />
+            </View>
+
+            <View style={{ marginBottom: 20 }}>
+              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Current Fuel Level (%)</Text>
+              <TextInput
+                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                placeholder="0"
+                placeholderTextColor={colors.muted}
+                keyboardType="decimal-pad"
+                value={blendInputs.currentFuelLevel.toString()}
+                onChangeText={(text) => handleBlendInputChange("currentFuelLevel", parseFloat(text) || 0)}
+              />
+            </View>
+
+            <View style={{ marginBottom: 20 }}>
+              <Text style={[styles.modalLabel, { color: colors.foreground }]}>Target Ethanol %</Text>
+              <TextInput
+                style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                placeholder="30"
+                placeholderTextColor={colors.muted}
+                keyboardType="decimal-pad"
+                value={blendInputs.targetEthanolPercent.toString()}
+                onChangeText={(text) => handleBlendInputChange("targetEthanolPercent", parseFloat(text) || 30)}
+              />
+            </View>
+
+            {/* Results */}
+            {blendResult && (
+              <View style={[{ backgroundColor: colors.surface, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: colors.border }]}>
+                <Text style={[{ fontSize: 18, fontWeight: "700", color: colors.foreground, marginBottom: 12 }]}>
+                  {blendResult.blendLabel} Blend
+                </Text>
+                <View style={{ gap: 8 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={[{ color: colors.muted }]}>E85 to add:</Text>
+                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.e85Gallons.toFixed(2)} gal</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={[{ color: colors.muted }]}>Gas to add:</Text>
+                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.gasGallons.toFixed(2)} gal</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={[{ color: colors.muted }]}>Final Ethanol %:</Text>
+                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.finalEthanolPercent.toFixed(1)}%</Text>
+                  </View>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                    <Text style={[{ color: colors.muted }]}>Est. Octane:</Text>
+                    <Text style={[{ color: colors.foreground, fontWeight: "600" }]}>{blendResult.estimatedOctane.toFixed(1)}</Text>
+                  </View>
+                </View>
+                {blendResult.errorMessage && (
+                  <Text style={[{ color: "#EF4444", marginTop: 12, fontSize: 12 }]}>{blendResult.errorMessage}</Text>
+                )}
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ── Odometer Modal ── */}
       <Modal
         visible={odometerModalVisible}
         animationType="slide"

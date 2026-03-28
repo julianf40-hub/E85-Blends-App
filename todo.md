@@ -194,3 +194,10 @@
 - [x] Wire fuel log addFuelEntry to check and update reminder status based on new odometer
 - [x] Auto-mark mileage-based reminders as due when odometer crosses threshold
 - [x] Test reminder sync with multiple fuel log entries
+
+## Bug Fixes
+
+- [x] Manual odometer update reverts to latest fuel log odometer on screen reload
+- [x] E85 Calculator button navigates to My Blends instead of showing calculator UI
+- [x] Fix odometer priority: manual update should take precedence over fuel log
+- [x] Build calculator modal with blend calculation inputs and results
