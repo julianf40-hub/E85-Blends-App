@@ -103,3 +103,15 @@
 - [ ] Update tab layout to include Garage tab
 - [ ] Add Garage tab icon mapping
 - [ ] Test all Garage features end-to-end
+
+
+## Station Caching & Map View
+
+- [x] Add station cache utility with 30-min TTL (AsyncStorage)
+- [x] Update fetchNearbyStations to read from cache before hitting API
+- [x] Invalidate cache on manual refresh or radius change
+- [x] Add map view toggle (List / Map) to Stations tab header
+- [x] Show station pins on MapView with custom callouts
+- [x] Tap pin to highlight station card / show detail callout
+- [x] Center map on user location with accuracy circle
+- [x] Animate map to fit all station pins on load

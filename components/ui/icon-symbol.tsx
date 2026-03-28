@@ -46,6 +46,10 @@ const MAPPING: Record<string, MaterialIconName> = {
   "ellipsis": "more-horiz",
   "crown.fill": "star",
   "gear": "settings",
+  "list.bullet": "format-list-bulleted",
+  "map": "map",
+  "location.circle.fill": "my-location",
+  "pin.fill": "push-pin",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

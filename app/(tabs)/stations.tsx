@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Text,
   View,
@@ -8,8 +8,9 @@ import {
   Linking,
   ActivityIndicator,
   StyleSheet,
-  TextInput,
+  Dimensions,
 } from "react-native";
+import MapView, { Marker, Circle, Region } from "react-native-maps";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
@@ -22,13 +23,51 @@ import { FuelPrices, fetchFuelPrices } from "@/lib/fuel-prices";
 import { PriceUpdateModal } from "@/components/price-update-modal";
 import {
   getLatestStationPrice,
-  getAverageStationPrices,
   addStationPrice,
   formatPriceAge,
 } from "@/lib/station-prices";
+import {
+  getCachedStations,
+  setCachedStations,
+  invalidateStationCache,
+  getStationCacheAge,
+} from "@/lib/station-cache";
+
+const SCREEN_WIDTH = Dimensions.get("window").width;
+
+/** Compute a region that fits all station markers plus the user location */
+function computeRegion(
+  userLat: number,
+  userLon: number,
+  stations: E85Station[]
+): Region {
+  if (stations.length === 0) {
+    return {
+      latitude: userLat,
+      longitude: userLon,
+      latitudeDelta: 0.3,
+      longitudeDelta: 0.3,
+    };
+  }
+  const lats = [userLat, ...stations.map((s) => s.latitude)];
+  const lons = [userLon, ...stations.map((s) => s.longitude)];
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const padding = 0.15;
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLon + maxLon) / 2,
+    latitudeDelta: maxLat - minLat + padding,
+    longitudeDelta: maxLon - minLon + padding,
+  };
+}
 
 export default function StationsScreen() {
   const colors = useColors();
+  const mapRef = useRef<MapView>(null);
+
   const [location, setLocation] = useState<{
     latitude: number;
     longitude: number;
@@ -42,16 +81,50 @@ export default function StationsScreen() {
   const [fuelPrices, setFuelPrices] = useState<FuelPrices | null>(null);
   const [priceModalVisible, setPriceModalVisible] = useState(false);
   const [priceModalStation, setPriceModalStation] = useState<E85Station | null>(null);
-  const [userPrices, setUserPrices] = useState<Record<string, any>>({}); // stationId -> latest price
+  const [userPrices, setUserPrices] = useState<Record<string, any>>({});
   const [submittingPrice, setSubmittingPrice] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "map">("list");
+  const [cacheAgeMin, setCacheAgeMin] = useState<number | null>(null);
 
   const loadStations = useCallback(
-    async (lat: number, lon: number, radius: number = searchRadius) => {
+    async (
+      lat: number,
+      lon: number,
+      radius: number = searchRadius,
+      forceRefresh = false
+    ) => {
       try {
+        // Try cache first (unless forced refresh)
+        if (!forceRefresh) {
+          const cached = await getCachedStations(lat, lon, radius);
+          if (cached) {
+            setStations(cached);
+            const age = await getStationCacheAge(lat, lon, radius);
+            setCacheAgeMin(age);
+            if (cached.length === 0) {
+              setErrorMsg(
+                `No E85 stations found within ${radius} miles. Try increasing the search radius.`
+              );
+            } else {
+              setErrorMsg(null);
+            }
+            return;
+          }
+        }
+
+        // Cache miss or forced refresh — hit the API
+        setCacheAgeMin(null);
         const results = await fetchNearbyStations(lat, lon, radius, 30);
         setStations(results);
+
+        // Write to cache
+        await setCachedStations(lat, lon, radius, results);
+        setCacheAgeMin(0);
+
         if (results.length === 0) {
-          setErrorMsg(`No E85 stations found within ${radius} miles. Try increasing the search radius.`);
+          setErrorMsg(
+            `No E85 stations found within ${radius} miles. Try increasing the search radius.`
+          );
         } else {
           setErrorMsg(null);
         }
@@ -68,7 +141,6 @@ export default function StationsScreen() {
 
   useEffect(() => {
     (async () => {
-      // Fetch fuel prices
       const prices = await fetchFuelPrices();
       setFuelPrices(prices);
 
@@ -104,12 +176,23 @@ export default function StationsScreen() {
     })();
   }, []);
 
+  // Animate map to fit all pins when switching to map view
+  useEffect(() => {
+    if (viewMode === "map" && location && stations.length > 0 && mapRef.current) {
+      const region = computeRegion(location.latitude, location.longitude, stations);
+      setTimeout(() => {
+        mapRef.current?.animateToRegion(region, 600);
+      }, 300);
+    }
+  }, [viewMode, stations, location]);
+
   const handleRefresh = useCallback(async () => {
     if (!location) return;
     setRefreshing(true);
-    await loadStations(location.latitude, location.longitude);
+    await invalidateStationCache(location.latitude, location.longitude, searchRadius);
+    await loadStations(location.latitude, location.longitude, searchRadius, true);
     setRefreshing(false);
-  }, [location, loadStations]);
+  }, [location, loadStations, searchRadius]);
 
   const handleRadiusChange = useCallback(
     async (newRadius: number) => {
@@ -138,18 +221,19 @@ export default function StationsScreen() {
     if (url) Linking.openURL(url);
   }, []);
 
-  const handlePriceUpdate = useCallback(
-    (station: E85Station) => {
-      setPriceModalStation(station);
-      setPriceModalVisible(true);
-    },
-    []
-  );
+  const handlePriceUpdate = useCallback((station: E85Station) => {
+    setPriceModalStation(station);
+    setPriceModalVisible(true);
+  }, []);
 
   const handlePriceSubmit = useCallback(
-    async (e85Price?: number, octane87Price?: number, octane89Price?: number, octane9194Price?: number) => {
+    async (
+      e85Price?: number,
+      octane87Price?: number,
+      octane89Price?: number,
+      octane9194Price?: number
+    ) => {
       if (!priceModalStation) return;
-
       setSubmittingPrice(true);
       try {
         await addStationPrice({
@@ -159,7 +243,6 @@ export default function StationsScreen() {
           octane89Price,
           octane9194Price,
         });
-
         const latestPrice = await getLatestStationPrice(priceModalStation.id);
         if (latestPrice) {
           setUserPrices((prev) => ({
@@ -167,7 +250,6 @@ export default function StationsScreen() {
             [priceModalStation.id]: latestPrice,
           }));
         }
-
         setPriceModalVisible(false);
         if (Platform.OS !== "web") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -182,6 +264,26 @@ export default function StationsScreen() {
     [priceModalStation]
   );
 
+  const handleMarkerPress = useCallback(
+    (station: E85Station) => {
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      setSelectedStation((prev) => (prev?.id === station.id ? null : station));
+      // Animate map to the tapped station
+      mapRef.current?.animateToRegion(
+        {
+          latitude: station.latitude,
+          longitude: station.longitude,
+          latitudeDelta: 0.04,
+          longitudeDelta: 0.04,
+        },
+        400
+      );
+    },
+    []
+  );
+
   const renderStationCard = useCallback(
     ({ item, index }: { item: E85Station; index: number }) => (
       <Animated.View entering={FadeInDown.duration(250).delay(Math.min(index * 40, 400))}>
@@ -190,18 +292,14 @@ export default function StationsScreen() {
             if (Platform.OS !== "web") {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             }
-            setSelectedStation(
-              selectedStation?.id === item.id ? null : item
-            );
+            setSelectedStation(selectedStation?.id === item.id ? null : item);
           }}
           style={({ pressed }) => [
             styles.stationCard,
             {
               backgroundColor: colors.surface,
               borderColor:
-                selectedStation?.id === item.id
-                  ? colors.primary
-                  : colors.border,
+                selectedStation?.id === item.id ? colors.primary : colors.border,
               borderWidth: selectedStation?.id === item.id ? 2 : 1,
             },
             pressed && { opacity: 0.8 },
@@ -216,11 +314,7 @@ export default function StationsScreen() {
                     { backgroundColor: colors.primary + "18" },
                   ]}
                 >
-                  <IconSymbol
-                    name="fuelpump.fill"
-                    size={18}
-                    color={colors.primary}
-                  />
+                  <IconSymbol name="fuelpump.fill" size={18} color={colors.primary} />
                 </View>
                 <View style={styles.stationNameCol}>
                   <Text
@@ -230,18 +324,14 @@ export default function StationsScreen() {
                     {item.name}
                   </Text>
                   {item.brand && (
-                    <Text
-                      style={[styles.stationBrand, { color: colors.muted }]}
-                    >
+                    <Text style={[styles.stationBrand, { color: colors.muted }]}>
                       {item.brand}
                     </Text>
                   )}
                 </View>
               </View>
               <View style={styles.distanceBadge}>
-                <Text
-                  style={[styles.distanceText, { color: colors.primary }]}
-                >
+                <Text style={[styles.distanceText, { color: colors.primary }]}>
                   {item.distance < 1
                     ? `${(item.distance * 5280).toFixed(0)} ft`
                     : `${item.distance.toFixed(1)} mi`}
@@ -259,43 +349,27 @@ export default function StationsScreen() {
             <View style={styles.stationMeta}>
               {item.hours && (
                 <View
-                  style={[
-                    styles.hoursBadge,
-                    { backgroundColor: colors.muted + "15" },
-                  ]}
+                  style={[styles.hoursBadge, { backgroundColor: colors.muted + "15" }]}
                 >
-                  <Text
-                    style={[styles.hoursText, { color: colors.muted }]}
-                    numberOfLines={1}
-                  >
+                  <Text style={[styles.hoursText, { color: colors.muted }]} numberOfLines={1}>
                     {item.hours}
                   </Text>
                 </View>
               )}
               {item.hasBlenderPump && (
                 <View
-                  style={[
-                    styles.blenderBadge,
-                    { backgroundColor: colors.primary + "15" },
-                  ]}
+                  style={[styles.blenderBadge, { backgroundColor: colors.primary + "15" }]}
                 >
-                  <Text
-                    style={[styles.blenderText, { color: colors.primary }]}
-                  >
+                  <Text style={[styles.blenderText, { color: colors.primary }]}>
                     Blender Pump
                   </Text>
                 </View>
               )}
               {item.facilityType && (
                 <View
-                  style={[
-                    styles.hoursBadge,
-                    { backgroundColor: colors.muted + "15" },
-                  ]}
+                  style={[styles.hoursBadge, { backgroundColor: colors.muted + "15" }]}
                 >
-                  <Text
-                    style={[styles.hoursText, { color: colors.muted }]}
-                  >
+                  <Text style={[styles.hoursText, { color: colors.muted }]}>
                     {item.facilityType}
                   </Text>
                 </View>
@@ -303,7 +377,7 @@ export default function StationsScreen() {
             </View>
           </View>
 
-          {/* User-Submitted Prices Section */}
+          {/* User-Submitted Prices */}
           {userPrices[item.id] && (
             <View
               style={[
@@ -314,9 +388,7 @@ export default function StationsScreen() {
               <View style={styles.priceRow}>
                 {userPrices[item.id].e85Price && (
                   <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      E85
-                    </Text>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>E85</Text>
                     <Text style={[styles.priceValue, { color: "#10B981" }]}>
                       ${userPrices[item.id].e85Price.toFixed(2)}
                     </Text>
@@ -324,9 +396,7 @@ export default function StationsScreen() {
                 )}
                 {userPrices[item.id].octane87Price && (
                   <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      87
-                    </Text>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>87</Text>
                     <Text style={[styles.priceValue, { color: "#3B82F6" }]}>
                       ${userPrices[item.id].octane87Price.toFixed(2)}
                     </Text>
@@ -334,9 +404,7 @@ export default function StationsScreen() {
                 )}
                 {userPrices[item.id].octane89Price && (
                   <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      89
-                    </Text>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>89</Text>
                     <Text style={[styles.priceValue, { color: "#F59E0B" }]}>
                       ${userPrices[item.id].octane89Price.toFixed(2)}
                     </Text>
@@ -344,9 +412,7 @@ export default function StationsScreen() {
                 )}
                 {userPrices[item.id].octane9194Price && (
                   <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                      91/94
-                    </Text>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>91/94</Text>
                     <Text style={[styles.priceValue, { color: "#EF4444" }]}>
                       ${userPrices[item.id].octane9194Price.toFixed(2)}
                     </Text>
@@ -369,25 +435,19 @@ export default function StationsScreen() {
             >
               <View style={styles.priceRow}>
                 <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                    E85 Avg
-                  </Text>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>E85 Avg</Text>
                   <Text style={[styles.priceValue, { color: colors.primary }]}>
                     ${fuelPrices.e85Price.toFixed(2)}/gal
                   </Text>
                 </View>
                 <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                    Gas Avg
-                  </Text>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>Gas Avg</Text>
                   <Text style={[styles.priceValue, { color: colors.foreground }]}>
                     ${fuelPrices.gasolinePrice.toFixed(2)}/gal
                   </Text>
                 </View>
                 <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>
-                    Savings
-                  </Text>
+                  <Text style={[styles.priceLabel, { color: colors.muted }]}>Savings</Text>
                   <Text style={[styles.priceValue, { color: colors.success }]}>
                     {((1 - fuelPrices.e85Price / fuelPrices.gasolinePrice) * 100).toFixed(0)}%
                   </Text>
@@ -400,10 +460,7 @@ export default function StationsScreen() {
           )}
 
           {selectedStation?.id === item.id && (
-            <Animated.View
-              entering={FadeIn.duration(200)}
-              style={styles.stationActions}
-            >
+            <Animated.View entering={FadeIn.duration(200)} style={styles.stationActions}>
               <Pressable
                 onPress={() => openDirections(item)}
                 style={({ pressed }) => [
@@ -417,11 +474,7 @@ export default function StationsScreen() {
                   end={{ x: 1, y: 1 }}
                   style={styles.directionGradient}
                 >
-                  <IconSymbol
-                    name="navigation.fill"
-                    size={16}
-                    color="#FFFFFF"
-                  />
+                  <IconSymbol name="navigation.fill" size={16} color="#FFFFFF" />
                   <Text style={styles.directionText}>Get Directions</Text>
                 </LinearGradient>
               </Pressable>
@@ -433,33 +486,21 @@ export default function StationsScreen() {
                   pressed && { opacity: 0.7 },
                 ]}
               >
-                <IconSymbol
-                  name="dollarsign.circle.fill"
-                  size={16}
-                  color={colors.primary}
-                />
-                <Text
-                  style={[styles.callButtonText, { color: colors.primary }]}
-                >
+                <IconSymbol name="dollarsign.circle.fill" size={16} color={colors.primary} />
+                <Text style={[styles.callButtonText, { color: colors.primary }]}>
                   Update Price
                 </Text>
               </Pressable>
               {item.phone && (
                 <Pressable
-                  onPress={() => {
-                    Linking.openURL(`tel:${item.phone}`);
-                  }}
+                  onPress={() => Linking.openURL(`tel:${item.phone}`)}
                   style={({ pressed }) => [
                     styles.callButton,
                     { borderColor: colors.primary },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Text
-                    style={[styles.callButtonText, { color: colors.primary }]}
-                  >
-                    Call
-                  </Text>
+                  <Text style={[styles.callButtonText, { color: colors.primary }]}>Call</Text>
                 </Pressable>
               )}
             </Animated.View>
@@ -473,7 +514,7 @@ export default function StationsScreen() {
         </Pressable>
       </Animated.View>
     ),
-    [colors, selectedStation, openDirections]
+    [colors, selectedStation, openDirections, fuelPrices, userPrices, handlePriceUpdate]
   );
 
   return (
@@ -482,10 +523,7 @@ export default function StationsScreen() {
       <View style={styles.header}>
         <View style={styles.headerRow}>
           <View
-            style={[
-              styles.headerIconBg,
-              { backgroundColor: colors.primary + "18" },
-            ]}
+            style={[styles.headerIconBg, { backgroundColor: colors.primary + "18" }]}
           >
             <IconSymbol name="map.fill" size={22} color={colors.primary} />
           </View>
@@ -496,7 +534,9 @@ export default function StationsScreen() {
             <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
               {loading
                 ? "Searching..."
-                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found nearby`}
+                : cacheAgeMin !== null
+                ? `${stations.length} stations · cached ${cacheAgeMin === 0 ? "just now" : `${cacheAgeMin}m ago`}`
+                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found`}
             </Text>
           </View>
           {!loading && (
@@ -508,21 +548,14 @@ export default function StationsScreen() {
                 pressed && { opacity: 0.7 },
               ]}
             >
-              <IconSymbol
-                name="arrow.clockwise"
-                size={18}
-                color={colors.primary}
-              />
+              <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
             </Pressable>
           )}
         </View>
       </View>
 
-      {/* Search Radius Selector */}
-      <View style={styles.radiusContainer}>
-        <Text style={[styles.radiusLabel, { color: colors.muted }]}>
-          Search radius:
-        </Text>
+      {/* Controls Row: radius chips + view toggle */}
+      <View style={styles.controlsRow}>
         <View style={styles.radiusChips}>
           {[10, 25, 50, 100].map((radius) => (
             <Pressable
@@ -532,9 +565,7 @@ export default function StationsScreen() {
                 styles.radiusChip,
                 {
                   backgroundColor:
-                    searchRadius === radius
-                      ? colors.primary
-                      : colors.background,
+                    searchRadius === radius ? colors.primary : colors.background,
                   borderColor:
                     searchRadius === radius ? colors.primary : colors.border,
                 },
@@ -544,10 +575,7 @@ export default function StationsScreen() {
               <Text
                 style={[
                   styles.radiusChipText,
-                  {
-                    color:
-                      searchRadius === radius ? "#FFFFFF" : colors.foreground,
-                  },
+                  { color: searchRadius === radius ? "#FFFFFF" : colors.foreground },
                 ]}
               >
                 {radius} mi
@@ -555,22 +583,54 @@ export default function StationsScreen() {
             </Pressable>
           ))}
         </View>
+
+        {/* List / Map toggle */}
+        <View
+          style={[
+            styles.viewToggle,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setViewMode("list");
+            }}
+            style={[
+              styles.toggleBtn,
+              viewMode === "list" && { backgroundColor: colors.primary },
+            ]}
+          >
+            <IconSymbol
+              name="list.bullet"
+              size={16}
+              color={viewMode === "list" ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setViewMode("map");
+            }}
+            style={[
+              styles.toggleBtn,
+              viewMode === "map" && { backgroundColor: colors.primary },
+            ]}
+          >
+            <IconSymbol
+              name="map"
+              size={16}
+              color={viewMode === "map" ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
+        </View>
       </View>
 
       {/* Error/Info Banner */}
       {errorMsg && !loading && (
         <View style={styles.bannerContainer}>
-          <View
-            style={[
-              styles.infoBanner,
-              { backgroundColor: colors.warning + "18" },
-            ]}
-          >
-            <IconSymbol
-              name="info.circle.fill"
-              size={16}
-              color={colors.warning}
-            />
+          <View style={[styles.infoBanner, { backgroundColor: colors.warning + "18" }]}>
+            <IconSymbol name="info.circle.fill" size={16} color={colors.warning} />
             <Text style={[styles.infoBannerText, { color: colors.warning }]}>
               {errorMsg}
             </Text>
@@ -578,7 +638,7 @@ export default function StationsScreen() {
         </View>
       )}
 
-      {/* Station List */}
+      {/* Content: Loading / Map / List */}
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -586,7 +646,154 @@ export default function StationsScreen() {
             Finding E85 stations near you...
           </Text>
         </View>
+      ) : viewMode === "map" ? (
+        /* ── MAP VIEW ── */
+        <View style={styles.mapContainer}>
+          {Platform.OS !== "web" ? (
+            <MapView
+              ref={mapRef}
+              style={StyleSheet.absoluteFillObject}
+              initialRegion={
+                location
+                  ? computeRegion(location.latitude, location.longitude, stations)
+                  : {
+                      latitude: 33.4484,
+                      longitude: -112.074,
+                      latitudeDelta: 0.5,
+                      longitudeDelta: 0.5,
+                    }
+              }
+              showsUserLocation
+              showsMyLocationButton={false}
+            >
+              {/* User accuracy circle */}
+              {location && (
+                <Circle
+                  center={location}
+                  radius={800}
+                  strokeColor={colors.primary + "60"}
+                  fillColor={colors.primary + "15"}
+                  strokeWidth={1.5}
+                />
+              )}
+
+              {/* Station pins */}
+              {stations.map((station) => (
+                <Marker
+                  key={station.id}
+                  coordinate={{
+                    latitude: station.latitude,
+                    longitude: station.longitude,
+                  }}
+                  title={station.name}
+                  description={`${station.distance.toFixed(1)} mi · ${station.address}`}
+                  pinColor={
+                    selectedStation?.id === station.id ? "#F59E0B" : colors.primary
+                  }
+                  onPress={() => handleMarkerPress(station)}
+                />
+              ))}
+            </MapView>
+          ) : (
+            <View style={styles.mapWebFallback}>
+              <IconSymbol name="map.fill" size={48} color={colors.muted} />
+              <Text style={[styles.mapWebText, { color: colors.muted }]}>
+                Map view is available on iOS and Android
+              </Text>
+            </View>
+          )}
+
+          {/* Selected station card overlay */}
+          {selectedStation && (
+            <Animated.View
+              entering={FadeInDown.duration(250)}
+              style={[
+                styles.mapCallout,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.primary,
+                },
+              ]}
+            >
+              <View style={styles.mapCalloutHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={[styles.mapCalloutName, { color: colors.foreground }]}
+                    numberOfLines={1}
+                  >
+                    {selectedStation.name}
+                  </Text>
+                  <Text style={[styles.mapCalloutAddr, { color: colors.muted }]} numberOfLines={1}>
+                    {selectedStation.address}, {selectedStation.city}
+                  </Text>
+                </View>
+                <Text style={[styles.mapCalloutDist, { color: colors.primary }]}>
+                  {selectedStation.distance.toFixed(1)} mi
+                </Text>
+              </View>
+              <View style={styles.mapCalloutActions}>
+                <Pressable
+                  onPress={() => openDirections(selectedStation)}
+                  style={({ pressed }) => [
+                    styles.mapCalloutBtn,
+                    { backgroundColor: colors.primary },
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <IconSymbol name="navigation.fill" size={14} color="#FFFFFF" />
+                  <Text style={styles.mapCalloutBtnText}>Directions</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handlePriceUpdate(selectedStation)}
+                  style={({ pressed }) => [
+                    styles.mapCalloutBtn,
+                    {
+                      backgroundColor: colors.primary + "18",
+                      borderWidth: 1,
+                      borderColor: colors.primary,
+                    },
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <IconSymbol name="dollarsign.circle.fill" size={14} color={colors.primary} />
+                  <Text style={[styles.mapCalloutBtnText, { color: colors.primary }]}>
+                    Price
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setSelectedStation(null)}
+                  style={({ pressed }) => [
+                    styles.mapCalloutCloseBtn,
+                    { backgroundColor: colors.border },
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <IconSymbol name="xmark" size={14} color={colors.muted} />
+                </Pressable>
+              </View>
+            </Animated.View>
+          )}
+
+          {/* Re-center button */}
+          {location && (
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                const region = computeRegion(location.latitude, location.longitude, stations);
+                mapRef.current?.animateToRegion(region, 600);
+              }}
+              style={({ pressed }) => [
+                styles.recenterBtn,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <IconSymbol name="location.circle.fill" size={22} color={colors.primary} />
+            </Pressable>
+          )}
+        </View>
       ) : (
+        /* ── LIST VIEW ── */
         <FlatList
           data={stations}
           renderItem={renderStationCard}
@@ -600,41 +807,29 @@ export default function StationsScreen() {
             !errorMsg ? (
               <View style={styles.emptyState}>
                 <View
-                  style={[
-                    styles.emptyIconBg,
-                    { backgroundColor: colors.primary + "15" },
-                  ]}
+                  style={[styles.emptyIconBg, { backgroundColor: colors.primary + "15" }]}
                 >
-                  <IconSymbol
-                    name="map.fill"
-                    size={40}
-                    color={colors.primary}
-                  />
+                  <IconSymbol name="map.fill" size={40} color={colors.primary} />
                 </View>
-                <Text
-                  style={[styles.emptyTitle, { color: colors.foreground }]}
-                >
+                <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
                   No Stations Found
                 </Text>
-                <Text
-                  style={[styles.emptySubtitle, { color: colors.muted }]}
-                >
-                  Try increasing the search radius or check your internet
-                  connection.
+                <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
+                  Try increasing the search radius or check your internet connection.
+                </Text>
+              </View>
+            ) : null
+          }
+          ListFooterComponent={
+            stations.length > 0 ? (
+              <View style={styles.attribution}>
+                <Text style={[styles.attributionText, { color: colors.muted }]}>
+                  Data from U.S. Department of Energy AFDC
                 </Text>
               </View>
             ) : null
           }
         />
-      )}
-
-      {/* Data Attribution */}
-      {stations.length > 0 && (
-        <View style={styles.attribution}>
-          <Text style={[styles.attributionText, { color: colors.muted }]}>
-            Data from U.S. Department of Energy AFDC
-          </Text>
-        </View>
       )}
 
       {/* Price Update Modal */}
@@ -687,16 +882,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  radiusContainer: {
-    paddingHorizontal: 20,
-    paddingBottom: 14,
+  // Controls row
+  controlsRow: {
     flexDirection: "row",
     alignItems: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 14,
     gap: 10,
-  },
-  radiusLabel: {
-    fontSize: 13,
-    fontWeight: "500",
   },
   radiusChips: {
     flexDirection: "row",
@@ -704,7 +896,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   radiusChip: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 10,
     borderWidth: 1,
@@ -712,6 +904,18 @@ const styles = StyleSheet.create({
   radiusChipText: {
     fontSize: 13,
     fontWeight: "600",
+  },
+  viewToggle: {
+    flexDirection: "row",
+    borderRadius: 10,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  toggleBtn: {
+    width: 36,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
   },
   bannerContainer: {
     paddingHorizontal: 20,
@@ -739,6 +943,97 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "500",
   },
+  // Map view
+  mapContainer: {
+    flex: 1,
+    position: "relative",
+  },
+  mapWebFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+  },
+  mapWebText: {
+    fontSize: 15,
+    textAlign: "center",
+    paddingHorizontal: 40,
+  },
+  mapCallout: {
+    position: "absolute",
+    bottom: 100,
+    left: 16,
+    right: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  mapCalloutHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    marginBottom: 10,
+  },
+  mapCalloutName: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  mapCalloutAddr: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  mapCalloutDist: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  mapCalloutActions: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  mapCalloutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  mapCalloutBtnText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  mapCalloutCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: "auto",
+  },
+  recenterBtn: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  // List view
   listContent: {
     paddingHorizontal: 20,
     paddingBottom: 100,
@@ -844,15 +1139,17 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   callButton: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 12,
     borderWidth: 1.5,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
   },
   callButtonText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
   },
   confirmedText: {
