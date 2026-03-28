@@ -209,3 +209,7 @@
 - [x] Fix decimal input bug (string-based state with decimal-safe sanitizer)
 - [x] Add Save Blend button to modal footer and header
 - [x] Match original calculator screen design with result card and color-coded blend label
+
+## Bug Fix: Repeating Mileage Reminder Completion
+
+- [x] Fix next mileage target after completion: should be current odometer + interval, not just interval value

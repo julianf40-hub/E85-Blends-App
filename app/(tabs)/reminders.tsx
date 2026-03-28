@@ -390,8 +390,10 @@ export default function RemindersScreen() {
           loadRemindersForCar(car.id),
           loadFuelLog(),
         ]);
-        // Get current mileage from most recent fuel log entry
-        const latestMileage = logs.length > 0 ? logs[0].odometer : 0;
+        // Use the highest of: latest fuel log odometer, or car's stored odometer
+        const fuelLogMileage = logs.length > 0 ? logs[0].odometer : 0;
+        const carOdometer = car.odometer ?? 0;
+        const latestMileage = Math.max(fuelLogMileage, carOdometer);
         setCurrentMileage(latestMileage);
         setReminders(sortRemindersByUrgency(rems, latestMileage));
       } else {
