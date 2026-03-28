@@ -119,3 +119,8 @@
 ## Layout Bug Fix
 
 - [x] Fix station card action buttons (Get Directions / Update Price / Call) being clipped horizontally
+
+## OLED Theme & Price Freshness
+
+- [x] Update dark theme to true OLED black (background #000000, surface #0A0A0A, etc.)
+- [x] Add inline price freshness ("Updated 5m ago") next to price value in station cards

@@ -390,9 +390,14 @@ export default function StationsScreen() {
                 {userPrices[item.id].e85Price && (
                   <View style={styles.priceItem}>
                     <Text style={[styles.priceLabel, { color: colors.muted }]}>E85</Text>
-                    <Text style={[styles.priceValue, { color: "#10B981" }]}>
-                      ${userPrices[item.id].e85Price.toFixed(2)}
-                    </Text>
+                    <View style={styles.priceValueRow}>
+                      <Text style={[styles.priceValue, { color: "#10B981" }]}>
+                        ${userPrices[item.id].e85Price.toFixed(2)}
+                      </Text>
+                      <Text style={[styles.priceFreshness, { color: colors.muted }]}>
+                        · {formatPriceAge(userPrices[item.id].timestamp)}
+                      </Text>
+                    </View>
                   </View>
                 )}
                 {userPrices[item.id].octane87Price && (
@@ -420,9 +425,6 @@ export default function StationsScreen() {
                   </View>
                 )}
               </View>
-              <Text style={[styles.priceSource, { color: colors.muted }]}>
-                Updated {formatPriceAge(userPrices[item.id].timestamp)}
-              </Text>
             </View>
           )}
 
@@ -1184,6 +1186,15 @@ const styles = StyleSheet.create({
   priceValue: {
     fontSize: 14,
     fontWeight: "700",
+  },
+  priceValueRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 4,
+  },
+  priceFreshness: {
+    fontSize: 11,
+    fontWeight: "400",
   },
   priceSource: {
     fontSize: 10,
