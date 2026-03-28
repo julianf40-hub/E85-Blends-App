@@ -228,3 +228,12 @@
 - [x] Auto-fill calculator gasEthanolPercent from active car's stored value
 - [x] Add pump instructions summary card below result (collapsible, numbered steps)
 - [x] Add "Log This Fill-Up" button on calculator result card with modal for station, odometer, prices
+
+## Fuel Log — Split Gallons Fields
+
+- [x] Add e85Gallons and gasGallons fields to FuelEntry type in fuel-log.ts
+- [x] Replace single gallonsAdded input with two fields: E85 Gallons and Gas Gallons
+- [x] Auto-calculate total gallons and blend ratio (ethanol %) from the two fields
+- [x] Show computed total and ethanol % as read-only summary below the inputs
+- [x] Update Log Fill-Up modal in calculator to pass e85Gallons/gasGallons/prices to addFuelEntry
+- [x] Keep backward compat: existing entries without split fields show total gallons only

@@ -35,12 +35,28 @@ export default function FuelLogScreen() {
   const [showModal, setShowModal] = useState(false);
   const [formData, setFormData] = useState({
     stationName: "",
-    blendRatio: "30",
-    gallonsAdded: "",
-    pricePerGallon: "",
+    e85Gallons: "",
+    gasGallons: "",
+    e85Price: "",
+    gasPrice: "",
     odometer: "",
     notes: "",
   });
+
+  // Derived values computed from e85Gallons + gasGallons
+  const derivedE85 = parseFloat(formData.e85Gallons) || 0;
+  const derivedGas = parseFloat(formData.gasGallons) || 0;
+  const derivedTotal = derivedE85 + derivedGas;
+  const E85_ETHANOL_PCT = 0.85; // E85 = 85% ethanol
+  const derivedEthanolPct = derivedTotal > 0
+    ? Math.round(((derivedE85 * E85_ETHANOL_PCT) / derivedTotal) * 100)
+    : 0;
+  const derivedE85Price = parseFloat(formData.e85Price) || 0;
+  const derivedGasPrice = parseFloat(formData.gasPrice) || 0;
+  const derivedBlendedPrice = derivedTotal > 0
+    ? (derivedE85Price * derivedE85 + derivedGasPrice * derivedGas) / derivedTotal
+    : 0;
+  const derivedTotalCost = derivedE85Price * derivedE85 + derivedGasPrice * derivedGas;
 
   useEffect(() => {
     loadData();
@@ -62,11 +78,14 @@ export default function FuelLogScreen() {
   const handleAddEntry = useCallback(async () => {
     if (
       !formData.stationName ||
-      !formData.gallonsAdded ||
-      !formData.pricePerGallon ||
+      (!formData.e85Gallons && !formData.gasGallons) ||
       !formData.odometer
     ) {
-      Alert.alert("Missing Fields", "Please fill in all required fields.");
+      Alert.alert("Missing Fields", "Please enter station name, at least one gallons field, and odometer.");
+      return;
+    }
+    if (derivedTotal <= 0) {
+      Alert.alert("Invalid Gallons", "Total gallons must be greater than 0.");
       return;
     }
 
@@ -74,12 +93,14 @@ export default function FuelLogScreen() {
       const newEntry = await addFuelEntry({
         date: new Date().toISOString(),
         stationName: formData.stationName,
-        blendRatio: parseFloat(formData.blendRatio),
-        gallonsAdded: parseFloat(formData.gallonsAdded),
-        pricePerGallon: parseFloat(formData.pricePerGallon),
-        totalPrice:
-          parseFloat(formData.gallonsAdded) *
-          parseFloat(formData.pricePerGallon),
+        blendRatio: derivedEthanolPct,
+        gallonsAdded: derivedTotal,
+        e85Gallons: derivedE85 > 0 ? derivedE85 : undefined,
+        gasGallons: derivedGas > 0 ? derivedGas : undefined,
+        e85PricePerGallon: derivedE85Price > 0 ? derivedE85Price : undefined,
+        gasPricePerGallon: derivedGasPrice > 0 ? derivedGasPrice : undefined,
+        pricePerGallon: derivedBlendedPrice,
+        totalPrice: derivedTotalCost,
         odometer: parseFloat(formData.odometer),
         notes: formData.notes || undefined,
       });
@@ -102,9 +123,10 @@ export default function FuelLogScreen() {
 
       setFormData({
         stationName: "",
-        blendRatio: "30",
-        gallonsAdded: "",
-        pricePerGallon: "",
+        e85Gallons: "",
+        gasGallons: "",
+        e85Price: "",
+        gasPrice: "",
         odometer: "",
         notes: "",
       });
@@ -113,7 +135,7 @@ export default function FuelLogScreen() {
     } catch (error) {
       Alert.alert("Error", "Failed to add fuel entry.");
     }
-  }, [formData, loadData]);
+  }, [formData, derivedTotal, derivedE85, derivedGas, derivedE85Price, derivedGasPrice, derivedEthanolPct, derivedBlendedPrice, derivedTotalCost, loadData]);
 
   const handleDeleteEntry = useCallback(
     (id: string) => {
@@ -194,18 +216,28 @@ export default function FuelLogScreen() {
           </View>
 
           <View style={styles.entryStats}>
-            <View style={styles.statItem}>
-              <Text style={[styles.statLabel, { color: colors.muted }]}>
-                Gallons
-              </Text>
-              <Text style={[styles.statValue, { color: colors.foreground }]}>
-                {item.gallonsAdded.toFixed(2)}
-              </Text>
-            </View>
+            {item.e85Gallons != null ? (
+              <>
+                <View style={styles.statItem}>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>E85 gal</Text>
+                  <Text style={[styles.statValue, { color: colors.foreground }]}>{item.e85Gallons.toFixed(2)}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statItem}>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>Gas gal</Text>
+                  <Text style={[styles.statValue, { color: colors.foreground }]}>{(item.gasGallons ?? 0).toFixed(2)}</Text>
+                </View>
+              </>
+            ) : (
+              <View style={styles.statItem}>
+                <Text style={[styles.statLabel, { color: colors.muted }]}>Gallons</Text>
+                <Text style={[styles.statValue, { color: colors.foreground }]}>{item.gallonsAdded.toFixed(2)}</Text>
+              </View>
+            )}
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
               <Text style={[styles.statLabel, { color: colors.muted }]}>
-                Price
+                Total
               </Text>
               <Text style={[styles.statValue, { color: colors.foreground }]}>
                 ${item.totalPrice.toFixed(2)}
@@ -437,125 +469,79 @@ export default function FuelLogScreen() {
                 />
               </View>
 
-              <View style={styles.formGroup}>
-                <Text style={[styles.formLabel, { color: colors.foreground }]}>
-                  Blend Ratio *
-                </Text>
-                <TextInput
-                  style={[
-                    styles.formInput,
-                    {
-                      color: colors.foreground,
-                      borderColor: colors.border,
-                      backgroundColor: colors.surface,
-                    },
-                  ]}
-                  placeholder="30"
-                  placeholderTextColor={colors.muted}
-                  keyboardType="default"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={formData.blendRatio}
-                  onChangeText={(value) =>
-                    setFormData({ ...formData, blendRatio: value.replace(/[^\d.]/g, "") })
-                  }
-                />
-                <Pressable
-                  onPress={() => {
-                    const cur = formData.blendRatio;
-                    if (!cur.includes(".")) {
-                      setFormData({ ...formData, blendRatio: cur === "" ? "0." : cur + "." });
-                    }
-                  }}
-                  style={({ pressed }) => [
-                    styles.fuelLogDecimalBtn,
-                    { backgroundColor: colors.primary + "20" },
-                    pressed && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
-                </Pressable>
+              {/* ── Gallons Section ── */}
+              <Text style={[styles.formSectionHeader, { color: colors.muted }]}>GALLONS ADDED</Text>
+              <View style={styles.formRow}>
+                <View style={[styles.formGroupHalf, { marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>E85 Gallons</Text>
+                  <TextInput
+                    style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                    placeholder="13.15"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    value={formData.e85Gallons}
+                    onChangeText={(v) => setFormData({ ...formData, e85Gallons: v.replace(/[^\d.]/g, "") })}
+                    returnKeyType="next"
+                  />
+                </View>
+                <View style={styles.formGroupHalf}>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Gas Gallons</Text>
+                  <TextInput
+                    style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                    placeholder="1.60"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    value={formData.gasGallons}
+                    onChangeText={(v) => setFormData({ ...formData, gasGallons: v.replace(/[^\d.]/g, "") })}
+                    returnKeyType="next"
+                  />
+                </View>
               </View>
 
-              <View style={styles.formGroup}>
-                <Text style={[styles.formLabel, { color: colors.foreground }]}>
-                  Gallons Added *
-                </Text>
-                <TextInput
-                  style={[
-                    styles.formInput,
-                    {
-                      color: colors.foreground,
-                      borderColor: colors.border,
-                      backgroundColor: colors.surface,
-                    },
-                  ]}
-                  placeholder="12.5"
-                  placeholderTextColor={colors.muted}
-                  keyboardType="default"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={formData.gallonsAdded}
-                  onChangeText={(value) =>
-                    setFormData({ ...formData, gallonsAdded: value.replace(/[^\d.]/g, "") })
-                  }
-                />
-                <Pressable
-                  onPress={() => {
-                    const cur = formData.gallonsAdded;
-                    if (!cur.includes(".")) {
-                      setFormData({ ...formData, gallonsAdded: cur === "" ? "0." : cur + "." });
-                    }
-                  }}
-                  style={({ pressed }) => [
-                    styles.fuelLogDecimalBtn,
-                    { backgroundColor: colors.primary + "20" },
-                    pressed && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
-                </Pressable>
-              </View>
+              {/* Live computed summary */}
+              {derivedTotal > 0 && (
+                <View style={[styles.derivedSummary, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}>
+                  <Text style={[styles.derivedSummaryText, { color: colors.primary }]}>
+                    Total: {derivedTotal.toFixed(2)} gal  ·  Blend: E{derivedEthanolPct}
+                  </Text>
+                </View>
+              )}
 
-              <View style={styles.formGroup}>
-                <Text style={[styles.formLabel, { color: colors.foreground }]}>
-                  Price Per Gallon *
-                </Text>
-                <TextInput
-                  style={[
-                    styles.formInput,
-                    {
-                      color: colors.foreground,
-                      borderColor: colors.border,
-                      backgroundColor: colors.surface,
-                    },
-                  ]}
-                  placeholder="3.49"
-                  placeholderTextColor={colors.muted}
-                  keyboardType="default"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={formData.pricePerGallon}
-                  onChangeText={(value) =>
-                    setFormData({ ...formData, pricePerGallon: value.replace(/[^\d.]/g, "") })
-                  }
-                />
-                <Pressable
-                  onPress={() => {
-                    const cur = formData.pricePerGallon;
-                    if (!cur.includes(".")) {
-                      setFormData({ ...formData, pricePerGallon: cur === "" ? "0." : cur + "." });
-                    }
-                  }}
-                  style={({ pressed }) => [
-                    styles.fuelLogDecimalBtn,
-                    { backgroundColor: colors.primary + "20" },
-                    pressed && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={[styles.fuelLogDecimalBtnText, { color: colors.primary }]}>.</Text>
-                </Pressable>
+              {/* ── Price Section ── */}
+              <Text style={[styles.formSectionHeader, { color: colors.muted }]}>PRICE PER GALLON (optional)</Text>
+              <View style={styles.formRow}>
+                <View style={[styles.formGroupHalf, { marginRight: 8 }]}>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>E85 $/gal</Text>
+                  <TextInput
+                    style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                    placeholder="2.89"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    value={formData.e85Price}
+                    onChangeText={(v) => setFormData({ ...formData, e85Price: v.replace(/[^\d.]/g, "") })}
+                    returnKeyType="next"
+                  />
+                </View>
+                <View style={styles.formGroupHalf}>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Gas $/gal</Text>
+                  <TextInput
+                    style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                    placeholder="3.49"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="decimal-pad"
+                    value={formData.gasPrice}
+                    onChangeText={(v) => setFormData({ ...formData, gasPrice: v.replace(/[^\d.]/g, "") })}
+                    returnKeyType="next"
+                  />
+                </View>
               </View>
+              {derivedTotalCost > 0 && (
+                <View style={[styles.derivedSummary, { backgroundColor: colors.success + "10", borderColor: colors.success + "30" }]}>
+                  <Text style={[styles.derivedSummaryText, { color: colors.success }]}>
+                    Total cost: ${derivedTotalCost.toFixed(2)}  ·  Avg: ${derivedBlendedPrice.toFixed(3)}/gal
+                  </Text>
+                </View>
+              )}
 
               <View style={styles.formGroup}>
                 <Text style={[styles.formLabel, { color: colors.foreground }]}>
@@ -894,5 +880,30 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "800",
     lineHeight: 26,
+  },
+  formRow: {
+    flexDirection: "row",
+    marginBottom: 12,
+  },
+  formGroupHalf: {
+    flex: 1,
+  },
+  formSectionHeader: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  derivedSummary: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  derivedSummaryText: {
+    fontSize: 13,
+    fontWeight: "600",
   },
 });

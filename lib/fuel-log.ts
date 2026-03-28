@@ -12,9 +12,13 @@ export interface FuelEntry {
   stationId?: string;
   latitude?: number;
   longitude?: number;
-  blendRatio: number; // E20-E85
-  gallonsAdded: number;
-  pricePerGallon: number;
+  blendRatio: number; // E20-E85 (ethanol %)
+  gallonsAdded: number; // total gallons (e85Gallons + gasGallons)
+  e85Gallons?: number; // gallons of E85 added
+  gasGallons?: number; // gallons of regular gas added
+  e85PricePerGallon?: number; // price per gallon of E85
+  gasPricePerGallon?: number; // price per gallon of regular gas
+  pricePerGallon: number; // blended average price per gallon
   totalPrice: number;
   odometer: number;
   mpg?: number; // calculated from previous entry
