@@ -149,6 +149,8 @@ export default function CalculatorScreen() {
               returnKeyType="done"
               placeholder="16"
               placeholderTextColor={colors.muted}
+              selectTextOnFocus
+              maxLength={10}
             />
             <Text style={[styles.unitLabel, { color: colors.muted }]}>gallons</Text>
           </View>
@@ -221,6 +223,8 @@ export default function CalculatorScreen() {
                 onChangeText={(v) => updateInput("currentEthanolPercent", v)}
                 keyboardType="decimal-pad"
                 returnKeyType="done"
+                selectTextOnFocus
+                maxLength={6}
               />
             </View>
           )}
@@ -285,6 +289,8 @@ export default function CalculatorScreen() {
               onChangeText={(v) => updateInput("targetEthanolPercent", v)}
               keyboardType="decimal-pad"
               returnKeyType="done"
+              selectTextOnFocus
+              maxLength={6}
             />
           </View>
         </Animated.View>

@@ -46,3 +46,6 @@
 - [x] Enable decimal input support for tank size (e.g., 18.5 gallons)
 - [x] Enable decimal input support for fuel calculations
 - [x] Fix vehicle information text inputs in Settings tab (unable to type)
+
+- [x] Fix splash screen to show correct app icon instead of old one
+- [x] Fix decimal input parsing - "18.5" not working in tank size field
