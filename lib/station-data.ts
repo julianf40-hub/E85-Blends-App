@@ -27,7 +27,10 @@ export interface E85Station {
 }
 
 const AFDC_API_BASE = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json";
-const AFDC_API_KEY = "DEMO_KEY"; // Free public key; rate-limited but sufficient for mobile app usage
+// Use the registered API key from env; falls back to DEMO_KEY (rate-limited to ~4 req/session)
+const AFDC_API_KEY =
+  (typeof process !== "undefined" && process.env.EXPO_PUBLIC_NREL_API_KEY) ||
+  "DEMO_KEY";
 
 /**
  * Fetch nearby E85 stations from the AFDC API
@@ -51,6 +54,10 @@ export async function fetchNearbyStations(
     });
 
     const response = await fetch(`${AFDC_API_BASE}?${params.toString()}`);
+
+    if (response.status === 429) {
+      throw new Error("RATE_LIMITED");
+    }
 
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);

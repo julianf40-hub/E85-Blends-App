@@ -55,8 +55,12 @@ export default function StationsScreen() {
         } else {
           setErrorMsg(null);
         }
-      } catch {
-        setErrorMsg("Failed to load stations. Check your connection.");
+      } catch (err: any) {
+        if (err?.message === "RATE_LIMITED") {
+          setErrorMsg("API rate limit reached. Pull down to refresh in a moment.");
+        } else {
+          setErrorMsg("Failed to load stations. Check your internet connection.");
+        }
       }
     },
     [searchRadius]
