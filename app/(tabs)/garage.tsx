@@ -109,9 +109,10 @@ interface FormState {
   defaultBlend: string;
   color: string;
   icon: string;
+  odometer: string;
 }
 
-function profileToForm(p: NewCarProfile): FormState {
+function profileToForm(p: CarProfile | NewCarProfile): FormState {
   return {
     nickname: p.nickname,
     year: p.year,
@@ -126,6 +127,7 @@ function profileToForm(p: NewCarProfile): FormState {
     defaultBlend: p.defaultBlend.toString(),
     color: p.color,
     icon: p.icon,
+    odometer: p.odometer.toString(),
   };
 }
 
@@ -144,6 +146,7 @@ function formToProfile(f: FormState): NewCarProfile {
     defaultBlend: parseInt(f.defaultBlend) || 30,
     color: f.color,
     icon: f.icon,
+    odometer: parseInt(f.odometer) || 0,
   };
 }
 
@@ -157,14 +160,16 @@ interface CarFormModalProps {
 }
 
 function CarFormModal({ visible, editProfile, onClose, onSave, colors }: CarFormModalProps) {
-  const [form, setForm] = useState<FormState>(() =>
-    profileToForm(editProfile ?? { ...DEFAULT_CAR, color: getRandomCarColor(), icon: getRandomCarIcon() })
-  );
+  const [form, setForm] = useState<FormState>(() => {
+    const profile = editProfile ? editProfile : ({ ...DEFAULT_CAR, color: getRandomCarColor(), icon: getRandomCarIcon() } as NewCarProfile);
+    return profileToForm(profile);
+  });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (visible) {
-      setForm(profileToForm(editProfile ?? { ...DEFAULT_CAR, color: getRandomCarColor(), icon: getRandomCarIcon() }));
+      const profile = editProfile ? editProfile : ({ ...DEFAULT_CAR, color: getRandomCarColor(), icon: getRandomCarIcon() } as NewCarProfile);
+      setForm(profileToForm(profile));
     }
   }, [visible, editProfile]);
 
@@ -312,6 +317,14 @@ function CarFormModal({ visible, editProfile, onClose, onSave, colors }: CarForm
               value={form.defaultBlend}
               onChangeText={(t) => set("defaultBlend", t.replace(/[^\d]/g, ""))}
               placeholder="30"
+              numeric
+              colors={colors}
+            />
+            <Field
+              label="Current Odometer (miles)"
+              value={form.odometer}
+              onChangeText={(t) => set("odometer", t.replace(/[^\d]/g, ""))}
+              placeholder="0"
               numeric
               colors={colors}
             />

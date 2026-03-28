@@ -236,7 +236,8 @@ export default function HomeScreen() {
       const logs = await loadFuelLog();
       const recent = logs.slice(0, 5);
       setRecentFillUps(recent);
-      const latestMileage = logs.length > 0 ? logs[0].odometer : 0;
+      // Use latest fuel log odometer, or fall back to car's odometer field
+      const latestMileage = logs.length > 0 ? logs[0].odometer : (car?.odometer ?? 0);
       setCurrentMileage(latestMileage);
 
       if (car) {
@@ -272,7 +273,14 @@ export default function HomeScreen() {
 
   const handleCarPress = useCallback(() => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push("/(tabs)/garage");
+    router.push("/(tabs)/settings");
+  }, [router]);
+
+  const handleCalculatePress = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // TODO: Open calculator modal or sheet
+    // For now, navigate to blends screen which shows saved blends
+    router.push("/(tabs)/blends");
   }, [router]);
 
   return (
@@ -322,7 +330,7 @@ export default function HomeScreen() {
         <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.quickActions}>
           <Pressable
             style={[styles.quickActionBtn, { backgroundColor: colors.primary }]}
-            onPress={() => router.push("/(tabs)")}
+            onPress={handleCalculatePress}
           >
             <IconSymbol name="fuelpump.fill" size={20} color="#fff" />
             <Text style={styles.quickActionText}>Calculate</Text>

@@ -177,3 +177,12 @@
 - [x] Add favorite/bookmark toggle action per blend card
 - [x] Add "Delete" action with confirmation
 - [x] Show empty state when no blends saved
+
+## Odometer Tracking & Calculator Restoration
+
+- [x] Add odometer field to CarProfile type in garage.ts
+- [x] Add odometer input field to car form modal in Garage
+- [x] Display current odometer on active car card in Home dashboard (via fuel log)
+- [x] Wire fuel log to use car odometer as fallback
+- [x] Restore E85 Calculator tile on Home dashboard with working tap handler
+- [x] Wire calculator tile to navigate to Saved Blends screen

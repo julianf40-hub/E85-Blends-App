@@ -27,6 +27,8 @@ export interface CarProfile {
   color: string;
   /** Emoji icon for the car card */
   icon: string;
+  /** Current odometer reading in miles */
+  odometer: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -68,6 +70,7 @@ export const DEFAULT_CAR: NewCarProfile = {
   defaultBlend: 30,
   color: CAR_COLORS[0],
   icon: "🚗",
+  odometer: 0,
 };
 
 /** Load all car profiles from storage */

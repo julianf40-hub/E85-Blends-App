@@ -122,7 +122,7 @@ const ICONS = ["🚗", "🏎️", "🚙", "🛻", "🚕", "⚡", "🔥", "💨"]
 interface FormState {
   nickname: string; year: string; make: string; model: string; trim: string;
   tankSize: string; mpgE85: string; mpgGas: string; requiredOctane: string;
-  isFlexFuel: boolean; defaultBlend: string; color: string; icon: string;
+  isFlexFuel: boolean; defaultBlend: string; color: string; icon: string; odometer: string;
 }
 
 function profileToForm(p: NewCarProfile): FormState {
@@ -130,7 +130,7 @@ function profileToForm(p: NewCarProfile): FormState {
     nickname: p.nickname, year: p.year, make: p.make, model: p.model, trim: p.trim,
     tankSize: p.tankSize.toString(), mpgE85: p.mpgE85.toString(), mpgGas: p.mpgGas.toString(),
     requiredOctane: p.requiredOctane.toString(), isFlexFuel: p.isFlexFuel,
-    defaultBlend: p.defaultBlend.toString(), color: p.color, icon: p.icon,
+    defaultBlend: p.defaultBlend.toString(), color: p.color, icon: p.icon, odometer: p.odometer.toString(),
   };
 }
 
@@ -141,7 +141,7 @@ function formToProfile(f: FormState): NewCarProfile {
     tankSize: parseFloat(f.tankSize) || 16, mpgE85: parseFloat(f.mpgE85) || 22,
     mpgGas: parseFloat(f.mpgGas) || 28, requiredOctane: parseInt(f.requiredOctane) || 87,
     isFlexFuel: f.isFlexFuel, defaultBlend: parseInt(f.defaultBlend) || 30,
-    color: f.color, icon: f.icon,
+    color: f.color, icon: f.icon, odometer: parseInt(f.odometer) || 0,
   };
 }
 
