@@ -39,6 +39,7 @@ export default function FuelLogScreen() {
     gasGallons: "",
     e85Price: "",
     gasPrice: "",
+    currentEthanolPct: "",
     odometer: "",
     notes: "",
   });
@@ -102,6 +103,7 @@ export default function FuelLogScreen() {
         pricePerGallon: derivedBlendedPrice,
         totalPrice: derivedTotalCost,
         odometer: parseFloat(formData.odometer),
+        currentEthanolPct: formData.currentEthanolPct ? parseFloat(formData.currentEthanolPct) : undefined,
         notes: formData.notes || undefined,
       });
 
@@ -127,6 +129,7 @@ export default function FuelLogScreen() {
         gasGallons: "",
         e85Price: "",
         gasPrice: "",
+        currentEthanolPct: "",
         odometer: "",
         notes: "",
       });
@@ -543,6 +546,22 @@ export default function FuelLogScreen() {
                 </View>
               )}
 
+              {/* ── Current Ethanol in Tank ── */}
+              <Text style={[styles.formSectionHeader, { color: colors.muted }]}>CURRENT TANK (optional)</Text>
+              <View style={styles.formGroup}>
+                <Text style={[styles.formLabel, { color: colors.foreground }]}>Ethanol % in Tank Before Fill-Up</Text>
+                <TextInput
+                  style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                  placeholder="e.g. 55  (leave blank if unknown)"
+                  placeholderTextColor={colors.muted}
+                  keyboardType="decimal-pad"
+                  value={formData.currentEthanolPct}
+                  onChangeText={(v) => setFormData({ ...formData, currentEthanolPct: v.replace(/[^\d.]/g, "") })}
+                  returnKeyType="next"
+                />
+                <Text style={[styles.formHint, { color: colors.muted }]}>Stored and used to auto-fill the calculator next time</Text>
+              </View>
+
               <View style={styles.formGroup}>
                 <Text style={[styles.formLabel, { color: colors.foreground }]}>
                   Odometer Reading *
@@ -905,5 +924,10 @@ const styles = StyleSheet.create({
   derivedSummaryText: {
     fontSize: 13,
     fontWeight: "600",
+  },
+  formHint: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
   },
 });

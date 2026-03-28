@@ -22,6 +22,7 @@ export interface FuelEntry {
   totalPrice: number;
   odometer: number;
   mpg?: number; // calculated from previous entry
+  currentEthanolPct?: number; // ethanol % already in tank at time of fill-up
   notes?: string;
   fuelQuality?: "excellent" | "good" | "fair" | "poor";
 }

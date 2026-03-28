@@ -330,11 +330,20 @@ export default function HomeScreen() {
     }
   }, [activeCar]);
 
-  const handleCalculatePress = useCallback(() => {
+  const [calcAutoFilled, setCalcAutoFilled] = useState(false);
+
+  const handleCalculatePress = useCallback(async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Load latest fuel log entry to auto-fill current ethanol %
+    const { loadFuelLog } = await import("@/lib/fuel-log");
+    const logs = await loadFuelLog();
+    // Find the most recent entry that has currentEthanolPct stored
+    const lastWithEthanol = logs.find((l: any) => l.currentEthanolPct != null);
+    const autoEthanolPct = lastWithEthanol?.currentEthanolPct ?? null;
     const inputs: BlendInputs = activeCar ? {
       ...DEFAULT_INPUTS,
       tankSize: activeCar.tankSize,
+      currentEthanolPercent: autoEthanolPct !== null ? autoEthanolPct : DEFAULT_INPUTS.currentEthanolPercent,
       targetEthanolPercent: activeCar.defaultBlend,
       gasOctane: activeCar.requiredOctane,
       gasEthanolPercent: activeCar.gasEthanolPercent ?? 0,
@@ -349,6 +358,7 @@ export default function HomeScreen() {
       gasEthanolPercent: inputs.gasEthanolPercent.toString(),
       gasOctane: inputs.gasOctane.toString(),
     });
+    setCalcAutoFilled(autoEthanolPct !== null);
     setBlendResult(calculateBlend(inputs));
     setBlendName("");
     setShowAdvanced(false);
@@ -568,14 +578,21 @@ export default function HomeScreen() {
               </View>
               <View style={styles.calcInputRow}>
                 <View style={styles.calcInputHalf}>
-                  <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Current Fuel Ethanol %</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <Text style={[styles.calcInputLabel, { color: colors.muted, marginBottom: 0 }]}>Current Fuel Ethanol %</Text>
+                    {calcAutoFilled && (
+                      <View style={{ backgroundColor: colors.primary + "22", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                        <Text style={{ fontSize: 10, color: colors.primary, fontWeight: "700" }}>AUTO</Text>
+                      </View>
+                    )}
+                  </View>
                   <TextInput
-                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+                    style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: calcAutoFilled ? colors.primary + "60" : colors.border, color: colors.foreground }]}
                     keyboardType="decimal-pad"
                     placeholder="10"
                     placeholderTextColor={colors.muted}
                     value={calcStrings.currentEthanolPercent}
-                    onChangeText={(t) => handleCalcStringChange("currentEthanolPercent", t)}
+                    onChangeText={(t) => { handleCalcStringChange("currentEthanolPercent", t); setCalcAutoFilled(false); }}
                     returnKeyType="done"
                   />
                 </View>

@@ -237,3 +237,10 @@
 - [x] Show computed total and ethanol % as read-only summary below the inputs
 - [x] Update Log Fill-Up modal in calculator to pass e85Gallons/gasGallons/prices to addFuelEntry
 - [x] Keep backward compat: existing entries without split fields show total gallons only
+
+## Current Ethanol % in Fuel Log
+
+- [x] Add currentEthanolPct optional field to FuelEntry type in fuel-log.ts
+- [x] Add "Current Ethanol % in Tank" input to fuel log form (below gallons section)
+- [x] Auto-populate calculator's currentFuelEthanol from most recent fuel log entry
+- [x] Show "AUTO" badge + tinted border when calculator field is auto-filled; clears on manual edit
