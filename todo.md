@@ -220,3 +220,11 @@
 - [x] Fixed default gasEthanolPercent from 10% to 0% in blend-calculator.ts
 - [x] Added helper hint "0% for pure 91/93 oct" below Gas Ethanol % field in calculator modal
 - [x] Real result explained: 13.15 gal E85 + 1.601 gal gas (pump shutoff early) → 68% (expected ~70% with full fill)
+
+## Calculator Enhancements (Three Suggestions)
+
+- [x] Add gasEthanolPercent field to CarProfile type in garage.ts
+- [x] Add "Gas Ethanol %" input to Garage car form so it saves per car
+- [x] Auto-fill calculator gasEthanolPercent from active car's stored value
+- [x] Add pump instructions summary card below result (collapsible, numbered steps)
+- [x] Add "Log This Fill-Up" button on calculator result card with modal for station, odometer, prices

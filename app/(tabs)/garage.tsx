@@ -110,6 +110,7 @@ interface FormState {
   color: string;
   icon: string;
   odometer: string;
+  gasEthanolPercent: string;
 }
 
 function profileToForm(p: CarProfile | NewCarProfile): FormState {
@@ -128,6 +129,7 @@ function profileToForm(p: CarProfile | NewCarProfile): FormState {
     color: p.color,
     icon: p.icon,
     odometer: p.odometer.toString(),
+    gasEthanolPercent: ((p as CarProfile).gasEthanolPercent ?? 0).toString(),
   };
 }
 
@@ -147,6 +149,7 @@ function formToProfile(f: FormState): NewCarProfile {
     color: f.color,
     icon: f.icon,
     odometer: parseInt(f.odometer) || 0,
+    gasEthanolPercent: parseFloat(f.gasEthanolPercent) || 0,
   };
 }
 
@@ -326,6 +329,15 @@ function CarFormModal({ visible, editProfile, onClose, onSave, colors }: CarForm
               onChangeText={(t) => set("odometer", t.replace(/[^\d]/g, ""))}
               placeholder="0"
               numeric
+              colors={colors}
+            />
+            <Field
+              label="Gas Ethanol % (0=pure 91/93, 10=E10)"
+              value={form.gasEthanolPercent}
+              onChangeText={(t) => set("gasEthanolPercent", sanitizeDecimal(t))}
+              placeholder="0"
+              numeric
+              onDecimal={() => addDecimal("gasEthanolPercent")}
               colors={colors}
             />
             {/* Flex-fuel toggle */}

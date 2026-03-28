@@ -123,6 +123,7 @@ interface FormState {
   nickname: string; year: string; make: string; model: string; trim: string;
   tankSize: string; mpgE85: string; mpgGas: string; requiredOctane: string;
   isFlexFuel: boolean; defaultBlend: string; color: string; icon: string; odometer: string;
+  gasEthanolPercent: string;
 }
 
 function profileToForm(p: NewCarProfile): FormState {
@@ -131,6 +132,7 @@ function profileToForm(p: NewCarProfile): FormState {
     tankSize: p.tankSize.toString(), mpgE85: p.mpgE85.toString(), mpgGas: p.mpgGas.toString(),
     requiredOctane: p.requiredOctane.toString(), isFlexFuel: p.isFlexFuel,
     defaultBlend: p.defaultBlend.toString(), color: p.color, icon: p.icon, odometer: p.odometer.toString(),
+    gasEthanolPercent: ((p as CarProfile).gasEthanolPercent ?? 0).toString(),
   };
 }
 
@@ -142,6 +144,7 @@ function formToProfile(f: FormState): NewCarProfile {
     mpgGas: parseFloat(f.mpgGas) || 28, requiredOctane: parseInt(f.requiredOctane) || 87,
     isFlexFuel: f.isFlexFuel, defaultBlend: parseInt(f.defaultBlend) || 30,
     color: f.color, icon: f.icon, odometer: parseInt(f.odometer) || 0,
+    gasEthanolPercent: parseFloat(f.gasEthanolPercent) || 0,
   };
 }
 

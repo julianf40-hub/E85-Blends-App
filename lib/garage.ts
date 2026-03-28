@@ -29,6 +29,8 @@ export interface CarProfile {
   icon: string;
   /** Current odometer reading in miles */
   odometer: number;
+  /** Ethanol % of the regular gas used (0 for pure 91/93 oct, 10 for E10) */
+  gasEthanolPercent: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +73,7 @@ export const DEFAULT_CAR: NewCarProfile = {
   color: CAR_COLORS[0],
   icon: "🚗",
   odometer: 0,
+  gasEthanolPercent: 0,
 };
 
 /** Load all car profiles from storage */

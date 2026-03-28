@@ -252,6 +252,12 @@ export default function HomeScreen() {
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [blendName, setBlendName] = useState("");
+  const [showPumpInstructions, setShowPumpInstructions] = useState(false);
+  const [logFillUpModalVisible, setLogFillUpModalVisible] = useState(false);
+  const [logFillUpOdometer, setLogFillUpOdometer] = useState("");
+  const [logFillUpStation, setLogFillUpStation] = useState("");
+  const [logFillUpPriceE85, setLogFillUpPriceE85] = useState("");
+  const [logFillUpPriceGas, setLogFillUpPriceGas] = useState("");
 
   const loadData = useCallback(async () => {
     try {
@@ -331,6 +337,7 @@ export default function HomeScreen() {
       tankSize: activeCar.tankSize,
       targetEthanolPercent: activeCar.defaultBlend,
       gasOctane: activeCar.requiredOctane,
+      gasEthanolPercent: activeCar.gasEthanolPercent ?? 0,
     } : DEFAULT_INPUTS;
     setBlendInputs(inputs);
     setCalcStrings({
@@ -383,6 +390,65 @@ export default function HomeScreen() {
       Alert.alert("Error", "Failed to save blend.");
     }
   }, [blendInputs, blendResult, blendName]);
+
+  const handleLogFillUp = useCallback(() => {
+    if (!blendResult) return;
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLogFillUpOdometer(currentMileage > 0 ? currentMileage.toString() : "");
+    setLogFillUpStation("");
+    setLogFillUpPriceE85("");
+    setLogFillUpPriceGas("");
+    setLogFillUpModalVisible(true);
+  }, [blendResult, currentMileage]);
+
+  const handleConfirmLogFillUp = useCallback(async () => {
+    if (!blendResult) return;
+    try {
+      const { addFuelEntry } = await import("@/lib/fuel-log");
+      const { loadRemindersForCar, completeReminder } = await import("@/lib/reminders");
+      const totalGallons = blendResult.e85Gallons + blendResult.gasGallons;
+      const priceE85 = parseFloat(logFillUpPriceE85) || 0;
+      const priceGas = parseFloat(logFillUpPriceGas) || 0;
+      const blendedPricePerGal = totalGallons > 0
+        ? (priceE85 * blendResult.e85Gallons + priceGas * blendResult.gasGallons) / totalGallons
+        : 0;
+      const odometer = parseInt(logFillUpOdometer) || currentMileage;
+      await addFuelEntry({
+        date: new Date().toISOString(),
+        stationName: logFillUpStation.trim() || "Unknown station",
+        blendRatio: blendResult.finalEthanolPercent,
+        gallonsAdded: totalGallons,
+        pricePerGallon: blendedPricePerGal,
+        totalPrice: blendedPricePerGal * totalGallons,
+        odometer,
+        notes: `Calculator blend: ${blendResult.blendLabel}`,
+      });
+      // Update car odometer if new reading is higher
+      if (activeCar && odometer > currentMileage) {
+        await updateCarProfile(activeCar.id, { ...activeCar, odometer });
+        setCurrentMileage(odometer);
+      }
+      // Check reminders
+      if (activeCar) {
+        const rems = await loadRemindersForCar(activeCar.id);
+        for (const rem of rems) {
+          if (rem.mileageEnabled && rem.nextReminderMileage !== undefined && !rem.completedAt) {
+            if (odometer >= rem.nextReminderMileage) {
+              await completeReminder(rem.id, odometer);
+            }
+          }
+        }
+      }
+      setLogFillUpModalVisible(false);
+      setCalculatorModalVisible(false);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Logged!", `${totalGallons.toFixed(2)} gal fill-up added to Fuel Log.`);
+      loadData();
+    } catch (e) {
+      console.warn("Failed to log fill-up:", e);
+      Alert.alert("Error", "Failed to log fill-up.");
+    }
+  }, [blendResult, logFillUpOdometer, logFillUpStation, logFillUpPriceE85, logFillUpPriceGas, currentMileage, activeCar, loadData]);
 
   const handleUpdateOdometer = useCallback(() => {
     setOdometerInput(currentMileage.toString());
@@ -632,6 +698,55 @@ export default function HomeScreen() {
                     <Text style={[styles.calcResultWarningText, { color: colors.warning }]}>{blendResult.errorMessage}</Text>
                   </View>
                 )}
+
+                {/* Pump Instructions */}
+                <Pressable
+                  onPress={() => setShowPumpInstructions((v) => !v)}
+                  style={({ pressed }) => [styles.pumpInstructionsToggle, { borderTopColor: colors.border, opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <Text style={[styles.pumpInstructionsToggleText, { color: colors.primary }]}>⛽ Pump Instructions</Text>
+                  <Text style={[styles.pumpInstructionsToggleChevron, { color: colors.muted }]}>{showPumpInstructions ? "▲" : "▼"}</Text>
+                </Pressable>
+                {showPumpInstructions && (
+                  <View style={[styles.pumpInstructionsBody, { backgroundColor: colors.primary + "0D" }]}>
+                    {blendResult.e85Gallons > 0 && (
+                      <View style={styles.pumpStep}>
+                        <View style={[styles.pumpStepBadge, { backgroundColor: colors.primary }]}>
+                          <Text style={styles.pumpStepNum}>1</Text>
+                        </View>
+                        <Text style={[styles.pumpStepText, { color: colors.foreground }]}>
+                          Fill <Text style={{ fontWeight: "700" }}>{blendResult.e85Gallons.toFixed(2)} gal E85</Text> first
+                        </Text>
+                      </View>
+                    )}
+                    {blendResult.gasGallons > 0 && (
+                      <View style={styles.pumpStep}>
+                        <View style={[styles.pumpStepBadge, { backgroundColor: "#D97706" }]}>
+                          <Text style={styles.pumpStepNum}>{blendResult.e85Gallons > 0 ? "2" : "1"}</Text>
+                        </View>
+                        <Text style={[styles.pumpStepText, { color: colors.foreground }]}>
+                          Top off with <Text style={{ fontWeight: "700" }}>{blendResult.gasGallons.toFixed(2)} gal {blendInputs.gasOctane >= 91 ? `${blendInputs.gasOctane} oct` : "regular"} gas</Text>
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.pumpStep}>
+                      <View style={[styles.pumpStepBadge, { backgroundColor: colors.success }]}>
+                        <Text style={styles.pumpStepNum}>✓</Text>
+                      </View>
+                      <Text style={[styles.pumpStepText, { color: colors.foreground }]}>
+                        Result: <Text style={{ fontWeight: "700" }}>{blendResult.blendLabel}</Text> · {blendResult.estimatedOctane.toFixed(1)} oct
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Log This Fill-Up */}
+                <Pressable
+                  onPress={handleLogFillUp}
+                  style={({ pressed }) => [styles.logFillUpBtn, { backgroundColor: colors.success + "18", borderColor: colors.success + "40", opacity: pressed ? 0.75 : 1 }]}
+                >
+                  <Text style={[styles.logFillUpBtnText, { color: colors.success }]}>+ Log This Fill-Up</Text>
+                </Pressable>
               </View>
             )}
 
@@ -657,6 +772,81 @@ export default function HomeScreen() {
               <Text style={styles.calcSaveBtnText}>Save Blend</Text>
             </Pressable>
 
+          </ScrollView>
+        </View>
+      </Modal>
+
+      {/* ── Log Fill-Up Modal ── */}
+      <Modal
+        visible={logFillUpModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setLogFillUpModalVisible(false)}
+      >
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+            <Pressable
+              onPress={() => setLogFillUpModalVisible(false)}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalCancelText, { color: colors.primary }]}>Cancel</Text>
+            </Pressable>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>Log Fill-Up</Text>
+            <Pressable
+              onPress={handleConfirmLogFillUp}
+              style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
+            >
+              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Log</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
+            {blendResult && (
+              <View style={[styles.logFillUpSummary, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Text style={[styles.logFillUpSummaryTitle, { color: colors.foreground }]}>{blendResult.blendLabel} Blend</Text>
+                <Text style={[styles.logFillUpSummaryDetail, { color: colors.muted }]}>
+                  {blendResult.e85Gallons.toFixed(2)} gal E85 + {blendResult.gasGallons.toFixed(2)} gal Gas = {(blendResult.e85Gallons + blendResult.gasGallons).toFixed(2)} gal total
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.modalLabel, { color: colors.foreground, marginTop: 16 }]}>Station Name (optional)</Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+              placeholder="e.g. QuikTrip #123"
+              placeholderTextColor={colors.muted}
+              value={logFillUpStation}
+              onChangeText={setLogFillUpStation}
+              returnKeyType="next"
+            />
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>Odometer (miles)</Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+              placeholder={currentMileage > 0 ? currentMileage.toString() : "0"}
+              placeholderTextColor={colors.muted}
+              keyboardType="number-pad"
+              value={logFillUpOdometer}
+              onChangeText={setLogFillUpOdometer}
+              returnKeyType="next"
+            />
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>E85 Price / gal (optional)</Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+              placeholder="e.g. 2.89"
+              placeholderTextColor={colors.muted}
+              keyboardType="decimal-pad"
+              value={logFillUpPriceE85}
+              onChangeText={setLogFillUpPriceE85}
+              returnKeyType="next"
+            />
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>Gas Price / gal (optional)</Text>
+            <TextInput
+              style={[styles.modalInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
+              placeholder="e.g. 3.49"
+              placeholderTextColor={colors.muted}
+              keyboardType="decimal-pad"
+              value={logFillUpPriceGas}
+              onChangeText={setLogFillUpPriceGas}
+              returnKeyType="done"
+            />
           </ScrollView>
         </View>
       </Modal>
@@ -1408,5 +1598,74 @@ const styles = StyleSheet.create({
   },
   modalHint: {
     fontSize: 13,
+  },
+  pumpInstructionsToggle: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingTop: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+  },
+  pumpInstructionsToggleText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  pumpInstructionsToggleChevron: {
+    fontSize: 11,
+  },
+  pumpInstructionsBody: {
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 10,
+    gap: 10,
+  },
+  pumpStep: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  pumpStepBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pumpStepNum: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  pumpStepText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  logFillUpBtn: {
+    marginTop: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  logFillUpBtnText: {
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  logFillUpSummary: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 4,
+  },
+  logFillUpSummaryTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  logFillUpSummaryDetail: {
+    fontSize: 13,
+    lineHeight: 18,
   },
 });
