@@ -1,1099 +1,772 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ScrollView,
   Text,
   View,
-  TextInput,
   Pressable,
   Platform,
-  Alert,
   StyleSheet,
-  Dimensions,
+  FlatList,
 } from "react-native";
 import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-  withSequence,
-  Easing,
   FadeIn,
   FadeInDown,
+  FadeInRight,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
+import { useRouter, useFocusEffect } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import {
-  BlendInputs,
-  BlendResult,
-  DEFAULT_INPUTS,
-  COMMON_BLENDS,
-  calculateBlend,
-} from "@/lib/blend-calculator";
-import { saveBlend, getSettings } from "@/lib/blend-storage";
 import { getActiveCar, CarProfile } from "@/lib/garage";
-import { useFocusEffect } from "expo-router";
+import { loadFuelLog, FuelEntry } from "@/lib/fuel-log";
+import {
+  loadRemindersForCar,
+  Reminder,
+  getReminderUrgency,
+  sortRemindersByUrgency,
+  REMINDER_CATEGORIES,
+  ReminderCategory,
+} from "@/lib/reminders";
 
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/**
- * String-based input state for all text fields.
- * This allows users to type "18." without it being converted to "18".
- * Numbers are only parsed when the user presses Calculate.
- */
-interface InputTexts {
-  tankSize: string;
-  currentEthanolPercent: string;
-  targetEthanolPercent: string;
-  e85EthanolPercent: string;
-  gasEthanolPercent: string;
-  e85Octane: string;
-  gasOctane: string;
+function getCategoryMeta(id: ReminderCategory) {
+  return REMINDER_CATEGORIES.find((c) => c.id === id) ?? REMINDER_CATEGORIES[REMINDER_CATEGORIES.length - 1];
 }
 
-function toInputTexts(inputs: BlendInputs): InputTexts {
-  return {
-    tankSize: inputs.tankSize.toString(),
-    currentEthanolPercent: inputs.currentEthanolPercent.toString(),
-    targetEthanolPercent: inputs.targetEthanolPercent.toString(),
-    e85EthanolPercent: inputs.e85EthanolPercent.toString(),
-    gasEthanolPercent: inputs.gasEthanolPercent.toString(),
-    e85Octane: inputs.e85Octane.toString(),
-    gasOctane: inputs.gasOctane.toString(),
-  };
-}
+function getUrgencyLabel(reminder: Reminder, currentMileage: number): { label: string; color: string } {
+  const { milesLeft, daysLeft, isOverdue } = getReminderUrgency(reminder, currentMileage);
 
-function textsToInputs(texts: InputTexts, currentFuelLevel: number): BlendInputs {
-  return {
-    tankSize: parseFloat(texts.tankSize) || 0,
-    currentFuelLevel,
-    currentEthanolPercent: parseFloat(texts.currentEthanolPercent) || 0,
-    targetEthanolPercent: parseFloat(texts.targetEthanolPercent) || 0,
-    e85EthanolPercent: parseFloat(texts.e85EthanolPercent) || 0,
-    gasEthanolPercent: parseFloat(texts.gasEthanolPercent) || 0,
-    e85Octane: parseFloat(texts.e85Octane) || 0,
-    gasOctane: parseFloat(texts.gasOctane) || 0,
-  };
-}
-
-/** Only allow digits, one decimal point, and comma (auto-replaced with dot) */
-function sanitizeDecimalInput(text: string): string {
-  // Replace comma with dot for locale support
-  let cleaned = text.replace(",", ".");
-  // Allow only digits and one dot
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = parts[0] + "." + parts.slice(1).join("");
+  if (isOverdue) {
+    if (milesLeft !== undefined && milesLeft <= 0)
+      return { label: `${Math.abs(milesLeft).toLocaleString()} mi overdue`, color: "#EF4444" };
+    if (daysLeft !== undefined && daysLeft <= 0)
+      return { label: `${Math.abs(daysLeft)}d overdue`, color: "#EF4444" };
   }
-  // Remove non-numeric non-dot characters
-  cleaned = cleaned.replace(/[^\d.]/g, "");
-  return cleaned;
+
+  const parts: string[] = [];
+  if (milesLeft !== undefined) parts.push(`${milesLeft.toLocaleString()} mi`);
+  if (daysLeft !== undefined) {
+    if (daysLeft === 0) parts.push("today");
+    else if (daysLeft === 1) parts.push("1 day");
+    else parts.push(`${daysLeft}d`);
+  }
+
+  const urgentColor =
+    (milesLeft !== undefined && milesLeft < 500) || (daysLeft !== undefined && daysLeft < 7)
+      ? "#F59E0B"
+      : "#10B981";
+
+  return { label: parts.join(" · ") || "Scheduled", color: urgentColor };
 }
 
-export default function CalculatorScreen() {
-  const colors = useColors();
-  const [inputTexts, setInputTexts] = useState<InputTexts>(toInputTexts(DEFAULT_INPUTS));
-  const [currentFuelLevel, setCurrentFuelLevel] = useState(0);
-  const [result, setResult] = useState<BlendResult | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [activeCar, setActiveCar] = useState<CarProfile | null>(null);
-  const resultScale = useSharedValue(1);
-  const tankInputRef = useRef<TextInput>(null);
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays} days ago`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
-  // Reload active car and settings whenever this tab is focused
+// ─── Sub-components ──────────────────────────────────────────────────────────
+
+interface CarHeroProps {
+  car: CarProfile;
+  currentMileage: number;
+  onPress: () => void;
+}
+
+function CarHero({ car, currentMileage, onPress }: CarHeroProps) {
+  const colors = useColors();
+  const carLabel = car.nickname || `${car.year} ${car.make} ${car.model}`.trim() || "My Car";
+
+  return (
+    <Animated.View entering={FadeIn.duration(400)} style={styles.heroWrapper}>
+      <Pressable onPress={onPress} style={({ pressed }) => [{ opacity: pressed ? 0.92 : 1 }]}>
+        <LinearGradient
+          colors={[car.color + "CC", car.color + "66"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroGradient}
+        >
+          {/* Car emoji + name */}
+          <View style={styles.heroTop}>
+            <View style={styles.heroEmojiWrap}>
+              <Text style={styles.heroEmoji}>{car.icon}</Text>
+            </View>
+            <View style={styles.heroInfo}>
+              <Text style={styles.heroCarName}>{carLabel}</Text>
+              {(car.year || car.make || car.model) && (
+                <Text style={styles.heroCarSub}>
+                  {[car.year, car.make, car.model].filter(Boolean).join(" ")}
+                </Text>
+              )}
+            </View>
+            <View style={styles.heroActiveBadge}>
+              <Text style={styles.heroActiveBadgeText}>Active</Text>
+            </View>
+          </View>
+
+          {/* Stats row */}
+          <View style={styles.heroStats}>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>{car.tankSize}</Text>
+              <Text style={styles.heroStatLabel}>gal tank</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>E{car.defaultBlend}</Text>
+              <Text style={styles.heroStatLabel}>default blend</Text>
+            </View>
+            <View style={styles.heroStatDivider} />
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatValue}>
+                {currentMileage > 0 ? currentMileage.toLocaleString() : "—"}
+              </Text>
+              <Text style={styles.heroStatLabel}>last odometer</Text>
+            </View>
+          </View>
+        </LinearGradient>
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+interface ReminderCardProps {
+  reminder: Reminder;
+  currentMileage: number;
+  onPress: () => void;
+}
+
+function ReminderCard({ reminder, currentMileage, onPress }: ReminderCardProps) {
+  const colors = useColors();
+  const catMeta = getCategoryMeta(reminder.category);
+  const urgency = getUrgencyLabel(reminder, currentMileage);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.reminderCard,
+        { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.8 : 1 },
+      ]}
+    >
+      <View style={[styles.reminderCardIcon, { backgroundColor: catMeta.color + "22" }]}>
+        <Text style={styles.reminderCardIconText}>{catMeta.icon}</Text>
+      </View>
+      <Text style={[styles.reminderCardName, { color: colors.foreground }]} numberOfLines={1}>
+        {reminder.name}
+      </Text>
+      <View style={[styles.reminderCardBadge, { backgroundColor: urgency.color + "22" }]}>
+        <Text style={[styles.reminderCardBadgeText, { color: urgency.color }]}>{urgency.label}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+interface FillUpRowProps {
+  entry: FuelEntry;
+  isLast: boolean;
+}
+
+function FillUpRow({ entry, isLast }: FillUpRowProps) {
+  const colors = useColors();
+  const blendColor =
+    entry.blendRatio >= 70 ? "#10B981" : entry.blendRatio >= 40 ? "#F59E0B" : "#3B82F6";
+
+  return (
+    <View style={[styles.fillUpRow, !isLast && { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+      {/* Timeline dot */}
+      <View style={styles.timelineDotWrap}>
+        <View style={[styles.timelineDot, { backgroundColor: blendColor }]} />
+        {!isLast && <View style={[styles.timelineLine, { backgroundColor: colors.border }]} />}
+      </View>
+
+      <View style={styles.fillUpContent}>
+        <View style={styles.fillUpHeader}>
+          <Text style={[styles.fillUpStation, { color: colors.foreground }]} numberOfLines={1}>
+            {entry.stationName || "Unknown station"}
+          </Text>
+          <Text style={[styles.fillUpDate, { color: colors.muted }]}>{formatDate(entry.date)}</Text>
+        </View>
+        <View style={styles.fillUpMeta}>
+          <View style={[styles.blendBadge, { backgroundColor: blendColor + "22" }]}>
+            <Text style={[styles.blendBadgeText, { color: blendColor }]}>E{entry.blendRatio}</Text>
+          </View>
+          <Text style={[styles.fillUpDetail, { color: colors.muted }]}>
+            {entry.gallonsAdded.toFixed(1)} gal
+          </Text>
+          {entry.pricePerGallon > 0 && (
+            <Text style={[styles.fillUpDetail, { color: colors.muted }]}>
+              ${entry.pricePerGallon.toFixed(2)}/gal
+            </Text>
+          )}
+          {entry.odometer > 0 && (
+            <Text style={[styles.fillUpDetail, { color: colors.muted }]}>
+              {entry.odometer.toLocaleString()} mi
+            </Text>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Main Screen ─────────────────────────────────────────────────────────────
+
+export default function HomeScreen() {
+  const colors = useColors();
+  const router = useRouter();
+  const [activeCar, setActiveCar] = useState<CarProfile | null>(null);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [recentFillUps, setRecentFillUps] = useState<FuelEntry[]>([]);
+  const [currentMileage, setCurrentMileage] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  const loadData = useCallback(async () => {
+    try {
+      const car = await getActiveCar();
+      setActiveCar(car);
+
+      const logs = await loadFuelLog();
+      const recent = logs.slice(0, 5);
+      setRecentFillUps(recent);
+      const latestMileage = logs.length > 0 ? logs[0].odometer : 0;
+      setCurrentMileage(latestMileage);
+
+      if (car) {
+        const rems = await loadRemindersForCar(car.id);
+        const sorted = sortRemindersByUrgency(rems, latestMileage);
+        // Show only upcoming/overdue (not completed)
+        setReminders(sorted.filter((r) => !r.completedAt).slice(0, 6));
+      } else {
+        setReminders([]);
+      }
+    } catch (e) {
+      console.warn("Failed to load home data:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        const [settings, car] = await Promise.all([getSettings(), getActiveCar()]);
-        setActiveCar(car);
-        const inputs: BlendInputs = {
-          ...DEFAULT_INPUTS,
-          tankSize: car ? car.tankSize : settings.defaultTankSize,
-          targetEthanolPercent: car ? car.defaultBlend : DEFAULT_INPUTS.targetEthanolPercent,
-          e85EthanolPercent: settings.defaultE85Ethanol,
-          gasEthanolPercent: settings.defaultGasEthanol,
-          gasOctane: car ? car.requiredOctane : settings.defaultGasOctane,
-          e85Octane: settings.defaultE85Octane,
-        };
-        setInputTexts(toInputTexts(inputs));
-      })();
-    }, [])
+      loadData();
+    }, [loadData])
   );
 
-  const handleCalculate = useCallback(() => {
-    if (Platform.OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-    const inputs = textsToInputs(inputTexts, currentFuelLevel);
-    const blendResult = calculateBlend(inputs);
-    setResult(blendResult);
-    resultScale.value = withSequence(
-      withTiming(0.97, { duration: 80 }),
-      withTiming(1, { duration: 200, easing: Easing.out(Easing.quad) })
-    );
-  }, [inputTexts, currentFuelLevel, resultScale]);
+  const handleAddReminder = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/(tabs)/reminders");
+  }, [router]);
 
-  const handleSaveBlend = useCallback(async () => {
-    if (!result) return;
-    if (Platform.OS !== "web") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-    try {
-      const inputs = textsToInputs(inputTexts, currentFuelLevel);
-      await saveBlend(inputs, result);
-      Alert.alert("Saved", "Blend saved to My Blends");
-    } catch {
-      Alert.alert("Error", "Failed to save blend");
-    }
-  }, [inputTexts, currentFuelLevel, result]);
+  const handleReminderPress = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/(tabs)/reminders");
+  }, [router]);
 
-  const handleBlendChipPress = useCallback(
-    (value: number) => {
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }
-      setInputTexts((prev) => ({ ...prev, targetEthanolPercent: value.toString() }));
-    },
-    []
-  );
-
-  /** Update a text field - keeps raw string so decimals work */
-  const updateText = useCallback(
-    (key: keyof InputTexts, value: string) => {
-      const sanitized = sanitizeDecimalInput(value);
-      setInputTexts((prev) => ({ ...prev, [key]: sanitized }));
-    },
-    []
-  );
-
-  const resultAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: resultScale.value }],
-  }));
-
-  const targetEthanolNum = parseFloat(inputTexts.targetEthanolPercent) || 0;
+  const handleCarPress = useCallback(() => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/(tabs)/garage");
+  }, [router]);
 
   return (
     <ScreenContainer>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
+        {/* ── Header ── */}
         <View style={styles.header}>
-          <View style={styles.headerRow}>
-            <View
-              style={[
-                styles.headerIconBg,
-                { backgroundColor: colors.primary + "18" },
-              ]}
-            >
-              <IconSymbol
-                name="fuelpump.fill"
-                size={24}
-                color={colors.primary}
-              />
-            </View>
-            <View>
-              <Text style={[styles.headerTitle, { color: colors.foreground }]}>
-                E85 Blend Calculator
-              </Text>
-              <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
-                Calculate your perfect fuel mix
-              </Text>
-            </View>
+          <View>
+            <Text style={[styles.headerTitle, { color: colors.foreground }]}>Dashboard</Text>
+            <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
+              {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+            </Text>
           </View>
+          <Pressable
+            style={[styles.headerBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={() => router.push("/(tabs)/settings")}
+          >
+            <IconSymbol name="gearshape.fill" size={20} color={colors.muted} />
+          </Pressable>
         </View>
 
-        {/* Active Car Banner */}
-        {activeCar && (
-          <Animated.View
-            entering={FadeIn.duration(300)}
-            style={[
-              styles.carBanner,
-              { backgroundColor: activeCar.color + "18", borderColor: activeCar.color + "40" },
-            ]}
-          >
-            <Text style={styles.carBannerEmoji}>{activeCar.icon}</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.carBannerName, { color: colors.foreground }]}>
-                {activeCar.nickname || `${activeCar.year} ${activeCar.make} ${activeCar.model}`.trim() || "Active Car"}
-              </Text>
-              <Text style={[styles.carBannerSub, { color: colors.muted }]}>
-                {activeCar.tankSize} gal tank · E{activeCar.defaultBlend} default
-              </Text>
-            </View>
-            <View style={[styles.carBannerBadge, { backgroundColor: activeCar.color + "30" }]}>
-              <Text style={[styles.carBannerBadgeText, { color: activeCar.color }]}>Active</Text>
-            </View>
+        {/* ── Car Hero ── */}
+        {activeCar ? (
+          <CarHero car={activeCar} currentMileage={currentMileage} onPress={handleCarPress} />
+        ) : (
+          <Animated.View entering={FadeInDown.duration(300)} style={styles.heroWrapper}>
+            <Pressable
+              style={[styles.noCarCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => router.push("/(tabs)/garage")}
+            >
+              <Text style={styles.noCarEmoji}>🚗</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.noCarTitle, { color: colors.foreground }]}>Add your car</Text>
+                <Text style={[styles.noCarSub, { color: colors.muted }]}>
+                  Set up a profile to track reminders and fill-ups
+                </Text>
+              </View>
+              <IconSymbol name="chevron.right" size={18} color={colors.muted} />
+            </Pressable>
           </Animated.View>
         )}
 
-        {/* Tank Size Input */}
-        <Animated.View
-          entering={FadeInDown.duration(300).delay(50)}
-          style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        >
-          <Text style={[styles.cardLabel, { color: colors.muted }]}>Tank Size</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              ref={tankInputRef}
-              style={[
-                styles.inputLarge,
-                { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-              ]}
-              value={inputTexts.tankSize}
-              onChangeText={(v) => updateText("tankSize", v)}
-              keyboardType="default"
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="done"
-              placeholder="16.5"
-              placeholderTextColor={colors.muted}
-              selectTextOnFocus
-              maxLength={10}
-            />
-            <Pressable
-              onPress={() => {
-                const cur = inputTexts.tankSize;
-                if (!cur.includes(".")) {
-                  updateText("tankSize", cur === "" ? "0." : cur + ".");
-                  tankInputRef.current?.focus();
-                }
-              }}
-              style={({ pressed }) => [
-                styles.decimalBtn,
-                { backgroundColor: colors.primary + "20" },
-                pressed && { opacity: 0.6 },
-              ]}
-            >
-              <Text style={[styles.decimalBtnText, { color: colors.primary }]}>.</Text>
-            </Pressable>
-            <Text style={[styles.unitLabel, { color: colors.muted }]}>gallons</Text>
-          </View>
+        {/* ── Quick Actions ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.quickActions}>
+          <Pressable
+            style={[styles.quickActionBtn, { backgroundColor: colors.primary }]}
+            onPress={() => router.push("/(tabs)")}
+          >
+            <IconSymbol name="fuelpump.fill" size={20} color="#fff" />
+            <Text style={styles.quickActionText}>Calculate</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.quickActionBtn, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
+            onPress={() => router.push("/(tabs)/stations")}
+          >
+            <IconSymbol name="map.fill" size={20} color={colors.foreground} />
+            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Stations</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.quickActionBtn, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
+            onPress={() => router.push("/(tabs)/fuel-log")}
+          >
+            <IconSymbol name="list.bullet.clipboard.fill" size={20} color={colors.foreground} />
+            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Fuel Log</Text>
+          </Pressable>
         </Animated.View>
 
-        {/* Current Fuel Level */}
-        <Animated.View
-          entering={FadeInDown.duration(300).delay(100)}
-          style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        >
-          <Text style={[styles.cardLabel, { color: colors.muted }]}>
-            Current Fuel Level
-          </Text>
-          <View style={styles.fuelLevelRow}>
-            {[0, 25, 50, 75].map((level) => (
-              <Pressable
-                key={level}
-                onPress={() => {
-                  if (Platform.OS !== "web") {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  }
-                  setCurrentFuelLevel(level);
-                }}
-                style={({ pressed }) => [
-                  styles.fuelLevelChip,
-                  {
-                    backgroundColor:
-                      currentFuelLevel === level
-                        ? colors.primary
-                        : colors.background,
-                    borderColor:
-                      currentFuelLevel === level
-                        ? colors.primary
-                        : colors.border,
-                  },
-                  pressed && { transform: [{ scale: 0.97 }] },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.fuelLevelText,
-                    {
-                      color:
-                        currentFuelLevel === level
-                          ? "#FFFFFF"
-                          : colors.foreground,
-                    },
-                  ]}
-                >
-                  {level === 0 ? "Empty" : `${level}%`}
-                </Text>
-              </Pressable>
-            ))}
+        {/* ── Reminders Strip ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(120)}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Reminders</Text>
+            <Pressable onPress={handleAddReminder} style={styles.sectionAction}>
+              <IconSymbol name="plus" size={16} color={colors.primary} />
+              <Text style={[styles.sectionActionText, { color: colors.primary }]}>Add</Text>
+            </Pressable>
           </View>
-          {currentFuelLevel > 0 && (
-            <View style={styles.subInputRow}>
-              <Text style={[styles.subLabel, { color: colors.muted }]}>
-                Current ethanol %
+
+          {reminders.length === 0 ? (
+            <Pressable
+              style={[styles.emptyRemindersCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={handleAddReminder}
+            >
+              <Text style={styles.emptyRemindersEmoji}>🔔</Text>
+              <Text style={[styles.emptyRemindersText, { color: colors.muted }]}>
+                {activeCar ? "No reminders — tap Add to create one" : "Add a car to start tracking maintenance"}
               </Text>
-              <View style={styles.inlineInputGroup}>
-                <TextInput
-                  style={[
-                    styles.inputSmall,
-                    { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                  ]}
-                  value={inputTexts.currentEthanolPercent}
-                  onChangeText={(v) => updateText("currentEthanolPercent", v)}
-                  keyboardType="default"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="done"
-                  selectTextOnFocus
-                  maxLength={6}
-                />
-                <Pressable
-                  onPress={() => {
-                    const cur = inputTexts.currentEthanolPercent;
-                    if (!cur.includes(".")) {
-                      updateText("currentEthanolPercent", cur === "" ? "0." : cur + ".");
-                    }
-                  }}
-                  style={({ pressed }) => [
-                    styles.decimalBtnSmall,
-                    { backgroundColor: colors.primary + "20" },
-                    pressed && { opacity: 0.6 },
-                  ]}
-                >
-                  <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-                </Pressable>
-              </View>
+            </Pressable>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.remindersStrip}
+            >
+              {reminders.map((rem, i) => (
+                <Animated.View key={rem.id} entering={FadeInRight.delay(i * 50).duration(250)}>
+                  <ReminderCard
+                    reminder={rem}
+                    currentMileage={currentMileage}
+                    onPress={handleReminderPress}
+                  />
+                </Animated.View>
+              ))}
+              {/* Add button card */}
+              <Pressable
+                style={[styles.addReminderCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={handleAddReminder}
+              >
+                <View style={[styles.addReminderIcon, { backgroundColor: colors.primary + "22" }]}>
+                  <IconSymbol name="plus" size={22} color={colors.primary} />
+                </View>
+                <Text style={[styles.addReminderText, { color: colors.muted }]}>New</Text>
+              </Pressable>
+            </ScrollView>
+          )}
+        </Animated.View>
+
+        {/* ── Recent Fill-ups ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(160)}>
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Recent Fill-ups</Text>
+            <Pressable onPress={() => router.push("/(tabs)/fuel-log")} style={styles.sectionAction}>
+              <Text style={[styles.sectionActionText, { color: colors.primary }]}>See all</Text>
+              <IconSymbol name="chevron.right" size={14} color={colors.primary} />
+            </Pressable>
+          </View>
+
+          {recentFillUps.length === 0 ? (
+            <Pressable
+              style={[styles.emptyFillUpsCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => router.push("/(tabs)/fuel-log")}
+            >
+              <Text style={styles.emptyFillUpsEmoji}>⛽</Text>
+              <Text style={[styles.emptyFillUpsText, { color: colors.muted }]}>
+                No fill-ups logged yet — tap to add your first
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={[styles.fillUpsCard, { backgroundColor: colors.surface }]}>
+              {recentFillUps.map((entry, i) => (
+                <FillUpRow key={entry.id} entry={entry} isLast={i === recentFillUps.length - 1} />
+              ))}
             </View>
           )}
         </Animated.View>
 
-        {/* Target Blend Selection */}
-        <Animated.View
-          entering={FadeInDown.duration(300).delay(150)}
-          style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        >
-          <Text style={[styles.cardLabel, { color: colors.muted }]}>
-            Target Blend
-          </Text>
-          <View style={styles.blendChipsRow}>
-            {COMMON_BLENDS.map((blend) => (
-              <Pressable
-                key={blend.value}
-                onPress={() => handleBlendChipPress(blend.value)}
-                style={({ pressed }) => [
-                  styles.blendChip,
-                  {
-                    backgroundColor:
-                      targetEthanolNum === blend.value
-                        ? colors.primary
-                        : colors.background,
-                    borderColor:
-                      targetEthanolNum === blend.value
-                        ? colors.primary
-                        : colors.border,
-                  },
-                  pressed && { transform: [{ scale: 0.97 }] },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.blendChipText,
-                    {
-                      color:
-                        targetEthanolNum === blend.value
-                          ? "#FFFFFF"
-                          : colors.foreground,
-                      fontWeight:
-                        targetEthanolNum === blend.value ? "700" : "500",
-                    },
-                  ]}
-                >
-                  {blend.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-          <View style={styles.customTargetRow}>
-            <Text style={[styles.subLabel, { color: colors.muted }]}>
-              Custom target %
-            </Text>
-            <View style={styles.inlineInputGroup}>
-              <TextInput
-                style={[
-                  styles.inputSmall,
-                  { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-                value={inputTexts.targetEthanolPercent}
-                onChangeText={(v) => updateText("targetEthanolPercent", v)}
-                keyboardType="default"
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="done"
-                selectTextOnFocus
-                maxLength={6}
-              />
-              <Pressable
-                onPress={() => {
-                  const cur = inputTexts.targetEthanolPercent;
-                  if (!cur.includes(".")) {
-                    updateText("targetEthanolPercent", cur === "" ? "0." : cur + ".");
-                  }
-                }}
-                style={({ pressed }) => [
-                  styles.decimalBtnSmall,
-                  { backgroundColor: colors.primary + "20" },
-                  pressed && { opacity: 0.6 },
-                ]}
-              >
-                <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Animated.View>
-
-        {/* Advanced Settings Toggle */}
-        <Pressable
-          onPress={() => {
-            if (Platform.OS !== "web") {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            }
-            setShowAdvanced(!showAdvanced);
-          }}
-          style={({ pressed }) => [
-            styles.advancedToggle,
-            pressed && { opacity: 0.7 },
-          ]}
-        >
-          <IconSymbol
-            name="slider.horizontal.3"
-            size={18}
-            color={colors.primary}
-          />
-          <Text style={[styles.advancedToggleText, { color: colors.primary }]}>
-            {showAdvanced ? "Hide" : "Show"} Advanced Settings
-          </Text>
-        </Pressable>
-
-        {/* Advanced Settings */}
-        {showAdvanced && (
-          <Animated.View
-            entering={FadeInDown.duration(200)}
-            style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-          >
-            <View style={styles.advancedGrid}>
-              <View style={styles.advancedItem}>
-                <Text style={[styles.subLabel, { color: colors.muted }]}>
-                  E85 Ethanol %
-                </Text>
-                <View style={styles.inlineInputGroup}>
-                  <TextInput
-                    style={[
-                      styles.inputSmall,
-                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                    ]}
-                    value={inputTexts.e85EthanolPercent}
-                    onChangeText={(v) => updateText("e85EthanolPercent", v)}
-                    keyboardType="default"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const cur = inputTexts.e85EthanolPercent;
-                      if (!cur.includes(".")) {
-                        updateText("e85EthanolPercent", cur === "" ? "0." : cur + ".");
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.decimalBtnSmall,
-                      { backgroundColor: colors.primary + "20" },
-                      pressed && { opacity: 0.6 },
-                    ]}
-                  >
-                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-                  </Pressable>
-                </View>
-              </View>
-              <View style={styles.advancedItem}>
-                <Text style={[styles.subLabel, { color: colors.muted }]}>
-                  Gas Ethanol %
-                </Text>
-                <View style={styles.inlineInputGroup}>
-                  <TextInput
-                    style={[
-                      styles.inputSmall,
-                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                    ]}
-                    value={inputTexts.gasEthanolPercent}
-                    onChangeText={(v) => updateText("gasEthanolPercent", v)}
-                    keyboardType="default"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const cur = inputTexts.gasEthanolPercent;
-                      if (!cur.includes(".")) {
-                        updateText("gasEthanolPercent", cur === "" ? "0." : cur + ".");
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.decimalBtnSmall,
-                      { backgroundColor: colors.primary + "20" },
-                      pressed && { opacity: 0.6 },
-                    ]}
-                  >
-                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-                  </Pressable>
-                </View>
-              </View>
-              <View style={styles.advancedItem}>
-                <Text style={[styles.subLabel, { color: colors.muted }]}>
-                  E85 Octane
-                </Text>
-                <View style={styles.inlineInputGroup}>
-                  <TextInput
-                    style={[
-                      styles.inputSmall,
-                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                    ]}
-                    value={inputTexts.e85Octane}
-                    onChangeText={(v) => updateText("e85Octane", v)}
-                    keyboardType="default"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const cur = inputTexts.e85Octane;
-                      if (!cur.includes(".")) {
-                        updateText("e85Octane", cur === "" ? "0." : cur + ".");
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.decimalBtnSmall,
-                      { backgroundColor: colors.primary + "20" },
-                      pressed && { opacity: 0.6 },
-                    ]}
-                  >
-                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-                  </Pressable>
-                </View>
-              </View>
-              <View style={styles.advancedItem}>
-                <Text style={[styles.subLabel, { color: colors.muted }]}>
-                  Gas Octane
-                </Text>
-                <View style={styles.inlineInputGroup}>
-                  <TextInput
-                    style={[
-                      styles.inputSmall,
-                      { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background },
-                    ]}
-                    value={inputTexts.gasOctane}
-                    onChangeText={(v) => updateText("gasOctane", v)}
-                    keyboardType="default"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="done"
-                  />
-                  <Pressable
-                    onPress={() => {
-                      const cur = inputTexts.gasOctane;
-                      if (!cur.includes(".")) {
-                        updateText("gasOctane", cur === "" ? "0." : cur + ".");
-                      }
-                    }}
-                    style={({ pressed }) => [
-                      styles.decimalBtnSmall,
-                      { backgroundColor: colors.primary + "20" },
-                      pressed && { opacity: 0.6 },
-                    ]}
-                  >
-                    <Text style={[styles.decimalBtnSmallText, { color: colors.primary }]}>.</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          </Animated.View>
-        )}
-
-        {/* Calculate Button */}
-        <Animated.View entering={FadeInDown.duration(300).delay(200)}>
-          <Pressable
-            onPress={handleCalculate}
-            style={({ pressed }) => [
-              styles.calculateButton,
-              pressed && { transform: [{ scale: 0.97 }], opacity: 0.9 },
-            ]}
-          >
-            <LinearGradient
-              colors={[colors.primary, "#15803D"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.calculateGradient}
-            >
-              <IconSymbol name="drop.fill" size={20} color="#FFFFFF" />
-              <Text style={styles.calculateText}>Calculate Blend</Text>
-            </LinearGradient>
-          </Pressable>
-        </Animated.View>
-
-        {/* Results */}
-        {result && (
-          <Animated.View style={resultAnimStyle}>
-            <Animated.View
-              entering={FadeInDown.duration(300)}
-              style={[
-                styles.resultCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              {/* Blend Gauge */}
-              <View style={styles.gaugeContainer}>
-                <View
-                  style={[styles.gaugeTrack, { backgroundColor: colors.border }]}
-                >
-                  <LinearGradient
-                    colors={[colors.primary, "#D97706"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={[
-                      styles.gaugeFill,
-                      {
-                        width: `${Math.min(
-                          100,
-                          (result.finalEthanolPercent / 85) * 100
-                        )}%`,
-                      },
-                    ]}
-                  />
-                </View>
-                <Text
-                  style={[styles.gaugeLabel, { color: colors.foreground }]}
-                >
-                  {result.blendLabel}
-                </Text>
-              </View>
-
-              {/* Result Grid */}
-              <View style={styles.resultGrid}>
-                <View
-                  style={[
-                    styles.resultItem,
-                    { backgroundColor: colors.primary + "12" },
-                  ]}
-                >
-                  <IconSymbol
-                    name="drop.fill"
-                    size={20}
-                    color={colors.primary}
-                  />
-                  <Text
-                    style={[styles.resultValue, { color: colors.foreground }]}
-                  >
-                    {result.e85Gallons}
-                  </Text>
-                  <Text style={[styles.resultLabel, { color: colors.muted }]}>
-                    gal E85
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.resultItem,
-                    { backgroundColor: "#D97706" + "12" },
-                  ]}
-                >
-                  <IconSymbol
-                    name="flame.fill"
-                    size={20}
-                    color="#D97706"
-                  />
-                  <Text
-                    style={[styles.resultValue, { color: colors.foreground }]}
-                  >
-                    {result.gasGallons}
-                  </Text>
-                  <Text style={[styles.resultLabel, { color: colors.muted }]}>
-                    gal Gas
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.resultItem,
-                    { backgroundColor: colors.primary + "12" },
-                  ]}
-                >
-                  <IconSymbol
-                    name="gauge.open.with.lines.needle.33percent"
-                    size={20}
-                    color={colors.primary}
-                  />
-                  <Text
-                    style={[styles.resultValue, { color: colors.foreground }]}
-                  >
-                    {result.estimatedOctane}
-                  </Text>
-                  <Text style={[styles.resultLabel, { color: colors.muted }]}>
-                    Octane
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.resultItem,
-                    { backgroundColor: "#D97706" + "12" },
-                  ]}
-                >
-                  <IconSymbol
-                    name="checkmark.circle.fill"
-                    size={20}
-                    color={result.isValid ? colors.primary : colors.warning}
-                  />
-                  <Text
-                    style={[styles.resultValue, { color: colors.foreground }]}
-                  >
-                    {result.finalEthanolPercent}%
-                  </Text>
-                  <Text style={[styles.resultLabel, { color: colors.muted }]}>
-                    Ethanol
-                  </Text>
-                </View>
-              </View>
-
-              {result.errorMessage && (
-                <View
-                  style={[
-                    styles.warningBanner,
-                    { backgroundColor: colors.warning + "18" },
-                  ]}
-                >
-                  <IconSymbol
-                    name="info.circle.fill"
-                    size={16}
-                    color={colors.warning}
-                  />
-                  <Text
-                    style={[styles.warningText, { color: colors.warning }]}
-                  >
-                    {result.errorMessage}
-                  </Text>
-                </View>
-              )}
-
-              {/* Save Button */}
-              <Pressable
-                onPress={handleSaveBlend}
-                style={({ pressed }) => [
-                  styles.saveButton,
-                  { borderColor: colors.primary },
-                  pressed && { opacity: 0.7, transform: [{ scale: 0.97 }] },
-                ]}
-              >
-                <IconSymbol
-                  name="bookmark.fill"
-                  size={18}
-                  color={colors.primary}
-                />
-                <Text
-                  style={[styles.saveButtonText, { color: colors.primary }]}
-                >
-                  Save Blend
-                </Text>
-              </Pressable>
-            </Animated.View>
-          </Animated.View>
-        )}
-
-        <View style={styles.bottomSpacer} />
+        <View style={{ height: 32 }} />
       </ScrollView>
     </ScreenContainer>
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 100,
+    paddingBottom: 24,
   },
+
+  // Header
   header: {
-    paddingTop: 8,
-    paddingBottom: 20,
-  },
-  headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-  },
-  headerIconBg: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
   },
   headerTitle: {
-    fontSize: 26,
-    fontWeight: "800",
+    fontSize: 28,
+    fontWeight: "700",
     letterSpacing: -0.5,
   },
   headerSubtitle: {
-    fontSize: 14,
-    fontWeight: "400",
+    fontSize: 13,
     marginTop: 2,
   },
-  card: {
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 14,
-    borderWidth: 1,
-  },
-  cardLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 12,
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  inputLarge: {
-    flex: 1,
-    fontSize: 28,
-    fontWeight: "700",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
-  unitLabel: {
-    fontSize: 16,
-    fontWeight: "500",
-  },
-  fuelLevelRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  fuelLevelChip: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    alignItems: "center",
-    borderWidth: 1,
-  },
-  fuelLevelText: {
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  subInputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 14,
-  },
-  subLabel: {
-    fontSize: 14,
-    fontWeight: "500",
-  },
-  inputSmall: {
-    width: 72,
-    fontSize: 18,
-    fontWeight: "600",
-    textAlign: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  blendChipsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  blendChip: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  blendChipText: {
-    fontSize: 15,
-  },
-  customTargetRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 14,
-  },
-  advancedToggle: {
-    flexDirection: "row",
+  headerBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingVertical: 10,
-    marginBottom: 14,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  advancedToggleText: {
-    fontSize: 14,
-    fontWeight: "600",
+
+  // Car Hero
+  heroWrapper: {
+    marginHorizontal: 16,
+    marginBottom: 16,
   },
-  advancedGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 14,
-  },
-  advancedItem: {
-    width: "46%",
-    gap: 8,
-  },
-  calculateButton: {
-    borderRadius: 18,
-    overflow: "hidden",
-    marginBottom: 18,
-  },
-  calculateGradient: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    paddingVertical: 16,
-  },
-  calculateText: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "700",
-  },
-  resultCard: {
+  heroGradient: {
     borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
+    padding: 20,
     gap: 16,
   },
-  gaugeContainer: {
-    alignItems: "center",
-    gap: 8,
-  },
-  gaugeTrack: {
-    width: "100%",
-    height: 10,
-    borderRadius: 5,
-    overflow: "hidden",
-  },
-  gaugeFill: {
-    height: "100%",
-    borderRadius: 5,
-  },
-  gaugeLabel: {
-    fontSize: 32,
-    fontWeight: "800",
-    letterSpacing: -1,
-  },
-  resultGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  resultItem: {
-    width: "47%",
-    borderRadius: 16,
-    padding: 14,
-    alignItems: "center",
-    gap: 6,
-  },
-  resultValue: {
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: -0.5,
-  },
-  resultLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-  },
-  warningBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    padding: 12,
-    borderRadius: 12,
-  },
-  warningText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "500",
-  },
-  saveButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1.5,
-  },
-  saveButtonText: {
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  bottomSpacer: {
-    height: 20,
-  },
-  decimalBtn: {
-    width: 44,
-    height: 52,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  decimalBtnText: {
-    fontSize: 28,
-    fontWeight: "800",
-    lineHeight: 32,
-  },
-  decimalBtnSmall: {
-    width: 32,
-    height: 38,
-    borderRadius: 10,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  decimalBtnSmallText: {
-    fontSize: 22,
-    fontWeight: "800",
-    lineHeight: 26,
-  },
-  inlineInputGroup: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  carBanner: {
+  heroTop: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    padding: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 14,
   },
-  carBannerEmoji: {
-    fontSize: 28,
+  heroEmojiWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  carBannerName: {
-    fontSize: 15,
+  heroEmoji: {
+    fontSize: 26,
+  },
+  heroInfo: {
+    flex: 1,
+  },
+  heroCarName: {
+    fontSize: 18,
     fontWeight: "700",
+    color: "#fff",
+    letterSpacing: -0.3,
   },
-  carBannerSub: {
-    fontSize: 12,
+  heroCarSub: {
+    fontSize: 13,
+    color: "rgba(255,255,255,0.75)",
     marginTop: 2,
   },
-  carBannerBadge: {
+  heroActiveBadge: {
+    backgroundColor: "rgba(255,255,255,0.25)",
     paddingHorizontal: 10,
     paddingVertical: 4,
+    borderRadius: 12,
+  },
+  heroActiveBadgeText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  heroStats: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.18)",
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+  },
+  heroStat: {
+    flex: 1,
+    alignItems: "center",
+    gap: 2,
+  },
+  heroStatValue: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#fff",
+  },
+  heroStatLabel: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.7)",
+  },
+  heroStatDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: "rgba(255,255,255,0.25)",
+  },
+
+  // No car card
+  noCarCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  noCarEmoji: {
+    fontSize: 32,
+  },
+  noCarTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  noCarSub: {
+    fontSize: 13,
+    marginTop: 2,
+    lineHeight: 18,
+  },
+
+  // Quick actions
+  quickActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 20,
+  },
+  quickActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  quickActionText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+
+  // Section header
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    letterSpacing: -0.3,
+  },
+  sectionAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  sectionActionText: {
+    fontSize: 14,
+    fontWeight: "500",
+  },
+
+  // Reminders strip
+  remindersStrip: {
+    paddingLeft: 16,
+    paddingRight: 8,
+    paddingBottom: 4,
+    gap: 10,
+    flexDirection: "row",
+    marginBottom: 20,
+  },
+  reminderCard: {
+    width: 150,
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  reminderCardIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  reminderCardIconText: {
+    fontSize: 20,
+  },
+  reminderCardName: {
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+  reminderCardBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
     borderRadius: 8,
   },
-  carBannerBadgeText: {
+  reminderCardBadgeText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  addReminderCard: {
+    width: 100,
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: "dashed",
+  },
+  addReminderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  addReminderText: {
     fontSize: 12,
+    fontWeight: "500",
+  },
+  emptyRemindersCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 20,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  emptyRemindersEmoji: {
+    fontSize: 24,
+  },
+  emptyRemindersText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
+  // Fill-ups
+  fillUpsCard: {
+    marginHorizontal: 16,
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 4,
+  },
+  fillUpRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  timelineDotWrap: {
+    width: 12,
+    alignItems: "center",
+    paddingTop: 4,
+  },
+  timelineDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  timelineLine: {
+    flex: 1,
+    width: 1,
+    marginTop: 4,
+  },
+  fillUpContent: {
+    flex: 1,
+    gap: 4,
+  },
+  fillUpHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  fillUpStation: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  fillUpDate: {
+    fontSize: 12,
+  },
+  fillUpMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  blendBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  blendBadgeText: {
+    fontSize: 11,
     fontWeight: "700",
+  },
+  fillUpDetail: {
+    fontSize: 12,
+  },
+  emptyFillUpsCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: 16,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  emptyFillUpsEmoji: {
+    fontSize: 24,
+  },
+  emptyFillUpsText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
   },
 });

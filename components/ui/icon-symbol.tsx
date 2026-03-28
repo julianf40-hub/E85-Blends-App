@@ -56,6 +56,16 @@ const MAPPING: Record<string, MaterialIconName> = {
   "star": "star-outline",
   "heart.fill": "favorite",
   "heart": "favorite-border",
+  "bell.fill": "notifications",
+  "bell": "notifications-none",
+  "bell.badge.fill": "notifications-active",
+  "speedometer": "speed",
+  "clock.fill": "schedule",
+  "calendar": "calendar-today",
+  "repeat": "repeat",
+  "checkmark.circle": "check-circle-outline",
+  "exclamationmark.triangle.fill": "warning",
+  "arrow.up.right": "open-in-new",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

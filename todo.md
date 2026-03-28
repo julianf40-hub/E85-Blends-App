@@ -152,3 +152,11 @@
 ## Stale Price Warning
 
 - [x] Show price freshness in amber when user-submitted price is older than 7 days
+
+## Home Redesign & Reminders System
+
+- [ ] Build reminder data model and storage library (mileage + date triggers, repeat, per-car)
+- [ ] Redesign Home tab: car hero banner, current mileage card, reminders strip, recent fill-up timeline
+- [ ] Build Reminders list screen (per-car, sorted by urgency)
+- [ ] Build New Reminder modal (name, category, date toggle, mileage toggle, repeat)
+- [ ] Add Reminders tab to navigation

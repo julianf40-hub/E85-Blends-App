@@ -65,6 +65,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="reminders"
+        options={{
+          title: "Reminders",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="bell.fill" color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="garage"
         options={{
           title: "Garage",
