@@ -28,12 +28,13 @@ export default function TabLayout() {
         },
       }}
     >
+      {/* ── 5 visible tabs ── */}
       <Tabs.Screen
         name="index"
         options={{
-          title: "Calculator",
+          title: "Home",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="fuelpump.fill" color={color} />
+            <IconSymbol size={26} name="house.fill" color={color} />
           ),
         }}
       />
@@ -43,15 +44,6 @@ export default function TabLayout() {
           title: "Stations",
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="map.fill" color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="blends"
-        options={{
-          title: "My Blends",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="bookmark.fill" color={color} />
           ),
         }}
       />
@@ -74,21 +66,26 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="garage"
+        name="settings"
         options={{
-          title: "Garage",
+          title: "More",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="car.2.fill" color={color} />
+            <IconSymbol size={26} name="ellipsis.circle.fill" color={color} />
           ),
         }}
       />
+
+      {/* ── Hidden screens (still routable, not shown in tab bar) ── */}
       <Tabs.Screen
-        name="settings"
+        name="garage"
         options={{
-          title: "Settings",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="gearshape.fill" color={color} />
-          ),
+          href: null, // hidden from tab bar
+        }}
+      />
+      <Tabs.Screen
+        name="blends"
+        options={{
+          href: null, // hidden from tab bar
         }}
       />
     </Tabs>

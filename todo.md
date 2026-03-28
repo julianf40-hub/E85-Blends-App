@@ -160,3 +160,11 @@
 - [ ] Build Reminders list screen (per-car, sorted by urgency)
 - [ ] Build New Reminder modal (name, category, date toggle, mileage toggle, repeat)
 - [ ] Add Reminders tab to navigation
+
+## Tab Bar Cleanup
+
+- [x] Reduce 7 tabs to 5 by moving Garage into Settings tab (rename to "More")
+- [x] Embed Garage car list directly in the More/Settings screen with section header
+- [x] Remove standalone Garage tab from tab layout
+- [x] Update all router.push("/(tabs)/garage") references to point to settings tab
+- [x] Rename Settings tab to "More" with ellipsis icon
