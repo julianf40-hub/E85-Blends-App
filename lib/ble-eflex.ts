@@ -3,6 +3,9 @@
  *
  * This module handles Bluetooth Low Energy communication with the eFlexPlus device.
  *
+ * ⚠️  FEATURE GATE: This module is currently gated behind ENABLE_BLE_MONITOR feature flag.
+ * The Live Monitor tab will not be visible until real eFlexPlus GATT UUIDs are confirmed.
+ *
  * ─────────────────────────────────────────────────────────────────────────────
  * TODO: Replace placeholder UUIDs with real values from your eFlexPlus device.
  *
@@ -56,78 +59,133 @@ export const EMPTY_LIVE_DATA: EFlexLiveData = {
 };
 
 /**
- * Parse a base64-encoded BLE notification packet from the eFlexPlus.
- *
- * NOTE: The byte layout below is a best-guess based on community reports.
- * Once you have confirmed UUIDs and can capture real packets, update this
- * function to match the actual protocol.
- *
- * Typical eFlexFuel packet (UART-style, ASCII CSV or binary):
- *   Some devices send ASCII like "68.5,25.3,45.2,2800\n"
- *   Others send binary structs.
- *
- * This parser tries ASCII CSV first, then falls back to raw hex display.
+ * Manages BLE connection to eFlexPlus device.
+ * Usage:
+ *   const manager = new EFlexBleManager();
+ *   await manager.scanAndConnect();
+ *   manager.onDataReceived((data) => console.log(data));
+ *   await manager.disconnect();
  */
-export function parseEFlexPacket(base64Value: string): Partial<EFlexLiveData> {
-  try {
-    // Decode base64 → string
-    const raw = atob(base64Value);
-    const hex = Array.from(raw)
-      .map((c) => (c as string).charCodeAt(0).toString(16).padStart(2, "0"))
-      .join(" ");
+export class EFlexBleManager {
+  private bleManager: BleManager;
+  private device: Device | null = null;
+  private dataCallback: ((data: EFlexLiveData) => void) | null = null;
 
-    // Try ASCII CSV format: "ethanol,tempC,dutyCycle,rpm"
-    const trimmed = raw.trim();
-    const parts = trimmed.split(",");
-    if (parts.length >= 1) {
-      const ethanolPercent = parseFloat(parts[0]);
-      const fuelTempC = parts[1] ? parseFloat(parts[1]) : null;
-      const injectorDutyCycle = parts[2] ? parseFloat(parts[2]) : null;
-      const rpm = parts[3] ? parseFloat(parts[3]) : null;
+  constructor() {
+    this.bleManager = new BleManager();
+  }
 
-      if (!isNaN(ethanolPercent) && ethanolPercent >= 0 && ethanolPercent <= 100) {
-        return {
-          ethanolPercent,
-          fuelTempC: fuelTempC !== null && !isNaN(fuelTempC) ? fuelTempC : null,
-          fuelTempF: fuelTempC !== null && !isNaN(fuelTempC) ? Math.round(fuelTempC * 9 / 5 + 32) : null,
-          injectorDutyCycle: injectorDutyCycle !== null && !isNaN(injectorDutyCycle) ? injectorDutyCycle : null,
-          rpm: rpm !== null && !isNaN(rpm) ? Math.round(rpm) : null,
-          rawPacket: hex,
-        };
-      }
+  /**
+   * Scan for eFlexPlus device and connect.
+   * Throws if device not found or connection fails.
+   */
+  async scanAndConnect(timeoutMs: number = 10000): Promise<void> {
+    if (Platform.OS === "web") {
+      throw new Error("BLE not supported on web");
     }
 
-    // Fallback: just show raw hex for debugging
-    return { rawPacket: hex };
-  } catch {
-    return { rawPacket: "parse error" };
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.bleManager.stopDeviceScan();
+        reject(new Error("eFlexPlus device not found within timeout"));
+      }, timeoutMs);
+
+      this.bleManager.startDeviceScan(null, null, (error, device) => {
+        if (error) {
+          clearTimeout(timeout);
+          reject(error);
+          return;
+        }
+
+        if (!device) return;
+
+        const isEFlex = EFLEX_DEVICE_NAME_PREFIXES.some((prefix) =>
+          device.name?.startsWith(prefix)
+        );
+
+        if (isEFlex) {
+          clearTimeout(timeout);
+          this.bleManager.stopDeviceScan();
+          this.connectToDevice(device).then(resolve).catch(reject);
+        }
+      });
+    });
+  }
+
+  private async connectToDevice(device: Device): Promise<void> {
+    this.device = device;
+    await device.connect();
+    await device.discoverAllServicesAndCharacteristics();
+    this.startListening();
+  }
+
+  private startListening(): void {
+    if (!this.device) return;
+
+    this.device.monitorCharacteristicForService(
+      EFLEX_SERVICE_UUID,
+      EFLEX_CHARACTERISTIC_UUID,
+      (error, characteristic) => {
+        if (error) {
+          console.error("BLE read error:", error);
+          return;
+        }
+
+        if (characteristic?.value) {
+          const data = this.parseEFlexData(characteristic.value);
+          this.dataCallback?.(data);
+        }
+      }
+    );
+  }
+
+  /**
+   * Parse raw BLE packet from eFlexPlus.
+   * Format is device-specific; adjust based on actual GATT profile.
+   */
+  private parseEFlexData(base64Data: string): EFlexLiveData {
+    try {
+      // Decode base64 to hex string
+      const binaryString = atob(base64Data);
+      const hexString = Array.from(binaryString)
+        .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
+        .join("");
+
+      // Parse based on eFlexPlus protocol (placeholder logic)
+      // Adjust offsets and bit shifts based on actual device spec
+      const ethanolPercent = parseInt(hexString.substring(0, 2), 16) / 2.55;
+      const fuelTempC = parseInt(hexString.substring(2, 4), 16) - 40;
+      const injectorDutyCycle = parseInt(hexString.substring(4, 6), 16) / 2.55;
+      const rpm = parseInt(hexString.substring(6, 10), 16);
+
+      return {
+        ethanolPercent: isNaN(ethanolPercent) ? null : ethanolPercent,
+        fuelTempC: isNaN(fuelTempC) ? null : fuelTempC,
+        fuelTempF: fuelTempC !== null ? fuelTempC * 1.8 + 32 : null,
+        injectorDutyCycle: isNaN(injectorDutyCycle) ? null : injectorDutyCycle,
+        rpm: isNaN(rpm) ? null : rpm,
+        rawPacket: hexString,
+      };
+    } catch (error) {
+      console.error("Failed to parse eFlexPlus data:", error);
+      return EMPTY_LIVE_DATA;
+    }
+  }
+
+  /**
+   * Register callback for live data updates.
+   */
+  onDataReceived(callback: (data: EFlexLiveData) => void): void {
+    this.dataCallback = callback;
+  }
+
+  /**
+   * Disconnect from device and clean up.
+   */
+  async disconnect(): Promise<void> {
+    if (this.device) {
+      await this.device.cancelConnection();
+      this.device = null;
+    }
   }
 }
-
-// Singleton BLE manager — created once, reused across the app
-let _manager: BleManager | null = null;
-
-export function getBleManager(): BleManager {
-  if (!_manager) {
-    _manager = new BleManager();
-  }
-  return _manager;
-}
-
-export function destroyBleManager(): void {
-  if (_manager) {
-    _manager.destroy();
-    _manager = null;
-  }
-}
-
-/** Check if a scanned device looks like an eFlexPlus */
-export function isEFlexDevice(device: Device): boolean {
-  const name = device.name ?? device.localName ?? "";
-  return EFLEX_DEVICE_NAME_PREFIXES.some((prefix) =>
-    name.toLowerCase().includes(prefix.toLowerCase())
-  );
-}
-
-/** BLE is not available on web */
-export const BLE_SUPPORTED = Platform.OS !== "web";

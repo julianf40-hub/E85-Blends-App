@@ -1,7 +1,9 @@
-import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
+import { z } from "zod";
+import axios from "axios";
+import { COOKIE_NAME } from "../shared/const";
 
 export const appRouter = router({
   // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -17,12 +19,39 @@ export const appRouter = router({
     }),
   }),
 
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
+  // NREL Station API proxy (prevents rate limits and client-side API key exposure)
+  stations: router({
+    search: publicProcedure
+      .input(
+        z.object({
+          latitude: z.number(),
+          longitude: z.number(),
+          radius: z.number().default(25),
+          fuelType: z.string().default("E85"),
+        })
+      )
+      .query(async ({ input }) => {
+        try {
+          const apiKey = process.env.EXPO_PUBLIC_NREL_API_KEY || "DEMO_KEY";
+          const url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json";
+          const response = await axios.get(url, {
+            params: {
+              api_key: apiKey,
+              latitude: input.latitude,
+              longitude: input.longitude,
+              radius: input.radius,
+              fuel_type: input.fuelType,
+              status: "E,P",
+              limit: 50,
+            },
+          });
+          return response.data;
+        } catch (error) {
+          console.error("NREL API error:", error);
+          throw new Error("Failed to fetch stations from NREL API");
+        }
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

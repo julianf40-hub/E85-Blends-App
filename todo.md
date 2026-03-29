@@ -297,3 +297,24 @@
 - [x] Add subtitle "Sync test from Manus" under Home screen title
 - [x] Update app icon with pure gold gasoline drop design
 - [x] Update Home screen subtitle to "Sync test from Manus 2"
+
+
+## Phase 1 & 2: Production Readiness (Mar 29)
+
+### Phase 1: Must-Fix Bugs
+- [x] Create NREL server proxy endpoint (tRPC /api/stations)
+- [x] Implement auth.logout() handler and write passing test
+- [x] Add BLE feature gate (hide Live Monitor behind flag)
+- [ ] Add dev settings screen for API base URL configuration
+- [ ] Create environment validation script
+- [ ] Ensure crowdsourced prices labeled clearly (not ambiguous)
+
+### Phase 2: Polish Improvements
+- [ ] Add location permission prompt on first app launch
+- [ ] Show one-time onboarding tooltip about demo key rate limits
+- [ ] Unify error messaging across Stations and Fuel Log tabs
+- [ ] Add retry buttons to all error states
+- [ ] Fix reminder category picker scroll
+- [ ] Add repeat options (once, weekly, monthly, 6mo, yearly, custom)
+- [ ] Remove obsolete todo.md items (e.g., "Garage tab")
+- [ ] Fix ESLint ESM config warning
