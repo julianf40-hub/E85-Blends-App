@@ -1,5 +1,5 @@
-import { View, type ViewProps } from "react-native";
-import { SafeAreaView, type Edge } from "react-native-safe-area-context";
+import { View, type ViewProps, Platform } from "react-native";
+import { SafeAreaView, useSafeAreaInsets, type Edge } from "react-native-safe-area-context";
 
 import { cn } from "@/lib/utils";
 
@@ -21,6 +21,11 @@ export interface ScreenContainerProps extends ViewProps {
    * Additional className for the SafeAreaView (content layer).
    */
   safeAreaClassName?: string;
+  /**
+   * When true, adds extra bottom padding so content scrolls above the
+   * floating glass tab bar. Defaults to true.
+   */
+  tabBarPadding?: boolean;
 }
 
 /**
@@ -44,9 +49,14 @@ export function ScreenContainer({
   className,
   containerClassName,
   safeAreaClassName,
+  tabBarPadding = true,
   style,
   ...props
 }: ScreenContainerProps) {
+  const insets = useSafeAreaInsets();
+  // Tab bar height: 56pt icon area + bottom safe area (or 8pt min)
+  const tabBarHeight = 56 + Math.max(insets.bottom, Platform.OS === "web" ? 12 : 8);
+
   return (
     <View
       className={cn(
@@ -59,7 +69,7 @@ export function ScreenContainer({
       <SafeAreaView
         edges={edges}
         className={cn("flex-1", safeAreaClassName)}
-        style={style}
+        style={[style, tabBarPadding ? { paddingBottom: tabBarHeight } : undefined]}
       >
         <View className={cn("flex-1", className)}>{children}</View>
       </SafeAreaView>

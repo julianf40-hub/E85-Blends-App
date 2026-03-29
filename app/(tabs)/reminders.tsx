@@ -100,7 +100,9 @@ function ReminderModal({
 
   const [name, setName] = useState("");
   const [category, setCategory] = useState<ReminderCategory>("oil_change");
+  const [customCategoryLabel, setCustomCategoryLabel] = useState("");
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [showCustomCategoryInput, setShowCustomCategoryInput] = useState(false);
 
   const [mileageEnabled, setMileageEnabled] = useState(true);
   const [nextMileage, setNextMileage] = useState(
@@ -117,6 +119,8 @@ function ReminderModal({
   });
   const [dateRepeat, setDateRepeat] = useState(false);
   const [repeatDays, setRepeatDays] = useState("365");
+  // Preset repeat options: weekly=7, monthly=30, 6months=182, yearly=365, custom
+  const [dateRepeatPreset, setDateRepeatPreset] = useState<"weekly"|"monthly"|"6months"|"yearly"|"custom">("yearly");
 
   useEffect(() => {
     if (editingReminder) {
@@ -133,6 +137,7 @@ function ReminderModal({
     } else {
       setName("");
       setCategory("oil_change");
+      setCustomCategoryLabel("");
       setMileageEnabled(true);
       setNextMileage(currentMileage > 0 ? (currentMileage + 5000).toString() : "");
       setRepeatMileage("5000");
@@ -143,14 +148,13 @@ function ReminderModal({
       setNextDate(d.toISOString().split("T")[0]);
       setDateRepeat(false);
       setRepeatDays("365");
+      setDateRepeatPreset("yearly");
     }
   }, [editingReminder, visible, currentMileage]);
 
   const handleSave = () => {
-    if (!name.trim()) {
-      Alert.alert("Name required", "Please enter a name for this reminder.");
-      return;
-    }
+    // Name is optional — default to category label if blank
+    const resolvedName = name.trim() || getCategoryMeta(category).label;
     if (!mileageEnabled && !dateEnabled) {
       Alert.alert("Trigger required", "Enable at least one trigger (mileage or date).");
       return;
@@ -158,7 +162,7 @@ function ReminderModal({
 
     const reminder: NewReminder = {
       carId,
-      name: name.trim(),
+      name: resolvedName,
       category,
       mileageEnabled,
       nextReminderMileage: mileageEnabled ? parseInt(nextMileage) || undefined : undefined,
@@ -308,30 +312,57 @@ function ReminderModal({
                   />
                 </View>
                 <View style={[styles.formRow, { borderBottomColor: colors.border }]}>
-                  <Text style={[styles.formRowLabel, { color: colors.foreground }]}>Repeat every</Text>
-                  <View style={styles.formRowRight}>
-                    {dateRepeat && (
-                      <TextInput
-                        style={[styles.inlineInput, { color: colors.foreground, borderColor: colors.border }]}
-                        value={repeatDays}
-                        onChangeText={setRepeatDays}
-                        keyboardType="number-pad"
-                        returnKeyType="done"
-                        placeholder="365"
-                        placeholderTextColor={colors.muted}
-                      />
-                    )}
-                    {dateRepeat && (
-                      <Text style={[styles.unitLabel, { color: colors.muted }]}>days</Text>
-                    )}
-                    <Switch
-                      value={dateRepeat}
-                      onValueChange={setDateRepeat}
-                      trackColor={{ false: colors.border, true: colors.primary }}
-                      thumbColor="#fff"
-                    />
-                  </View>
+                  <Text style={[styles.formRowLabel, { color: colors.foreground }]}>Repeat</Text>
+                  <Switch
+                    value={dateRepeat}
+                    onValueChange={setDateRepeat}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                    thumbColor="#fff"
+                  />
                 </View>
+                {dateRepeat && (
+                  <>
+                    {/* Preset repeat chips */}
+                    <View style={[styles.formRow, { borderBottomColor: colors.border, flexWrap: "wrap", gap: 8 }]}>
+                      {(["weekly", "monthly", "6months", "yearly", "custom"] as const).map((preset) => {
+                        const label = preset === "weekly" ? "Weekly" : preset === "monthly" ? "Monthly" : preset === "6months" ? "6 Months" : preset === "yearly" ? "Yearly" : "Custom";
+                        const isActive = dateRepeatPreset === preset;
+                        return (
+                          <Pressable
+                            key={preset}
+                            onPress={() => {
+                              setDateRepeatPreset(preset);
+                              if (preset === "weekly") setRepeatDays("7");
+                              else if (preset === "monthly") setRepeatDays("30");
+                              else if (preset === "6months") setRepeatDays("182");
+                              else if (preset === "yearly") setRepeatDays("365");
+                            }}
+                            style={({ pressed }) => [styles.repeatPresetChip, { backgroundColor: isActive ? colors.primary : colors.background, borderColor: isActive ? colors.primary : colors.border, opacity: pressed ? 0.7 : 1 }]}
+                          >
+                            <Text style={[styles.repeatPresetText, { color: isActive ? "#fff" : colors.foreground }]}>{label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {dateRepeatPreset === "custom" && (
+                      <View style={[styles.formRow, { borderBottomColor: colors.border }]}>
+                        <Text style={[styles.formRowLabel, { color: colors.foreground }]}>Every</Text>
+                        <View style={styles.formRowRight}>
+                          <TextInput
+                            style={[styles.inlineInput, { color: colors.foreground, borderColor: colors.border }]}
+                            value={repeatDays}
+                            onChangeText={setRepeatDays}
+                            keyboardType="number-pad"
+                            returnKeyType="done"
+                            placeholder="30"
+                            placeholderTextColor={colors.muted}
+                          />
+                          <Text style={[styles.unitLabel, { color: colors.muted }]}>days</Text>
+                        </View>
+                      </View>
+                    )}
+                  </>
+                )}
               </>
             )}
           </View>
@@ -340,29 +371,70 @@ function ReminderModal({
         </ScrollView>
 
         {/* Category Picker */}
-        <Modal visible={showCategoryPicker} transparent animationType="fade" onRequestClose={() => setShowCategoryPicker(false)}>
+        <Modal visible={showCategoryPicker} transparent animationType="slide" onRequestClose={() => setShowCategoryPicker(false)}>
           <Pressable style={styles.pickerOverlay} onPress={() => setShowCategoryPicker(false)}>
-            <View style={[styles.pickerSheet, { backgroundColor: colors.surface }]}>
+            <Pressable style={[styles.pickerSheet, { backgroundColor: colors.surface }]} onPress={(e) => e.stopPropagation()}>
+              <View style={[styles.pickerDragHandle, { backgroundColor: colors.border }]} />
               <Text style={[styles.pickerTitle, { color: colors.foreground }]}>Category</Text>
-              {REMINDER_CATEGORIES.map((cat) => (
+              <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={true} bounces={false}>
+                {REMINDER_CATEGORIES.map((cat) => (
+                  <Pressable
+                    key={cat.id}
+                    style={[styles.pickerRow, { borderBottomColor: colors.border }]}
+                    onPress={() => {
+                      setCategory(cat.id);
+                      setShowCustomCategoryInput(false);
+                      setShowCategoryPicker(false);
+                    }}
+                  >
+                    <View style={[styles.categoryDot, { backgroundColor: cat.color }]}>
+                      <Text style={styles.categoryDotIcon}>{cat.icon}</Text>
+                    </View>
+                    <Text style={[styles.pickerRowLabel, { color: colors.foreground }]}>{cat.label}</Text>
+                    {category === cat.id && (
+                      <IconSymbol name="checkmark" size={18} color={colors.primary} />
+                    )}
+                  </Pressable>
+                ))}
+                {/* Custom category option */}
                 <Pressable
-                  key={cat.id}
                   style={[styles.pickerRow, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    setCategory(cat.id);
-                    setShowCategoryPicker(false);
-                  }}
+                  onPress={() => setShowCustomCategoryInput(true)}
                 >
-                  <View style={[styles.categoryDot, { backgroundColor: cat.color }]}>
-                    <Text style={styles.categoryDotIcon}>{cat.icon}</Text>
+                  <View style={[styles.categoryDot, { backgroundColor: colors.muted }]}>
+                    <Text style={styles.categoryDotIcon}>✏️</Text>
                   </View>
-                  <Text style={[styles.pickerRowLabel, { color: colors.foreground }]}>{cat.label}</Text>
-                  {category === cat.id && (
-                    <IconSymbol name="checkmark" size={18} color={colors.primary} />
-                  )}
+                  <Text style={[styles.pickerRowLabel, { color: colors.foreground }]}>Custom…</Text>
                 </Pressable>
-              ))}
-            </View>
+                {showCustomCategoryInput && (
+                  <View style={[styles.pickerRow, { borderBottomColor: colors.border, gap: 8 }]}>
+                    <TextInput
+                      style={[styles.inlineInput, { flex: 1, color: colors.foreground, borderColor: colors.border }]}
+                      placeholder="Category name"
+                      placeholderTextColor={colors.muted}
+                      value={customCategoryLabel}
+                      onChangeText={setCustomCategoryLabel}
+                      returnKeyType="done"
+                      autoFocus
+                    />
+                    <Pressable
+                      onPress={() => {
+                        if (customCategoryLabel.trim()) {
+                          // Use "other" category id but override name via reminder name
+                          setCategory("other");
+                          if (!name.trim()) setName(customCategoryLabel.trim());
+                          setShowCustomCategoryInput(false);
+                          setShowCategoryPicker(false);
+                        }
+                      }}
+                      style={({ pressed }) => [{ paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.primary, borderRadius: 8, opacity: pressed ? 0.7 : 1 }]}
+                    >
+                      <Text style={{ color: "#fff", fontWeight: "600" }}>Add</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </ScrollView>
+            </Pressable>
           </Pressable>
         </Modal>
       </View>
@@ -823,5 +895,22 @@ const styles = StyleSheet.create({
   pickerRowLabel: {
     flex: 1,
     fontSize: 15,
+  },
+  pickerDragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: "center",
+    marginBottom: 12,
+  },
+  repeatPresetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  repeatPresetText: {
+    fontSize: 13,
+    fontWeight: "500",
   },
 });

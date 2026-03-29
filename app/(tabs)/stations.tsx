@@ -41,6 +41,12 @@ import {
   isFavorited,
   type StationFavorite,
 } from "@/lib/station-favorites";
+import {
+  getStationVotes,
+  castVote,
+  getConfidenceScore,
+  type StationVote,
+} from "@/lib/station-votes";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -96,12 +102,26 @@ export default function StationsScreen() {
   const [cacheAgeMin, setCacheAgeMin] = useState<number | null>(null);
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [stationVotes, setStationVotes] = useState<Record<string, StationVote>>({});
 
   // Load favorites on mount
   useEffect(() => {
     loadFavorites().then((favs) => {
       setFavoriteIds(new Set(favs.map((f) => f.stationId)));
     });
+  }, []);
+
+  // Load votes whenever stations change
+  useEffect(() => {
+    if (stations.length > 0) {
+      getStationVotes(stations.map((s) => s.id)).then(setStationVotes);
+    }
+  }, [stations]);
+
+  const handleVote = useCallback(async (stationId: string, vote: "yes" | "no") => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const updated = await castVote(stationId, vote);
+    setStationVotes((prev) => ({ ...prev, [stationId]: updated }));
   }, []);
 
   const handleToggleFavorite = useCallback(
@@ -534,6 +554,66 @@ export default function StationsScreen() {
             </View>
           )}
 
+          {/* E85 Availability Voting Row */}
+          {(() => {
+            const vote = stationVotes[item.id];
+            const confidence = vote ? getConfidenceScore(vote) : -1;
+            const total = vote ? vote.yesCount + vote.noCount : 0;
+            return (
+              <View style={[styles.votingRow, { borderTopColor: colors.border }]}>
+                <View style={styles.votingLeft}>
+                  <Text style={[styles.votingLabel, { color: colors.muted }]}>
+                    E85 Available?
+                  </Text>
+                  {total > 0 && confidence >= 0 && (
+                    <Text style={[styles.votingStats, {
+                      color: confidence >= 70 ? colors.success : confidence >= 40 ? colors.warning : colors.error
+                    }]}>
+                      {confidence}% yes · {total} vote{total !== 1 ? "s" : ""}
+                    </Text>
+                  )}
+                  {total === 0 && (
+                    <Text style={[styles.votingStats, { color: colors.muted }]}>No votes yet</Text>
+                  )}
+                </View>
+                <View style={styles.votingButtons}>
+                  <Pressable
+                    onPress={(e) => { e.stopPropagation?.(); handleVote(item.id, "yes"); }}
+                    style={({ pressed }) => [
+                      styles.voteBtn,
+                      {
+                        backgroundColor: vote?.userVote === "yes" ? colors.success + "22" : colors.surface,
+                        borderColor: vote?.userVote === "yes" ? colors.success : colors.border,
+                      },
+                      pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
+                    ]}
+                    hitSlop={6}
+                  >
+                    <Text style={[styles.voteBtnText, { color: vote?.userVote === "yes" ? colors.success : colors.muted }]}>
+                      👍 {vote?.yesCount ?? 0}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={(e) => { e.stopPropagation?.(); handleVote(item.id, "no"); }}
+                    style={({ pressed }) => [
+                      styles.voteBtn,
+                      {
+                        backgroundColor: vote?.userVote === "no" ? colors.error + "22" : colors.surface,
+                        borderColor: vote?.userVote === "no" ? colors.error : colors.border,
+                      },
+                      pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
+                    ]}
+                    hitSlop={6}
+                  >
+                    <Text style={[styles.voteBtnText, { color: vote?.userVote === "no" ? colors.error : colors.muted }]}>
+                      👎 {vote?.noCount ?? 0}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })()}
+
           {selectedStation?.id === item.id && (
             <Animated.View entering={FadeIn.duration(200)} style={styles.stationActions}>
               <Pressable
@@ -589,7 +669,7 @@ export default function StationsScreen() {
         </Pressable>
       </Animated.View>
     ),
-    [colors, selectedStation, openDirections, fuelPrices, userPrices, handlePriceUpdate]
+    [colors, selectedStation, openDirections, fuelPrices, userPrices, handlePriceUpdate, stationVotes, handleVote, favoriteIds, handleToggleFavorite]
   );
 
   return (
@@ -1290,5 +1370,43 @@ const styles = StyleSheet.create({
   starBtn: {
     padding: 4,
     marginLeft: 4,
+  },
+  votingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 4,
+  },
+  votingLeft: {
+    flex: 1,
+    gap: 2,
+  },
+  votingLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  votingStats: {
+    fontSize: 11,
+    fontWeight: "500",
+  },
+  votingButtons: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  voteBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 60,
+  },
+  voteBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
   },
 });

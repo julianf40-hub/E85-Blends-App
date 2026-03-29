@@ -244,3 +244,32 @@
 - [x] Add "Current Ethanol % in Tank" input to fuel log form (below gallons section)
 - [x] Auto-populate calculator's currentFuelEthanol from most recent fuel log entry
 - [x] Show "AUTO" badge + tinted border when calculator field is auto-filled; clears on manual edit
+
+## BLE Live Monitor (eFlexPlus)
+
+- [ ] Install react-native-ble-plx and add config plugin
+- [ ] Create lib/ble-eflex.ts with BLE manager, scan, connect, and read logic
+- [ ] Build app/(tabs)/live-monitor.tsx with scanner list, connect button, and live gauge
+- [ ] Add Live Monitor tab to tab layout with bluetooth icon
+- [ ] Add placeholder UUIDs with clear TODO comments for easy swap-in
+- [ ] Show live ethanol %, fuel temp, injector duty cycle on the screen
+- [ ] Handle BLE permission requests (iOS + Android)
+- [ ] Handle disconnect/reconnect gracefully
+
+## Batch Improvements (Mar 28)
+
+- [ ] Fix/remove opening splash screen
+- [ ] Auto-update odometer from fuel log entry (keep hero card current)
+- [ ] Remove recent fill-ups section from dashboard
+- [ ] System theme button follows iOS light/dark mode automatically
+- [ ] Remove random decimal points in More tab fuel preferences section
+- [ ] Move Saved Blends from More tab to Fuel Log tab (pinned to top)
+- [ ] Fix reminder category scroll (can't scroll up/down in picker) + add custom category option
+- [ ] On reminder completion, auto-advance displayed next mileage point
+- [ ] Date reminder repeat options: weekly, monthly, every 6 months, yearly, custom (days/weeks/months)
+- [ ] Make reminder name optional (default to category name if blank)
+- [x] Station rating/voting: users vote whether station sells E85/flex fuel
+- [x] Station crowdsourced E85/gas prices (GasBuddy-style, user can update if wrong)
+- [x] Pull-to-refresh on stations tab
+- [x] Auto-populate station name from user location when adding fuel entry
+- [x] iOS 26 Liquid Glass tab bar + UI polish with smooth transitions

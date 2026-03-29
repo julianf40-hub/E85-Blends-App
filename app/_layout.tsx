@@ -3,7 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+
 import "react-native-reanimated";
 import { Platform } from "react-native";
 import "@/lib/_core/nativewind-pressable";
@@ -23,6 +25,9 @@ import { router } from "expo-router";
 import { useQuickActionRouting } from "expo-quick-actions/router";
 import { useAppUpdate } from "@/hooks/use-app-update";
 import { Pressable, Text, StyleSheet } from "react-native";
+
+// Hide splash screen immediately — no delay
+SplashScreen.hideAsync().catch(() => {});
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };

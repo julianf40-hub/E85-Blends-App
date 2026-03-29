@@ -1026,35 +1026,6 @@ export default function HomeScreen() {
           )}
         </Animated.View>
 
-        {/* ── Recent Fill-ups ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(160)}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Recent Fill-ups</Text>
-            <Pressable onPress={() => router.push("/(tabs)/fuel-log")} style={styles.sectionAction}>
-              <Text style={[styles.sectionActionText, { color: colors.primary }]}>See all</Text>
-              <IconSymbol name="chevron.right" size={14} color={colors.primary} />
-            </Pressable>
-          </View>
-
-          {recentFillUps.length === 0 ? (
-            <Pressable
-              style={[styles.emptyFillUpsCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-              onPress={() => router.push("/(tabs)/fuel-log")}
-            >
-              <Text style={styles.emptyFillUpsEmoji}>⛽</Text>
-              <Text style={[styles.emptyFillUpsText, { color: colors.muted }]}>
-                No fill-ups logged yet — tap to add your first
-              </Text>
-            </Pressable>
-          ) : (
-            <View style={[styles.fillUpsCard, { backgroundColor: colors.surface }]}>
-              {recentFillUps.map((entry, i) => (
-                <FillUpRow key={entry.id} entry={entry} isLast={i === recentFillUps.length - 1} />
-              ))}
-            </View>
-          )}
-        </Animated.View>
-
         <View style={{ height: 32 }} />
       </ScrollView>
     </ScreenContainer>

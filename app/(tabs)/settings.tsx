@@ -73,11 +73,13 @@ function NumericField({
   placeholder: string;
   colors: ReturnType<typeof useColors>;
 }) {
-  const [text, setText] = useState(value.toString());
+  // Display integers without trailing decimals (e.g. 25 not 25.0)
+  const fmt = (n: number) => Number.isInteger(n) ? String(n) : String(n);
+  const [text, setText] = useState(fmt(value));
   const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
-    setText(value.toString());
+    setText(fmt(value));
   }, [value]);
 
   return (
@@ -450,7 +452,7 @@ const bc = StyleSheet.create({
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function MoreScreen() {
   const colors = useColors();
-  const { colorScheme, setColorScheme } = useThemeContext();
+  const { themeMode, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -712,13 +714,13 @@ export default function MoreScreen() {
               {(["light", "dark", "system"] as const).map((mode) => {
                 const label = mode === "light" ? "Light" : mode === "dark" ? "Dark" : "System";
                 const iconName = mode === "light" ? "sun.max.fill" : mode === "dark" ? "moon.fill" : "circle.lefthalf.filled";
-                const isActive = colorScheme === mode;
+                const isActive = themeMode === mode;
                 return (
                   <Pressable
                     key={mode}
                     onPress={() => {
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setColorScheme(mode === "system" ? (colorScheme === "dark" ? "light" : "dark") : mode);
+                      setColorScheme(mode);
                     }}
                     style={({ pressed }) => [
                       styles.themeOption,

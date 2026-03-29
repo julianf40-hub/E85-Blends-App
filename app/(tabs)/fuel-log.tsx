@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Text,
   View,
@@ -24,8 +24,10 @@ import {
   FuelEntry,
   getFuelLogStats,
 } from "@/lib/fuel-log";
-import { getActiveCar } from "@/lib/garage";
-import { loadRemindersForCar } from "@/lib/reminders";
+import { getActiveCar, updateCarProfile } from "@/lib/garage";
+import { getSavedBlends, deleteBlend, toggleFavorite, SavedBlend } from "@/lib/blend-storage";
+import * as Location from "expo-location";
+import { fetchNearbyStations } from "@/lib/station-data";
 
 export default function FuelLogScreen() {
   const colors = useColors();
@@ -33,6 +35,51 @@ export default function FuelLogScreen() {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [blends, setBlends] = useState<SavedBlend[]>([]);
+  const [blendsExpanded, setBlendsExpanded] = useState(true);
+
+  const loadBlends = useCallback(async () => {
+    const b = await getSavedBlends();
+    setBlends(b);
+  }, []);
+
+  const handleDeleteBlend = useCallback(async (id: string) => {
+    Alert.alert("Delete Blend", "Remove this saved blend?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: async () => { await deleteBlend(id); loadBlends(); } },
+    ]);
+  }, [loadBlends]);
+
+  const handleToggleFavorite = useCallback(async (id: string) => {
+    await toggleFavorite(id);
+    loadBlends();
+  }, [loadBlends]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const locationFetchedRef = useRef(false);
+
+  // Auto-populate station name from nearest E85 station when modal opens
+  const autoPopulateStation = useCallback(async () => {
+    if (locationFetchedRef.current) return; // only fetch once per modal open
+    locationFetchedRef.current = true;
+    setLocationLoading(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") return;
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const nearby = await fetchNearbyStations(loc.coords.latitude, loc.coords.longitude, 5, 1);
+      if (nearby.length > 0) {
+        setFormData((prev) => ({
+          ...prev,
+          stationName: prev.stationName === "" ? nearby[0].name : prev.stationName,
+        }));
+      }
+    } catch {
+      // silently fail — user can type manually
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
   const [formData, setFormData] = useState({
     stationName: "",
     e85Gallons: "",
@@ -69,12 +116,13 @@ export default function FuelLogScreen() {
       const stats = await getFuelLogStats();
       setEntries(logs);
       setStats(stats);
+      await loadBlends();
     } catch (error) {
       console.error("Failed to load fuel log:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadBlends]);
 
   const handleAddEntry = useCallback(async () => {
     if (
@@ -111,16 +159,17 @@ export default function FuelLogScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
 
-      // Auto-check reminders after fuel entry is added
+      // Auto-update active car odometer from fuel log entry
       try {
         const car = await getActiveCar();
         if (car) {
-          const rems = await loadRemindersForCar(car.id);
-          // Reminders will automatically show as due/overdue in the UI based on the new odometer
-          // No need to update reminder status here; the UI will recalculate based on getReminderUrgency
+          const newOdometer = parseFloat(formData.odometer);
+          if (!isNaN(newOdometer) && newOdometer > (car.odometer ?? 0)) {
+            await updateCarProfile(car.id, { odometer: newOdometer });
+          }
         }
       } catch (e) {
-        console.warn("Failed to check reminders after fuel entry:", e);
+        console.warn("Failed to update car odometer after fuel entry:", e);
       }
 
       setFormData({
@@ -353,13 +402,74 @@ export default function FuelLogScreen() {
         </Animated.View>
       )}
 
+      {/* Saved Blends Section — pinned to top */}
+      {blends.length > 0 && (
+        <Animated.View entering={FadeInDown.duration(300).delay(60)} style={[styles.blendsSection, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => setBlendsExpanded(!blendsExpanded)}
+            style={styles.blendsSectionHeader}
+          >
+            <View style={styles.blendsSectionLeft}>
+              <Text style={styles.blendsSectionIcon}>⚗️</Text>
+              <Text style={[styles.blendsSectionTitle, { color: colors.foreground }]}>Saved Blends</Text>
+              <View style={[styles.blendsBadge, { backgroundColor: colors.primary + "20" }]}>
+                <Text style={[styles.blendsBadgeText, { color: colors.primary }]}>{blends.length}</Text>
+              </View>
+            </View>
+            <IconSymbol name={blendsExpanded ? "chevron.up" : "chevron.down"} size={16} color={colors.muted} />
+          </Pressable>
+          {blendsExpanded && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.blendsScroll} contentContainerStyle={styles.blendsScrollContent}>
+              {blends.map((blend) => {
+                const ethanol = blend.result.finalEthanolPercent;
+                const badgeColor = ethanol >= 60 ? "#10B981" : ethanol >= 40 ? "#F59E0B" : "#3B82F6";
+                return (
+                  <View key={blend.id} style={[styles.blendCard, { backgroundColor: colors.background, borderColor: colors.border }]}>
+                    <View style={[styles.blendCardBadge, { backgroundColor: badgeColor + "20" }]}>
+                      <Text style={[styles.blendCardBadgeText, { color: badgeColor }]}>E{Math.round(ethanol)}</Text>
+                    </View>
+                    <Text style={[styles.blendCardName, { color: colors.foreground }]} numberOfLines={1}>
+                      {blend.name ?? `E${Math.round(ethanol)} Blend`}
+                    </Text>
+                    <Text style={[styles.blendCardDetail, { color: colors.muted }]}>
+                      {blend.result.e85Gallons.toFixed(1)} gal E85 · {blend.result.gasGallons.toFixed(1)} gal gas
+                    </Text>
+                    <Text style={[styles.blendCardDate, { color: colors.muted }]}>
+                      {new Date(blend.date).toLocaleDateString()}
+                    </Text>
+                    <View style={styles.blendCardActions}>
+                      <Pressable
+                        onPress={() => handleToggleFavorite(blend.id)}
+                        style={({ pressed }) => [styles.blendCardAction, { opacity: pressed ? 0.6 : 1 }]}
+                      >
+                        <Text style={{ fontSize: 16 }}>{blend.isFavorite ? "🔖" : "📌"}</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => handleDeleteBlend(blend.id)}
+                        style={({ pressed }) => [styles.blendCardAction, { opacity: pressed ? 0.6 : 1 }]}
+                      >
+                        <IconSymbol name="trash" size={14} color={colors.error} />
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          )}
+        </Animated.View>
+      )}
+
       {/* Add Entry Button */}
       <Animated.View
         entering={FadeInDown.duration(300).delay(160)}
         style={styles.addButtonContainer}
       >
         <Pressable
-          onPress={() => setShowModal(true)}
+          onPress={() => {
+            locationFetchedRef.current = false;
+            setShowModal(true);
+            autoPopulateStation();
+          }}
           style={({ pressed }) => [
             styles.addButton,
             pressed && { transform: [{ scale: 0.97 }] },
@@ -454,22 +564,30 @@ export default function FuelLogScreen() {
                 <Text style={[styles.formLabel, { color: colors.foreground }]}>
                   Station Name *
                 </Text>
-                <TextInput
-                  style={[
-                    styles.formInput,
-                    {
-                      color: colors.foreground,
-                      borderColor: colors.border,
-                      backgroundColor: colors.surface,
-                    },
-                  ]}
-                  placeholder="e.g., Shell, Chevron"
-                  placeholderTextColor={colors.muted}
-                  value={formData.stationName}
-                  onChangeText={(value) =>
-                    setFormData({ ...formData, stationName: value })
-                  }
-                />
+                <View style={{ position: "relative" }}>
+                  <TextInput
+                    style={[
+                      styles.formInput,
+                      {
+                        color: colors.foreground,
+                        borderColor: locationLoading ? colors.primary : colors.border,
+                        backgroundColor: colors.surface,
+                        paddingRight: locationLoading ? 40 : 12,
+                      },
+                    ]}
+                    placeholder={locationLoading ? "Finding nearest station..." : "e.g., Shell, Chevron"}
+                    placeholderTextColor={locationLoading ? colors.primary : colors.muted}
+                    value={formData.stationName}
+                    onChangeText={(value) =>
+                      setFormData({ ...formData, stationName: value })
+                    }
+                  />
+                  {locationLoading && (
+                    <View style={{ position: "absolute", right: 10, top: 0, bottom: 0, justifyContent: "center" }}>
+                      <IconSymbol name="location.fill" size={16} color={colors.primary} />
+                    </View>
+                  )}
+                </View>
               </View>
 
               {/* ── Gallons Section ── */}
@@ -929,5 +1047,88 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
     lineHeight: 16,
+  },
+  // Saved Blends section
+  blendsSection: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  blendsSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  blendsSectionLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  blendsSectionIcon: {
+    fontSize: 16,
+  },
+  blendsSectionTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  blendsBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  blendsBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  blendsScroll: {
+    paddingBottom: 12,
+  },
+  blendsScrollContent: {
+    paddingHorizontal: 12,
+    gap: 8,
+    paddingBottom: 4,
+  },
+  blendCard: {
+    width: 160,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    gap: 4,
+  },
+  blendCardBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginBottom: 2,
+  },
+  blendCardBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  blendCardName: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  blendCardDetail: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  blendCardDate: {
+    fontSize: 10,
+    marginTop: 2,
+  },
+  blendCardActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+    marginTop: 6,
+  },
+  blendCardAction: {
+    padding: 4,
   },
 });

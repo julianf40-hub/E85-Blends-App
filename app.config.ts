@@ -68,6 +68,10 @@ const config: ExpoConfig = {
       "POST_NOTIFICATIONS",
       "ACCESS_FINE_LOCATION",
       "ACCESS_COARSE_LOCATION",
+      "BLUETOOTH",
+      "BLUETOOTH_ADMIN",
+      "BLUETOOTH_CONNECT",
+      "BLUETOOTH_SCAN",
     ],
     intentFilters: [
       {
@@ -90,6 +94,14 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    [
+      "@config-plugins/react-native-ble-plx",
+      {
+        isBackgroundEnabled: false,
+        modes: ["central"],
+        bluetoothAlwaysPermission: "Allow E85 Blend to connect to your eFlexPlus device via Bluetooth.",
+      },
+    ],
     "expo-updates",
     [
       "expo-quick-actions",

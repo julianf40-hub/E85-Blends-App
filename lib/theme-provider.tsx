@@ -1,19 +1,28 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Appearance, View, useColorScheme as useSystemColorScheme } from "react-native";
 import { colorScheme as nativewindColorScheme, vars } from "nativewind";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { SchemeColors, type ColorScheme } from "@/constants/theme";
 
+const THEME_PREF_KEY = "@e85app/themePref";
+
+type ThemeMode = "light" | "dark" | "system";
+
 type ThemeContextValue = {
-  colorScheme: ColorScheme;
-  setColorScheme: (scheme: ColorScheme) => void;
+  colorScheme: ColorScheme;   // resolved scheme: "light" | "dark"
+  themeMode: ThemeMode;       // user's chosen mode: "light" | "dark" | "system"
+  setColorScheme: (mode: ThemeMode) => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const systemScheme = useSystemColorScheme() ?? "light";
-  const [colorScheme, setColorSchemeState] = useState<ColorScheme>(systemScheme);
+  const systemScheme = (useSystemColorScheme() ?? "light") as ColorScheme;
+  const [themeMode, setThemeModeState] = useState<ThemeMode>("system");
+
+  // Resolved scheme: when mode is "system", follow the OS
+  const resolvedScheme: ColorScheme = themeMode === "system" ? systemScheme : themeMode;
 
   const applyScheme = useCallback((scheme: ColorScheme) => {
     nativewindColorScheme.set(scheme);
@@ -29,39 +38,49 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const setColorScheme = useCallback((scheme: ColorScheme) => {
-    setColorSchemeState(scheme);
-    applyScheme(scheme);
-  }, [applyScheme]);
-
+  // Load persisted preference on mount
   useEffect(() => {
-    applyScheme(colorScheme);
-  }, [applyScheme, colorScheme]);
+    AsyncStorage.getItem(THEME_PREF_KEY).then((saved) => {
+      if (saved === "light" || saved === "dark" || saved === "system") {
+        setThemeModeState(saved);
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Apply scheme whenever resolved scheme changes (covers system mode OS changes too)
+  useEffect(() => {
+    applyScheme(resolvedScheme);
+  }, [applyScheme, resolvedScheme]);
+
+  const setColorScheme = useCallback((mode: ThemeMode) => {
+    setThemeModeState(mode);
+    AsyncStorage.setItem(THEME_PREF_KEY, mode).catch(() => {});
+  }, []);
 
   const themeVariables = useMemo(
     () =>
       vars({
-        "color-primary": SchemeColors[colorScheme].primary,
-        "color-background": SchemeColors[colorScheme].background,
-        "color-surface": SchemeColors[colorScheme].surface,
-        "color-foreground": SchemeColors[colorScheme].foreground,
-        "color-muted": SchemeColors[colorScheme].muted,
-        "color-border": SchemeColors[colorScheme].border,
-        "color-success": SchemeColors[colorScheme].success,
-        "color-warning": SchemeColors[colorScheme].warning,
-        "color-error": SchemeColors[colorScheme].error,
+        "color-primary": SchemeColors[resolvedScheme].primary,
+        "color-background": SchemeColors[resolvedScheme].background,
+        "color-surface": SchemeColors[resolvedScheme].surface,
+        "color-foreground": SchemeColors[resolvedScheme].foreground,
+        "color-muted": SchemeColors[resolvedScheme].muted,
+        "color-border": SchemeColors[resolvedScheme].border,
+        "color-success": SchemeColors[resolvedScheme].success,
+        "color-warning": SchemeColors[resolvedScheme].warning,
+        "color-error": SchemeColors[resolvedScheme].error,
       }),
-    [colorScheme],
+    [resolvedScheme],
   );
 
   const value = useMemo(
     () => ({
-      colorScheme,
+      colorScheme: resolvedScheme,
+      themeMode,
       setColorScheme,
     }),
-    [colorScheme, setColorScheme],
+    [resolvedScheme, themeMode, setColorScheme],
   );
-  console.log(value, themeVariables)
 
   return (
     <ThemeContext.Provider value={value}>
