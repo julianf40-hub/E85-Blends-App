@@ -295,3 +295,4 @@
 ## Mar 29 Sync Test
 
 - [x] Add subtitle "Sync test from Manus" under Home screen title
+- [x] Update app icon with pure gold gasoline drop design
