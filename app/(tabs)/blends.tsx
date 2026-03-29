@@ -259,7 +259,7 @@ export default function BlendsScreen() {
         No Saved Blends
       </Text>
       <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-        Calculate a blend and tap "Save Blend" to keep it here for quick
+        Calculate a blend and tap Save Blend to keep it here for quick
         reference.
       </Text>
     </Animated.View>
