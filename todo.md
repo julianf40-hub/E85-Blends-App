@@ -296,3 +296,4 @@
 
 - [x] Add subtitle "Sync test from Manus" under Home screen title
 - [x] Update app icon with pure gold gasoline drop design
+- [x] Update Home screen subtitle to "Sync test from Manus 2"

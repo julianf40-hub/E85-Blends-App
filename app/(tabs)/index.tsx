@@ -920,7 +920,7 @@ export default function HomeScreen() {
           <View>
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>Dashboard</Text>
             <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
-              Sync test from Manus
+              Sync test from Manus 2
             </Text>
           </View>
           <Pressable
