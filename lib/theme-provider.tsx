@@ -24,9 +24,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Resolved scheme: when mode is "system", follow the OS
   const resolvedScheme: ColorScheme = themeMode === "system" ? systemScheme : themeMode;
 
-  const applyScheme = useCallback((scheme: ColorScheme) => {
+  const applyScheme = useCallback((scheme: ColorScheme, isSystemMode: boolean) => {
+    // Only update NativeWind color scheme — never call Appearance.setColorScheme in system mode
+    // because that would override the OS setting and break automatic switching.
     nativewindColorScheme.set(scheme);
-    Appearance.setColorScheme?.(scheme);
+    if (!isSystemMode) {
+      // In manual light/dark mode, lock the appearance at OS level too
+      Appearance.setColorScheme?.(scheme);
+    } else {
+      // In system mode, reset any previous lock so the OS can control it
+      Appearance.setColorScheme?.(null as any);
+    }
     if (typeof document !== "undefined") {
       const root = document.documentElement;
       root.dataset.theme = scheme;
@@ -49,8 +57,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   // Apply scheme whenever resolved scheme changes (covers system mode OS changes too)
   useEffect(() => {
-    applyScheme(resolvedScheme);
-  }, [applyScheme, resolvedScheme]);
+    applyScheme(resolvedScheme, themeMode === "system");
+  }, [applyScheme, resolvedScheme, themeMode]);
 
   const setColorScheme = useCallback((mode: ThemeMode) => {
     setThemeModeState(mode);

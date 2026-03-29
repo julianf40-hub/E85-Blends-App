@@ -89,7 +89,7 @@ function NumericField({
         style={[styles.numberInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
         placeholder={placeholder}
         placeholderTextColor={colors.muted}
-        keyboardType="default"
+        keyboardType="numeric"
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="done"
@@ -102,17 +102,6 @@ function NumericField({
         selectTextOnFocus
         maxLength={10}
       />
-      <Pressable
-        onPress={() => {
-          if (!text.includes(".")) {
-            setText(text === "" ? "0." : text + ".");
-            inputRef.current?.focus();
-          }
-        }}
-        style={({ pressed }) => [styles.decimalBtn, { backgroundColor: colors.primary + "20" }, pressed && { opacity: 0.6 }]}
-      >
-        <Text style={[styles.decimalBtnText, { color: colors.primary }]}>.</Text>
-      </Pressable>
     </View>
   );
 }

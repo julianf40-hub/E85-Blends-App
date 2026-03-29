@@ -285,3 +285,9 @@
 - [x] Add cheapest-price sort option to stations list (distance vs price toggle)
 - [x] Show price source label (EIA Weekly / AFDC State Avg / reported)
 - [x] Fall back to user-submitted crowdsourced price for E85 if available
+
+## UI Fixes (Mar 28 Round 2)
+
+- [x] Remove decimal stepper (+/-) buttons from Fuel Preferences (tank size, default blend, search radius)
+- [x] Fix System theme button to follow device-level light/dark mode automatically
+- [x] Move Saved Blends section to very top of Fuel Log tab (above stats cards)

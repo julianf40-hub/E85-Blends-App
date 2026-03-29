@@ -352,57 +352,7 @@ export default function FuelLogScreen() {
         </View>
       </Animated.View>
 
-      {/* Stats Cards */}
-      {stats && (
-        <Animated.View
-          entering={FadeInDown.duration(300).delay(80)}
-          style={styles.statsContainer}
-        >
-          <View style={styles.statsRow}>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Total Entries
-              </Text>
-              <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                {stats.totalEntries}
-              </Text>
-            </View>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Avg MPG
-              </Text>
-              <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                {stats.averageMPG.toFixed(1)}
-              </Text>
-            </View>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Total Spent
-              </Text>
-              <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                ${stats.totalSpent.toFixed(0)}
-              </Text>
-            </View>
-          </View>
-        </Animated.View>
-      )}
-
-      {/* Saved Blends Section — pinned to top */}
+      {/* Saved Blends Section — pinned to very top, above stats */}
       {blends.length > 0 && (
         <Animated.View entering={FadeInDown.duration(300).delay(60)} style={[styles.blendsSection, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Pressable
@@ -456,6 +406,56 @@ export default function FuelLogScreen() {
               })}
             </ScrollView>
           )}
+        </Animated.View>
+      )}
+
+      {/* Stats Cards */}
+      {stats && (
+        <Animated.View
+          entering={FadeInDown.duration(300).delay(80)}
+          style={styles.statsContainer}
+        >
+          <View style={styles.statsRow}>
+            <View
+              style={[
+                styles.statCard,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
+                Total Entries
+              </Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>
+                {stats.totalEntries}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.statCard,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
+                Avg MPG
+              </Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>
+                {stats.averageMPG.toFixed(1)}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.statCard,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
+                Total Spent
+              </Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>
+                ${stats.totalSpent.toFixed(0)}
+              </Text>
+            </View>
+          </View>
         </Animated.View>
       )}
 
