@@ -291,3 +291,7 @@
 - [x] Remove decimal stepper (+/-) buttons from Fuel Preferences (tank size, default blend, search radius)
 - [x] Fix System theme button to follow device-level light/dark mode automatically
 - [x] Move Saved Blends section to very top of Fuel Log tab (above stats cards)
+
+## Mar 29 Sync Test
+
+- [x] Add subtitle "Sync test from Manus" under Home screen title

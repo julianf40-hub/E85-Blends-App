@@ -920,7 +920,7 @@ export default function HomeScreen() {
           <View>
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>Dashboard</Text>
             <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
-              {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+              Sync test from Manus
             </Text>
           </View>
           <Pressable
