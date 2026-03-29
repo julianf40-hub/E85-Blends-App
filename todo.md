@@ -273,3 +273,15 @@
 - [x] Pull-to-refresh on stations tab
 - [x] Auto-populate station name from user location when adding fuel entry
 - [x] iOS 26 Liquid Glass tab bar + UI polish with smooth transitions
+
+## Per-Station Real Price Lookup
+
+- [x] Research AFDC API for per-station E85 price data
+- [x] Research alternative APIs (EIA.gov weekly retail gas prices by state)
+- [x] Build fetchLocalPrices(state) using EIA API for real state-level gas prices
+- [x] Remove national average price section from station cards
+- [x] Show real state-level gas price from EIA (updated weekly) with source label
+- [x] Show E85 state average from AFDC (or user-submitted if available)
+- [x] Add cheapest-price sort option to stations list (distance vs price toggle)
+- [x] Show price source label (EIA Weekly / AFDC State Avg / reported)
+- [x] Fall back to user-submitted crowdsourced price for E85 if available

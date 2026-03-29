@@ -20,7 +20,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { E85Station, fetchNearbyStations } from "@/lib/station-data";
-import { FuelPrices, fetchFuelPrices } from "@/lib/fuel-prices";
+import { FuelPrices, fetchFuelPrices, fetchLocalPrices, getE85StateAverage, LocalFuelPrices } from "@/lib/fuel-prices";
 import { PriceUpdateModal } from "@/components/price-update-modal";
 import {
   getLatestStationPrice,
@@ -94,6 +94,8 @@ export default function StationsScreen() {
   const [selectedStation, setSelectedStation] = useState<E85Station | null>(null);
   const [searchRadius, setSearchRadius] = useState(25);
   const [fuelPrices, setFuelPrices] = useState<FuelPrices | null>(null);
+  const [localPrices, setLocalPrices] = useState<LocalFuelPrices | null>(null);
+  const [sortMode, setSortMode] = useState<"distance" | "price">("distance");
   const [priceModalVisible, setPriceModalVisible] = useState(false);
   const [priceModalStation, setPriceModalStation] = useState<E85Station | null>(null);
   const [userPrices, setUserPrices] = useState<Record<string, any>>({});
@@ -220,6 +222,8 @@ export default function StationsScreen() {
           const defaultLon = -112.074;
           setLocation({ latitude: defaultLat, longitude: defaultLon });
           await loadStations(defaultLat, defaultLon);
+          // Fetch local prices for AZ (default location)
+          fetchLocalPrices("AZ").then(setLocalPrices);
           setLoading(false);
           return;
         }
@@ -244,6 +248,16 @@ export default function StationsScreen() {
       }
     })();
   }, []);
+
+  // Load local EIA prices whenever stations load (derive state from first station)
+  useEffect(() => {
+    if (stations.length > 0) {
+      const state = stations[0].state;
+      if (state) {
+        fetchLocalPrices(state).then(setLocalPrices);
+      }
+    }
+  }, [stations]);
 
   // Animate map to fit all pins when switching to map view
   useEffect(() => {
@@ -352,6 +366,34 @@ export default function StationsScreen() {
     },
     []
   );
+
+  // Build sorted station list
+  const sortedStations = React.useMemo(() => {
+    const sorted = [...stations];
+    if (sortMode === "price") {
+      sorted.sort((a, b) => {
+        const aPrice = (userPrices[a.id]?.e85Price as number | undefined)
+          ?? localPrices?.e85Price
+          ?? getE85StateAverage(a.state);
+        const bPrice = (userPrices[b.id]?.e85Price as number | undefined)
+          ?? localPrices?.e85Price
+          ?? getE85StateAverage(b.state);
+        // Favorites always first, then by price
+        const aFav = favoriteIds.has(a.id) ? 0 : 1;
+        const bFav = favoriteIds.has(b.id) ? 0 : 1;
+        if (aFav !== bFav) return aFav - bFav;
+        return aPrice - bPrice;
+      });
+    } else {
+      sorted.sort((a, b) => {
+        const aFav = favoriteIds.has(a.id) ? 0 : 1;
+        const bFav = favoriteIds.has(b.id) ? 0 : 1;
+        if (aFav !== bFav) return aFav - bFav;
+        return a.distance - b.distance;
+      });
+    }
+    return sorted;
+  }, [stations, sortMode, userPrices, localPrices, favoriteIds]);
 
   const renderStationCard = useCallback(
     ({ item, index }: { item: E85Station; index: number }) => (
@@ -520,39 +562,60 @@ export default function StationsScreen() {
             </View>
           )}
 
-          {/* AFDC National Average Prices */}
-          {fuelPrices && (
-            <View
-              style={[
-                styles.pricesSection,
-                { backgroundColor: colors.background, borderTopColor: colors.border },
-              ]}
-            >
-              <View style={styles.priceRow}>
-                <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>E85 Avg</Text>
-                  <Text style={[styles.priceValue, { color: colors.primary }]}>
-                    ${fuelPrices.e85Price.toFixed(2)}/gal
-                  </Text>
+          {/* Local Prices: user-submitted E85 + EIA state gas price */}
+          {(() => {
+            // Priority: user-submitted E85 price > AFDC state average
+            const userE85 = userPrices[item.id]?.e85Price as number | undefined;
+            const stateE85 = localPrices?.e85Price ?? getE85StateAverage(item.state);
+            const displayE85 = userE85 ?? stateE85;
+            const displayGas = localPrices?.gasPrice ?? null;
+            const savings = displayGas
+              ? ((1 - displayE85 / displayGas) * 100)
+              : null;
+            const e85Label = userE85 ? "E85 (reported)" : `E85 (${item.state} avg)`;
+            const gasLabel = localPrices?.gasPrice
+              ? `Gas (${item.state} · EIA)`
+              : "Gas (national)";
+            const gasFallback = localPrices?.gasPrice ?? (fuelPrices?.gasolinePrice ?? null);
+            return (
+              <View
+                style={[
+                  styles.pricesSection,
+                  { backgroundColor: colors.background, borderTopColor: colors.border },
+                ]}
+              >
+                <View style={styles.priceRow}>
+                  <View style={styles.priceItem}>
+                    <Text style={[styles.priceLabel, { color: colors.muted }]}>{e85Label}</Text>
+                    <Text style={[styles.priceValue, { color: colors.primary }]}>
+                      ${displayE85.toFixed(2)}/gal
+                    </Text>
+                  </View>
+                  {gasFallback != null && (
+                    <View style={styles.priceItem}>
+                      <Text style={[styles.priceLabel, { color: colors.muted }]}>{gasLabel}</Text>
+                      <Text style={[styles.priceValue, { color: colors.foreground }]}>
+                        ${gasFallback.toFixed(2)}/gal
+                      </Text>
+                    </View>
+                  )}
+                  {savings != null && gasFallback != null && (
+                    <View style={styles.priceItem}>
+                      <Text style={[styles.priceLabel, { color: colors.muted }]}>Savings</Text>
+                      <Text style={[styles.priceValue, { color: colors.success }]}>
+                        {savings.toFixed(0)}%
+                      </Text>
+                    </View>
+                  )}
                 </View>
-                <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>Gas Avg</Text>
-                  <Text style={[styles.priceValue, { color: colors.foreground }]}>
-                    ${fuelPrices.gasolinePrice.toFixed(2)}/gal
+                {localPrices?.gasPricePeriod && (
+                  <Text style={[styles.priceSource, { color: colors.muted }]}>
+                    Gas price: week of {localPrices.gasPricePeriod} · EIA.gov
                   </Text>
-                </View>
-                <View style={styles.priceItem}>
-                  <Text style={[styles.priceLabel, { color: colors.muted }]}>Savings</Text>
-                  <Text style={[styles.priceValue, { color: colors.success }]}>
-                    {((1 - fuelPrices.e85Price / fuelPrices.gasolinePrice) * 100).toFixed(0)}%
-                  </Text>
-                </View>
+                )}
               </View>
-              <Text style={[styles.priceSource, { color: colors.muted }]}>
-                {fuelPrices.source}
-              </Text>
-            </View>
-          )}
+            );
+          })()}
 
           {/* E85 Availability Voting Row */}
           {(() => {
@@ -669,7 +732,7 @@ export default function StationsScreen() {
         </Pressable>
       </Animated.View>
     ),
-    [colors, selectedStation, openDirections, fuelPrices, userPrices, handlePriceUpdate, stationVotes, handleVote, favoriteIds, handleToggleFavorite]
+    [colors, selectedStation, openDirections, fuelPrices, localPrices, userPrices, handlePriceUpdate, stationVotes, handleVote, favoriteIds, handleToggleFavorite]
   );
 
   return (
@@ -737,6 +800,47 @@ export default function StationsScreen() {
               </Text>
             </Pressable>
           ))}
+        </View>
+
+        {/* Sort toggle: Distance / Price */}
+        <View
+          style={[
+            styles.viewToggle,
+            { backgroundColor: colors.surface, borderColor: colors.border, marginRight: 6 },
+          ]}
+        >
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSortMode("distance");
+            }}
+            style={[
+              styles.toggleBtn,
+              sortMode === "distance" && { backgroundColor: colors.primary },
+            ]}
+          >
+            <IconSymbol
+              name="location.fill"
+              size={14}
+              color={sortMode === "distance" ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSortMode("price");
+            }}
+            style={[
+              styles.toggleBtn,
+              sortMode === "price" && { backgroundColor: colors.primary },
+            ]}
+          >
+            <IconSymbol
+              name="dollarsign.circle.fill"
+              size={14}
+              color={sortMode === "price" ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
         </View>
 
         {/* List / Map toggle */}
@@ -925,11 +1029,7 @@ export default function StationsScreen() {
       ) : (
         /* ── LIST VIEW ── */
         <FlatList
-          data={[...stations].sort((a, b) => {
-            const aFav = favoriteIds.has(a.id) ? 0 : 1;
-            const bFav = favoriteIds.has(b.id) ? 0 : 1;
-            return aFav - bFav;
-          })}
+          data={sortedStations}
           renderItem={renderStationCard}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}

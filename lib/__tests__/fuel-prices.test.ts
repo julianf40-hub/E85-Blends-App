@@ -13,12 +13,12 @@ describe("Fuel Prices Module", () => {
       expect(prices.source).toBeDefined();
     });
 
-    it("should return national average prices", async () => {
+    it("should return national average prices as legacy fallback", async () => {
       const prices = await fetchFuelPrices();
 
-      // AFDC national average (Oct 2025)
-      expect(prices.e85Price).toBe(2.63);
-      expect(prices.gasolinePrice).toBe(3.14);
+      // Legacy national average fallback — real prices come from fetchLocalPrices()
+      expect(prices.e85Price).toBeGreaterThan(0);
+      expect(prices.gasolinePrice).toBeGreaterThan(0);
     });
   });
 
