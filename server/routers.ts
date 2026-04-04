@@ -32,8 +32,9 @@ export const appRouter = router({
       )
       .query(async ({ input }) => {
         try {
-          const apiKey = process.env.EXPO_PUBLIC_NREL_API_KEY || "DEMO_KEY";
-          const url = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json";
+          // Use server-only env variable — NOT exposed to client
+          const apiKey = process.env.NREL_API_KEY || "DEMO_KEY";
+          const url = "https://developer.nlr.gov/api/alt-fuel-stations/v1/nearest.json";
           const response = await axios.get(url, {
             params: {
               api_key: apiKey,

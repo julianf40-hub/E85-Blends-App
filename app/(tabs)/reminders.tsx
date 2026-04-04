@@ -12,7 +12,8 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import Animated, { FadeInDown } from "react-native-reanimated";
+import Animated, { FadeInDown, SlideOutRight } from "react-native-reanimated";
+import { Swipeable } from "react-native-gesture-handler";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -133,7 +134,14 @@ function ReminderModal({
       setDateEnabled(editingReminder.dateEnabled);
       setNextDate(editingReminder.nextReminderDate ?? new Date().toISOString().split("T")[0]);
       setDateRepeat(!!editingReminder.repeatDateInterval);
-      setRepeatDays(editingReminder.repeatDateInterval?.toString() ?? "365");
+      const days = editingReminder.repeatDateInterval ?? 365;
+      setRepeatDays(days.toString());
+      // Restore preset from saved interval
+      if (days === 7) setDateRepeatPreset("weekly");
+      else if (days === 30) setDateRepeatPreset("monthly");
+      else if (days === 182) setDateRepeatPreset("6months");
+      else if (days === 365) setDateRepeatPreset("yearly");
+      else setDateRepeatPreset("custom");
     } else {
       setName("");
       setCategory("oil_change");
@@ -205,8 +213,8 @@ function ReminderModal({
           {/* Car + Category + Name */}
           <View style={[styles.formSection, { backgroundColor: colors.surface }]}>
             <View style={[styles.formRow, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.formRowLabel, { color: colors.muted, fontSize: 13 }]}>Vehicle</Text>
               <Text style={[styles.formRowLabel, { color: colors.foreground }]}>{carName}</Text>
-              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
             </View>
             <Pressable
               style={[styles.formRow, { borderBottomColor: colors.border }]}
@@ -222,7 +230,7 @@ function ReminderModal({
             </Pressable>
             <TextInput
               style={[styles.nameInput, { color: colors.foreground }]}
-              placeholder="Name"
+              placeholder={`Name (optional — defaults to ${catMeta.label})`}
               placeholderTextColor={colors.muted}
               value={name}
               onChangeText={setName}
@@ -301,12 +309,15 @@ function ReminderModal({
             {dateEnabled && (
               <>
                 <View style={[styles.formRow, { borderBottomColor: colors.border }]}>
-                  <Text style={[styles.formRowLabel, { color: colors.foreground }]}>Next Reminder</Text>
+                  <View>
+                    <Text style={[styles.formRowLabel, { color: colors.foreground }]}>Next Reminder</Text>
+                    <Text style={{ fontSize: 11, color: colors.muted, marginTop: 1 }}>YYYY-MM-DD</Text>
+                  </View>
                   <TextInput
                     style={[styles.inlineInput, { color: colors.foreground, borderColor: colors.border, minWidth: 120 }]}
                     value={nextDate}
                     onChangeText={setNextDate}
-                    placeholder="YYYY-MM-DD"
+                    placeholder="2026-12-01"
                     placeholderTextColor={colors.muted}
                     returnKeyType="done"
                   />
@@ -450,10 +461,12 @@ export default function RemindersScreen() {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [currentMileage, setCurrentMileage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
 
   const loadData = useCallback(async () => {
+    setLoadError(false);
     try {
       const car = await getActiveCar();
       setActiveCar(car);
@@ -473,6 +486,7 @@ export default function RemindersScreen() {
       }
     } catch (e) {
       console.warn("Failed to load reminders:", e);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -546,30 +560,50 @@ export default function RemindersScreen() {
       const catMeta = getCategoryMeta(item.category);
       const urgency = formatUrgency(item, currentMileage);
 
+      const renderRightActions = () => (
+        <Pressable
+          style={[styles.swipeDeleteAction, { backgroundColor: "#EF4444" }]}
+          onPress={() => handleDelete(item)}
+        >
+          <IconSymbol name="trash.fill" size={20} color="#fff" />
+        </Pressable>
+      );
+
       return (
         <Animated.View entering={FadeInDown.delay(index * 40).springify()}>
-          <Pressable
-            style={[styles.reminderRow, { borderBottomColor: colors.border }]}
-            onPress={() => {
-              setEditingReminder(item);
-              setShowModal(true);
+          <Swipeable
+            renderRightActions={renderRightActions}
+            onSwipeableOpen={(direction) => {
+              if (direction === "right") {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }
             }}
-            onLongPress={() => handleDelete(item)}
+            friction={2}
+            rightThreshold={40}
           >
-            <View style={[styles.reminderIcon, { backgroundColor: catMeta.color }]}>
-              <Text style={styles.reminderIconText}>{catMeta.icon}</Text>
-            </View>
-            <View style={styles.reminderContent}>
-              <Text style={[styles.reminderName, { color: colors.foreground }]}>{item.name}</Text>
-              <Text style={[styles.reminderUrgency, { color: urgency.color }]}>{urgency.label}</Text>
-            </View>
             <Pressable
-              style={[styles.completeBtn, { borderColor: colors.border }]}
-              onPress={() => handleComplete(item)}
+              style={[styles.reminderRow, { borderBottomColor: colors.border }]}
+              onPress={() => {
+                setEditingReminder(item);
+                setShowModal(true);
+              }}
+              onLongPress={() => handleDelete(item)}
             >
-              <IconSymbol name="checkmark.circle" size={22} color={colors.primary} />
+              <View style={[styles.reminderIcon, { backgroundColor: catMeta.color }]}>
+                <Text style={styles.reminderIconText}>{catMeta.icon}</Text>
+              </View>
+              <View style={styles.reminderContent}>
+                <Text style={[styles.reminderName, { color: colors.foreground }]}>{item.name}</Text>
+                <Text style={[styles.reminderUrgency, { color: urgency.color }]}>{urgency.label}</Text>
+              </View>
+              <Pressable
+                style={[styles.completeBtn, { borderColor: colors.border }]}
+                onPress={() => handleComplete(item)}
+              >
+                <IconSymbol name="checkmark.circle" size={22} color={colors.primary} />
+              </Pressable>
             </Pressable>
-          </Pressable>
+          </Swipeable>
         </Animated.View>
       );
     },
@@ -616,21 +650,36 @@ export default function RemindersScreen() {
         </View>
       )}
 
+      {/* Error state */}
+      {loadError && (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyEmoji}>⚠️</Text>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn't load reminders</Text>
+          <Text style={[styles.emptySubtitle, { color: colors.muted }]}>Something went wrong. Tap to try again.</Text>
+          <Pressable
+            onPress={loadData}
+            style={({ pressed }) => [styles.emptyAction, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}
+          >
+            <Text style={styles.emptyActionText}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* List */}
-      {!activeCar ? (
+      {!loadError && !activeCar ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyEmoji}>🚗</Text>
-          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No car selected</Text>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No Active Vehicle</Text>
           <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-            Add a car in the Garage tab to start tracking reminders.
+            Reminders are tied to a specific car. Add a vehicle in the Garage tab, then come back here to set up oil changes, tire rotations, and more.
           </Text>
         </View>
       ) : reminders.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyEmoji}>🔔</Text>
-          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No reminders yet</Text>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No Reminders Set</Text>
           <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-            Tap Add to set up your first maintenance reminder.
+            Stay on top of oil changes, tire rotations, and other maintenance. Tap Add to create your first reminder.
           </Text>
         </View>
       ) : (
@@ -750,6 +799,12 @@ const styles = StyleSheet.create({
     padding: 4,
     borderRadius: 12,
   },
+  swipeDeleteAction: {
+    width: 80,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingRight: 16,
+  },
   emptyState: {
     flex: 1,
     alignItems: "center",
@@ -770,6 +825,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: "center",
     lineHeight: 20,
+  },
+  emptyAction: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  emptyActionText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 15,
   },
   // Modal
   modalContainer: {

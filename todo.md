@@ -318,3 +318,178 @@
 - [ ] Add repeat options (once, weekly, monthly, 6mo, yearly, custom)
 - [ ] Remove obsolete todo.md items (e.g., "Garage tab")
 - [ ] Fix ESLint ESM config warning
+
+## Public Beta Stabilization (Apr 2)
+
+- [x] Fix splash screen race condition (preventAutoHideAsync + hide after onboarding check)
+- [x] Add "Enable Location" retry button to stations permission denied banner
+- [x] Add "Retry" button to stations network error banner
+- [x] Add error state with Retry button to Fuel Log (swallowed errors now visible)
+- [x] Improve station price labels: "E85 (you reported)", "E85 (AZ state avg)", "Gas (AZ · EIA weekly)", "Gas (national avg)"
+- [x] Add "📸 Prices you reported at the pump" header to user-submitted price section
+- [x] Add "Votes stored on this device only" disclaimer to station voting row
+- [x] Add "No votes yet — be first!" CTA to unvoted stations
+- [x] Fix onboarding app name: "Welcome to E85 Blend" → "Welcome to 85Blends"
+- [x] Expand onboarding to 4 slides: Welcome, Calculator, Stations (with price disclaimer), Garage setup
+- [x] Add price disclaimer to Stations onboarding slide
+- [x] Add Help & Disclaimer section to Settings: Price Disclaimer, Community Data, Calculator Accuracy
+- [x] Update About section: app name "85Blends", Version 1.0.0 (Public Beta), data source attribution
+- [x] 0 TypeScript errors, 59 tests passing
+
+## Second Refinement Pass (Apr 2, 2026)
+
+- [x] Onboarding: enable swipe-to-advance gesture (scrollEnabled)
+- [x] Onboarding: remove redundant handleSkip alias, clean up code
+- [x] Onboarding: tighten slideSubtitle lineHeight (24→26) and add maxWidth 320
+- [x] Calculator: improve pump mode hint — icon + clearer "At-Pump Mode" label
+- [x] Calculator: rename "Blend Name (optional)" → "Save this blend (optional)"
+- [x] Reminders modal: add "Vehicle" label to the car row for clarity
+- [x] Reminders modal: improve name placeholder to show default category name
+- [x] Reminders modal: add YYYY-MM-DD helper label + better date placeholder
+- [x] Stations: cache age subtitle turns warning color when >30 min stale
+- [x] Stations: cache age subtitle says "tap ↻" when stale to hint at refresh
+- [x] Stations: price footer now clearly attributes EIA weekly avg + AFDC state avg
+- [x] Stations: voting disclaimer changed to "Your votes only — not shared with others"
+- [x] Stations: permission denied message improved — less alarming, more actionable
+- [x] 0 TypeScript errors, 59 tests passing
+
+## Tab Restructure (Apr 2, 2026)
+
+- [ ] Move Fuel Log from tab bar into More/Settings tab
+- [ ] Build dedicated Calculator tab screen (promote modal to full tab)
+- [ ] Make Calculator the default first tab (landing screen)
+- [ ] Remove Fuel Log tab from tab bar
+- [ ] Add calculator icon mapping to icon-symbol.tsx
+- [ ] Update all router.push references to fuel-log tab
+
+## Tab Restructure — Calculator as Default Tab
+
+- [x] Create dedicated Calculator tab screen (calculator.tsx) with full standalone UI
+- [x] Move Fuel Log from tab bar to More/Settings tab as "Fill-Up History" navigation card
+- [x] Make Calculator the first/default tab (users land on it when opening the app)
+- [x] Remove Fuel Log from tab bar (still routable via More tab)
+- [x] Add ellipsis.circle.fill and function icon mappings to icon-symbol.tsx
+- [x] Update tab bar: Calculator, Stations, Reminders, More (4 tabs)
+- [x] Hide index/Home from tab bar (still routable)
+
+## Calculator-First Navigation Polish & TestFlight Prep
+
+- [ ] Optimize Calculator screen information hierarchy (Calculator as core experience)
+- [ ] Add quick actions to Calculator result: Save Blend, Log Fill-Up, Find Nearby Station
+- [ ] Rework Home/index screen as supporting garage/dashboard overview
+- [ ] Tighten navigation labels (Home → Dashboard or Garage)
+- [ ] Audit app.config.ts for TestFlight readiness (bundle ID, version, build number)
+- [ ] Verify all iOS icons and splash screen assets are correct format/size
+- [ ] Check iOS-specific permissions in app.config.ts
+- [ ] Review EAS build configuration for TestFlight
+- [ ] Verify no missing environment values that would block iOS build
+- [ ] Document all changed files and TestFlight steps
+
+## Tab Restructure — Calculator as Default Tab
+
+- [x] Create dedicated Calculator tab screen (calculator.tsx) with full standalone UI
+- [x] Move Fuel Log from tab bar to More/Settings tab as "Fill-Up History" navigation card
+- [x] Make Calculator the first/default tab (users land on it when opening the app)
+- [x] Remove Fuel Log from tab bar (still routable via More tab)
+- [x] Add ellipsis.circle.fill and function icon mappings to icon-symbol.tsx
+- [x] Update tab bar: Calculator, Stations, Reminders, More (4 tabs)
+- [x] Hide index/Home from tab bar (still routable)
+
+## Calculator-First + TestFlight Prep (Apr 2, 2026)
+- [x] Add "Find Nearby Station" quick action to Calculator result card
+- [x] Rework Home/Dashboard: rename to "Garage", replace Calculate CTA with Find E85 / Fill-Up Log / Reminders shortcuts
+- [x] Remove competing "Calculate" button from dashboard quick actions
+- [x] Fix app name: "E85 Blend" → "85Blends" in app.config.ts
+- [x] Add expo-notifications plugin to app.config.ts (required for iOS push)
+- [x] Fix OTA updates URL: conditional on EXPO_PROJECT_ID (no longer crashes when missing)
+- [x] Create eas.json with development / preview / production build profiles
+- [x] Verify 0 TypeScript errors and 59 tests passing after all changes
+
+## UI Fixes (Apr 2, 2026 - Session 2)
+- [x] Add Garage back as visible tab in tab bar
+- [x] Clean up Stations top filter bar (too congested) — split into 2 rows: radius chips + filters/toggles
+- [x] Fix Get Directions button: full-width, centered text, secondary buttons on separate row
+
+## Home Screen Preference & Splash Screen (Apr 2, 2026 - Session 3)
+- [x] Add homeScreen preference field to preferences storage (values: "calculator" | "garage")
+- [x] Add "Home Screen" setting row in More/Settings tab with segmented picker
+- [x] Implement dynamic default tab routing based on homeScreen preference
+- [x] Remove/disable splash screen — app should open directly without white screen + icon
+
+## Help & Support Section (Apr 2, 2026 - Session 4)
+- [x] Create app/help/ directory with four detail screens
+- [x] Create app/help/faq.tsx — Help & FAQ screen (accordion-style Q&A)
+- [x] Create app/help/data-sources.tsx — Data Sources screen
+- [x] Create app/help/disclaimers.tsx — Disclaimers screen
+- [x] Create app/help/about.tsx — About 85Blends screen with version display
+- [x] Add Help & Support section to More/Settings tab with 4 list rows
+- [x] Register help screens via app/help/_layout.tsx (Expo Router auto-discovery)
+- [x] Verify 0 TypeScript errors and 59 tests passing
+
+## Beta Readiness Refinements (Apr 2, 2026 - Session 5)
+- [x] Create app/help/privacy.tsx — Privacy Policy screen
+- [x] Create app/help/feedback.tsx — Send Feedback / Contact screen (mailto link)
+- [x] Add Privacy Policy and Send Feedback rows to Help & Support in settings.tsx
+- [x] Add version/build number footer at bottom of More/Settings tab
+- [x] Revise FAQ wording for more careful, trustworthy fuel guidance
+- [x] Add lightweight data-source info hint on Stations screen
+- [x] Add lightweight disclaimer note near Calculator result area
+- [x] Verify 0 TypeScript errors and 59 tests passing
+
+## Bug Fixes (Apr 2, 2026 - Session 6)
+- [x] Fix Home Screen preference selector — deferred router.replace with correct route paths
+- [x] Update splash screen to match app icon (red car, not gold drop) — new icon generated, splash bg set to #000000
+
+## Splash Screen Icon Fix (Apr 2, 2026 - Session 7)
+- [x] Use user's E85 jerry can icon as app icon and splash screen (revert red car)
+- [x] Update splash background to complement the icon's dark olive/grey border (#3a3a2e)
+
+## Blend Guide in Calculator (Apr 2, 2026 - Session 8)
+- [x] Add BLEND_GUIDE_TIERS data constant (E20–E30, E40–E50, E60–E70, E85) with range/power/octane/desc
+- [x] Add collapsible "📊 Blend Guide — Range vs Power" toggle below Target Blend presets
+- [x] Show range/power dot bars (5-dot scale, blue=range, red=power) per tier
+- [x] Highlight active tier based on current targetEthanolPercent
+- [x] Tapping a tier sets target to tier midpoint via handleQuickBlend
+- [x] Footer disclaimer: "Estimates only — verify with your tuner"
+- [x] Verify 0 TypeScript errors and 59 tests passing
+
+## Release Readiness Audit — Bucket 1 (Must Do Now)
+- [x] Fix onboarding post-completion routing: /(tabs)/garage → /(tabs), skip → /(tabs)/calculator
+- [x] Remove BLE plugin + permissions from app.config.ts (BLUETOOTH_* permissions removed)
+- [x] Remove react-native-ble-plx and @config-plugins/react-native-ble-plx from package.json
+- [x] Delete lib/ble-eflex.ts (dead code, placeholder UUIDs, no UI references)
+- [x] Remove expo-audio and expo-video plugins from app.config.ts (not used in any screen)
+- [x] Remove microphone permission from app.config.ts
+- [x] Clean up bundle ID: space.manus.e85.blend.app.t… → com.e85blends.app
+- [x] Clean up URL scheme: manus-timestamp → e85blends
+- [x] Add build number to feedback email subject/body in feedback.tsx
+- [x] Add manual steps comments to eas.json for Apple credentials (appleId, ascAppId, appleTeamId)
+
+## Pre-TestFlight Polish Pass (Apr 3, 2026)
+- [x] Stations: denied-location state — split banner with clear title, Open Settings deep-link, Dismiss button
+- [x] Stations: API error state — separate from location-denied, shows retry button
+- [x] Stations: added location.slash.fill icon mapping
+- [x] Garage: empty state — 3 feature hint rows (icon + benefit text)
+- [x] Reminders: no-active-car state — explains reminders are per-car, directs to Garage
+- [x] Reminders: no-reminders state — explains what reminders track, prompts Add
+- [x] Fuel Log: empty state — explains what logging builds over time, two paths to log
+- [x] Calculator: guard result card — inline warning banner when !isValid (no 0/0 gal shown)
+- [x] More tab: section renamed to "Fuel Log & History", row renamed to "Fuel Log" with better subtitle
+- [x] Verify 0 TypeScript errors and 59 tests passing
+
+## API Key Security Audit (Apr 3, 2026 - Session 11)
+- [x] Audit current NREL API integration — identified direct fetch from client
+- [x] Refactor lib/station-data.ts to use server proxy instead of direct NREL calls
+- [x] Update server proxy to use server-only NREL_API_KEY env variable (not EXPO_PUBLIC_*)
+- [x] Remove real API key from eas.json (was wYvVTmn6ub2F09aUEbFrCZB0v6hfqLKeNN3o3ZX6)
+- [x] Create API_KEY_SETUP.md with secure configuration instructions
+- [x] Update station-data test to mock tRPC client (no direct fetch)
+- [x] Verify 0 TypeScript errors and 58 tests passing
+
+## Session 12 — Six Targeted Fixes (Apr 3, 2026)
+- [x] Fix Stations page — API not loading (0 stations shown) — fixed tRPC client initialization in lib/station-data.ts
+- [x] Add visibility toggles for Reminders and Garage in Settings/More — added Show Garage Tab and Show Reminders Tab toggles in settings.tsx
+- [x] Add swipe-to-delete gesture for Reminders (in addition to press-and-hold) — added Swipeable wrapper with renderRightActions in reminders.tsx
+- [x] Set default gas ethanol to 10% (currently 0%) — changed DEFAULT_INPUTS.gasEthanolPercent from 0 to 10 in blend-calculator.ts
+- [x] Make Saved Blends tappable/selectable to populate calculator — added savedBlends state and handleLoadSavedBlend function, created collapsible Saved Blends section in calculator.tsx
+- [x] Verify odometer updates sync between Fuel Log and Reminders — confirmed existing implementation in calculator.tsx handleConfirmLogFillUp already syncs reminders when odometer updates

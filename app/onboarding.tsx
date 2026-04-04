@@ -1,6 +1,6 @@
 /**
  * Onboarding screen — shown on first launch only.
- * 3 slides: Welcome, Find Stations, Log Fill-ups.
+ * 4 slides: Welcome, Calculator, Stations, Garage.
  * Completion is persisted in AsyncStorage so it only shows once.
  */
 import React, { useRef, useState } from "react";
@@ -48,10 +48,20 @@ const SLIDES = [
   {
     id: "welcome",
     emoji: "⛽",
-    title: "Welcome to E85 Blend",
+    title: "Welcome to 85Blends",
     subtitle:
       "The smart companion for flex-fuel drivers. Calculate perfect E85 blends, find nearby stations, and track your fuel savings.",
     cta: "Get Started",
+    icon: "drop.fill" as const,
+    accent: "#00C853",
+  },
+  {
+    id: "calculator",
+    emoji: "🧮",
+    title: "Smart Blend Calculator",
+    subtitle:
+      "Tell us your tank size and current ethanol level. We'll calculate exactly how much E85 and gas to add for your target blend.",
+    cta: "Next",
     icon: "drop.fill" as const,
     accent: "#00C853",
   },
@@ -60,7 +70,7 @@ const SLIDES = [
     emoji: "🗺️",
     title: "Find E85 Stations",
     subtitle:
-      "Discover E85 stations near you, view real-time prices submitted by the community, and get turn-by-turn directions.",
+      "Discover E85 stations near you. Prices shown are state averages from AFDC or prices you report at the pump — always verify at the station.",
     cta: "Next",
     icon: "map.fill" as const,
     accent: "#00B0FF",
@@ -68,10 +78,10 @@ const SLIDES = [
   {
     id: "garage",
     emoji: "🚗",
-    title: "Manage Your Garage",
+    title: "Set Up Your Garage",
     subtitle:
-      "Add your flex-fuel vehicles to the Garage tab. The calculator will auto-fill your tank size and preferred blend every time.",
-    cta: "Let's Go",
+      "Add your flex-fuel vehicle to auto-fill your tank size and preferred blend. You can do this now or any time from the Garage tab.",
+    cta: "Set Up My Car",
     icon: "car.2.fill" as const,
     accent: "#FF6D00",
   },
@@ -96,24 +106,36 @@ export default function OnboardingScreen() {
       if (Platform.OS !== "web") {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
-      router.replace("/(tabs)");
+      // Navigate to Garage tab so user can immediately add their car
+      // Garage tab is the `index` screen inside (tabs)
+      router.replace("/(tabs)" as never);
     }
   };
 
-  const handleSkip = async () => {
+  const handleSkipToHome = async () => {
     await markOnboardingComplete();
-    router.replace("/(tabs)");
+    // Default to Calculator on skip
+    router.replace("/(tabs)/calculator" as never);
   };
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]} containerClassName="bg-background">
-      {/* Skip button */}
+      {/* Skip button — always visible except on last slide */}
       {currentIndex < SLIDES.length - 1 && (
         <Pressable
-          onPress={handleSkip}
+          onPress={handleSkipToHome}
           style={({ pressed }) => [styles.skipBtn, pressed && { opacity: 0.6 }]}
         >
           <Text style={[styles.skipText, { color: colors.muted }]}>Skip</Text>
+        </Pressable>
+      )}
+      {/* On last slide, show a subtle "Maybe Later" link */}
+      {currentIndex === SLIDES.length - 1 && (
+        <Pressable
+          onPress={handleSkipToHome}
+          style={({ pressed }) => [styles.skipBtn, pressed && { opacity: 0.6 }]}
+        >
+          <Text style={[styles.skipText, { color: colors.muted }]}>Maybe Later</Text>
         </Pressable>
       )}
 
@@ -124,7 +146,11 @@ export default function OnboardingScreen() {
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
-        scrollEnabled={false}
+        scrollEnabled
+        onMomentumScrollEnd={(e) => {
+          const newIndex = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+          if (newIndex !== currentIndex) setCurrentIndex(newIndex);
+        }}
         keyExtractor={(item) => item.id}
         onScroll={(e) => {
           scrollX.value = e.nativeEvent.contentOffset.x;
@@ -281,7 +307,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "400",
     textAlign: "center",
-    lineHeight: 24,
+    lineHeight: 26,
+    maxWidth: 320,
   },
   footer: {
     paddingHorizontal: 24,

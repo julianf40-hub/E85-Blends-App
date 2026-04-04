@@ -541,10 +541,20 @@ function EmptyGarage({ onAdd, colors }: { onAdd: () => void; colors: ReturnType<
   return (
     <View style={empty.container}>
       <Text style={empty.emoji}>🚗</Text>
-      <Text style={[empty.title, { color: colors.foreground }]}>Your Garage is Empty</Text>
+      <Text style={[empty.title, { color: colors.foreground }]}>No Cars Yet</Text>
       <Text style={[empty.sub, { color: colors.muted }]}>
-        Add your car to auto-fill tank size in the calculator and track fuel economy per vehicle.
+        Add your vehicle to unlock the full experience.
       </Text>
+      {[
+        { icon: "fuelpump.fill" as const, text: "Auto-fills tank size in the Calculator" },
+        { icon: "speedometer" as const, text: "Tracks MPG and odometer per car" },
+        { icon: "bell.fill" as const, text: "Enables personalized maintenance reminders" },
+      ].map(({ icon, text }) => (
+        <View key={text} style={[empty.hintRow, { borderColor: colors.border }]}>
+          <IconSymbol name={icon} size={16} color={colors.primary} />
+          <Text style={[empty.hintText, { color: colors.muted }]}>{text}</Text>
+        </View>
+      ))}
       <Pressable
         onPress={onAdd}
         style={({ pressed }) => [empty.btn, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}
@@ -560,8 +570,10 @@ const empty = StyleSheet.create({
   container: { flex: 1, justifyContent: "center", alignItems: "center", padding: 32 },
   emoji: { fontSize: 64, marginBottom: 16 },
   title: { fontSize: 22, fontWeight: "700", textAlign: "center", marginBottom: 8 },
-  sub: { fontSize: 15, textAlign: "center", lineHeight: 22, marginBottom: 28 },
-  btn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 24, paddingVertical: 14, borderRadius: 14 },
+  sub: { fontSize: 15, textAlign: "center", lineHeight: 22, marginBottom: 16 },
+  hintRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 16, borderWidth: 1, borderRadius: 10, marginBottom: 8, width: "100%" },
+  hintText: { fontSize: 14, lineHeight: 20, flex: 1 },
+  btn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 24, paddingVertical: 14, borderRadius: 14, marginTop: 20 },
   btnText: { fontSize: 16, fontWeight: "700", color: "#fff" },
 });
 

@@ -251,6 +251,7 @@ export default function HomeScreen() {
     gasOctane: DEFAULT_INPUTS.gasOctane.toString(),
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [pumpMode, setPumpMode] = useState(false);
   const [blendName, setBlendName] = useState("");
   const [showPumpInstructions, setShowPumpInstructions] = useState(false);
   const [logFillUpModalVisible, setLogFillUpModalVisible] = useState(false);
@@ -515,14 +516,24 @@ export default function HomeScreen() {
             </Pressable>
             <Text style={[styles.modalTitle, { color: colors.foreground }]}>E85 Calculator</Text>
             <Pressable
-              onPress={handleSaveBlend}
+              onPress={() => { if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setPumpMode((v) => !v); }}
               style={({ pressed }) => [styles.modalHeaderBtn, { opacity: pressed ? 0.6 : 1 }]}
             >
-              <Text style={[styles.modalSaveText, { color: colors.primary }]}>Save</Text>
+              <View style={[{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: pumpMode ? colors.success + "22" : colors.primary + "18" }]}>
+                <Text style={[styles.modalSaveText, { color: pumpMode ? colors.success : colors.primary }]}>{pumpMode ? "⛽ At Pump" : "⛽ Pump Mode"}</Text>
+              </View>
             </Pressable>
           </View>
 
           <ScrollView style={styles.calcScroll} contentContainerStyle={styles.calcScrollContent} keyboardShouldPersistTaps="handled">
+
+            {/* Pump mode hint */}
+            {pumpMode && (
+              <View style={{ marginHorizontal: 16, marginTop: 12, marginBottom: 0, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.success + "14", borderRadius: 10, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Text style={{ fontSize: 13 }}>⛽</Text>
+                <Text style={{ fontSize: 12, color: colors.success, fontWeight: "600", flex: 1 }}>At-Pump Mode — results show numbered fill instructions</Text>
+              </View>
+            )}
 
             {/* Quick Blend Presets */}
             <View style={styles.calcSection}>
@@ -574,6 +585,25 @@ export default function HomeScreen() {
                     onChangeText={(t) => handleCalcStringChange("currentFuelLevel", t)}
                     returnKeyType="done"
                   />
+                  <View style={{ flexDirection: "row", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                    {[{l:"E",v:"0"},{l:"1/4",v:"25"},{l:"1/2",v:"50"},{l:"3/4",v:"75"}].map((item) => {
+                      const isActive = calcStrings.currentFuelLevel === item.v;
+                      return (
+                        <Pressable
+                          key={item.v}
+                          onPress={() => handleCalcStringChange("currentFuelLevel", item.v)}
+                          style={({ pressed }) => ({
+                            paddingHorizontal: 8, paddingVertical: 3, borderRadius: 7,
+                            backgroundColor: isActive ? "#D97706" : colors.surface,
+                            borderWidth: 1, borderColor: isActive ? "#D97706" : colors.border,
+                            opacity: pressed ? 0.7 : 1,
+                          })}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: "600", color: isActive ? "#fff" : colors.foreground }}>{item.l}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 </View>
               </View>
               <View style={styles.calcInputRow}>
@@ -665,13 +695,79 @@ export default function HomeScreen() {
                       onChangeText={(t) => handleCalcStringChange("gasOctane", t)}
                       returnKeyType="done"
                     />
+                    <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
+                      {[87, 89, 91, 93].map((oct) => {
+                        const isActive = calcStrings.gasOctane === String(oct);
+                        return (
+                          <Pressable
+                            key={oct}
+                            onPress={() => handleCalcStringChange("gasOctane", String(oct))}
+                            style={({ pressed }) => ({
+                              paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+                              backgroundColor: isActive ? colors.primary : colors.surface,
+                              borderWidth: 1, borderColor: isActive ? colors.primary : colors.border,
+                              opacity: pressed ? 0.7 : 1,
+                            })}
+                          >
+                            <Text style={{ fontSize: 12, fontWeight: "600", color: isActive ? "#fff" : colors.foreground }}>{oct}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
                   </View>
                 </View>
               </View>
             )}
 
             {/* Results Card */}
-            {blendResult && (
+            {blendResult && pumpMode && (
+              <View style={[styles.calcResultCard, { backgroundColor: colors.surface, borderColor: colors.success, borderWidth: 2 }]}>
+                <View style={{ backgroundColor: colors.success + "18", borderRadius: 10, padding: 16, marginBottom: 12 }}>
+                  <Text style={{ textAlign: "center", fontSize: 13, fontWeight: "600", color: colors.success, marginBottom: 12, letterSpacing: 0.5 }}>⛽ PUMP INSTRUCTIONS</Text>
+                  {blendResult.e85Gallons > 0 && (
+                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+                      <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>1</Text>
+                      </View>
+                      <Text style={{ color: colors.foreground, fontSize: 16, flex: 1 }}>
+                        Add <Text style={{ fontWeight: "800", fontSize: 20, color: colors.primary }}>{blendResult.e85Gallons.toFixed(2)}</Text> <Text style={{ fontWeight: "700" }}>gal E85</Text>
+                      </Text>
+                    </View>
+                  )}
+                  {blendResult.gasGallons > 0 && (
+                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 10 }}>
+                      <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: "#D97706", alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                        <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>{blendResult.e85Gallons > 0 ? "2" : "1"}</Text>
+                      </View>
+                      <Text style={{ color: colors.foreground, fontSize: 16, flex: 1 }}>
+                        Add <Text style={{ fontWeight: "800", fontSize: 20, color: "#D97706" }}>{blendResult.gasGallons.toFixed(2)}</Text> <Text style={{ fontWeight: "700" }}>gal {blendInputs.gasOctane >= 91 ? `${blendInputs.gasOctane} oct` : "regular"}</Text>
+                      </Text>
+                    </View>
+                  )}
+                  <View style={{ flexDirection: "row", alignItems: "center" }}>
+                    <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: colors.success, alignItems: "center", justifyContent: "center", marginRight: 10 }}>
+                      <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>✓</Text>
+                    </View>
+                    <Text style={{ color: colors.foreground, fontSize: 15 }}>
+                      Result: <Text style={{ fontWeight: "700" }}>{blendResult.blendLabel}</Text> · {blendResult.estimatedOctane.toFixed(1)} oct
+                    </Text>
+                  </View>
+                </View>
+                {blendResult.errorMessage && (
+                  <View style={[styles.calcResultWarning, { backgroundColor: colors.warning + "18" }]}>
+                    <Text style={[styles.calcResultWarningText, { color: colors.warning }]}>{blendResult.errorMessage}</Text>
+                  </View>
+                )}
+                <Pressable
+                  onPress={handleLogFillUp}
+                  style={({ pressed }) => [styles.logFillUpBtn, { backgroundColor: colors.success + "18", borderColor: colors.success + "40", opacity: pressed ? 0.75 : 1 }]}
+                >
+                  <Text style={[styles.logFillUpBtnText, { color: colors.success }]}>+ Log This Fill-Up</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {blendResult && !pumpMode && (
               <View style={[styles.calcResultCard, { backgroundColor: colors.surface, borderColor: blendResult.isValid ? colors.primary : colors.warning }]}>
                 {/* Blend Label Badge */}
                 <View style={styles.calcResultHeader}>
@@ -719,6 +815,13 @@ export default function HomeScreen() {
                     <Text style={[styles.calcResultWarningText, { color: colors.warning }]}>{blendResult.errorMessage}</Text>
                   </View>
                 )}
+
+                {/* Estimate disclaimer */}
+                <View style={[styles.calcDisclaimer, { borderTopColor: colors.border }]}>
+                  <Text style={[styles.calcDisclaimerText, { color: colors.muted }]}>
+                    Results are estimates — E85 ethanol content varies by season (51–83%). Verify compatibility with your tuner.
+                  </Text>
+                </View>
 
                 {/* Pump Instructions */}
                 <Pressable
@@ -773,7 +876,7 @@ export default function HomeScreen() {
 
             {/* Save Blend Name */}
             <View style={styles.calcSection}>
-              <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Blend Name (optional)</Text>
+              <Text style={[styles.calcInputLabel, { color: colors.muted }]}>Save this blend (optional)</Text>
               <TextInput
                 style={[styles.calcInput, { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground }]}
                 placeholder="e.g. Track Day E50"
@@ -918,9 +1021,9 @@ export default function HomeScreen() {
         {/* ── Header ── */}
         <View style={styles.header}>
           <View>
-            <Text style={[styles.headerTitle, { color: colors.foreground }]}>Dashboard</Text>
+            <Text style={[styles.headerTitle, { color: colors.foreground }]}>Garage</Text>
             <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
-              Sync test from Manus 2
+              Your car & maintenance overview
             </Text>
           </View>
           <Pressable
@@ -955,25 +1058,25 @@ export default function HomeScreen() {
         {/* ── Quick Actions ── */}
         <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.quickActions}>
           <Pressable
-            style={[styles.quickActionBtn, { backgroundColor: colors.primary }]}
-            onPress={handleCalculatePress}
-          >
-            <IconSymbol name="fuelpump.fill" size={20} color="#fff" />
-            <Text style={styles.quickActionText}>Calculate</Text>
-          </Pressable>
-          <Pressable
             style={[styles.quickActionBtn, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
             onPress={() => router.push("/(tabs)/stations")}
           >
             <IconSymbol name="map.fill" size={20} color={colors.foreground} />
-            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Stations</Text>
+            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Find E85</Text>
           </Pressable>
           <Pressable
             style={[styles.quickActionBtn, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
             onPress={() => router.push("/(tabs)/fuel-log")}
           >
             <IconSymbol name="list.bullet.clipboard.fill" size={20} color={colors.foreground} />
-            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Fuel Log</Text>
+            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Fill-Up Log</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.quickActionBtn, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 }]}
+            onPress={() => router.push("/(tabs)/reminders")}
+          >
+            <IconSymbol name="bell.fill" size={20} color={colors.foreground} />
+            <Text style={[styles.quickActionText, { color: colors.foreground }]}>Reminders</Text>
           </Pressable>
         </Animated.View>
 
@@ -1525,6 +1628,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "500",
     lineHeight: 17,
+  },
+  calcDisclaimer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  calcDisclaimerText: {
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: "center",
   },
   calcSaveBtn: {
     flexDirection: "row",

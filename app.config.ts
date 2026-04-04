@@ -2,37 +2,18 @@
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
-const rawBundleId = "space.manus.e85.blend.app.t20260325014712";
-const bundleId =
-  rawBundleId
-    .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
-    .replace(/[^a-zA-Z0-9.]/g, "") // Remove invalid chars
-    .replace(/\.+/g, ".") // Collapse consecutive dots
-    .replace(/^\.+|\.+$/g, "") // Trim leading/trailing dots
-    .toLowerCase()
-    .split(".")
-    .map((segment) => {
-      // Android requires each segment to start with a letter
-      // Prefix with 'x' if segment starts with a digit
-      return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
-    })
-    .join(".") || "space.manus.app";
-// Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
+// Clean production bundle ID — no template/manus namespace
+const bundleId = "com.e85blends.app";
+// Deep link scheme for the app
+const schemeFromBundleId = "e85blends";
 
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "E85 Blend",
+  appName: "85Blends",
   appSlug: "e85-blend-app",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://d2xsxph8kpxj0f.cloudfront.net/310519663474338743/PAGwDikW5vXNA2iijnVeE6/icon-ND4oZK6STzRWyoZbDk9AXf.png",
+  logoUrl: "", // User-provided icon stored in assets/images/icon.png
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -68,10 +49,6 @@ const config: ExpoConfig = {
       "POST_NOTIFICATIONS",
       "ACCESS_FINE_LOCATION",
       "ACCESS_COARSE_LOCATION",
-      "BLUETOOTH",
-      "BLUETOOTH_ADMIN",
-      "BLUETOOTH_CONNECT",
-      "BLUETOOTH_SCAN",
     ],
     intentFilters: [
       {
@@ -95,11 +72,12 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     [
-      "@config-plugins/react-native-ble-plx",
+      "expo-notifications",
       {
-        isBackgroundEnabled: false,
-        modes: ["central"],
-        bluetoothAlwaysPermission: "Allow E85 Blend to connect to your eFlexPlus device via Bluetooth.",
+        icon: "./assets/images/icon.png",
+        color: "#10B981",
+        sounds: [],
+        iosDisplayInForeground: true,
       },
     ],
     "expo-updates",
@@ -123,27 +101,15 @@ const config: ExpoConfig = {
     ],
     // react-native-maps uses PROVIDER_DEFAULT with OpenStreetMap tiles (no config plugin needed)
     [
-      "expo-audio",
-      {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
-      },
-    ],
-    [
-      "expo-video",
-      {
-        supportsBackgroundPlayback: true,
-        supportsPictureInPicture: true,
-      },
-    ],
-    [
       "expo-splash-screen",
       {
         image: "./assets/images/splash-icon.png",
-        imageWidth: 200,
+        imageWidth: 240,
         resizeMode: "contain",
-        backgroundColor: "#ffffff",
+        // Match the icon's dark olive/charcoal border color
+        backgroundColor: "#3a3a2e",
         dark: {
-          backgroundColor: "#000000",
+          backgroundColor: "#3a3a2e",
         },
       },
     ],
@@ -157,15 +123,20 @@ const config: ExpoConfig = {
       },
     ],
   ],
-  updates: {
-    url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID ?? ""}`,
-    enabled: true,
-    checkAutomatically: "ON_LOAD",
-    fallbackToCacheTimeout: 0,
-  },
-  runtimeVersion: {
-    policy: "appVersion",
-  },
+  // OTA updates — only enabled when EXPO_PROJECT_ID is set (required for EAS)
+  ...(process.env.EXPO_PROJECT_ID
+    ? {
+        updates: {
+          url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID}`,
+          enabled: true,
+          checkAutomatically: "ON_LOAD",
+          fallbackToCacheTimeout: 0,
+        },
+        runtimeVersion: {
+          policy: "appVersion",
+        },
+      }
+    : {}),
   experiments: {
     typedRoutes: true,
     reactCompiler: true,

@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
@@ -438,9 +438,10 @@ const bc = StyleSheet.create({
   actionText: { fontSize: 12, fontWeight: "600" },
 });
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
-export default function MoreScreen() {
+// ─── Main Screen ─────────────────────────────────────────────────────────────
+export default function SettingsScreen() {
   const colors = useColors();
+  const router = useRouter();
   const { themeMode, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [loading, setLoading] = useState(true);
@@ -723,6 +724,67 @@ export default function MoreScreen() {
                 );
               })}
             </View>
+
+            {/* ── Home Screen picker ── */}
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={[styles.settingRow, { paddingBottom: 6 }]}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Home Screen</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Which tab opens when you launch the app</Text>
+              </View>
+            </View>
+            <View style={[styles.themeToggleRow, { paddingTop: 0 }]}>
+              {(["calculator", "garage"] as const).map((screen) => {
+                const label = screen === "calculator" ? "Calculator" : "Garage";
+                const iconName = screen === "calculator" ? "fuelpump.fill" : "car.fill";
+                const isActive = (prefs.homeScreen ?? "calculator") === screen;
+                return (
+                  <Pressable
+                    key={screen}
+                    onPress={() => {
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      handleSavePreference("homeScreen", screen);
+                    }}
+                    style={({ pressed }) => [
+                      styles.themeOption,
+                      { backgroundColor: isActive ? colors.primary : colors.background, borderColor: isActive ? colors.primary : colors.border },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <IconSymbol name={iconName} size={18} color={isActive ? "#fff" : colors.muted} />
+                    <Text style={[styles.themeOptionText, { color: isActive ? "#fff" : colors.foreground }]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {/* ── Tab Visibility Toggles ── */}
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={styles.settingRow}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Display the Garage tab in navigation</Text>
+              </View>
+              <Switch
+                value={prefs.showGarage !== false}
+                onValueChange={(val) => handleSavePreference("showGarage", val)}
+                trackColor={{ false: colors.border, true: colors.primary + "44" }}
+                thumbColor={prefs.showGarage !== false ? colors.primary : colors.muted}
+              />
+            </View>
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={styles.settingRow}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Reminders Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Display the Reminders tab in navigation</Text>
+              </View>
+              <Switch
+                value={prefs.showReminders !== false}
+                onValueChange={(val) => handleSavePreference("showReminders", val)}
+                trackColor={{ false: colors.border, true: colors.primary + "44" }}
+                thumbColor={prefs.showReminders !== false ? colors.primary : colors.muted}
+              />
+            </View>
           </View>
         </Animated.View>
 
@@ -808,18 +870,183 @@ export default function MoreScreen() {
           </View>
         </Animated.View>
 
-        {/* ── About ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(200)} style={styles.section}>
-          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.aboutContent}>
-              <Text style={[styles.aboutTitle, { color: colors.foreground }]}>E85 Blend Calculator</Text>
-              <Text style={[styles.aboutVersion, { color: colors.muted }]}>Version 2.1.0</Text>
-              <Text style={[styles.aboutDesc, { color: colors.muted }]}>
-                Calculate perfect E85 blends, find nearby stations, manage your garage, and track your fuel economy.
-              </Text>
+        {/* ── Fuel Log ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(180)} style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Fuel Log & History</Text>
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push("/(tabs)/fuel-log");
+            }}
+            style={({ pressed }) => [
+              styles.card,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingVertical: 16,
+                opacity: pressed ? 0.7 : 1,
+              },
+            ]}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={[styles.sectionIcon, { backgroundColor: "#22C55E" + "18" }]}>
+                <IconSymbol name="list.bullet.clipboard.fill" size={22} color="#22C55E" />
+              </View>
+              <View>
+                <Text style={[styles.cardRowTitle, { color: colors.foreground }]}>Fuel Log</Text>
+                <Text style={[styles.cardRowSubtitle, { color: colors.muted }]}>Fill-up history, MPG trends & cost tracking</Text>
+              </View>
             </View>
+            <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+          </Pressable>
+        </Animated.View>
+
+        {/* ── Help & Support ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(200)} style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Help & Support</Text>
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+
+            {/* Help & FAQ */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/faq");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: colors.primary + "18" }]}>
+                  <IconSymbol name="questionmark.circle.fill" size={20} color={colors.primary} />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Help & FAQ</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Calculator, Pump Mode, reminders & more</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* Data Sources */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/data-sources");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#3B82F6" + "18" }]}>
+                  <IconSymbol name="chart.bar.fill" size={20} color="#3B82F6" />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Data Sources</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Where station, price & fuel data comes from</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* Disclaimers */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/disclaimers");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: colors.warning + "18" }]}>
+                  <IconSymbol name="exclamationmark.triangle.fill" size={20} color={colors.warning} />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Disclaimers</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Accuracy, vehicle compatibility & limitations</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* About */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/about");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#10B981" + "18" }]}>
+                  <IconSymbol name="info.circle.fill" size={20} color="#10B981" />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>About 85Blends</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Mission, version & data attribution</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* Privacy Policy */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/privacy");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#6366F1" + "18" }]}>
+                  <IconSymbol name="lock.fill" size={20} color="#6366F1" />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Privacy Policy</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>No accounts, no tracking, local-first</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* Send Feedback */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/feedback");
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: colors.primary + "18" }]}>
+                  <IconSymbol name="paperplane.fill" size={20} color={colors.primary} />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Send Feedback</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Bug reports, ideas & beta feedback</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
           </View>
         </Animated.View>
+
+        {/* ── Version Footer ── */}
+        <View style={styles.versionFooter}>
+          <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.0 · Public Beta</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 1 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+        </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -905,4 +1132,25 @@ const styles = StyleSheet.create({
   aboutDesc: { fontSize: 13, textAlign: "center", lineHeight: 18, marginTop: 4 },
   clearAllBtn: { paddingHorizontal: 10, paddingVertical: 4 },
   clearAllBtnText: { fontSize: 13, fontWeight: "600" },
+  disclaimerBox: { padding: 16, borderRadius: 0 },
+  disclaimerTitle: { fontSize: 14, fontWeight: "700", marginBottom: 6 },
+  sectionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  cardRowTitle: {
+    fontSize: 15,
+    fontWeight: "600" as const,
+  },
+  cardRowSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  disclaimerText: { fontSize: 13, lineHeight: 19 },
+  versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
+  versionFooterText: { fontSize: 13, fontWeight: "500" },
+  versionFooterSub: { fontSize: 11 },
 });

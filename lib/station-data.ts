@@ -1,10 +1,13 @@
 /**
- * E85 Station Data - AFDC API Integration
+ * E85 Station Data - AFDC API Integration (via Server Proxy)
  *
- * Uses the NREL Alternative Fuel Station Locator API to fetch
- * real E85 stations near the user's location.
- * API Docs: https://developer.nrel.gov/docs/transportation/alt-fuel-stations-v1/nearest/
+ * Calls the backend server proxy at /api/trpc/stations.search
+ * The server proxy handles the NREL API key securely (server-only env variable).
+ * This prevents the API key from being exposed in the client bundle.
+ * API Docs: https://developer.nlr.gov/docs/transportation/alt-fuel-stations-v1/nearest/
  */
+
+import { trpc, createTRPCClient } from "@/lib/trpc";
 
 export interface E85Station {
   id: string;
@@ -17,7 +20,7 @@ export interface E85Station {
   longitude: number;
   phone?: string;
   hours?: string;
-  distance: number; // miles from search location
+  distance: number;
   distanceKm?: number;
   brand?: string;
   hasBlenderPump: boolean;
@@ -26,14 +29,12 @@ export interface E85Station {
   facilityType?: string;
 }
 
-const AFDC_API_BASE = "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json";
-// Use the registered API key from env; falls back to DEMO_KEY (rate-limited to ~4 req/session)
-const AFDC_API_KEY =
-  (typeof process !== "undefined" && process.env.EXPO_PUBLIC_NREL_API_KEY) ||
-  "DEMO_KEY";
-
 /**
- * Fetch nearby E85 stations from the AFDC API
+ * Fetch nearby E85 stations via the backend server proxy.
+ * The server proxy uses a server-only NREL_API_KEY env variable.
+ *
+ * NOTE: This function is called from React components (stations.tsx).
+ * It uses the tRPC client created in the root layout.
  */
 export async function fetchNearbyStations(
   latitude: number,
@@ -42,34 +43,23 @@ export async function fetchNearbyStations(
   limit: number = 20
 ): Promise<E85Station[]> {
   try {
-    const params = new URLSearchParams({
-      api_key: AFDC_API_KEY,
-      latitude: latitude.toString(),
-      longitude: longitude.toString(),
-      fuel_type: "E85",
-      status: "E", // Available stations only
-      access: "public",
-      radius: radiusMiles.toString(),
-      limit: limit.toString(),
+    // Create the tRPC client with proper configuration (links, headers, auth)
+    const client = createTRPCClient();
+    
+    // Call the server proxy via tRPC
+    // The server handles the API key securely and returns the NREL API response
+    const response = await client.stations.search.query({
+      latitude,
+      longitude,
+      radius: radiusMiles,
+      fuelType: "E85",
     });
 
-    const response = await fetch(`${AFDC_API_BASE}?${params.toString()}`);
-
-    if (response.status === 429) {
-      throw new Error("RATE_LIMITED");
-    }
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (!data.fuel_stations || !Array.isArray(data.fuel_stations)) {
+    if (!response.fuel_stations || !Array.isArray(response.fuel_stations)) {
       return [];
     }
 
-    return data.fuel_stations.map((station: any) => ({
+    return response.fuel_stations.slice(0, limit).map((station: any) => ({
       id: station.id?.toString() || "",
       name: station.station_name || "Unknown Station",
       address: station.street_address || "",
@@ -89,7 +79,7 @@ export async function fetchNearbyStations(
       facilityType: formatFacilityType(station.facility_type),
     }));
   } catch (error) {
-    console.warn("Failed to fetch stations from AFDC API:", error);
+    console.warn("Failed to fetch stations from server proxy:", error);
     return [];
   }
 }
@@ -144,7 +134,7 @@ export function calculateDistance(
   lat2: number,
   lon2: number
 ): number {
-  const R = 3959; // Earth's radius in miles
+  const R = 3959;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =

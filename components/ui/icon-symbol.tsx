@@ -66,6 +66,12 @@ const MAPPING: Record<string, MaterialIconName> = {
   "checkmark.circle": "check-circle-outline",
   "exclamationmark.triangle.fill": "warning",
   "arrow.up.right": "open-in-new",
+  "function": "calculate",
+  "ellipsis.circle.fill": "more-horiz",
+  "questionmark.circle.fill": "help",
+  "chart.bar.fill": "bar-chart",
+  "lock.fill": "lock",
+  "location.slash.fill": "location-off",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

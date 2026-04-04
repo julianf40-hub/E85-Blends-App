@@ -25,8 +25,9 @@ import { router } from "expo-router";
 import { useQuickActionRouting } from "expo-quick-actions/router";
 import { useAppUpdate } from "@/hooks/use-app-update";
 import { Pressable, Text, StyleSheet } from "react-native";
+import { loadPreferences } from "@/lib/preferences";
 
-// Hide splash screen immediately — no delay
+// Hide splash screen immediately — no loading delay needed
 SplashScreen.hideAsync().catch(() => {});
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -79,14 +80,35 @@ export default function RootLayout() {
   // OTA update check
   const { status: updateStatus, applyUpdate } = useAppUpdate();
 
-  // Redirect to onboarding on first launch
+  // Redirect to onboarding on first launch; otherwise navigate to preferred home screen
   useEffect(() => {
-    (async () => {
-      const done = await hasCompletedOnboarding();
-      if (!done) {
-        router.replace("/onboarding");
+    // Defer navigation until after the root layout has mounted and the
+    // navigation stack is ready. A short setTimeout avoids the "navigate
+    // before mount" warning that causes silent no-ops on iOS.
+    const timer = setTimeout(async () => {
+      try {
+        const done = await hasCompletedOnboarding();
+        if (!done) {
+          router.replace("/onboarding");
+          return;
+        }
+        // Navigate to preferred home screen
+        const prefs = await loadPreferences();
+        const homeScreen = prefs.homeScreen ?? "calculator";
+        if (homeScreen === "garage") {
+          // Garage tab is the `index` screen inside (tabs)
+          // Cast needed because typed routes don't expose /(tabs)/index directly
+          router.replace("/(tabs)" as never);
+        } else {
+          // Calculator tab
+          router.replace("/(tabs)/calculator" as never);
+        }
+      } catch {
+        // If check fails, proceed to main app (calculator default)
+        router.replace("/(tabs)/calculator" as never);
       }
-    })();
+    }, 50);
+    return () => clearTimeout(timer);
   }, []);
 
   const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {

@@ -20,7 +20,7 @@ export function useQuickActions() {
         title: "E85 Calculator",
         subtitle: "Calculate your blend",
         icon: "calculator_icon",
-        params: { href: "/(tabs)/" },
+        params: { href: "/(tabs)/calculator" },
       },
       {
         id: "open_stations",

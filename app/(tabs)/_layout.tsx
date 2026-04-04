@@ -1,12 +1,14 @@
 import { Tabs } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Platform, StyleSheet, View } from "react-native";
+import { useEffect, useState } from "react";
 import { BlurView } from "expo-blur";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { loadPreferences } from "@/lib/preferences";
 
 /**
  * Liquid Glass tab bar background component.
@@ -50,6 +52,16 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const bottomPadding = Platform.OS === "web" ? 12 : Math.max(insets.bottom, 8);
   const tabBarHeight = 56 + bottomPadding;
+  const [showReminders, setShowReminders] = useState(true);
+  const [showGarage, setShowGarage] = useState(true);
+
+  // Load visibility preferences on mount
+  useEffect(() => {
+    loadPreferences().then((prefs) => {
+      setShowReminders(prefs.showReminders !== false);
+      setShowGarage(prefs.showGarage !== false);
+    });
+  }, []);
 
   // Border color adapts to scheme: subtle on glass
   const borderColor =
@@ -82,16 +94,18 @@ export default function TabLayout() {
         },
       }}
     >
-      {/* ── 5 visible tabs ── */}
+      {/* ── Calculator (default / first tab) ── */}
       <Tabs.Screen
-        name="index"
+        name="calculator"
         options={{
-          title: "Home",
+          title: "Calculator",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="house.fill" color={color} />
+            <IconSymbol size={26} name="fuelpump.fill" color={color} />
           ),
         }}
       />
+
+      {/* ── Stations ── */}
       <Tabs.Screen
         name="stations"
         options={{
@@ -101,24 +115,34 @@ export default function TabLayout() {
           ),
         }}
       />
-      <Tabs.Screen
-        name="fuel-log"
-        options={{
-          title: "Fuel Log",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="list.bullet.clipboard.fill" color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="reminders"
-        options={{
-          title: "Reminders",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="bell.fill" color={color} />
-          ),
-        }}
-      />
+
+      {/* ── Garage (conditionally shown based on preference) ── */}
+      {showGarage && (
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: "Garage",
+            tabBarIcon: ({ color }) => (
+              <IconSymbol size={26} name="car.fill" color={color} />
+            ),
+          }}
+        />
+      )}
+
+      {/* ── Reminders (conditionally shown based on preference) ── */}
+      {showReminders && (
+        <Tabs.Screen
+          name="reminders"
+          options={{
+            title: "Reminders",
+            tabBarIcon: ({ color }) => (
+              <IconSymbol size={26} name="bell.fill" color={color} />
+            ),
+          }}
+        />
+      )}
+
+      {/* ── More / Settings ── */}
       <Tabs.Screen
         name="settings"
         options={{
@@ -129,17 +153,23 @@ export default function TabLayout() {
         }}
       />
 
-      {/* ── Hidden screens (still routable, not shown in tab bar) ── */}
+      {/* ── Hidden screens (routable but not shown in tab bar) ── */}
+      <Tabs.Screen
+        name="fuel-log"
+        options={{
+          href: null, // Fuel Log accessible via More tab → Fill-Up History
+        }}
+      />
       <Tabs.Screen
         name="garage"
         options={{
-          href: null, // hidden from tab bar
+          href: null,
         }}
       />
       <Tabs.Screen
         name="blends"
         options={{
-          href: null, // hidden from tab bar
+          href: null,
         }}
       />
     </Tabs>

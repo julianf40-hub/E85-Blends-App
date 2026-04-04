@@ -34,6 +34,7 @@ export default function FuelLogScreen() {
   const [entries, setEntries] = useState<FuelEntry[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
@@ -111,6 +112,7 @@ export default function FuelLogScreen() {
   }, []);
 
   const loadData = useCallback(async () => {
+    setLoadError(false);
     try {
       const logs = await loadFuelLog();
       const stats = await getFuelLogStats();
@@ -119,6 +121,7 @@ export default function FuelLogScreen() {
       await loadBlends();
     } catch (error) {
       console.error("Failed to load fuel log:", error);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -416,43 +419,38 @@ export default function FuelLogScreen() {
           style={styles.statsContainer}
         >
           <View style={styles.statsRow}>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Total Entries
-              </Text>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Fill-Ups</Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>{stats.totalEntries}</Text>
+            </View>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Avg MPG</Text>
               <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                {stats.totalEntries}
+                {stats.averageMPG > 0 ? stats.averageMPG.toFixed(1) : "—"}
               </Text>
             </View>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Avg MPG
-              </Text>
-              <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                {stats.averageMPG.toFixed(1)}
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Total Spent</Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>${stats.totalSpent.toFixed(0)}</Text>
+            </View>
+          </View>
+          <View style={[styles.statsRow, { marginTop: 8 }]}>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Total Gal</Text>
+              <Text style={[styles.statCardValue, { color: colors.primary }]}>{stats.totalGallons.toFixed(1)}</Text>
+            </View>
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Avg $/gal</Text>
+              <Text style={[styles.statCardValue, { color: "#D97706" }]}>
+                {stats.totalGallons > 0 ? `$${(stats.totalSpent / stats.totalGallons).toFixed(2)}` : "—"}
               </Text>
             </View>
-            <View
-              style={[
-                styles.statCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.statCardLabel, { color: colors.muted }]}>
-                Total Spent
-              </Text>
-              <Text style={[styles.statCardValue, { color: colors.primary }]}>
-                ${stats.totalSpent.toFixed(0)}
+            <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.statCardLabel, { color: colors.muted }]}>Avg Blend</Text>
+              <Text style={[styles.statCardValue, { color: colors.success }]}>
+                {entries.length > 0
+                  ? `E${Math.round(entries.reduce((sum, e) => sum + (e.blendRatio ?? 0), 0) / entries.length)}`
+                  : "—"}
               </Text>
             </View>
           </View>
@@ -492,6 +490,22 @@ export default function FuelLogScreen() {
         <Text style={[styles.loadingText, { color: colors.muted }]}>
           Loading fuel log...
         </Text>
+      ) : loadError ? (
+        <View style={styles.emptyState}>
+          <View style={[styles.emptyIconBg, { backgroundColor: colors.error + "15" }]}>
+            <IconSymbol name="exclamationmark.triangle.fill" size={40} color={colors.error} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Failed to Load</Text>
+          <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
+            Could not load your fuel log. Tap below to try again.
+          </Text>
+          <Pressable
+            onPress={() => { setLoading(true); loadData(); }}
+            style={({ pressed }) => [{ marginTop: 16, paddingHorizontal: 24, paddingVertical: 12, backgroundColor: colors.primary, borderRadius: 12, opacity: pressed ? 0.7 : 1 }]}
+          >
+            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Retry</Text>
+          </Pressable>
+        </View>
       ) : entries.length === 0 ? (
         <View style={styles.emptyState}>
           <View
@@ -507,10 +521,13 @@ export default function FuelLogScreen() {
             />
           </View>
           <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-            No Fuel Entries
+            No Fill-Ups Logged
           </Text>
           <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-            Start tracking your fuel-ups to see analytics and MPG trends
+            Every fill-up you log builds your fuel history — MPG trends, cost tracking, and blend records over time.
+          </Text>
+          <Text style={[styles.emptySubtitle, { color: colors.muted, marginTop: -6 }]}>
+            Tap the + button above to log your first fill-up, or calculate a blend in the Calculator tab and tap "Log This Fill-Up" there.
           </Text>
         </View>
       ) : (

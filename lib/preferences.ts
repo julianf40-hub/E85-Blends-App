@@ -17,6 +17,9 @@ export interface UserPreferences {
   vehicleModel?: string;
   mpgRegularGas?: number;
   mpgE85?: number;
+  homeScreen?: "calculator" | "garage"; // default landing tab
+  showReminders?: boolean; // visibility toggle for Reminders tab
+  showGarage?: boolean; // visibility toggle for Garage tab
 }
 
 const PREFERENCES_KEY = "e85_user_preferences";
@@ -27,6 +30,9 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   units: "imperial",
   searchRadius: 25,
   defaultBlend: 30,
+  homeScreen: "calculator",
+  showReminders: true,
+  showGarage: true,
 };
 
 /**

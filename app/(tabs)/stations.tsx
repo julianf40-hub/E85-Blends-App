@@ -105,6 +105,7 @@ export default function StationsScreen() {
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [stationVotes, setStationVotes] = useState<Record<string, StationVote>>({});
+  const [filterConfirmed, setFilterConfirmed] = useState(false);
 
   // Load favorites on mount
   useEffect(() => {
@@ -217,7 +218,7 @@ export default function StationsScreen() {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== "granted") {
           setHasLocationPermission(false);
-          setErrorMsg("Location permission denied. Showing stations near Phoenix, AZ.");
+          setErrorMsg("LOCATION_DENIED");
           const defaultLat = 33.4484;
           const defaultLon = -112.074;
           setLocation({ latitude: defaultLat, longitude: defaultLon });
@@ -392,8 +393,17 @@ export default function StationsScreen() {
         return a.distance - b.distance;
       });
     }
+    if (filterConfirmed) {
+      return sorted.filter((s) => {
+        const vote = stationVotes[s.id];
+        if (!vote) return false;
+        const total = vote.yesCount + vote.noCount;
+        if (total === 0) return false;
+        return vote.yesCount / total >= 0.5;
+      });
+    }
     return sorted;
-  }, [stations, sortMode, userPrices, localPrices, favoriteIds]);
+  }, [stations, sortMode, userPrices, localPrices, favoriteIds, filterConfirmed, stationVotes]);
 
   const renderStationCard = useCallback(
     ({ item, index }: { item: E85Station; index: number }) => (
@@ -510,6 +520,9 @@ export default function StationsScreen() {
                 { backgroundColor: colors.primary + "10", borderTopColor: colors.primary },
               ]}
             >
+              <Text style={[styles.priceSource, { color: colors.primary, fontWeight: "600", marginBottom: 4 }]}>
+                📸 Prices you reported at the pump
+              </Text>
               <View style={styles.priceRow}>
                 {userPrices[item.id].e85Price && (
                   <View style={styles.priceItem}>
@@ -572,10 +585,12 @@ export default function StationsScreen() {
             const savings = displayGas
               ? ((1 - displayE85 / displayGas) * 100)
               : null;
-            const e85Label = userE85 ? "E85 (reported)" : `E85 (${item.state} avg)`;
+            const e85Label = userE85 ? "E85 (you reported \u2014 estimate)" : `E85 (${item.state} avg \u00b7 AFDC)`;
             const gasLabel = localPrices?.gasPrice
-              ? `Gas (${item.state} · EIA)`
-              : "Gas (national)";
+              ? `Gas (${item.state} \u00b7 EIA weekly)`
+              : fuelPrices?.gasolinePrice
+              ? "Gas (national avg \u00b7 EIA)"
+              : null;
             const gasFallback = localPrices?.gasPrice ?? (fuelPrices?.gasolinePrice ?? null);
             return (
               <View
@@ -608,11 +623,11 @@ export default function StationsScreen() {
                     </View>
                   )}
                 </View>
-                {localPrices?.gasPricePeriod && (
-                  <Text style={[styles.priceSource, { color: colors.muted }]}>
-                    Gas price: week of {localPrices.gasPricePeriod} · EIA.gov
-                  </Text>
-                )}
+                <Text style={[styles.priceSource, { color: colors.muted }]}>
+                  {localPrices?.gasPricePeriod
+                    ? `Gas: EIA weekly avg (week of ${localPrices.gasPricePeriod}) \u00b7 E85: AFDC state avg \u00b7 Always verify at pump`
+                    : "Prices are AFDC/EIA estimates \u00b7 Always verify at the pump"}
+                </Text>
               </View>
             );
           })()}
@@ -636,8 +651,11 @@ export default function StationsScreen() {
                     </Text>
                   )}
                   {total === 0 && (
-                    <Text style={[styles.votingStats, { color: colors.muted }]}>No votes yet</Text>
+                    <Text style={[styles.votingStats, { color: colors.muted }]}>No votes yet — be first!</Text>
                   )}
+                  <Text style={[styles.votingStats, { color: colors.muted, fontSize: 10, marginTop: 2 }]}>
+                    Your votes only — not shared with others
+                  </Text>
                 </View>
                 <View style={styles.votingButtons}>
                   <Pressable
@@ -696,31 +714,33 @@ export default function StationsScreen() {
                   <Text style={styles.directionText}>Get Directions</Text>
                 </LinearGradient>
               </Pressable>
-              <Pressable
-                onPress={() => handlePriceUpdate(item)}
-                style={({ pressed }) => [
-                  styles.callButton,
-                  { borderColor: colors.primary },
-                  pressed && { opacity: 0.7 },
-                ]}
-              >
-                <IconSymbol name="dollarsign.circle.fill" size={16} color={colors.primary} />
-                <Text style={[styles.callButtonText, { color: colors.primary }]}>
-                  Update Price
-                </Text>
-              </Pressable>
-              {item.phone && (
+              <View style={styles.stationActionsSecondary}>
                 <Pressable
-                  onPress={() => Linking.openURL(`tel:${item.phone}`)}
+                  onPress={() => handlePriceUpdate(item)}
                   style={({ pressed }) => [
                     styles.callButton,
-                    { borderColor: colors.primary },
+                    { borderColor: colors.primary, flex: 1 },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <Text style={[styles.callButtonText, { color: colors.primary }]}>Call</Text>
+                  <IconSymbol name="dollarsign.circle.fill" size={16} color={colors.primary} />
+                  <Text style={[styles.callButtonText, { color: colors.primary }]}>
+                    Update Price
+                  </Text>
                 </Pressable>
-              )}
+                {item.phone && (
+                  <Pressable
+                    onPress={() => Linking.openURL(`tel:${item.phone}`)}
+                    style={({ pressed }) => [
+                      styles.callButton,
+                      { borderColor: colors.primary },
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={[styles.callButtonText, { color: colors.primary }]}>Call</Text>
+                  </Pressable>
+                )}
+              </View>
             </Animated.View>
           )}
 
@@ -749,12 +769,12 @@ export default function StationsScreen() {
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>
               E85 Stations
             </Text>
-            <Text style={[styles.headerSubtitle, { color: colors.muted }]}>
+            <Text style={[styles.headerSubtitle, { color: cacheAgeMin !== null && cacheAgeMin > 30 ? colors.warning : colors.muted }]}>
               {loading
                 ? "Searching..."
                 : cacheAgeMin !== null
-                ? `${stations.length} stations · cached ${cacheAgeMin === 0 ? "just now" : `${cacheAgeMin}m ago`}`
-                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found`}
+                ? `${stations.length} station${stations.length !== 1 ? "s" : ""} \u00b7 AFDC${cacheAgeMin === 0 ? " \u00b7 just updated" : cacheAgeMin > 30 ? ` \u00b7 cached ${cacheAgeMin}m ago \u2014 tap \u21bb` : ` \u00b7 cached ${cacheAgeMin}m ago`}`
+                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found \u00b7 AFDC`}
             </Text>
           </View>
           {!loading && (
@@ -772,7 +792,7 @@ export default function StationsScreen() {
         </View>
       </View>
 
-      {/* Controls Row: radius chips + view toggle */}
+      {/* Row 1: Radius chips */}
       <View style={styles.controlsRow}>
         <View style={styles.radiusChips}>
           {[10, 25, 50, 100].map((radius) => (
@@ -801,12 +821,36 @@ export default function StationsScreen() {
             </Pressable>
           ))}
         </View>
+      </View>
+
+      {/* Row 2: Filters + toggles */}
+      <View style={styles.filtersRow}>
+        {/* Confirmed-only filter */}
+        <Pressable
+          onPress={() => {
+            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setFilterConfirmed((v) => !v);
+          }}
+          style={({ pressed }) => [{
+            paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1,
+            backgroundColor: filterConfirmed ? colors.success + "20" : colors.surface,
+            borderColor: filterConfirmed ? colors.success : colors.border,
+            opacity: pressed ? 0.7 : 1,
+          }]}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "600", color: filterConfirmed ? colors.success : colors.muted }}>
+            {filterConfirmed ? "✅ Confirmed" : "All Stations"}
+          </Text>
+        </Pressable>
+
+        {/* Spacer */}
+        <View style={{ flex: 1 }} />
 
         {/* Sort toggle: Distance / Price */}
         <View
           style={[
             styles.viewToggle,
-            { backgroundColor: colors.surface, borderColor: colors.border, marginRight: 6 },
+            { backgroundColor: colors.surface, borderColor: colors.border, marginRight: 8 },
           ]}
         >
           <Pressable
@@ -885,14 +929,76 @@ export default function StationsScreen() {
         </View>
       </View>
 
-      {/* Error/Info Banner */}
-      {errorMsg && !loading && (
+      {/* Location Denied Banner */}
+      {errorMsg === "LOCATION_DENIED" && !loading && (
         <View style={styles.bannerContainer}>
-          <View style={[styles.infoBanner, { backgroundColor: colors.warning + "18" }]}>
-            <IconSymbol name="info.circle.fill" size={16} color={colors.warning} />
-            <Text style={[styles.infoBannerText, { color: colors.warning }]}>
-              {errorMsg}
-            </Text>
+          <View style={[styles.infoBanner, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, flexDirection: "column", alignItems: "stretch", gap: 10 }]}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+              <IconSymbol name="location.slash.fill" size={18} color={colors.warning} style={{ marginTop: 1 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.infoBannerText, { color: colors.foreground, fontWeight: "700", marginBottom: 2 }]}>
+                  Location Access Off
+                </Text>
+                <Text style={[styles.infoBannerText, { color: colors.muted, fontWeight: "400" }]}>
+                  Showing stations near Phoenix, AZ as a preview. Enable location to find stations near you.
+                </Text>
+              </View>
+            </View>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                onPress={async () => {
+                  // On iOS, once denied the only path is Settings
+                  if (Platform.OS === "ios") {
+                    Linking.openURL("app-settings:");
+                  } else {
+                    const { status } = await Location.requestForegroundPermissionsAsync();
+                    if (status === "granted") {
+                      setHasLocationPermission(true);
+                      setErrorMsg(null);
+                      setLoading(true);
+                      try {
+                        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+                        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+                        setLocation(coords);
+                        await loadStations(coords.latitude, coords.longitude, searchRadius, true);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }
+                  }
+                }}
+                style={({ pressed }) => [styles.bannerBtn, { backgroundColor: colors.primary, flex: 1, opacity: pressed ? 0.8 : 1 }]}
+              >
+                <IconSymbol name="gear" size={14} color="#fff" />
+                <Text style={styles.bannerBtnText}>Open Settings</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setErrorMsg(null)}
+                style={({ pressed }) => [styles.bannerBtn, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}
+              >
+                <Text style={[styles.bannerBtnText, { color: colors.muted }]}>Dismiss</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Error/Info Banner (non-location errors) */}
+      {errorMsg && errorMsg !== "LOCATION_DENIED" && !loading && (
+        <View style={styles.bannerContainer}>
+          <View style={[styles.infoBanner, { backgroundColor: colors.warning + "18", flexDirection: "column", alignItems: "flex-start", gap: 8 }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <IconSymbol name="info.circle.fill" size={16} color={colors.warning} />
+              <Text style={[styles.infoBannerText, { color: colors.warning, flex: 1 }]}>
+                {errorMsg}
+              </Text>
+            </View>
+            <Pressable
+              onPress={handleRefresh}
+              style={({ pressed }) => [{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.warning, borderRadius: 8, opacity: pressed ? 0.7 : 1 }]}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Retry</Text>
+            </Pressable>
           </View>
         </View>
       )}
@@ -1058,7 +1164,10 @@ export default function StationsScreen() {
             stations.length > 0 ? (
               <View style={styles.attribution}>
                 <Text style={[styles.attributionText, { color: colors.muted }]}>
-                  Data from U.S. Department of Energy AFDC
+                  Station locations: U.S. DOE AFDC · Prices: EIA weekly avg + community-reported
+                </Text>
+                <Text style={[styles.attributionSub, { color: colors.border }]}>
+                  Prices are estimates — always verify at the pump
                 </Text>
               </View>
             ) : null
@@ -1121,8 +1230,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingBottom: 14,
+    paddingBottom: 8,
     gap: 10,
+  },
+  filtersRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 8,
   },
   radiusChips: {
     flexDirection: "row",
@@ -1352,14 +1468,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   stationActions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+    flexDirection: "column",
     gap: 8,
     paddingTop: 4,
   },
+  stationActionsSecondary: {
+    flexDirection: "row",
+    gap: 8,
+  },
   directionButton: {
-    flex: 1,
-    minWidth: 140,
+    width: "100%",
     borderRadius: 12,
     overflow: "hidden",
   },
@@ -1368,8 +1486,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 11,
-    paddingHorizontal: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
   },
   directionText: {
     color: "#FFFFFF",
@@ -1467,6 +1585,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "400",
   },
+  attributionSub: {
+    fontSize: 10,
+    marginTop: 2,
+    textAlign: "center",
+  },
   starBtn: {
     padding: 4,
     marginLeft: 4,
@@ -1508,5 +1631,19 @@ const styles = StyleSheet.create({
   voteBtnText: {
     fontSize: 13,
     fontWeight: "600",
+  },
+  bannerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  bannerBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#fff",
   },
 });

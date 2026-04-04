@@ -34,7 +34,7 @@ export const DEFAULT_INPUTS: BlendInputs = {
   currentEthanolPercent: 10,
   targetEthanolPercent: 30,
   e85EthanolPercent: 85,
-  gasEthanolPercent: 0,
+  gasEthanolPercent: 10,
   e85Octane: 105,
   gasOctane: 93,
 };
