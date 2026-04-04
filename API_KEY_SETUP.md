@@ -38,13 +38,27 @@ pnpm dev
 
 ## EAS Build Setup (TestFlight / App Store)
 
-Before building for production, set the NREL API key as an EAS secret:
+### Automatic Fallback (No Manual Config Needed!)
+
+The app now automatically uses the Manus backend (`e85blend-pagwdikw.manus.space`) on TestFlight without requiring manual environment variable setup. **Your cousin doesn't need to enter any code!**
+
+If you want to use a custom backend server instead, set this optional variable:
+
+```bash
+eas secret set EXPO_PUBLIC_API_BASE_URL https://your-api-server.com
+```
+
+### NREL API Key (Server-side) — Still Required
 
 ```bash
 eas secret set NREL_API_KEY your_actual_api_key_here
 ```
 
-This stores the key securely in EAS and injects it into the production build. The key is **never** stored in `eas.json` or version control.
+This stores the key securely in EAS and injects it into the backend server. The key is **never** stored in `eas.json` or version control.
+
+### Summary
+- **NREL_API_KEY**: Required (backend needs it to call NREL API)
+- **EXPO_PUBLIC_API_BASE_URL**: Optional (defaults to Manus backend on TestFlight)
 
 ## Verifying the Setup
 
@@ -55,7 +69,9 @@ This stores the key securely in EAS and injects it into the production build. Th
 
 | Issue | Solution |
 |---|---|
-| Stations don't load | Check that `NREL_API_KEY` is set in your environment |
+| Stations don't load on TestFlight | Check that `NREL_API_KEY` is set in EAS. The app auto-uses Manus backend, no manual URL config needed. |
+| "Cannot reach server" error on TestFlight | The Manus backend is unreachable (rare). Check your internet connection. |
+| Stations work on web but not iOS/Android | Usually means `NREL_API_KEY` is not set. Verify it's in EAS. |
 | Rate limit errors (429) | Verify the API key is valid and not expired at developer.nrel.gov |
 | "DEMO_KEY" fallback used | The `NREL_API_KEY` env var is not set; the app falls back to the public demo key (rate-limited) |
 

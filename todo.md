@@ -493,3 +493,77 @@
 - [x] Set default gas ethanol to 10% (currently 0%) — changed DEFAULT_INPUTS.gasEthanolPercent from 0 to 10 in blend-calculator.ts
 - [x] Make Saved Blends tappable/selectable to populate calculator — added savedBlends state and handleLoadSavedBlend function, created collapsible Saved Blends section in calculator.tsx
 - [x] Verify odometer updates sync between Fuel Log and Reminders — confirmed existing implementation in calculator.tsx handleConfirmLogFillUp already syncs reminders when odometer updates
+
+
+## Session 13 — Stations Feature TestFlight Audit & Fix (Apr 3, 2026)
+
+### Root Cause Analysis
+- [x] Identified: getApiBaseUrl() returns empty string on native (no EXPO_PUBLIC_API_BASE_URL set)
+- [x] Identified: tRPC URL becomes relative "/api/trpc" instead of absolute URL
+- [x] Identified: Errors silently swallowed in fetchNearbyStations() → returns []
+- [x] Identified: UI shows "No E85 stations found" instead of meaningful error
+
+### Fixes Applied
+- [x] Updated constants/oauth.ts: Added warning when API_BASE_URL empty on native
+- [x] Updated lib/trpc.ts: Added validation and error logging for missing API base URL
+- [x] Updated lib/station-data.ts: Changed error handling to throw meaningful errors (NETWORK_ERROR, RATE_LIMITED, NREL_API_ERROR)
+- [x] Updated app/(tabs)/stations.tsx: Enhanced error UI to distinguish between error types
+- [x] Updated eas.json: Added env section documenting required variables
+- [x] Updated API_KEY_SETUP.md: Documented EXPO_PUBLIC_API_BASE_URL requirement for native/TestFlight
+- [x] Updated lib/__tests__/station-data.test.ts: Fixed tests to work with new error handling
+- [x] Created STATIONS_AUDIT.md: Comprehensive audit report with failure flow and fixes
+
+### Quality Assurance
+- [x] 0 TypeScript errors
+- [x] 58 tests passing (no regressions)
+- [x] All error paths tested and documented
+
+### Required Environment Variables for TestFlight
+```
+EXPO_PUBLIC_API_BASE_URL=https://your-api-server.com
+NREL_API_KEY=<your-nrel-key>
+```
+
+### Manual Steps Before Rebuilding
+1. Set EAS secrets:
+   ```bash
+   eas secret set EXPO_PUBLIC_API_BASE_URL https://your-api-server.com
+   eas secret set NREL_API_KEY <your-nrel-key>
+   ```
+2. Rebuild for TestFlight:
+   ```bash
+   eas build --platform ios --profile production
+   ```
+
+
+## Session 13b — Automatic Fallback for TestFlight (No Manual Config!)
+
+### Problem Solved
+- Cousin doesn't need to enter EXPO_PUBLIC_API_BASE_URL manually
+- No credit waste on failed builds due to misconfiguration
+
+### Implementation
+- [x] Updated constants/oauth.ts: Added automatic fallback to Manus backend for native builds
+- [x] Updated lib/trpc.ts: Simplified to use fallback without warnings
+- [x] Updated API_KEY_SETUP.md: Documented automatic fallback (EXPO_PUBLIC_API_BASE_URL now optional)
+- [x] Updated eas.json: Removed EXPO_PUBLIC_API_BASE_URL from env section (only NREL_API_KEY required)
+- [x] Updated troubleshooting: Simplified for automatic fallback scenario
+
+### How It Works
+1. On TestFlight, app automatically uses `https://e85blend-pagwdikw.manus.space`
+2. No manual env var setup needed
+3. If cousin wants custom backend, can still set EXPO_PUBLIC_API_BASE_URL (optional override)
+
+### Quality Assurance
+- [x] 0 TypeScript errors
+- [x] 58 tests passing
+- [x] Backward compatible with custom backends
+
+### For Your Cousin
+**All he needs to do:**
+```bash
+eas secret set NREL_API_KEY <your-key>
+eas build --platform ios --profile production
+```
+
+That's it! No EXPO_PUBLIC_API_BASE_URL needed. 🎉

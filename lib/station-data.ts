@@ -79,8 +79,23 @@ export async function fetchNearbyStations(
       facilityType: formatFacilityType(station.facility_type),
     }));
   } catch (error) {
-    console.warn("Failed to fetch stations from server proxy:", error);
-    return [];
+    // Surface meaningful error instead of silently returning empty array
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    
+    // Distinguish between different failure modes
+    if (errorMsg.includes("Failed to fetch") || errorMsg.includes("Network")) {
+      console.error("[Stations] Network error - API server unreachable:", error);
+      throw new Error("NETWORK_ERROR");
+    } else if (errorMsg.includes("API rate limit")) {
+      console.error("[Stations] API rate limited:", error);
+      throw new Error("RATE_LIMITED");
+    } else if (errorMsg.includes("NREL API")) {
+      console.error("[Stations] NREL API error:", error);
+      throw new Error("NREL_API_ERROR");
+    } else {
+      console.error("[Stations] Failed to fetch stations:", error);
+      throw error;
+    }
   }
 }
 

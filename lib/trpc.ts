@@ -17,12 +17,18 @@ export const trpc = createTRPCReact<AppRouter>();
 /**
  * Creates the tRPC client with proper configuration.
  * Call this once in your app's root layout.
+ *
+ * On native/TestFlight:
+ * - If EXPO_PUBLIC_API_BASE_URL is set, uses it
+ * - Otherwise, uses fallback Manus backend (no manual config needed)
  */
 export function createTRPCClient() {
+  const apiBaseUrl = getApiBaseUrl();
+  
   return trpc.createClient({
     links: [
       httpBatchLink({
-        url: `${getApiBaseUrl()}/api/trpc`,
+        url: `${apiBaseUrl}/api/trpc`,
         // tRPC v11: transformer MUST be inside httpBatchLink, not at root
         transformer: superjson,
         async headers() {

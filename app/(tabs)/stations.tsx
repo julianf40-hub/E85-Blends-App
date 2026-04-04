@@ -199,8 +199,13 @@ export default function StationsScreen() {
           setErrorMsg(null);
         }
       } catch (err: any) {
-        if (err?.message === "RATE_LIMITED") {
+        const errorType = err?.message;
+        if (errorType === "RATE_LIMITED") {
           setErrorMsg("API rate limit reached. Pull down to refresh in a moment.");
+        } else if (errorType === "NETWORK_ERROR") {
+          setErrorMsg("Cannot reach server. Check your internet connection or contact support.");
+        } else if (errorType === "NREL_API_ERROR") {
+          setErrorMsg("E85 station data service temporarily unavailable. Try again later.");
         } else {
           setErrorMsg("Failed to load stations. Check your internet connection.");
         }

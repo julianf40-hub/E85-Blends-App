@@ -3,6 +3,11 @@
     "version": ">= 16.0.0",
     "appVersionSource": "local"
   },
+  "env": {
+    "production": {
+      "NREL_API_KEY": "your-nrel-api-key"
+    }
+  },
   "build": {
     "development": {
       "developmentClient": true,
@@ -22,6 +27,9 @@
     },
     "production": {
       "distribution": "store",
+      "env": {
+        "NREL_API_KEY": ""
+      },
       "ios": {
         "autoIncrement": true
       },

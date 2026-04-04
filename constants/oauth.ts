@@ -28,9 +28,14 @@ export const API_BASE_URL = env.apiBaseUrl;
  * Get the API base URL, deriving from current hostname if not set.
  * Metro runs on 8081, API server runs on 3000.
  * URL pattern: https://PORT-sandboxid.region.domain
+ *
+ * Smart fallback for native/TestFlight:
+ * - If EXPO_PUBLIC_API_BASE_URL is set, use it
+ * - On web, auto-derive from window.location
+ * - On native, use the Manus backend as fallback (no manual config needed)
  */
 export function getApiBaseUrl(): string {
-  // If API_BASE_URL is set, use it
+  // If API_BASE_URL is set, use it (explicit config takes priority)
   if (API_BASE_URL) {
     return API_BASE_URL.replace(/\/$/, "");
   }
@@ -45,7 +50,16 @@ export function getApiBaseUrl(): string {
     }
   }
 
-  // Fallback to empty (will use relative URL)
+  // On native without explicit config, use Manus backend as fallback
+  // This allows TestFlight builds to work without manual env var setup
+  if (ReactNative.Platform.OS !== "web") {
+    const fallbackUrl = "https://e85blend-pagwdikw.manus.space";
+    console.info(
+      "[API] Using fallback Manus backend for native build: " + fallbackUrl
+    );
+    return fallbackUrl;
+  }
+
   return "";
 }
 
