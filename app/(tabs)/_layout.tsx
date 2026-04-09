@@ -161,12 +161,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="garage"
-        options={{
-          href: null,
-        }}
-      />
-      <Tabs.Screen
         name="blends"
         options={{
           href: null,
