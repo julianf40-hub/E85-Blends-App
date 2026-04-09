@@ -78,7 +78,7 @@ export default function AboutScreen() {
           </Text>
           <View style={[styles.versionBadge, { backgroundColor: colors.primary + "18", borderColor: colors.primary + "30" }]}>
             <Text style={[styles.versionText, { color: colors.primary }]}>
-              v{version} · Public Beta
+              v{version}
             </Text>
           </View>
         </View>

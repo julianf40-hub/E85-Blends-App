@@ -29,6 +29,8 @@ import { getActiveCar, updateCarProfile } from "@/lib/garage";
 import { getSavedBlends, deleteBlend, toggleFavorite, SavedBlend } from "@/lib/blend-storage";
 import * as Location from "expo-location";
 import { fetchNearbyStations } from "@/lib/station-data";
+import { loadPreferences } from "@/lib/preferences";
+import { addStationPrice } from "@/lib/station-prices";
 
 export default function FuelLogScreen() {
   const colors = useColors();
@@ -39,6 +41,7 @@ export default function FuelLogScreen() {
   const [showModal, setShowModal] = useState(false);
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
+  const [preferredOctane, setPreferredOctane] = useState<number>(87);
 
   const loadBlends = useCallback(async () => {
     const b = await getSavedBlends();
@@ -73,6 +76,7 @@ export default function FuelLogScreen() {
         setFormData((prev) => ({
           ...prev,
           stationName: prev.stationName === "" ? nearby[0].name : prev.stationName,
+          stationId: prev.stationId === "" ? nearby[0].id : prev.stationId,
         }));
       }
     } catch {
@@ -84,6 +88,7 @@ export default function FuelLogScreen() {
 
   const [formData, setFormData] = useState({
     stationName: "",
+    stationId: "",
     e85Gallons: "",
     gasGallons: "",
     e85Price: "",
@@ -115,10 +120,14 @@ export default function FuelLogScreen() {
   const loadData = useCallback(async () => {
     setLoadError(false);
     try {
-      const logs = await loadFuelLog();
-      const stats = await getFuelLogStats();
+      const [logs, stats, prefs] = await Promise.all([
+        loadFuelLog(),
+        getFuelLogStats(),
+        loadPreferences(),
+      ]);
       setEntries(logs);
       setStats(stats);
+      setPreferredOctane(prefs.preferredOctane ?? 87);
       await loadBlends();
     } catch (error) {
       console.error("Failed to load fuel log:", error);
@@ -163,6 +172,25 @@ export default function FuelLogScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
 
+      // Auto-update station price community record with octane-mapped grade
+      if (newEntry.stationId && (derivedE85Price > 0 || derivedGasPrice > 0)) {
+        try {
+          const octane = preferredOctane;
+          const gradeField =
+            octane >= 93 ? "octane9194Price" :
+            octane === 91 || octane === 92 ? "octane9194Price" :
+            octane === 89 ? "octane89Price" :
+            "octane87Price";
+          await addStationPrice({
+            stationId: newEntry.stationId,
+            e85Price: derivedE85Price > 0 ? derivedE85Price : undefined,
+            [gradeField]: derivedGasPrice > 0 ? derivedGasPrice : undefined,
+          });
+        } catch {
+          // non-critical — silently ignore
+        }
+      }
+
       // Auto-update active car odometer from fuel log entry
       try {
         const car = await getActiveCar();
@@ -181,6 +209,7 @@ export default function FuelLogScreen() {
 
       setFormData({
         stationName: "",
+        stationId: "",
         e85Gallons: "",
         gasGallons: "",
         e85Price: "",
@@ -665,7 +694,7 @@ export default function FuelLogScreen() {
                   />
                 </View>
                 <View style={styles.formGroupHalf}>
-                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Gas $/gal</Text>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Octane {preferredOctane} $/gal</Text>
                   <TextInput
                     style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
                     placeholder="3.49"

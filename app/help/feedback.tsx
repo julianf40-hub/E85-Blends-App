@@ -92,7 +92,7 @@ export default function FeedbackScreen() {
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>We'd love to hear from you</Text>
           <Text style={[styles.cardBody, { color: colors.muted }]}>
-            85Blends is in public beta. Your feedback directly shapes what gets built next. Bug reports, feature ideas, and general impressions are all welcome.
+            Your feedback directly shapes what gets built next. Bug reports, feature ideas, and general impressions are all welcome.
           </Text>
         </View>
 
@@ -136,10 +136,10 @@ export default function FeedbackScreen() {
           </Pressable>
         </View>
 
-        {/* Beta note */}
-        <View style={[styles.betaBadge, { backgroundColor: colors.warning + "12", borderColor: colors.warning + "30" }]}>
+        {/* Note */}
+        <View style={[styles.betaBadge, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.betaText, { color: colors.muted }]}>
-            <Text style={{ fontWeight: "700", color: colors.warning }}>Beta note: </Text>
+            <Text style={{ fontWeight: "700", color: colors.foreground }}>Note: </Text>
             Feedback is read by the developer personally. Response times may vary, but every message is reviewed.
           </Text>
         </View>

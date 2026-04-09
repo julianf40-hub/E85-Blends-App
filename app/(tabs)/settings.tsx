@@ -743,6 +743,10 @@ export default function SettingsScreen() {
                     key={screen}
                     onPress={() => {
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      // If selecting Garage as home, also ensure Garage tab is visible
+                      if (screen === "garage" && prefs.showGarage === false) {
+                        handleSavePreference("showGarage", true);
+                      }
                       handleSavePreference("homeScreen", screen);
                     }}
                     style={({ pressed }) => [
@@ -763,11 +767,19 @@ export default function SettingsScreen() {
             <View style={styles.settingRow}>
               <View style={styles.settingLabel}>
                 <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage Tab</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Display the Garage tab in navigation</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                  {(prefs.homeScreen ?? "calculator") === "garage"
+                    ? "Required — Garage is your home screen"
+                    : "Display the Garage tab in navigation"}
+                </Text>
               </View>
               <Switch
                 value={prefs.showGarage !== false}
-                onValueChange={(val) => handleSavePreference("showGarage", val)}
+                disabled={(prefs.homeScreen ?? "calculator") === "garage"}
+                onValueChange={(val) => {
+                  if ((prefs.homeScreen ?? "calculator") === "garage") return;
+                  handleSavePreference("showGarage", val);
+                }}
                 trackColor={{ false: colors.border, true: colors.primary + "44" }}
                 thumbColor={prefs.showGarage !== false ? colors.primary : colors.muted}
               />
@@ -1044,7 +1056,7 @@ export default function SettingsScreen() {
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
-          <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.0 · Public Beta</Text>
+          <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.0</Text>
           <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 1 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 

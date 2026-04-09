@@ -41,8 +41,8 @@ const SECTIONS: PolicySection[] = [
     body: "There are no user accounts. No email address, name, or personal identifier is collected at any point. Your data is not synced to any cloud service.",
   },
   {
-    title: "Beta Period",
-    body: "This is a public beta release. If you choose to send feedback via the Send Feedback option, your message is sent through your device's email client directly to the developer. No feedback data is collected automatically.",
+    title: "Feedback",
+    body: "If you choose to send feedback via the Send Feedback option, your message is sent through your device's email client directly to the developer. No feedback data is collected automatically.",
   },
   {
     title: "Data Deletion",
@@ -98,7 +98,7 @@ export default function PrivacyScreen() {
 
         {/* Footer */}
         <Text style={[styles.footer, { color: colors.muted }]}>
-          Effective: April 2026 · 85Blends v1.0.0 Public Beta
+          Effective: April 2026 · 85Blends v1.0.0
         </Text>
 
         <View style={{ height: 40 }} />

@@ -74,25 +74,42 @@ type StationPriceSummary = {
 function getStationPriceSummary(
   station: E85Station,
   userPrice: { e85Price?: number; timestamp?: number } | undefined,
+  communityPrice: { e85Price?: number; reportCount: number; freshestTimestamp?: number } | undefined,
   localPrices: { e85Price: number | null; gasPrice: number | null; gasPricePeriod: string | null } | null,
 ): StationPriceSummary {
+  // Tier 1: User's own logged price
   if (userPrice?.e85Price != null && userPrice.timestamp != null) {
     const stale = isPriceStale(userPrice.timestamp);
     return {
       price: userPrice.e85Price,
       sourceLabel: "Your logged E85",
-      sublabel: stale ? "Local pump report (stale)" : "Local pump report",
+      sublabel: stale ? "Your pump report (stale)" : "Your pump report",
       stale,
       updatedLabel: formatPriceAge(userPrice.timestamp),
       isEstimate: false,
     };
   }
 
+  // Tier 2: Community price (aggregated local reports)
+  if (communityPrice?.e85Price != null && communityPrice.reportCount > 0) {
+    const stale = communityPrice.freshestTimestamp != null && isPriceStale(communityPrice.freshestTimestamp);
+    const countLabel = communityPrice.reportCount === 1 ? "1 report" : `${communityPrice.reportCount} reports`;
+    return {
+      price: communityPrice.e85Price,
+      sourceLabel: "Community E85",
+      sublabel: stale ? `Community (stale · ${countLabel})` : `Community · ${countLabel}`,
+      stale,
+      updatedLabel: communityPrice.freshestTimestamp != null ? formatPriceAge(communityPrice.freshestTimestamp) : undefined,
+      isEstimate: false,
+    };
+  }
+
+  // Tier 3: State/regional average fallback
   const stateAvg = localPrices?.e85Price ?? getE85StateAverage(station.state);
   return {
     price: stateAvg,
-    sourceLabel: `Estimated ${station.state} avg`,
-    sublabel: "AFDC state average",
+    sourceLabel: `${station.state} avg`,
+    sublabel: "EIA state average",
     stale: false,
     isEstimate: true,
   };
@@ -106,7 +123,11 @@ function getTrustBadges(
 ) {
   const badges: Array<{ label: string; tone: "success" | "warn" | "muted" | "accent" }> = [];
   if (!summary.isEstimate) {
-    badges.push({ label: summary.stale ? "Price stale" : "User logged", tone: summary.stale ? "warn" : "success" });
+    if (summary.sourceLabel === "Community E85") {
+      badges.push({ label: summary.stale ? "Community (stale)" : "Community", tone: summary.stale ? "warn" : "accent" });
+    } else {
+      badges.push({ label: summary.stale ? "Price stale" : "Your log", tone: summary.stale ? "warn" : "success" });
+    }
   } else {
     badges.push({ label: "Estimated", tone: "muted" });
   }
@@ -160,6 +181,7 @@ export default function StationsScreen() {
     setPriceModalVisible,
     priceModalStation,
     userPrices,
+    communityPrices,
     submittingPrice,
     viewMode,
     setViewMode,
@@ -327,7 +349,7 @@ export default function StationsScreen() {
 	            const vote = stationVotes[item.id];
 	            const confidence = vote ? getConfidenceScore(vote) : -1;
 	            const total = vote ? vote.yesCount + vote.noCount : 0;
-	            const summary = getStationPriceSummary(item, userPrices[item.id], localPrices);
+	            const summary = getStationPriceSummary(item, userPrices[item.id], communityPrices[item.id], localPrices);
 	            const gasFallback = localPrices?.gasPrice ?? (fuelPrices?.gasolinePrice ?? null);
 	            const savings =
 	              gasFallback != null ? (1 - summary.price / gasFallback) * 100 : null;

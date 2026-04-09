@@ -4,7 +4,7 @@ import * as Haptics from "expo-haptics";
 import type { E85Station } from "@/lib/station-data";
 import type { LocalFuelPrices } from "@/lib/fuel-prices";
 import { getE85StateAverage } from "@/lib/fuel-prices";
-import { getLatestStationPrice, addStationPrice, type StationPrice } from "@/lib/station-prices";
+import { getLatestStationPrice, addStationPrice, getAverageStationPrices, getStationPrices, isPriceStale, type StationPrice } from "@/lib/station-prices";
 import { loadFavorites, addFavorite, removeFavorite } from "@/lib/station-favorites";
 import { getStationVotes, castVote, type StationVote } from "@/lib/station-votes";
 
@@ -14,6 +14,7 @@ export function useStationsInteractions(stations: E85Station[], localPrices: Loc
   const [priceModalVisible, setPriceModalVisible] = useState(false);
   const [priceModalStation, setPriceModalStation] = useState<E85Station | null>(null);
   const [userPrices, setUserPrices] = useState<Record<string, any>>({});
+  const [communityPrices, setCommunityPrices] = useState<Record<string, { e85Price?: number; reportCount: number; freshestTimestamp?: number }>>({});
   const [submittingPrice, setSubmittingPrice] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
@@ -37,20 +38,37 @@ export function useStationsInteractions(stations: E85Station[], localPrices: Loc
     (async () => {
       if (stations.length === 0) {
         setUserPrices({});
+        setCommunityPrices({});
         return;
       }
       const entries = await Promise.all(
         stations.map(async (station) => {
-          const latest = await getLatestStationPrice(station.id);
-          return [station.id, latest] as const;
+          const [latest, allPrices] = await Promise.all([
+            getLatestStationPrice(station.id),
+            getStationPrices(station.id),
+          ]);
+          return [station.id, latest, allPrices] as const;
         })
       );
       if (cancelled) return;
-      const next: Record<string, StationPrice> = {};
-      for (const [stationId, price] of entries) {
-        if (price) next[stationId] = price;
+      const nextUser: Record<string, StationPrice> = {};
+      const nextCommunity: Record<string, { e85Price?: number; reportCount: number; freshestTimestamp?: number }> = {};
+      for (const [stationId, latest, allPrices] of entries) {
+        if (latest) nextUser[stationId] = latest;
+        // Build community summary: aggregate all e85 reports (excluding own latest if only 1)
+        const e85Reports = allPrices.filter((p) => p.e85Price != null);
+        if (e85Reports.length > 0) {
+          const avg = e85Reports.reduce((sum, p) => sum + (p.e85Price ?? 0), 0) / e85Reports.length;
+          const freshest = e85Reports.reduce((max, p) => Math.max(max, p.timestamp), 0);
+          nextCommunity[stationId] = {
+            e85Price: Math.round(avg * 100) / 100,
+            reportCount: e85Reports.length,
+            freshestTimestamp: freshest,
+          };
+        }
       }
-      setUserPrices(next);
+      setUserPrices(nextUser);
+      setCommunityPrices(nextCommunity);
     })();
     return () => {
       cancelled = true;
@@ -179,6 +197,7 @@ export function useStationsInteractions(stations: E85Station[], localPrices: Loc
     setPriceModalVisible,
     priceModalStation,
     userPrices,
+    communityPrices,
     submittingPrice,
     viewMode,
     setViewMode,
