@@ -79,23 +79,27 @@ export async function fetchNearbyStations(
       facilityType: formatFacilityType(station.facility_type),
     }));
   } catch (error) {
-    // Surface meaningful error instead of silently returning empty array
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    
-    // Distinguish between different failure modes
-    if (errorMsg.includes("Failed to fetch") || errorMsg.includes("Network")) {
-      console.error("[Stations] Network error - API server unreachable:", error);
-      throw new Error("NETWORK_ERROR");
-    } else if (errorMsg.includes("API rate limit")) {
-      console.error("[Stations] API rate limited:", error);
+    const trpcCode = (error as any)?.data?.code as string | undefined;
+    const serverCode = (error as any)?.message as string | undefined;
+
+    if (trpcCode === "TOO_MANY_REQUESTS" || serverCode === "STATION_SEARCH_RATE_LIMITED") {
       throw new Error("RATE_LIMITED");
-    } else if (errorMsg.includes("NREL API")) {
-      console.error("[Stations] NREL API error:", error);
-      throw new Error("NREL_API_ERROR");
-    } else {
-      console.error("[Stations] Failed to fetch stations:", error);
-      throw error;
     }
+    if (serverCode === "STATION_SEARCH_CONFIG_ERROR") {
+      throw new Error("CONFIG_ERROR");
+    }
+    if (serverCode === "STATION_SEARCH_UPSTREAM_ERROR") {
+      throw new Error("NREL_API_ERROR");
+    }
+    if (trpcCode === "INTERNAL_SERVER_ERROR") {
+      throw new Error("NREL_API_ERROR");
+    }
+
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (errorMsg.includes("Failed to fetch") || errorMsg.includes("Network")) {
+      throw new Error("NETWORK_ERROR");
+    }
+    throw error;
   }
 }
 

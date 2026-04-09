@@ -37,14 +37,16 @@ Create a `.env` file in the project root. Required keys:
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `EXPO_PUBLIC_NREL_API_KEY` | NREL API key for station data (get free key at [developer.nrel.gov](https://developer.nrel.gov)) | `YOUR_KEY_HERE` |
+| `NREL_API_KEY` | NREL API key for station data (get free key at [developer.nrel.gov](https://developer.nrel.gov)) | `YOUR_KEY_HERE` |
 | `EXPO_PROJECT_ID` | Expo project ID for OTA updates (from `app.json` or EAS) | `abc123def456` |
 | `DATABASE_URL` | PostgreSQL connection string (optional, for backend) | `postgresql://user:pass@localhost/e85` |
-| `JWT_SECRET` | Secret for JWT signing (optional, for auth) | `your-secret-key` |
+| `JWT_SECRET` | Secret for JWT signing (**required when running backend/auth**) | `openssl rand -base64 32` |
 
-**Note:** If `EXPO_PUBLIC_NREL_API_KEY` is not set, the app will use a shared demo key, which is **rate-limited**. For production, provide your own key.
+**Note:** `NREL_API_KEY` is required for station search on the backend. If missing, station search requests fail fast with a server configuration error.
 
 See `.env.example` for all available options.
+
+> Backend startup now validates `JWT_SECRET` and will fail fast outside tests if the value is missing, too short, or looks like a placeholder.
 
 ---
 
@@ -156,13 +158,13 @@ tailwind.config.js     ← Tailwind CSS config
 
 ## Troubleshooting
 
-### "Station search not working" or "Rate limit exceeded"
+### "Station search not working" or "NREL API key not configured"
 
-**Cause:** Using the shared demo NREL API key, which is rate-limited.
+**Cause:** `NREL_API_KEY` is missing or invalid on the backend.
 
 **Fix:** 
 1. Get your own free API key at [developer.nrel.gov](https://developer.nrel.gov)
-2. Add to `.env`: `EXPO_PUBLIC_NREL_API_KEY=your_key_here`
+2. Add to `.env`: `NREL_API_KEY=your_key_here`
 3. Restart the dev server: `pnpm dev`
 
 ### "API connection refused" on physical device

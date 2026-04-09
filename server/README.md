@@ -577,7 +577,7 @@ Available environment variables:
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | MySQL/TiDB connection string |
-| `JWT_SECRET` | Session signing secret |
+| `JWT_SECRET` | Session signing secret (**required outside tests**, must be strong and non-placeholder) |
 | `VITE_APP_ID` | Manus OAuth app ID |
 | `OAUTH_SERVER_URL` | Manus OAuth backend URL |
 | `VITE_OAUTH_PORTAL_URL` | Manus login portal URL |
@@ -593,6 +593,8 @@ Expo runtime variables (prefixed with `EXPO_PUBLIC_`):
 | `EXPO_PUBLIC_APP_ID` | App ID for OAuth |
 | `EXPO_PUBLIC_API_BASE_URL` | API server URL |
 | `EXPO_PUBLIC_OAUTH_PORTAL_URL` | Login portal URL |
+
+> Server startup validates `JWT_SECRET` and fails fast in non-test environments if it is missing, shorter than 32 characters, or appears to be a placeholder value.
 
 ---
 

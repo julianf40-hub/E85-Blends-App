@@ -15,7 +15,7 @@ The 85Blends app uses the NREL Alternative Fuel Data Center (AFDC) API to fetch 
 1. Go to [developer.nrel.gov](https://developer.nrel.gov)
 2. Sign up or log in
 3. Create an API key for the Alternative Fuel Stations API
-4. Copy the key (looks like: `wYvVTmn6ub2F09aUEbFrCZB0v6hfqLKeNN3o3ZX6`)
+4. Copy the key (looks like: `<your-nrel-api-key>`)
 
 ## Local Development Setup
 
@@ -73,7 +73,7 @@ This stores the key securely in EAS and injects it into the backend server. The 
 | "Cannot reach server" error on TestFlight | The Manus backend is unreachable (rare). Check your internet connection. |
 | Stations work on web but not iOS/Android | Usually means `NREL_API_KEY` is not set. Verify it's in EAS. |
 | Rate limit errors (429) | Verify the API key is valid and not expired at developer.nrel.gov |
-| "DEMO_KEY" fallback used | The `NREL_API_KEY` env var is not set; the app falls back to the public demo key (rate-limited) |
+| "NREL API key is not configured on the server" | Set `NREL_API_KEY` in your backend environment and restart the server. |
 
 ## Security Notes
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useEffect, useCallback, useRef } from "react";
 import {
   Text,
   View,
@@ -19,36 +19,19 @@ import { LinearGradient } from "expo-linear-gradient";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { E85Station, fetchNearbyStations } from "@/lib/station-data";
-import { FuelPrices, fetchFuelPrices, fetchLocalPrices, getE85StateAverage, LocalFuelPrices } from "@/lib/fuel-prices";
+import { E85Station } from "@/lib/station-data";
+import { getE85StateAverage } from "@/lib/fuel-prices";
 import { PriceUpdateModal } from "@/components/price-update-modal";
-import {
-  getLatestStationPrice,
-  addStationPrice,
-  formatPriceAge,
-  isPriceStale,
-} from "@/lib/station-prices";
-import {
-  getCachedStations,
-  setCachedStations,
-  invalidateStationCache,
-  getStationCacheAge,
-} from "@/lib/station-cache";
-import {
-  loadFavorites,
-  addFavorite,
-  removeFavorite,
-  isFavorited,
-  type StationFavorite,
-} from "@/lib/station-favorites";
-import {
-  getStationVotes,
-  castVote,
-  getConfidenceScore,
-  type StationVote,
-} from "@/lib/station-votes";
+import { formatPriceAge, isPriceStale } from "@/lib/station-prices";
+import { getConfidenceScore } from "@/lib/station-votes";
+import { useStationsData } from "@/hooks/use-stations-data";
+import { useStationsInteractions } from "@/hooks/use-stations-interactions";
+import { StationsHeader } from "@/components/stations/stations-header";
+import { StationsControls } from "@/components/stations/stations-controls";
+import { LocationDeniedBanner, StationsErrorBanner } from "@/components/stations/stations-banners";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Compute a region that fits all station markers plus the user location */
 function computeRegion(
@@ -79,191 +62,117 @@ function computeRegion(
   };
 }
 
+type StationPriceSummary = {
+  price: number;
+  sourceLabel: string;
+  sublabel: string;
+  stale: boolean;
+  updatedLabel?: string;
+  isEstimate: boolean;
+};
+
+function getStationPriceSummary(
+  station: E85Station,
+  userPrice: { e85Price?: number; timestamp?: number } | undefined,
+  localPrices: { e85Price: number | null; gasPrice: number | null; gasPricePeriod: string | null } | null,
+): StationPriceSummary {
+  if (userPrice?.e85Price != null && userPrice.timestamp != null) {
+    const stale = isPriceStale(userPrice.timestamp);
+    return {
+      price: userPrice.e85Price,
+      sourceLabel: "Your logged E85",
+      sublabel: stale ? "Local pump report (stale)" : "Local pump report",
+      stale,
+      updatedLabel: formatPriceAge(userPrice.timestamp),
+      isEstimate: false,
+    };
+  }
+
+  const stateAvg = localPrices?.e85Price ?? getE85StateAverage(station.state);
+  return {
+    price: stateAvg,
+    sourceLabel: `Estimated ${station.state} avg`,
+    sublabel: "AFDC state average",
+    stale: false,
+    isEstimate: true,
+  };
+}
+
+function getTrustBadges(
+  station: E85Station,
+  summary: StationPriceSummary,
+  confidence: number,
+  voteTotal: number,
+) {
+  const badges: Array<{ label: string; tone: "success" | "warn" | "muted" | "accent" }> = [];
+  if (!summary.isEstimate) {
+    badges.push({ label: summary.stale ? "Price stale" : "User logged", tone: summary.stale ? "warn" : "success" });
+  } else {
+    badges.push({ label: "Estimated", tone: "muted" });
+  }
+
+  if (station.lastConfirmed) {
+    const confirmedAt = new Date(station.lastConfirmed).getTime();
+    if (!Number.isNaN(confirmedAt)) {
+      const ageDays = Math.floor((Date.now() - confirmedAt) / DAY_MS);
+      if (ageDays <= 1) badges.push({ label: "Confirmed today", tone: "success" });
+      else if (ageDays <= 30) badges.push({ label: `Confirmed ${ageDays}d`, tone: "accent" });
+    }
+  }
+
+  if (voteTotal > 0) {
+    if (confidence >= 70) badges.push({ label: `Local votes ${confidence}%`, tone: "success" });
+    else if (confidence <= 40) badges.push({ label: `Mixed votes ${confidence}%`, tone: "warn" });
+    else badges.push({ label: `Local votes ${confidence}%`, tone: "accent" });
+  }
+  return badges.slice(0, 3);
+}
+
 export default function StationsScreen() {
   const colors = useColors();
   const mapRef = useRef<any>(null);
+  const {
+    location,
+    stations,
+    loading,
+    refreshing,
+    errorMsg,
+    searchRadius,
+    fuelPrices,
+    localPrices,
+    cacheAgeMin,
+    hasLocationPermission,
+    setErrorMsg,
+    setHasLocationPermission,
+    setLoading,
+    setLocation,
+    loadStations,
+    handleRefresh,
+    handleRadiusChange,
+  } = useStationsData();
 
-  const [location, setLocation] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
-  const [stations, setStations] = useState<E85Station[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [selectedStation, setSelectedStation] = useState<E85Station | null>(null);
-  const [searchRadius, setSearchRadius] = useState(25);
-  const [fuelPrices, setFuelPrices] = useState<FuelPrices | null>(null);
-  const [localPrices, setLocalPrices] = useState<LocalFuelPrices | null>(null);
-  const [sortMode, setSortMode] = useState<"distance" | "price">("distance");
-  const [priceModalVisible, setPriceModalVisible] = useState(false);
-  const [priceModalStation, setPriceModalStation] = useState<E85Station | null>(null);
-  const [userPrices, setUserPrices] = useState<Record<string, any>>({});
-  const [submittingPrice, setSubmittingPrice] = useState(false);
-  const [viewMode, setViewMode] = useState<"list" | "map">("list");
-  const [cacheAgeMin, setCacheAgeMin] = useState<number | null>(null);
-  const [hasLocationPermission, setHasLocationPermission] = useState(false);
-  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-  const [stationVotes, setStationVotes] = useState<Record<string, StationVote>>({});
-  const [filterConfirmed, setFilterConfirmed] = useState(false);
-
-  // Load favorites on mount
-  useEffect(() => {
-    loadFavorites().then((favs) => {
-      setFavoriteIds(new Set(favs.map((f) => f.stationId)));
-    });
-  }, []);
-
-  // Load votes whenever stations change
-  useEffect(() => {
-    if (stations.length > 0) {
-      getStationVotes(stations.map((s) => s.id)).then(setStationVotes);
-    }
-  }, [stations]);
-
-  const handleVote = useCallback(async (stationId: string, vote: "yes" | "no") => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const updated = await castVote(stationId, vote);
-    setStationVotes((prev) => ({ ...prev, [stationId]: updated }));
-  }, []);
-
-  const handleToggleFavorite = useCallback(
-    async (station: E85Station) => {
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      }
-      const alreadyFav = favoriteIds.has(station.id);
-      if (alreadyFav) {
-        await removeFavorite(station.id);
-        setFavoriteIds((prev) => {
-          const next = new Set(prev);
-          next.delete(station.id);
-          return next;
-        });
-      } else {
-        await addFavorite({
-          stationId: station.id,
-          stationName: station.name,
-          city: station.city,
-          state: station.state,
-          latitude: station.latitude,
-          longitude: station.longitude,
-          addedDate: new Date().toISOString(),
-        });
-        setFavoriteIds((prev) => new Set([...prev, station.id]));
-      }
-    },
-    [favoriteIds]
-  );
-
-  const loadStations = useCallback(
-    async (
-      lat: number,
-      lon: number,
-      radius: number = searchRadius,
-      forceRefresh = false
-    ) => {
-      try {
-        // Try cache first (unless forced refresh)
-        if (!forceRefresh) {
-          const cached = await getCachedStations(lat, lon, radius);
-          if (cached) {
-            setStations(cached);
-            const age = await getStationCacheAge(lat, lon, radius);
-            setCacheAgeMin(age);
-            if (cached.length === 0) {
-              setErrorMsg(
-                `No E85 stations found within ${radius} miles. Try increasing the search radius.`
-              );
-            } else {
-              setErrorMsg(null);
-            }
-            return;
-          }
-        }
-
-        // Cache miss or forced refresh — hit the API
-        setCacheAgeMin(null);
-        const results = await fetchNearbyStations(lat, lon, radius, 30);
-        setStations(results);
-
-        // Write to cache
-        await setCachedStations(lat, lon, radius, results);
-        setCacheAgeMin(0);
-
-        if (results.length === 0) {
-          setErrorMsg(
-            `No E85 stations found within ${radius} miles. Try increasing the search radius.`
-          );
-        } else {
-          setErrorMsg(null);
-        }
-      } catch (err: any) {
-        const errorType = err?.message;
-        if (errorType === "RATE_LIMITED") {
-          setErrorMsg("API rate limit reached. Pull down to refresh in a moment.");
-        } else if (errorType === "NETWORK_ERROR") {
-          setErrorMsg("Cannot reach server. Check your internet connection or contact support.");
-        } else if (errorType === "NREL_API_ERROR") {
-          setErrorMsg("E85 station data service temporarily unavailable. Try again later.");
-        } else {
-          setErrorMsg("Failed to load stations. Check your internet connection.");
-        }
-      }
-    },
-    [searchRadius]
-  );
-
-  useEffect(() => {
-    (async () => {
-      const prices = await fetchFuelPrices();
-      setFuelPrices(prices);
-
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          setHasLocationPermission(false);
-          setErrorMsg("LOCATION_DENIED");
-          const defaultLat = 33.4484;
-          const defaultLon = -112.074;
-          setLocation({ latitude: defaultLat, longitude: defaultLon });
-          await loadStations(defaultLat, defaultLon);
-          // Fetch local prices for AZ (default location)
-          fetchLocalPrices("AZ").then(setLocalPrices);
-          setLoading(false);
-          return;
-        }
-        setHasLocationPermission(true);
-
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        const coords = {
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-        };
-        setLocation(coords);
-        await loadStations(coords.latitude, coords.longitude);
-      } catch {
-        const defaultLat = 33.4484;
-        const defaultLon = -112.074;
-        setLocation({ latitude: defaultLat, longitude: defaultLon });
-        await loadStations(defaultLat, defaultLon);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  // Load local EIA prices whenever stations load (derive state from first station)
-  useEffect(() => {
-    if (stations.length > 0) {
-      const state = stations[0].state;
-      if (state) {
-        fetchLocalPrices(state).then(setLocalPrices);
-      }
-    }
-  }, [stations]);
+  const {
+    selectedStation,
+    setSelectedStation,
+    sortMode,
+    setSortMode,
+    priceModalVisible,
+    setPriceModalVisible,
+    priceModalStation,
+    userPrices,
+    submittingPrice,
+    viewMode,
+    setViewMode,
+    favoriteIds,
+    stationVotes,
+    filterConfirmed,
+    setFilterConfirmed,
+    handleVote,
+    handleToggleFavorite,
+    handlePriceUpdate,
+    handlePriceSubmit,
+    sortedStations,
+  } = useStationsInteractions(stations, localPrices);
 
   // Animate map to fit all pins when switching to map view
   useEffect(() => {
@@ -274,29 +183,6 @@ export default function StationsScreen() {
       }, 300);
     }
   }, [viewMode, stations, location]);
-
-  const handleRefresh = useCallback(async () => {
-    if (!location) return;
-    setRefreshing(true);
-    await invalidateStationCache(location.latitude, location.longitude, searchRadius);
-    await loadStations(location.latitude, location.longitude, searchRadius, true);
-    setRefreshing(false);
-  }, [location, loadStations, searchRadius]);
-
-  const handleRadiusChange = useCallback(
-    async (newRadius: number) => {
-      if (Platform.OS !== "web") {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }
-      setSearchRadius(newRadius);
-      if (location) {
-        setLoading(true);
-        await loadStations(location.latitude, location.longitude, newRadius);
-        setLoading(false);
-      }
-    },
-    [location, loadStations]
-  );
 
   const openDirections = useCallback((station: E85Station) => {
     if (Platform.OS !== "web") {
@@ -309,49 +195,6 @@ export default function StationsScreen() {
     });
     if (url) Linking.openURL(url);
   }, []);
-
-  const handlePriceUpdate = useCallback((station: E85Station) => {
-    setPriceModalStation(station);
-    setPriceModalVisible(true);
-  }, []);
-
-  const handlePriceSubmit = useCallback(
-    async (
-      e85Price?: number,
-      octane87Price?: number,
-      octane89Price?: number,
-      octane9194Price?: number
-    ) => {
-      if (!priceModalStation) return;
-      setSubmittingPrice(true);
-      try {
-        await addStationPrice({
-          stationId: priceModalStation.id,
-          e85Price,
-          octane87Price,
-          octane89Price,
-          octane9194Price,
-        });
-        const latestPrice = await getLatestStationPrice(priceModalStation.id);
-        if (latestPrice) {
-          setUserPrices((prev) => ({
-            ...prev,
-            [priceModalStation.id]: latestPrice,
-          }));
-        }
-        setPriceModalVisible(false);
-        if (Platform.OS !== "web") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        }
-      } catch (error) {
-        console.error("Failed to submit price:", error);
-        alert("Failed to save price. Please try again.");
-      } finally {
-        setSubmittingPrice(false);
-      }
-    },
-    [priceModalStation]
-  );
 
   const handleMarkerPress = useCallback(
     (station: E85Station) => {
@@ -372,43 +215,6 @@ export default function StationsScreen() {
     },
     []
   );
-
-  // Build sorted station list
-  const sortedStations = React.useMemo(() => {
-    const sorted = [...stations];
-    if (sortMode === "price") {
-      sorted.sort((a, b) => {
-        const aPrice = (userPrices[a.id]?.e85Price as number | undefined)
-          ?? localPrices?.e85Price
-          ?? getE85StateAverage(a.state);
-        const bPrice = (userPrices[b.id]?.e85Price as number | undefined)
-          ?? localPrices?.e85Price
-          ?? getE85StateAverage(b.state);
-        // Favorites always first, then by price
-        const aFav = favoriteIds.has(a.id) ? 0 : 1;
-        const bFav = favoriteIds.has(b.id) ? 0 : 1;
-        if (aFav !== bFav) return aFav - bFav;
-        return aPrice - bPrice;
-      });
-    } else {
-      sorted.sort((a, b) => {
-        const aFav = favoriteIds.has(a.id) ? 0 : 1;
-        const bFav = favoriteIds.has(b.id) ? 0 : 1;
-        if (aFav !== bFav) return aFav - bFav;
-        return a.distance - b.distance;
-      });
-    }
-    if (filterConfirmed) {
-      return sorted.filter((s) => {
-        const vote = stationVotes[s.id];
-        if (!vote) return false;
-        const total = vote.yesCount + vote.noCount;
-        if (total === 0) return false;
-        return vote.yesCount / total >= 0.5;
-      });
-    }
-    return sorted;
-  }, [stations, sortMode, userPrices, localPrices, favoriteIds, filterConfirmed, stationVotes]);
 
   const renderStationCard = useCallback(
     ({ item, index }: { item: E85Station; index: number }) => (
@@ -515,190 +321,212 @@ export default function StationsScreen() {
                 </View>
               )}
             </View>
-          </View>
+	          </View>
 
-          {/* User-Submitted Prices */}
-          {userPrices[item.id] && (
-            <View
-              style={[
-                styles.pricesSection,
-                { backgroundColor: colors.primary + "10", borderTopColor: colors.primary },
-              ]}
-            >
-              <Text style={[styles.priceSource, { color: colors.primary, fontWeight: "600", marginBottom: 4 }]}>
-                📸 Prices you reported at the pump
-              </Text>
-              <View style={styles.priceRow}>
-                {userPrices[item.id].e85Price && (
-                  <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>E85</Text>
-                    <View style={styles.priceValueRow}>
-                      <Text style={[styles.priceValue, { color: "#10B981" }]}>
-                        ${userPrices[item.id].e85Price.toFixed(2)}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.priceFreshness,
-                          {
-                            color: isPriceStale(userPrices[item.id].timestamp)
-                              ? colors.warning
-                              : colors.muted,
-                          },
-                        ]}
-                      >
-                        {isPriceStale(userPrices[item.id].timestamp) ? "⚠ " : "· "}
-                        {formatPriceAge(userPrices[item.id].timestamp)}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-                {userPrices[item.id].octane87Price && (
-                  <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>87</Text>
-                    <Text style={[styles.priceValue, { color: "#3B82F6" }]}>
-                      ${userPrices[item.id].octane87Price.toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                {userPrices[item.id].octane89Price && (
-                  <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>89</Text>
-                    <Text style={[styles.priceValue, { color: "#F59E0B" }]}>
-                      ${userPrices[item.id].octane89Price.toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-                {userPrices[item.id].octane9194Price && (
-                  <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>91/94</Text>
-                    <Text style={[styles.priceValue, { color: "#EF4444" }]}>
-                      ${userPrices[item.id].octane9194Price.toFixed(2)}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          )}
+	          {(() => {
+	            const vote = stationVotes[item.id];
+	            const confidence = vote ? getConfidenceScore(vote) : -1;
+	            const total = vote ? vote.yesCount + vote.noCount : 0;
+	            const summary = getStationPriceSummary(item, userPrices[item.id], localPrices);
+	            const gasFallback = localPrices?.gasPrice ?? (fuelPrices?.gasolinePrice ?? null);
+	            const savings =
+	              gasFallback != null ? (1 - summary.price / gasFallback) * 100 : null;
+	            const trustBadges = getTrustBadges(item, summary, confidence, total);
+	            return (
+	              <>
+	                <View style={[styles.priceFocusRow, { borderTopColor: colors.border }]}>
+	                  <View style={{ flex: 1 }}>
+	                    <Text style={[styles.priceSource, { color: colors.muted }]}>
+	                      {summary.sourceLabel}
+	                    </Text>
+	                    <Text style={[styles.priceFocusValue, { color: colors.primary }]}>
+	                      ${summary.price.toFixed(2)}
+	                      <Text style={[styles.pricePerGalText, { color: colors.muted }]}> /gal</Text>
+	                    </Text>
+	                    <Text style={[styles.priceMetaText, { color: summary.stale ? colors.warning : colors.muted }]}>
+	                      {summary.sublabel}
+	                      {summary.updatedLabel ? ` · ${summary.updatedLabel}` : ""}
+	                    </Text>
+	                  </View>
+	                  <Pressable
+	                    onPress={(e) => {
+	                      e.stopPropagation?.();
+	                      openDirections(item);
+	                    }}
+	                    style={({ pressed }) => [
+	                      styles.inlineDirectionsBtn,
+	                      { borderColor: colors.primary, backgroundColor: colors.primary + "12" },
+	                      pressed && { opacity: 0.75 },
+	                    ]}
+	                  >
+	                    <IconSymbol name="navigation.fill" size={14} color={colors.primary} />
+	                    <Text style={[styles.inlineDirectionsText, { color: colors.primary }]}>Directions</Text>
+	                  </Pressable>
+	                </View>
 
-          {/* Local Prices: user-submitted E85 + EIA state gas price */}
-          {(() => {
-            // Priority: user-submitted E85 price > AFDC state average
-            const userE85 = userPrices[item.id]?.e85Price as number | undefined;
-            const stateE85 = localPrices?.e85Price ?? getE85StateAverage(item.state);
-            const displayE85 = userE85 ?? stateE85;
-            const displayGas = localPrices?.gasPrice ?? null;
-            const savings = displayGas
-              ? ((1 - displayE85 / displayGas) * 100)
-              : null;
-            const e85Label = userE85 ? "E85 (you reported \u2014 estimate)" : `E85 (${item.state} avg \u00b7 AFDC)`;
-            const gasLabel = localPrices?.gasPrice
-              ? `Gas (${item.state} \u00b7 EIA weekly)`
-              : fuelPrices?.gasolinePrice
-              ? "Gas (national avg \u00b7 EIA)"
-              : null;
-            const gasFallback = localPrices?.gasPrice ?? (fuelPrices?.gasolinePrice ?? null);
-            return (
-              <View
-                style={[
-                  styles.pricesSection,
-                  { backgroundColor: colors.background, borderTopColor: colors.border },
-                ]}
-              >
-                <View style={styles.priceRow}>
-                  <View style={styles.priceItem}>
-                    <Text style={[styles.priceLabel, { color: colors.muted }]}>{e85Label}</Text>
-                    <Text style={[styles.priceValue, { color: colors.primary }]}>
-                      ${displayE85.toFixed(2)}/gal
-                    </Text>
-                  </View>
-                  {gasFallback != null && (
-                    <View style={styles.priceItem}>
-                      <Text style={[styles.priceLabel, { color: colors.muted }]}>{gasLabel}</Text>
-                      <Text style={[styles.priceValue, { color: colors.foreground }]}>
-                        ${gasFallback.toFixed(2)}/gal
-                      </Text>
-                    </View>
-                  )}
-                  {savings != null && gasFallback != null && (
-                    <View style={styles.priceItem}>
-                      <Text style={[styles.priceLabel, { color: colors.muted }]}>Savings</Text>
-                      <Text style={[styles.priceValue, { color: colors.success }]}>
-                        {savings.toFixed(0)}%
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={[styles.priceSource, { color: colors.muted }]}>
-                  {localPrices?.gasPricePeriod
-                    ? `Gas: EIA weekly avg (week of ${localPrices.gasPricePeriod}) \u00b7 E85: AFDC state avg \u00b7 Always verify at pump`
-                    : "Prices are AFDC/EIA estimates \u00b7 Always verify at the pump"}
-                </Text>
-              </View>
-            );
-          })()}
+	                {trustBadges.length > 0 && (
+	                  <View style={styles.badgeRow}>
+	                    {trustBadges.map((badge) => {
+	                      const badgeColor =
+	                        badge.tone === "success"
+	                          ? colors.success
+	                          : badge.tone === "warn"
+	                            ? colors.warning
+	                            : badge.tone === "accent"
+	                              ? colors.primary
+	                              : colors.muted;
+	                      return (
+	                        <View
+	                          key={badge.label}
+	                          style={[
+	                            styles.trustBadge,
+	                            {
+	                              backgroundColor: badgeColor + "20",
+	                              borderColor: badgeColor + "50",
+	                            },
+	                          ]}
+	                        >
+	                          <Text style={[styles.trustBadgeText, { color: badgeColor }]}>
+	                            {badge.label}
+	                          </Text>
+	                        </View>
+	                      );
+	                    })}
+	                  </View>
+	                )}
 
-          {/* E85 Availability Voting Row */}
-          {(() => {
-            const vote = stationVotes[item.id];
-            const confidence = vote ? getConfidenceScore(vote) : -1;
-            const total = vote ? vote.yesCount + vote.noCount : 0;
-            return (
-              <View style={[styles.votingRow, { borderTopColor: colors.border }]}>
-                <View style={styles.votingLeft}>
-                  <Text style={[styles.votingLabel, { color: colors.muted }]}>
-                    E85 Available?
-                  </Text>
-                  {total > 0 && confidence >= 0 && (
-                    <Text style={[styles.votingStats, {
-                      color: confidence >= 70 ? colors.success : confidence >= 40 ? colors.warning : colors.error
-                    }]}>
-                      {confidence}% yes · {total} vote{total !== 1 ? "s" : ""}
-                    </Text>
-                  )}
-                  {total === 0 && (
-                    <Text style={[styles.votingStats, { color: colors.muted }]}>No votes yet — be first!</Text>
-                  )}
-                  <Text style={[styles.votingStats, { color: colors.muted, fontSize: 10, marginTop: 2 }]}>
-                    Your votes only — not shared with others
-                  </Text>
-                </View>
-                <View style={styles.votingButtons}>
-                  <Pressable
-                    onPress={(e) => { e.stopPropagation?.(); handleVote(item.id, "yes"); }}
-                    style={({ pressed }) => [
-                      styles.voteBtn,
-                      {
-                        backgroundColor: vote?.userVote === "yes" ? colors.success + "22" : colors.surface,
-                        borderColor: vote?.userVote === "yes" ? colors.success : colors.border,
-                      },
-                      pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
-                    ]}
-                    hitSlop={6}
-                  >
-                    <Text style={[styles.voteBtnText, { color: vote?.userVote === "yes" ? colors.success : colors.muted }]}>
-                      👍 {vote?.yesCount ?? 0}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={(e) => { e.stopPropagation?.(); handleVote(item.id, "no"); }}
-                    style={({ pressed }) => [
-                      styles.voteBtn,
-                      {
-                        backgroundColor: vote?.userVote === "no" ? colors.error + "22" : colors.surface,
-                        borderColor: vote?.userVote === "no" ? colors.error : colors.border,
-                      },
-                      pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
-                    ]}
-                    hitSlop={6}
-                  >
-                    <Text style={[styles.voteBtnText, { color: vote?.userVote === "no" ? colors.error : colors.muted }]}>
-                      👎 {vote?.noCount ?? 0}
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
-            );
-          })()}
+	                {selectedStation?.id === item.id && (
+	                  <>
+	                    {gasFallback != null && (
+	                      <View
+	                        style={[
+	                          styles.pricesSection,
+	                          { backgroundColor: colors.background, borderTopColor: colors.border },
+	                        ]}
+	                      >
+	                        <View style={styles.priceRow}>
+	                          <View style={styles.priceItem}>
+	                            <Text style={[styles.priceLabel, { color: colors.muted }]}>
+	                              Gas benchmark ({item.state})
+	                            </Text>
+	                            <Text style={[styles.priceValue, { color: colors.foreground }]}>
+	                              ${gasFallback.toFixed(2)}/gal
+	                            </Text>
+	                          </View>
+	                          {savings != null && (
+	                            <View style={styles.priceItem}>
+	                              <Text style={[styles.priceLabel, { color: colors.muted }]}>
+	                                E85 vs gas
+	                              </Text>
+	                              <Text style={[styles.priceValue, { color: colors.success }]}>
+	                                {savings.toFixed(0)}%
+	                              </Text>
+	                            </View>
+	                          )}
+	                        </View>
+	                        <Text style={[styles.priceSource, { color: colors.muted }]}>
+	                          {localPrices?.gasPricePeriod
+	                            ? `Gas: EIA weekly (week of ${localPrices.gasPricePeriod}) · E85 avg: AFDC`
+	                            : "Benchmarks are AFDC/EIA estimates — verify at pump"}
+	                        </Text>
+	                      </View>
+	                    )}
+	                    <View style={[styles.votingRow, { borderTopColor: colors.border }]}>
+	                      <View style={styles.votingLeft}>
+	                        <Text style={[styles.votingLabel, { color: colors.muted }]}>
+	                          E85 Available?
+	                        </Text>
+	                        {total > 0 && confidence >= 0 && (
+	                          <Text
+	                            style={[
+	                              styles.votingStats,
+	                              {
+	                                color:
+	                                  confidence >= 70
+	                                    ? colors.success
+	                                    : confidence >= 40
+	                                      ? colors.warning
+	                                      : colors.error,
+	                              },
+	                            ]}
+	                          >
+	                            {confidence}% yes · {total} vote{total !== 1 ? "s" : ""}
+	                          </Text>
+	                        )}
+	                        {total === 0 && (
+	                          <Text style={[styles.votingStats, { color: colors.muted }]}>
+	                            No votes yet — be first!
+	                          </Text>
+	                        )}
+	                        <Text
+	                          style={[
+	                            styles.votingStats,
+	                            { color: colors.muted, fontSize: 10, marginTop: 2 },
+	                          ]}
+	                        >
+	                          Votes are local to this device
+	                        </Text>
+	                      </View>
+	                      <View style={styles.votingButtons}>
+	                        <Pressable
+	                          onPress={(e) => {
+	                            e.stopPropagation?.();
+	                            handleVote(item.id, "yes");
+	                          }}
+	                          style={({ pressed }) => [
+	                            styles.voteBtn,
+	                            {
+	                              backgroundColor:
+	                                vote?.userVote === "yes" ? colors.success + "22" : colors.surface,
+	                              borderColor:
+	                                vote?.userVote === "yes" ? colors.success : colors.border,
+	                            },
+	                            pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
+	                          ]}
+	                          hitSlop={6}
+	                        >
+	                          <Text
+	                            style={[
+	                              styles.voteBtnText,
+	                              { color: vote?.userVote === "yes" ? colors.success : colors.muted },
+	                            ]}
+	                          >
+	                            👍 {vote?.yesCount ?? 0}
+	                          </Text>
+	                        </Pressable>
+	                        <Pressable
+	                          onPress={(e) => {
+	                            e.stopPropagation?.();
+	                            handleVote(item.id, "no");
+	                          }}
+	                          style={({ pressed }) => [
+	                            styles.voteBtn,
+	                            {
+	                              backgroundColor:
+	                                vote?.userVote === "no" ? colors.error + "22" : colors.surface,
+	                              borderColor:
+	                                vote?.userVote === "no" ? colors.error : colors.border,
+	                            },
+	                            pressed && { opacity: 0.7, transform: [{ scale: 0.95 }] },
+	                          ]}
+	                          hitSlop={6}
+	                        >
+	                          <Text
+	                            style={[
+	                              styles.voteBtnText,
+	                              { color: vote?.userVote === "no" ? colors.error : colors.muted },
+	                            ]}
+	                          >
+	                            👎 {vote?.noCount ?? 0}
+	                          </Text>
+	                        </Pressable>
+	                      </View>
+	                    </View>
+	                  </>
+	                )}
+	              </>
+	            );
+	          })()}
 
           {selectedStation?.id === item.id && (
             <Animated.View entering={FadeIn.duration(200)} style={styles.stationActions}>
@@ -760,253 +588,67 @@ export default function StationsScreen() {
     [colors, selectedStation, openDirections, fuelPrices, localPrices, userPrices, handlePriceUpdate, stationVotes, handleVote, favoriteIds, handleToggleFavorite]
   );
 
+  const handleOpenLocationSettings = useCallback(async () => {
+    if (Platform.OS === "ios") {
+      Linking.openURL("app-settings:");
+      return;
+    }
+
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status === "granted") {
+      setHasLocationPermission(true);
+      setErrorMsg(null);
+      setLoading(true);
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+        setLocation(coords);
+        await loadStations(coords.latitude, coords.longitude, searchRadius, true);
+      } finally {
+        setLoading(false);
+      }
+    }
+  }, [loadStations, searchRadius, setErrorMsg, setHasLocationPermission, setLoading, setLocation]);
+
   return (
     <ScreenContainer>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <View
-            style={[styles.headerIconBg, { backgroundColor: colors.primary + "18" }]}
-          >
-            <IconSymbol name="map.fill" size={22} color={colors.primary} />
-          </View>
-          <View style={styles.headerTextCol}>
-            <Text style={[styles.headerTitle, { color: colors.foreground }]}>
-              E85 Stations
-            </Text>
-            <Text style={[styles.headerSubtitle, { color: cacheAgeMin !== null && cacheAgeMin > 30 ? colors.warning : colors.muted }]}>
-              {loading
-                ? "Searching..."
-                : cacheAgeMin !== null
-                ? `${stations.length} station${stations.length !== 1 ? "s" : ""} \u00b7 AFDC${cacheAgeMin === 0 ? " \u00b7 just updated" : cacheAgeMin > 30 ? ` \u00b7 cached ${cacheAgeMin}m ago \u2014 tap \u21bb` : ` \u00b7 cached ${cacheAgeMin}m ago`}`
-                : `${stations.length} station${stations.length !== 1 ? "s" : ""} found \u00b7 AFDC`}
-            </Text>
-          </View>
-          {!loading && (
-            <Pressable
-              onPress={handleRefresh}
-              style={({ pressed }) => [
-                styles.refreshButton,
-                { backgroundColor: colors.primary + "15" },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
-            </Pressable>
-          )}
-        </View>
-      </View>
+      <StationsHeader
+        colors={colors}
+        styles={styles}
+        loading={loading}
+        cacheAgeMin={cacheAgeMin}
+        stationsCount={stations.length}
+        onRefresh={handleRefresh}
+      />
 
-      {/* Row 1: Radius chips */}
-      <View style={styles.controlsRow}>
-        <View style={styles.radiusChips}>
-          {[10, 25, 50, 100].map((radius) => (
-            <Pressable
-              key={radius}
-              onPress={() => handleRadiusChange(radius)}
-              style={({ pressed }) => [
-                styles.radiusChip,
-                {
-                  backgroundColor:
-                    searchRadius === radius ? colors.primary : colors.background,
-                  borderColor:
-                    searchRadius === radius ? colors.primary : colors.border,
-                },
-                pressed && { transform: [{ scale: 0.97 }] },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.radiusChipText,
-                  { color: searchRadius === radius ? "#FFFFFF" : colors.foreground },
-                ]}
-              >
-                {radius} mi
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
+      <StationsControls
+        colors={colors}
+        styles={styles}
+        searchRadius={searchRadius}
+        onRadiusChange={handleRadiusChange}
+        filterConfirmed={filterConfirmed}
+        onToggleConfirmed={() => setFilterConfirmed((v) => !v)}
+        sortMode={sortMode}
+        onSortModeChange={setSortMode}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+      />
 
-      {/* Row 2: Filters + toggles */}
-      <View style={styles.filtersRow}>
-        {/* Confirmed-only filter */}
-        <Pressable
-          onPress={() => {
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setFilterConfirmed((v) => !v);
-          }}
-          style={({ pressed }) => [{
-            paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1,
-            backgroundColor: filterConfirmed ? colors.success + "20" : colors.surface,
-            borderColor: filterConfirmed ? colors.success : colors.border,
-            opacity: pressed ? 0.7 : 1,
-          }]}
-        >
-          <Text style={{ fontSize: 13, fontWeight: "600", color: filterConfirmed ? colors.success : colors.muted }}>
-            {filterConfirmed ? "✅ Confirmed" : "All Stations"}
-          </Text>
-        </Pressable>
+      <LocationDeniedBanner
+        colors={colors}
+        styles={styles}
+        visible={errorMsg === "LOCATION_DENIED" && !loading}
+        onOpenSettings={handleOpenLocationSettings}
+        onDismiss={() => setErrorMsg(null)}
+      />
 
-        {/* Spacer */}
-        <View style={{ flex: 1 }} />
-
-        {/* Sort toggle: Distance / Price */}
-        <View
-          style={[
-            styles.viewToggle,
-            { backgroundColor: colors.surface, borderColor: colors.border, marginRight: 8 },
-          ]}
-        >
-          <Pressable
-            onPress={() => {
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setSortMode("distance");
-            }}
-            style={[
-              styles.toggleBtn,
-              sortMode === "distance" && { backgroundColor: colors.primary },
-            ]}
-          >
-            <IconSymbol
-              name="location.fill"
-              size={14}
-              color={sortMode === "distance" ? "#FFFFFF" : colors.muted}
-            />
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setSortMode("price");
-            }}
-            style={[
-              styles.toggleBtn,
-              sortMode === "price" && { backgroundColor: colors.primary },
-            ]}
-          >
-            <IconSymbol
-              name="dollarsign.circle.fill"
-              size={14}
-              color={sortMode === "price" ? "#FFFFFF" : colors.muted}
-            />
-          </Pressable>
-        </View>
-
-        {/* List / Map toggle */}
-        <View
-          style={[
-            styles.viewToggle,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <Pressable
-            onPress={() => {
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setViewMode("list");
-            }}
-            style={[
-              styles.toggleBtn,
-              viewMode === "list" && { backgroundColor: colors.primary },
-            ]}
-          >
-            <IconSymbol
-              name="list.bullet"
-              size={16}
-              color={viewMode === "list" ? "#FFFFFF" : colors.muted}
-            />
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setViewMode("map");
-            }}
-            style={[
-              styles.toggleBtn,
-              viewMode === "map" && { backgroundColor: colors.primary },
-            ]}
-          >
-            <IconSymbol
-              name="map"
-              size={16}
-              color={viewMode === "map" ? "#FFFFFF" : colors.muted}
-            />
-          </Pressable>
-        </View>
-      </View>
-
-      {/* Location Denied Banner */}
-      {errorMsg === "LOCATION_DENIED" && !loading && (
-        <View style={styles.bannerContainer}>
-          <View style={[styles.infoBanner, { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1, flexDirection: "column", alignItems: "stretch", gap: 10 }]}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-              <IconSymbol name="location.slash.fill" size={18} color={colors.warning} style={{ marginTop: 1 }} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoBannerText, { color: colors.foreground, fontWeight: "700", marginBottom: 2 }]}>
-                  Location Access Off
-                </Text>
-                <Text style={[styles.infoBannerText, { color: colors.muted, fontWeight: "400" }]}>
-                  Showing stations near Phoenix, AZ as a preview. Enable location to find stations near you.
-                </Text>
-              </View>
-            </View>
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable
-                onPress={async () => {
-                  // On iOS, once denied the only path is Settings
-                  if (Platform.OS === "ios") {
-                    Linking.openURL("app-settings:");
-                  } else {
-                    const { status } = await Location.requestForegroundPermissionsAsync();
-                    if (status === "granted") {
-                      setHasLocationPermission(true);
-                      setErrorMsg(null);
-                      setLoading(true);
-                      try {
-                        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-                        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-                        setLocation(coords);
-                        await loadStations(coords.latitude, coords.longitude, searchRadius, true);
-                      } finally {
-                        setLoading(false);
-                      }
-                    }
-                  }
-                }}
-                style={({ pressed }) => [styles.bannerBtn, { backgroundColor: colors.primary, flex: 1, opacity: pressed ? 0.8 : 1 }]}
-              >
-                <IconSymbol name="gear" size={14} color="#fff" />
-                <Text style={styles.bannerBtnText}>Open Settings</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setErrorMsg(null)}
-                style={({ pressed }) => [styles.bannerBtn, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}
-              >
-                <Text style={[styles.bannerBtnText, { color: colors.muted }]}>Dismiss</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Error/Info Banner (non-location errors) */}
-      {errorMsg && errorMsg !== "LOCATION_DENIED" && !loading && (
-        <View style={styles.bannerContainer}>
-          <View style={[styles.infoBanner, { backgroundColor: colors.warning + "18", flexDirection: "column", alignItems: "flex-start", gap: 8 }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <IconSymbol name="info.circle.fill" size={16} color={colors.warning} />
-              <Text style={[styles.infoBannerText, { color: colors.warning, flex: 1 }]}>
-                {errorMsg}
-              </Text>
-            </View>
-            <Pressable
-              onPress={handleRefresh}
-              style={({ pressed }) => [{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: colors.warning, borderRadius: 8, opacity: pressed ? 0.7 : 1 }]}
-            >
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Retry</Text>
-            </Pressable>
-          </View>
-        </View>
-      )}
+      <StationsErrorBanner
+        colors={colors}
+        styles={styles}
+        message={errorMsg}
+        loading={loading}
+        onRetry={handleRefresh}
+      />
 
       {/* Content: Loading / Map / List */}
       {loading ? (
@@ -1549,6 +1191,62 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     marginTop: 8,
+  },
+  priceFocusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  priceFocusValue: {
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    marginTop: 2,
+  },
+  pricePerGalText: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  priceMetaText: {
+    fontSize: 11,
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  inlineDirectionsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    minWidth: 100,
+  },
+  inlineDirectionsText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  badgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  trustBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  trustBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
   },
   priceRow: {
     flexDirection: "row",
