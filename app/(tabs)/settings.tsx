@@ -24,6 +24,7 @@ import {
   resetPreferences,
   UserPreferences,
 } from "@/lib/preferences";
+import { usePreferencesContext } from "@/lib/preferences-context";
 import { clearFuelLog } from "@/lib/fuel-log";
 import { clearHistory, clearFavorites } from "@/lib/station-favorites";
 import { clearReviews } from "@/lib/station-reviews";
@@ -445,6 +446,7 @@ export default function SettingsScreen() {
   const { themeMode, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [loading, setLoading] = useState(true);
+  const { updatePref } = usePreferencesContext();
 
   // Garage state
   const [profiles, setProfiles] = useState<CarProfile[]>([]);
@@ -478,9 +480,11 @@ export default function SettingsScreen() {
     if (!prefs) return;
     const updated = { ...prefs, [key]: value };
     setPrefs(updated);
+    // Also update the shared context so the tab bar reacts immediately
+    updatePref(key, value);
     await savePreferences(updated);
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, [prefs]);
+  }, [prefs, updatePref]);
 
   // Garage handlers
   const handleAddCar = useCallback(() => {

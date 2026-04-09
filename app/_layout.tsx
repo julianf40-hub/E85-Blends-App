@@ -26,6 +26,7 @@ import { useQuickActionRouting } from "expo-quick-actions/router";
 import { useAppUpdate } from "@/hooks/use-app-update";
 import { Pressable, Text, StyleSheet } from "react-native";
 import { loadPreferences } from "@/lib/preferences";
+import { PreferencesProvider } from "@/lib/preferences-context";
 
 // Hide splash screen immediately — no loading delay needed
 SplashScreen.hideAsync().catch(() => {});
@@ -166,6 +167,7 @@ export default function RootLayout() {
   ) : null;
 
   const content = (
+    <PreferencesProvider>
     <GestureHandlerRootView style={{ flex: 1 }}>
       <trpc.Provider client={trpcClient} queryClient={queryClient}>
         <QueryClientProvider client={queryClient}>
@@ -182,6 +184,7 @@ export default function RootLayout() {
       </trpc.Provider>
       {updateBanner}
     </GestureHandlerRootView>
+    </PreferencesProvider>
   );
 
   const shouldOverrideSafeArea = Platform.OS === "web";

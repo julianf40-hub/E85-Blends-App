@@ -1,14 +1,14 @@
 import { Tabs } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Platform, StyleSheet, View } from "react-native";
-import { useEffect, useState } from "react";
+
 import { BlurView } from "expo-blur";
 
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useColorScheme } from "@/hooks/use-color-scheme";
-import { loadPreferences } from "@/lib/preferences";
+import { usePreferencesContext } from "@/lib/preferences-context";
 
 /**
  * Liquid Glass tab bar background component.
@@ -52,16 +52,9 @@ export default function TabLayout() {
   const insets = useSafeAreaInsets();
   const bottomPadding = Platform.OS === "web" ? 12 : Math.max(insets.bottom, 8);
   const tabBarHeight = 56 + bottomPadding;
-  const [showReminders, setShowReminders] = useState(true);
-  const [showGarage, setShowGarage] = useState(true);
-
-  // Load visibility preferences on mount
-  useEffect(() => {
-    loadPreferences().then((prefs) => {
-      setShowReminders(prefs.showReminders !== false);
-      setShowGarage(prefs.showGarage !== false);
-    });
-  }, []);
+  const { prefs } = usePreferencesContext();
+  const showReminders = prefs?.showReminders !== false;
+  const showGarage = prefs?.showGarage !== false;
 
   // Border color adapts to scheme: subtle on glass
   const borderColor =
