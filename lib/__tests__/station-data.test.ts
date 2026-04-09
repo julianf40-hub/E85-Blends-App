@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calculateDistance } from "../station-data";
+import { calculateDistance, fetchNearbyStations } from "../station-data";
 
 // Mock tRPC to prevent import errors in tests
 import { vi } from "vitest";
@@ -7,6 +7,7 @@ vi.mock("@/lib/trpc", () => ({
   createTRPCClient: vi.fn(),
   trpc: {},
 }));
+import { createTRPCClient } from "@/lib/trpc";
 
 /**
  * Station Data Tests
@@ -44,5 +45,37 @@ describe("calculateDistance", () => {
   it("should handle negative coordinates", () => {
     const dist = calculateDistance(-33.8688, 151.2093, -37.8136, 144.9631);
     expect(dist).toBeGreaterThan(0);
+  });
+});
+
+describe("fetchNearbyStations error mapping", () => {
+  it("maps stable server rate-limit codes to RATE_LIMITED", async () => {
+    vi.mocked(createTRPCClient).mockReturnValue({
+      stations: {
+        search: {
+          query: vi.fn().mockRejectedValue({
+            data: { code: "TOO_MANY_REQUESTS" },
+            message: "STATION_SEARCH_RATE_LIMITED",
+          }),
+        },
+      },
+    } as any);
+
+    await expect(fetchNearbyStations(33.4484, -112.074, 25, 10)).rejects.toThrow("RATE_LIMITED");
+  });
+
+  it("maps stable server config code to CONFIG_ERROR", async () => {
+    vi.mocked(createTRPCClient).mockReturnValue({
+      stations: {
+        search: {
+          query: vi.fn().mockRejectedValue({
+            data: { code: "INTERNAL_SERVER_ERROR" },
+            message: "STATION_SEARCH_CONFIG_ERROR",
+          }),
+        },
+      },
+    } as any);
+
+    await expect(fetchNearbyStations(33.4484, -112.074, 25, 10)).rejects.toThrow("CONFIG_ERROR");
   });
 });

@@ -3,9 +3,9 @@
 ## Phase 1: Must-Fix Bugs (Correctness, Reliability, Trust)
 
 ### NREL API Rate Limits
-- [ ] Create server-side tRPC endpoint `/api/stations` that proxies NREL calls with real `EXPO_PUBLIC_NREL_API_KEY`
+- [ ] Create server-side tRPC endpoint `/api/stations` that proxies NREL calls with real `NREL_API_KEY`
 - [ ] Update client to call `/api/stations` instead of direct NREL API
-- [ ] Document that DEMO_KEY is rate-limited; production requires real key
+- [ ] Document that station search requires server-side `NREL_API_KEY` (no demo fallback)
 - [ ] Add error messaging when rate limit is hit: "Station search temporarily unavailable — please try again in a few minutes"
 
 ### API Base URL on Real Devices
@@ -54,7 +54,7 @@
 
 ### Onboarding & First-Run
 - [ ] Add location permission prompt on first app launch
-- [ ] Show one-time tooltip: "Station search uses a shared demo API key (rate-limited). For unlimited access, add your own NREL key in Settings."
+- [ ] Show one-time tooltip: "Station search requires a configured server-side NREL API key."
 - [ ] Track `hasSeenOnboarding` in AsyncStorage
 
 ### Reminder UX Polish

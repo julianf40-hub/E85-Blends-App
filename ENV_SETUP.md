@@ -7,8 +7,8 @@ Copy the template below to `.env` in the project root and fill in your values.
 
 # NREL API Key for station data
 # Get free key at: https://developer.nrel.gov/signup/
-# Without this, the app uses a shared demo key (rate-limited)
-EXPO_PUBLIC_NREL_API_KEY=your_nrel_api_key_here
+# Required for backend station search (no demo fallback)
+NREL_API_KEY=your_nrel_api_key_here
 
 # Expo Project ID for OTA updates
 # Find in: app.json > "extra" > "eas" > "projectId" or EAS dashboard
@@ -20,7 +20,7 @@ EXPO_PROJECT_ID=your_expo_project_id_here
 # Format: postgresql://user:password@host:port/database
 DATABASE_URL=postgresql://localhost/e85_blend_app
 
-# JWT secret for token signing (only if using auth)
+# JWT secret for token signing (required when running backend/auth)
 # Generate: openssl rand -base64 32
 JWT_SECRET=your_jwt_secret_here
 
@@ -59,21 +59,22 @@ ENABLE_ANALYTICS=false
 
 | Key | Purpose | How to Get |
 |-----|---------|-----------|
-| `EXPO_PUBLIC_NREL_API_KEY` | Fetch E85 station data from NREL database | Free signup at [developer.nrel.gov](https://developer.nrel.gov/signup/) |
+| `NREL_API_KEY` | Fetch E85 station data from NREL database | Free signup at [developer.nrel.gov](https://developer.nrel.gov/signup/) |
 | `EXPO_PROJECT_ID` | Enable OTA (over-the-air) updates via Expo | Found in `app.json` or [EAS dashboard](https://expo.dev/eas) |
 
 ## For Production Deployment
 
 1. **Never commit `.env` to version control** (it's in `.gitignore`)
 2. **Use a secrets manager** (AWS Secrets Manager, Vercel Secrets, etc.)
-3. **Ensure `EXPO_PUBLIC_NREL_API_KEY` is set** (not the demo key, which is rate-limited)
+3. **Ensure `NREL_API_KEY` is set** (station search fails fast if missing)
 4. **Set `NODE_ENV=production`** for optimized builds
 5. **Verify `JWT_SECRET` is strong and unique** (use `openssl rand -base64 32`)
+6. **Backend fails fast without a valid `JWT_SECRET`** in non-test environments (missing/short/placeholder values are rejected)
 
 ## Troubleshooting
 
-**"Station search not working" or "Rate limit exceeded"**
-- You're using the shared demo key. Set `EXPO_PUBLIC_NREL_API_KEY` to your own key.
+**"Station search not working" or "NREL API key not configured"**
+- Set `NREL_API_KEY` on the backend environment and restart `pnpm dev:server`.
 
 **"API connection refused" on physical device**
 - Set `API_BASE_URL` to your machine's LAN IP: `http://192.168.x.x:3000`

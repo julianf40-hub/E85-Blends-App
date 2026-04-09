@@ -29,7 +29,7 @@ cd e85-blend-app
 pnpm install
 
 # 3. Set the NREL API key (only required env var!)
-eas secret set NREL_API_KEY wYvVTmn6ub2F09aUEbFrCZB0v6hfqLKeNN3o3ZX6
+eas secret set NREL_API_KEY <your-nrel-api-key>
 
 # 4. Build for TestFlight
 eas build --platform ios --profile production
@@ -92,7 +92,7 @@ e85-blend-app/
 
 **Required:**
 ```bash
-NREL_API_KEY=wYvVTmn6ub2F09aUEbFrCZB0v6hfqLKeNN3o3ZX6
+NREL_API_KEY=<your-nrel-api-key>
 ```
 
 **Optional (for custom backend):**

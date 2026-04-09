@@ -260,7 +260,7 @@ export default function CalculatorScreen() {
     if (!blendResult) return;
     try {
       const { addFuelEntry } = await import("@/lib/fuel-log");
-      const { loadRemindersForCar, completeReminder } = await import("@/lib/reminders");
+      const { syncMileageRemindersForCar } = await import("@/lib/reminders");
       const totalGallons = blendResult.e85Gallons + blendResult.gasGallons;
       const priceE85 = parseFloat(logFillUpPriceE85) || 0;
       const priceGas = parseFloat(logFillUpPriceGas) || 0;
@@ -288,19 +288,7 @@ export default function CalculatorScreen() {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer });
         setCurrentMileage(odometer);
       }
-      if (activeCar) {
-        const rems = await loadRemindersForCar(activeCar.id);
-        for (const rem of rems) {
-          if (
-            rem.mileageEnabled &&
-            rem.nextReminderMileage !== undefined &&
-            !rem.completedAt &&
-            odometer >= rem.nextReminderMileage
-          ) {
-            await completeReminder(rem.id, odometer);
-          }
-        }
-      }
+      if (activeCar) await syncMileageRemindersForCar(activeCar.id, odometer);
       setLogFillUpModalVisible(false);
       if (Platform.OS !== "web")
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -488,6 +476,65 @@ export default function CalculatorScreen() {
           </View>
         )}
 
+        {pumpMode && (
+          <View style={[styles.pumpQuickCard, { backgroundColor: colors.surface, borderColor: colors.success + "40" }]}>
+            <Text style={[styles.pumpQuickTitle, { color: colors.foreground }]}>Quick Pump Inputs</Text>
+            <Text style={[styles.pumpQuickLabel, { color: colors.muted }]}>Current tank level</Text>
+            <View style={styles.pumpLevelRow}>
+              {[
+                { l: "E", v: "0" },
+                { l: "¼", v: "25" },
+                { l: "½", v: "50" },
+                { l: "¾", v: "75" },
+              ].map((item) => {
+                const isActive = calcStrings.currentFuelLevel === item.v;
+                return (
+                  <Pressable
+                    key={`pump-${item.v}`}
+                    onPress={() => handleCalcStringChange("currentFuelLevel", item.v)}
+                    style={({ pressed }) => [
+                      styles.pumpLevelChip,
+                      {
+                        backgroundColor: isActive ? colors.success : colors.background,
+                        borderColor: isActive ? colors.success : colors.border,
+                      },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <Text style={[styles.pumpLevelChipText, { color: isActive ? "#fff" : colors.foreground }]}>
+                      {item.l}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.pumpQuickLabel, { color: colors.muted }]}>Target blend</Text>
+            <View style={styles.pumpTargetRow}>
+              {COMMON_BLENDS.map((blend) => {
+                const isActive = blendInputs.targetEthanolPercent === blend.value;
+                return (
+                  <Pressable
+                    key={`pump-target-${blend.value}`}
+                    onPress={() => handleQuickBlend(blend.value)}
+                    style={({ pressed }) => [
+                      styles.pumpTargetChip,
+                      {
+                        backgroundColor: isActive ? colors.primary : colors.background,
+                        borderColor: isActive ? colors.primary : colors.border,
+                      },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <Text style={[styles.pumpTargetChipText, { color: isActive ? "#fff" : colors.foreground }]}>
+                      {blend.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
+
         {/* ── Target Blend Presets ── */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Target Blend</Text>
@@ -522,7 +569,7 @@ export default function CalculatorScreen() {
         </View>
 
         {/* ── Saved Blends ── */}
-        {savedBlends.length > 0 && (
+        {!pumpMode && savedBlends.length > 0 && (
           <>
             <Pressable
               onPress={() => {
@@ -577,7 +624,7 @@ export default function CalculatorScreen() {
         )}
 
         {/* ── Blend Guide ── */}
-        <Pressable
+        {!pumpMode && <Pressable
           onPress={() => {
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setShowBlendGuide((v) => !v);
@@ -593,9 +640,9 @@ export default function CalculatorScreen() {
           <Text style={[styles.blendGuideToggleChevron, { color: colors.muted }]}>
             {showBlendGuide ? "▲" : "▼"}
           </Text>
-        </Pressable>
+        </Pressable>}
 
-        {showBlendGuide && (
+        {!pumpMode && showBlendGuide && (
           <View style={[styles.blendGuideCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             {BLEND_GUIDE_TIERS.map((tier) => {
               // Highlight if current target falls in this tier
@@ -822,7 +869,7 @@ export default function CalculatorScreen() {
         </View>
 
         {/* ── Advanced Toggle ── */}
-        <Pressable
+        {!pumpMode && <Pressable
           onPress={() => setShowAdvanced((v) => !v)}
           style={({ pressed }) => [
             styles.advancedToggle,
@@ -837,10 +884,10 @@ export default function CalculatorScreen() {
             size={14}
             color={colors.primary}
           />
-        </Pressable>
+        </Pressable>}
 
         {/* ── Advanced Inputs ── */}
-        {showAdvanced && (
+        {!pumpMode && showAdvanced && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Fuel Properties</Text>
             <View style={styles.inputRow}>
@@ -1345,6 +1392,57 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   pumpBannerText: { fontSize: 12, fontWeight: "600", flex: 1 },
+  pumpQuickCard: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+  },
+  pumpQuickTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  pumpQuickLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    marginBottom: 6,
+  },
+  pumpLevelRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 10,
+  },
+  pumpLevelChip: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  pumpLevelChipText: {
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  pumpTargetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  pumpTargetChip: {
+    minWidth: 74,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  pumpTargetChipText: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
 
   section: { paddingHorizontal: 16, marginBottom: 4 },
   sectionTitle: { fontSize: 15, fontWeight: "700", marginBottom: 10 },

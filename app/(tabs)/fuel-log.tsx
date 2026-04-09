@@ -24,6 +24,7 @@ import {
   FuelEntry,
   getFuelLogStats,
 } from "@/lib/fuel-log";
+import { syncMileageRemindersForCar } from "@/lib/reminders";
 import { getActiveCar, updateCarProfile } from "@/lib/garage";
 import { getSavedBlends, deleteBlend, toggleFavorite, SavedBlend } from "@/lib/blend-storage";
 import * as Location from "expo-location";
@@ -169,6 +170,9 @@ export default function FuelLogScreen() {
           const newOdometer = parseFloat(formData.odometer);
           if (!isNaN(newOdometer) && newOdometer > (car.odometer ?? 0)) {
             await updateCarProfile(car.id, { odometer: newOdometer });
+          }
+          if (!isNaN(newOdometer)) {
+            await syncMileageRemindersForCar(car.id, newOdometer);
           }
         }
       } catch (e) {
