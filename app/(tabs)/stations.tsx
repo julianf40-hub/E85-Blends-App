@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback, useRef } from "react";
+import { useFocusEffect } from "expo-router";
 import {
   Text,
   View,
@@ -194,7 +195,16 @@ export default function StationsScreen() {
     handlePriceUpdate,
     handlePriceSubmit,
     sortedStations,
+    refreshUserPrices,
   } = useStationsInteractions(stations, localPrices);
+
+  // Refresh user/community prices every time this tab comes into focus
+  // (e.g. after a fuel log save writes a new price)
+  useFocusEffect(
+    useCallback(() => {
+      refreshUserPrices();
+    }, [refreshUserPrices])
+  );
 
   // Animate map to fit all pins when switching to map view
   useEffect(() => {

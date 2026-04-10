@@ -155,6 +155,7 @@ export default function FuelLogScreen() {
       const newEntry = await addFuelEntry({
         date: new Date().toISOString(),
         stationName: formData.stationName,
+        stationId: formData.stationId || undefined,
         blendRatio: derivedEthanolPct,
         gallonsAdded: derivedTotal,
         e85Gallons: derivedE85 > 0 ? derivedE85 : undefined,

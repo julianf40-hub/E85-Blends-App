@@ -33,47 +33,51 @@ export function useStationsInteractions(stations: E85Station[], localPrices: Loc
     }
   }, [stations]);
 
+  const loadUserAndCommunityPrices = useCallback(async (stationList: E85Station[]) => {
+    if (stationList.length === 0) {
+      setUserPrices({});
+      setCommunityPrices({});
+      return;
+    }
+    const entries = await Promise.all(
+      stationList.map(async (station) => {
+        const [latest, allPrices] = await Promise.all([
+          getLatestStationPrice(station.id),
+          getStationPrices(station.id),
+        ]);
+        return [station.id, latest, allPrices] as const;
+      })
+    );
+    const nextUser: Record<string, StationPrice> = {};
+    const nextCommunity: Record<string, { e85Price?: number; reportCount: number; freshestTimestamp?: number }> = {};
+    for (const [stationId, latest, allPrices] of entries) {
+      if (latest) nextUser[stationId] = latest;
+      const e85Reports = allPrices.filter((p) => p.e85Price != null);
+      if (e85Reports.length > 0) {
+        const avg = e85Reports.reduce((sum, p) => sum + (p.e85Price ?? 0), 0) / e85Reports.length;
+        const freshest = e85Reports.reduce((max, p) => Math.max(max, p.timestamp), 0);
+        nextCommunity[stationId] = {
+          e85Price: Math.round(avg * 100) / 100,
+          reportCount: e85Reports.length,
+          freshestTimestamp: freshest,
+        };
+      }
+    }
+    setUserPrices(nextUser);
+    setCommunityPrices(nextCommunity);
+  }, []);
+
+  // Reload prices whenever the station list changes
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      if (stations.length === 0) {
-        setUserPrices({});
-        setCommunityPrices({});
-        return;
-      }
-      const entries = await Promise.all(
-        stations.map(async (station) => {
-          const [latest, allPrices] = await Promise.all([
-            getLatestStationPrice(station.id),
-            getStationPrices(station.id),
-          ]);
-          return [station.id, latest, allPrices] as const;
-        })
-      );
-      if (cancelled) return;
-      const nextUser: Record<string, StationPrice> = {};
-      const nextCommunity: Record<string, { e85Price?: number; reportCount: number; freshestTimestamp?: number }> = {};
-      for (const [stationId, latest, allPrices] of entries) {
-        if (latest) nextUser[stationId] = latest;
-        // Build community summary: aggregate all e85 reports (excluding own latest if only 1)
-        const e85Reports = allPrices.filter((p) => p.e85Price != null);
-        if (e85Reports.length > 0) {
-          const avg = e85Reports.reduce((sum, p) => sum + (p.e85Price ?? 0), 0) / e85Reports.length;
-          const freshest = e85Reports.reduce((max, p) => Math.max(max, p.timestamp), 0);
-          nextCommunity[stationId] = {
-            e85Price: Math.round(avg * 100) / 100,
-            reportCount: e85Reports.length,
-            freshestTimestamp: freshest,
-          };
-        }
-      }
-      setUserPrices(nextUser);
-      setCommunityPrices(nextCommunity);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [stations]);
+    loadUserAndCommunityPrices(stations).catch(() => {});
+    return () => { cancelled = true; };
+  }, [stations, loadUserAndCommunityPrices]);
+
+  // Exposed so callers (e.g. after a fuel log save) can force a refresh
+  const refreshUserPrices = useCallback(() => {
+    return loadUserAndCommunityPrices(stations);
+  }, [stations, loadUserAndCommunityPrices]);
 
   const handleVote = useCallback(async (stationId: string, vote: "yes" | "no") => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -210,5 +214,6 @@ export function useStationsInteractions(stations: E85Station[], localPrices: Loc
     handlePriceUpdate,
     handlePriceSubmit,
     sortedStations,
+    refreshUserPrices,
   };
 }
