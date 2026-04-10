@@ -27,6 +27,7 @@ import { useAppUpdate } from "@/hooks/use-app-update";
 import { Pressable, Text, StyleSheet } from "react-native";
 import { loadPreferences } from "@/lib/preferences";
 import { PreferencesProvider } from "@/lib/preferences-context";
+import { setupNotificationChannel } from "@/lib/notifications";
 
 // Hide splash screen immediately — no loading delay needed
 SplashScreen.hideAsync().catch(() => {});
@@ -73,6 +74,11 @@ export default function RootLayout() {
   // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
     initManusRuntime();
+  }, []);
+
+  // Set up Android notification channel on mount (no-op on iOS/web)
+  useEffect(() => {
+    setupNotificationChannel().catch(() => {});
   }, []);
 
   // Handle Android App Shortcuts (long-press app icon)

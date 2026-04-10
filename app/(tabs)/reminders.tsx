@@ -34,6 +34,13 @@ import {
   getReminderUrgency,
   sortRemindersByUrgency,
 } from "@/lib/reminders";
+import {
+  requestNotificationPermission,
+  getNotificationPermissionStatus,
+  scheduleReminderNotification,
+  cancelReminderNotification,
+  syncAllReminderNotifications,
+} from "@/lib/notifications";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -464,6 +471,7 @@ export default function RemindersScreen() {
   const [loadError, setLoadError] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
+  const [notifPermission, setNotifPermission] = useState<"granted" | "denied" | "undetermined">("undetermined");
 
   const loadData = useCallback(async () => {
     setLoadError(false);
@@ -492,19 +500,33 @@ export default function RemindersScreen() {
     }
   }, []);
 
+  // Check notification permission status on focus
   useFocusEffect(
     useCallback(() => {
       loadData();
+      getNotificationPermissionStatus().then(setNotifPermission).catch(() => {});
     }, [loadData])
   );
+
+  // Sync notifications whenever reminders change
+  useEffect(() => {
+    if (reminders.length > 0) {
+      syncAllReminderNotifications(reminders).catch(() => {});
+    }
+  }, [reminders]);
 
   const handleSave = useCallback(
     async (data: NewReminder) => {
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (editingReminder) {
-        await updateReminder(editingReminder.id, data);
+        const updated = await updateReminder(editingReminder.id, data).then(() =>
+          ({ ...editingReminder, ...data })
+        );
+        // Re-schedule notification with updated dates
+        await scheduleReminderNotification(updated as Reminder).catch(() => {});
       } else {
-        await addReminder(data);
+        const newReminder = await addReminder(data);
+        await scheduleReminderNotification(newReminder).catch(() => {});
       }
       setShowModal(false);
       setEditingReminder(null);
@@ -525,6 +547,7 @@ export default function RemindersScreen() {
             onPress: async () => {
               if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               await completeReminder(reminder.id, currentMileage);
+              await cancelReminderNotification(reminder.id).catch(() => {});
               loadData();
             },
           },
@@ -545,6 +568,7 @@ export default function RemindersScreen() {
             text: "Delete",
             style: "destructive",
             onPress: async () => {
+              await cancelReminderNotification(reminder.id).catch(() => {});
               await deleteReminder(reminder.id);
               loadData();
             },
@@ -639,6 +663,24 @@ export default function RemindersScreen() {
           <Text style={styles.addBtnText}>Add</Text>
         </Pressable>
       </View>
+
+      {/* Notification permission banner */}
+      {notifPermission !== "granted" && Platform.OS !== "web" && (
+        <Pressable
+          style={[styles.notifBanner, { backgroundColor: "#F59E0B" }]}
+          onPress={async () => {
+            const granted = await requestNotificationPermission();
+            setNotifPermission(granted ? "granted" : "denied");
+          }}
+        >
+          <Text style={styles.notifBannerIcon}>🔔</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.notifBannerTitle}>Enable Notifications</Text>
+            <Text style={styles.notifBannerBody}>Get alerted when maintenance is due</Text>
+          </View>
+          <IconSymbol name="chevron.right" size={16} color="#fff" />
+        </Pressable>
+      )}
 
       {/* Mileage chip */}
       {currentMileage > 0 && (
@@ -978,5 +1020,28 @@ const styles = StyleSheet.create({
   repeatPresetText: {
     fontSize: 13,
     fontWeight: "500",
+  },
+  notifBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  notifBannerIcon: {
+    fontSize: 20,
+  },
+  notifBannerTitle: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
+  },
+  notifBannerBody: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 12,
+    marginTop: 1,
   },
 });

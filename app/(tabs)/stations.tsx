@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Dimensions,
+  RefreshControl,
 } from "react-native";
 import { StationMap } from "@/components/station-map";
 type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
@@ -820,8 +821,16 @@ export default function StationsScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={colors.primary}
+              colors={[colors.primary]}
+              title="Refreshing stations…"
+              titleColor={colors.muted}
+            />
+          }
           ListEmptyComponent={
             !errorMsg ? (
               <View style={styles.emptyState}>
