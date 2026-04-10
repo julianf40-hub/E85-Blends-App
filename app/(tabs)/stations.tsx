@@ -1276,20 +1276,21 @@ const styles = StyleSheet.create({
   badgeRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: 4,
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 6,
+    paddingBottom: 2,
   },
   trustBadge: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
   },
   trustBadgeText: {
     fontSize: 9,
-    fontWeight: "700",
-    letterSpacing: 0.3,
+    fontWeight: "600",
+    letterSpacing: 0.2,
   },
   priceRow: {
     flexDirection: "row",

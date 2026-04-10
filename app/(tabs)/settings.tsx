@@ -778,10 +778,10 @@ export default function SettingsScreen() {
                 <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage in Tab Bar</Text>
                 <Text style={[styles.settingDesc, { color: colors.muted }]}>
                   {(prefs.homeScreen ?? "calculator") === "garage"
-                    ? "Can't hide — Garage is your home screen"
+                    ? "Required — set as your home screen"
                     : prefs.showGarage === false
-                    ? "Hidden tabs are still accessible from More"
-                    : "Visible in the tab bar"}
+                    ? "Still accessible from the More tab"
+                    : "Shown in the tab bar"}
                 </Text>
               </View>
               <Switch
@@ -803,8 +803,8 @@ export default function SettingsScreen() {
                 <Text style={[styles.settingName, { color: colors.foreground }]}>Show Reminders in Tab Bar</Text>
                 <Text style={[styles.settingDesc, { color: colors.muted }]}>
                   {prefs.showReminders === false
-                    ? "Hidden tabs are still accessible from More"
-                    : "Visible in the tab bar"}
+                    ? "Still accessible from the More tab"
+                    : "Shown in the tab bar"}
                 </Text>
               </View>
               <Switch
