@@ -820,7 +820,7 @@ export default function SettingsScreen() {
             <View style={[styles.settingRow, { paddingBottom: 6 }]}>
               <View style={styles.settingLabel}>
                 <Text style={[styles.settingName, { color: colors.foreground }]}>Directions App</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Opens when you tap Get Directions on a station</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Opens when you tap Directions on a station</Text>
               </View>
             </View>
             <View style={[styles.themeToggleRow, { paddingTop: 0, flexWrap: "wrap", gap: 8 }]}>

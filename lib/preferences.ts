@@ -20,7 +20,7 @@ export interface UserPreferences {
   homeScreen?: "calculator" | "garage"; // default landing tab
   showReminders?: boolean; // visibility toggle for Reminders tab
   showGarage?: boolean; // visibility toggle for Garage tab
-  directionsApp?: "apple" | "google" | "waze" | "ask"; // preferred navigation app
+  directionsApp?: "apple" | "google" | "waze"; // preferred navigation app
 }
 
 const PREFERENCES_KEY = "e85_user_preferences";

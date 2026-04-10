@@ -232,7 +232,7 @@ export default function StationsScreen() {
     } else if (directionsApp === "waze") {
       url = `https://waze.com/ul?ll=${lat},${lon}&navigate=yes`;
     } else {
-      // "apple" or "ask" — default to native maps (Apple on iOS, Google on Android/web)
+      // Apple Maps (default) — native on iOS, fallback to Google Maps on Android/web
       url = Platform.select({
         ios: `maps:0,0?q=${lat},${lon}`,
         android: `geo:0,0?q=${lat},${lon}(${name})`,
