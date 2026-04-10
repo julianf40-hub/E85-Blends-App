@@ -380,10 +380,10 @@ export default function StationsScreen() {
 	              <>
 	                <View style={[styles.priceFocusRow, { borderTopColor: colors.border }]}>
 	                  <View style={{ flex: 1 }}>
-	                    <Text style={[styles.priceSource, { color: colors.muted, fontStyle: "normal", fontSize: 11, opacity: 1, textAlign: "left" }]}>
+	                    <Text style={[styles.priceSource, { color: colors.muted, fontStyle: "normal", fontSize: 12, fontWeight: "600", opacity: 1, textAlign: "left" }]}>
 	                      {summary.sourceLabel}
 	                    </Text>
-	                    <Text style={[styles.priceFocusValue, { color: summary.isEstimate ? colors.muted : colors.primary }]}>
+	                    <Text style={[styles.priceFocusValue, { color: summary.isEstimate ? colors.muted : colors.primary }, summary.isEstimate && { fontSize: 19, fontWeight: "600" }]}>
 	                      ${summary.price.toFixed(2)}
 	                      <Text style={[styles.pricePerGalText, { color: colors.muted }]}> /gal</Text>
 	                    </Text>
@@ -1217,7 +1217,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    marginTop: 8,
+    marginTop: 4,
     paddingHorizontal: 16,
     paddingTop: 12,
   },
@@ -1258,7 +1258,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 4,
     paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 2,
     paddingBottom: 2,
   },
   trustBadge: {
