@@ -130,8 +130,6 @@ function getTrustBadges(
     } else {
       badges.push({ label: summary.stale ? "Price stale" : "Your log", tone: summary.stale ? "warn" : "success" });
     }
-  } else {
-    badges.push({ label: "State avg", tone: "muted" });
   }
 
   if (station.lastConfirmed) {
@@ -385,7 +383,7 @@ export default function StationsScreen() {
 	                    <Text style={[styles.priceSource, { color: colors.muted, fontStyle: "normal", fontSize: 11, opacity: 1, textAlign: "left" }]}>
 	                      {summary.sourceLabel}
 	                    </Text>
-	                    <Text style={[styles.priceFocusValue, { color: colors.primary }]}>
+	                    <Text style={[styles.priceFocusValue, { color: summary.isEstimate ? colors.muted : colors.primary }]}>
 	                      ${summary.price.toFixed(2)}
 	                      <Text style={[styles.pricePerGalText, { color: colors.muted }]}> /gal</Text>
 	                    </Text>
