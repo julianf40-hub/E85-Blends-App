@@ -201,7 +201,13 @@ export default function FuelLogScreen() {
             await updateCarProfile(car.id, { odometer: newOdometer });
           }
           if (!isNaN(newOdometer)) {
-            await syncMileageRemindersForCar(car.id, newOdometer);
+            const syncCount = await syncMileageRemindersForCar(car.id, newOdometer);
+            if (syncCount > 0) {
+              Alert.alert(
+                "Maintenance Updated",
+                `${syncCount} reminder${syncCount > 1 ? "s" : ""} advanced based on your new mileage.`
+              );
+            }
           }
         }
       } catch (e) {

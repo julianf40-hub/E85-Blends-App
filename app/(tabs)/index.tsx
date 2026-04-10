@@ -33,6 +33,7 @@ import {
   REMINDER_CATEGORIES,
   ReminderCategory,
   updateReminder,
+  syncMileageRemindersForCar,
 } from "@/lib/reminders";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ function getUrgencyLabel(reminder: Reminder, currentMileage: number): { label: s
   }
 
   const parts: string[] = [];
-  if (milesLeft !== undefined) parts.push(`${milesLeft.toLocaleString()} mi`);
+  if (milesLeft !== undefined) parts.push(`in ${milesLeft.toLocaleString()} mi`);
   if (daysLeft !== undefined) {
     if (daysLeft === 0) parts.push("today");
     else if (daysLeft === 1) parts.push("1 day");
@@ -311,26 +312,6 @@ export default function HomeScreen() {
     router.push("/(tabs)/settings");
   }, [router]);
 
-  // Auto-check reminders when odometer changes
-  const checkAndUpdateReminders = useCallback(async (newOdometer: number) => {
-    if (!activeCar) return;
-    try {
-      const rems = await loadRemindersForCar(activeCar.id);
-      // Check each mileage-based reminder
-      for (const rem of rems) {
-        if (rem.mileageEnabled && rem.nextReminderMileage !== undefined && !rem.completedAt) {
-          // If odometer crosses the reminder threshold, mark it as due
-          if (newOdometer >= rem.nextReminderMileage) {
-            // Reminder is now due/overdue, no need to update (it will show as due in the UI)
-            // The UI already shows it as due based on getReminderUrgency
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to check reminders:", e);
-    }
-  }, [activeCar]);
-
   const [calcAutoFilled, setCalcAutoFilled] = useState(false);
 
   const handleCalculatePress = useCallback(async () => {
@@ -416,7 +397,6 @@ export default function HomeScreen() {
     if (!blendResult) return;
     try {
       const { addFuelEntry } = await import("@/lib/fuel-log");
-      const { loadRemindersForCar, completeReminder } = await import("@/lib/reminders");
       const totalGallons = blendResult.e85Gallons + blendResult.gasGallons;
       const priceE85 = parseFloat(logFillUpPriceE85) || 0;
       const priceGas = parseFloat(logFillUpPriceGas) || 0;
@@ -443,15 +423,11 @@ export default function HomeScreen() {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer });
         setCurrentMileage(odometer);
       }
-      // Check reminders
+      // Sync mileage reminders
       if (activeCar) {
-        const rems = await loadRemindersForCar(activeCar.id);
-        for (const rem of rems) {
-          if (rem.mileageEnabled && rem.nextReminderMileage !== undefined && !rem.completedAt) {
-            if (odometer >= rem.nextReminderMileage) {
-              await completeReminder(rem.id, odometer);
-            }
-          }
+        const syncCount = await syncMileageRemindersForCar(activeCar.id, odometer);
+        if (syncCount > 0) {
+          Alert.alert("Maintenance Updated", `${syncCount} reminder${syncCount > 1 ? "s" : ""} advanced based on your new mileage.`);
         }
       }
       setLogFillUpModalVisible(false);
@@ -486,15 +462,17 @@ export default function HomeScreen() {
       // Update the active car's odometer field
       if (activeCar) {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer: newOdometer });
+        await syncMileageRemindersForCar(activeCar.id, newOdometer);
         setCurrentMileage(newOdometer);
         setOdometerModalVisible(false);
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        loadData();
       }
     } catch (e) {
       console.warn("Failed to update odometer:", e);
       Alert.alert("Error", "Failed to update odometer. Please try again.");
     }
-  }, [odometerInput, currentMileage, activeCar]);
+  }, [odometerInput, currentMileage, activeCar, loadData]);
 
   return (
     <ScreenContainer>
@@ -1090,6 +1068,25 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
+          {reminders.length > 0 && (() => {
+            const next = reminders[0];
+            const meta = getCategoryMeta(next.category);
+            const { label, color } = getUrgencyLabel(next, currentMileage);
+            return (
+              <Pressable
+                style={[styles.nextServiceRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={handleReminderPress}
+              >
+                <Text style={styles.nextServiceIcon}>{meta.icon}</Text>
+                <Text style={[styles.nextServiceLabel, { color: colors.foreground }]} numberOfLines={1}>
+                  {next.name}
+                </Text>
+                <Text style={[styles.nextServiceUrgency, { color }]}>{label}</Text>
+                <IconSymbol name="chevron.right" size={14} color={colors.muted} />
+              </Pressable>
+            );
+          })()}
+
           {reminders.length === 0 ? (
             <Pressable
               style={[styles.emptyRemindersCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -1354,6 +1351,29 @@ const styles = StyleSheet.create({
   },
   reminderCardBadgeText: {
     fontSize: 11,
+    fontWeight: "600",
+  },
+  nextServiceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginHorizontal: 16,
+    marginBottom: 8,
+  },
+  nextServiceIcon: {
+    fontSize: 16,
+  },
+  nextServiceLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  nextServiceUrgency: {
+    fontSize: 13,
     fontWeight: "600",
   },
   addReminderCard: {
