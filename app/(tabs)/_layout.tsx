@@ -46,6 +46,12 @@ function GlassTabBarBackground() {
   );
 }
 
+// Explicitly declare calculator as the initial/default tab route.
+// This prevents Expo Router from looking for an index.tsx fallback.
+export const unstable_settings = {
+  initialRouteName: "calculator",
+};
+
 export default function TabLayout() {
   const colors = useColors();
   const colorScheme = useColorScheme();
