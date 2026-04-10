@@ -110,7 +110,7 @@ function getStationPriceSummary(
   const stateAvg = localPrices?.e85Price ?? getE85StateAverage(station.state);
   return {
     price: stateAvg,
-    sourceLabel: `${station.state} avg`,
+    sourceLabel: `${station.state} state avg`,
     sublabel: "State average — no station reports",
     stale: false,
     isEstimate: true,
@@ -131,7 +131,7 @@ function getTrustBadges(
       badges.push({ label: summary.stale ? "Price stale" : "Your log", tone: summary.stale ? "warn" : "success" });
     }
   } else {
-    badges.push({ label: "Estimated", tone: "muted" });
+    badges.push({ label: "State avg", tone: "muted" });
   }
 
   if (station.lastConfirmed) {
@@ -382,7 +382,7 @@ export default function StationsScreen() {
 	              <>
 	                <View style={[styles.priceFocusRow, { borderTopColor: colors.border }]}>
 	                  <View style={{ flex: 1 }}>
-	                    <Text style={[styles.priceSource, { color: colors.muted }]}>
+	                    <Text style={[styles.priceSource, { color: colors.muted, fontStyle: "normal", fontSize: 11, opacity: 1, textAlign: "left" }]}>
 	                      {summary.sourceLabel}
 	                    </Text>
 	                    <Text style={[styles.priceFocusValue, { color: colors.primary }]}>
@@ -472,7 +472,7 @@ export default function StationsScreen() {
 	                        </View>
 	                        <Text style={[styles.priceSource, { color: colors.muted }]}>
 	                          {localPrices?.gasPricePeriod
-	                            ? `Gas: EIA weekly (week of ${localPrices.gasPricePeriod}) · E85 avg: AFDC`
+	                            ? `Gas: EIA weekly (week of ${localPrices.gasPricePeriod}) · E85 avg: AFDC — verify at pump`
 	                            : "Benchmarks are AFDC/EIA estimates — verify at pump"}
 	                        </Text>
 	                      </View>
@@ -1237,7 +1237,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "400",
     marginTop: 2,
-    opacity: 0.8,
+    opacity: 0.65,
   },
   inlineDirectionsBtn: {
     flexDirection: "row",
@@ -1270,7 +1270,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   trustBadgeText: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: "500",
     letterSpacing: 0.1,
   },
