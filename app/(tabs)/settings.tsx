@@ -814,6 +814,40 @@ export default function SettingsScreen() {
                 thumbColor={prefs.showReminders !== false ? colors.primary : colors.muted}
               />
             </View>
+
+            {/* Directions App picker */}
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={[styles.settingRow, { paddingBottom: 6 }]}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Directions App</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Opens when you tap Get Directions on a station</Text>
+              </View>
+            </View>
+            <View style={[styles.themeToggleRow, { paddingTop: 0, flexWrap: "wrap", gap: 8 }]}>
+              {([
+                { key: "apple", label: "Apple Maps" },
+                { key: "google", label: "Google Maps" },
+                { key: "waze", label: "Waze" },
+              ] as const).map(({ key, label }) => {
+                const isActive = (prefs.directionsApp ?? "apple") === key;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => {
+                      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      handleSavePreference("directionsApp", key);
+                    }}
+                    style={({ pressed }) => [
+                      styles.themeOption,
+                      { backgroundColor: isActive ? colors.primary : colors.background, borderColor: isActive ? colors.primary : colors.border, flex: 0, paddingHorizontal: 14 },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <Text style={[styles.themeOptionText, { color: isActive ? "#fff" : colors.foreground }]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
           </View>
         </Animated.View>
 

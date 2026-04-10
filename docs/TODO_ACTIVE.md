@@ -88,3 +88,22 @@ Extracted from `todo.md` unchecked items during cleanup pass.
 - [ ] Review EAS build configuration for TestFlight
 - [ ] Verify no missing environment values that would block iOS build
 - [ ] Document all changed files and TestFlight steps
+
+## Cleanup Pass 09 (Apr 9, 2026)
+
+### Completed in this pass
+- [x] Add `directionsApp` preference to `UserPreferences` model (`lib/preferences.ts`)
+- [x] Wire `directionsApp` into `openDirections()` in `app/(tabs)/stations.tsx` (Apple Maps / Google Maps / Waze)
+- [x] Add Directions App picker UI to Navigation card in `app/(tabs)/settings.tsx`
+- [x] Fix onboarding `handleAddVehicle` routing from `/(tabs)` → `/(tabs)/index` (lands on Garage)
+- [x] Fix onboarding `handleFinish("garage")` routing from `/(tabs)` → `/(tabs)/index`
+- [x] Improve EIA fallback price sublabel: "EIA state average" → "EIA estimate — no reports yet"
+- [x] Tighten station card badge row: hairline border, reduced padding/weight for visual hierarchy
+
+### Deferred / Dependency cleanup debt
+- [ ] Remove `expo-audio` plugin from `app.config.ts` (no imports anywhere in app code)
+- [ ] Remove `expo-video` plugin from `app.config.ts` (no imports anywhere in app code)
+- [ ] Remove `expo-audio` and `expo-video` from `package.json` dependencies
+- [ ] Remove `expo-keep-awake` from `package.json` (no imports anywhere)
+- [ ] Remove `expo-web-browser` from `package.json` (no imports anywhere)
+- [ ] Directions App "Ask every time" option (ActionSheet on tap) — deferred, not in scope

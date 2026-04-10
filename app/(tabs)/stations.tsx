@@ -28,6 +28,7 @@ import { formatPriceAge, isPriceStale } from "@/lib/station-prices";
 import { getConfidenceScore } from "@/lib/station-votes";
 import { useStationsData } from "@/hooks/use-stations-data";
 import { useStationsInteractions } from "@/hooks/use-stations-interactions";
+import { usePreferencesContext } from "@/lib/preferences-context";
 import { StationsHeader } from "@/components/stations/stations-header";
 import { StationsControls } from "@/components/stations/stations-controls";
 import { LocationDeniedBanner, StationsErrorBanner } from "@/components/stations/stations-banners";
@@ -111,7 +112,7 @@ function getStationPriceSummary(
   return {
     price: stateAvg,
     sourceLabel: `${station.state} avg`,
-    sublabel: "EIA state average",
+    sublabel: "EIA estimate — no reports yet",
     stale: false,
     isEstimate: true,
   };
@@ -154,6 +155,7 @@ function getTrustBadges(
 export default function StationsScreen() {
   const colors = useColors();
   const mapRef = useRef<any>(null);
+  const { prefs } = usePreferencesContext();
   const {
     location,
     stations,
@@ -221,13 +223,25 @@ export default function StationsScreen() {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    const url = Platform.select({
-      ios: `maps:0,0?q=${station.latitude},${station.longitude}`,
-      android: `geo:0,0?q=${station.latitude},${station.longitude}(${encodeURIComponent(station.name)})`,
-      default: `https://www.google.com/maps/dir/?api=1&destination=${station.latitude},${station.longitude}`,
-    });
+    const directionsApp = prefs?.directionsApp ?? "apple";
+    const lat = station.latitude;
+    const lon = station.longitude;
+    const name = encodeURIComponent(station.name);
+    let url: string | undefined;
+    if (directionsApp === "google") {
+      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`;
+    } else if (directionsApp === "waze") {
+      url = `https://waze.com/ul?ll=${lat},${lon}&navigate=yes`;
+    } else {
+      // "apple" or "ask" — default to native maps (Apple on iOS, Google on Android/web)
+      url = Platform.select({
+        ios: `maps:0,0?q=${lat},${lon}`,
+        android: `geo:0,0?q=${lat},${lon}(${name})`,
+        default: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}`,
+      });
+    }
     if (url) Linking.openURL(url);
-  }, []);
+  }, [prefs?.directionsApp]);
 
   const handleMarkerPress = useCallback(
     (station: E85Station) => {
@@ -1278,19 +1292,19 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 4,
     paddingHorizontal: 16,
-    paddingTop: 6,
+    paddingTop: 4,
     paddingBottom: 2,
   },
   trustBadge: {
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 999,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
   trustBadgeText: {
     fontSize: 9,
-    fontWeight: "600",
-    letterSpacing: 0.2,
+    fontWeight: "500",
+    letterSpacing: 0.1,
   },
   priceRow: {
     flexDirection: "row",
