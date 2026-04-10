@@ -1253,9 +1253,10 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   priceMetaText: {
-    fontSize: 11,
-    fontWeight: "500",
+    fontSize: 10,
+    fontWeight: "400",
     marginTop: 2,
+    opacity: 0.8,
   },
   inlineDirectionsBtn: {
     flexDirection: "row",
@@ -1286,8 +1287,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   trustBadgeText: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: "700",
+    letterSpacing: 0.3,
   },
   priceRow: {
     flexDirection: "row",
@@ -1318,7 +1320,9 @@ const styles = StyleSheet.create({
   priceSource: {
     fontSize: 10,
     fontWeight: "400",
+    fontStyle: "italic",
     textAlign: "center",
+    opacity: 0.75,
   },
   attribution: {
     paddingHorizontal: 20,

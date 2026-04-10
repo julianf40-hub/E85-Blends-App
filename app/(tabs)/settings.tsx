@@ -698,7 +698,7 @@ export default function SettingsScreen() {
         </Animated.View>
 
         {/* ── Appearance ── */}
-        <Animated.View entering={FadeInDown.duration(300).delay(80)}style={styles.section}>
+        <Animated.View entering={FadeInDown.duration(300).delay(80)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Appearance</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.settingRow}>
@@ -728,9 +728,15 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+          </View>
+        </Animated.View>
 
-            {/* ── Home Screen picker ── */}
-            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+        {/* ── Navigation ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(100)} style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Navigation</Text>
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+
+            {/* Home Screen picker */}
             <View style={[styles.settingRow, { paddingBottom: 6 }]}>
               <View style={styles.settingLabel}>
                 <Text style={[styles.settingName, { color: colors.foreground }]}>Home Screen</Text>
@@ -747,7 +753,6 @@ export default function SettingsScreen() {
                     key={screen}
                     onPress={() => {
                       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      // If selecting Garage as home, also ensure Garage tab is visible
                       if (screen === "garage" && prefs.showGarage === false) {
                         handleSavePreference("showGarage", true);
                       }
@@ -766,15 +771,17 @@ export default function SettingsScreen() {
               })}
             </View>
 
-            {/* ── Tab Visibility Toggles ── */}
+            {/* Show Garage in Tab Bar */}
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
             <View style={styles.settingRow}>
               <View style={styles.settingLabel}>
-                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage Tab</Text>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage in Tab Bar</Text>
                 <Text style={[styles.settingDesc, { color: colors.muted }]}>
                   {(prefs.homeScreen ?? "calculator") === "garage"
-                    ? "Required — Garage is your home screen"
-                    : "Display the Garage tab in navigation"}
+                    ? "Can't hide — Garage is your home screen"
+                    : prefs.showGarage === false
+                    ? "Hidden tabs are still accessible from More"
+                    : "Visible in the tab bar"}
                 </Text>
               </View>
               <Switch
@@ -788,11 +795,17 @@ export default function SettingsScreen() {
                 thumbColor={prefs.showGarage !== false ? colors.primary : colors.muted}
               />
             </View>
+
+            {/* Show Reminders in Tab Bar */}
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
             <View style={styles.settingRow}>
               <View style={styles.settingLabel}>
-                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Reminders Tab</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Display the Reminders tab in navigation</Text>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Reminders in Tab Bar</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                  {prefs.showReminders === false
+                    ? "Hidden tabs are still accessible from More"
+                    : "Visible in the tab bar"}
+                </Text>
               </View>
               <Switch
                 value={prefs.showReminders !== false}

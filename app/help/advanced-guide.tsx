@@ -35,7 +35,17 @@ interface GuideSection {
   note?: string;
 }
 
-const GUIDE_SECTIONS: GuideSection[] = [
+interface GuideGroup {
+  id: string;
+  label: string;
+  sections: GuideSection[];
+}
+
+const GUIDE_GROUPS: GuideGroup[] = [
+  {
+    id: "overview",
+    label: "Overview",
+    sections: [
   {
     id: "what",
     emoji: "⛽",
@@ -48,6 +58,12 @@ const GUIDE_SECTIONS: GuideSection[] = [
       "A lightweight maintenance companion",
     ],
   },
+  ],
+  },
+  {
+    id: "calculator",
+    label: "Calculator",
+    sections: [
   {
     id: "calculator",
     emoji: "🧮",
@@ -108,6 +124,12 @@ const GUIDE_SECTIONS: GuideSection[] = [
     ],
     note: "Saved Blends are best for repeat use when you usually aim for the same target blend.",
   },
+  ],
+  },
+  {
+    id: "stations-log",
+    label: "Stations & Fuel Log",
+    sections: [
   {
     id: "fuel-log",
     emoji: "📋",
@@ -155,6 +177,12 @@ const GUIDE_SECTIONS: GuideSection[] = [
     ],
     note: "If the detected station is wrong, just change it before saving.",
   },
+  ],
+  },
+  {
+    id: "settings-tips",
+    label: "Settings & Tips",
+    sections: [
   {
     id: "reminders",
     emoji: "🔔",
@@ -199,6 +227,8 @@ const GUIDE_SECTIONS: GuideSection[] = [
     title: "Safety and accuracy",
     body: "85Blends is designed to be a helpful planning and tracking tool. Fuel blend calculations, octane estimates, and station price data are informational only and may vary based on real-world conditions.",
     note: "Always verify your setup, fuel quality, and tune requirements before making changes that could affect vehicle performance or reliability.",
+  },
+  ],
   },
 ];
 
@@ -300,27 +330,32 @@ export default function AdvancedGuideScreen() {
             <View>
               <Text style={[styles.title, { color: colors.foreground }]}>Advanced Guide</Text>
               <Text style={[styles.subtitle, { color: colors.muted }]}>
-                {GUIDE_SECTIONS.length} topics · tap any section to expand
+                {GUIDE_GROUPS.reduce((acc, g) => acc + g.sections.length, 0)} topics · tap any section to expand
               </Text>
             </View>
           </View>
         </Animated.View>
 
-        {/* Sections */}
-        <Animated.View
-          entering={FadeIn.duration(300).delay(100)}
-          style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        >
-          {GUIDE_SECTIONS.map((section, index) => (
-            <AccordionItem
-              key={section.id}
-              section={section}
-              colors={colors}
-              isFirst={index === 0}
-              isLast={index === GUIDE_SECTIONS.length - 1}
-            />
-          ))}
-        </Animated.View>
+        {/* Grouped Sections */}
+        {GUIDE_GROUPS.map((group, gIndex) => (
+          <Animated.View
+            key={group.id}
+            entering={FadeIn.duration(300).delay(80 + gIndex * 60)}
+          >
+            <Text style={[styles.groupLabel, { color: colors.muted }]}>{group.label.toUpperCase()}</Text>
+            <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {group.sections.map((section, index) => (
+                <AccordionItem
+                  key={section.id}
+                  section={section}
+                  colors={colors}
+                  isFirst={index === 0}
+                  isLast={index === group.sections.length - 1}
+                />
+              ))}
+            </View>
+          </Animated.View>
+        ))}
 
         {/* Footer note */}
         <Animated.View entering={FadeIn.duration(300).delay(200)} style={styles.footer}>
@@ -371,6 +406,13 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 13,
     marginTop: 2,
+  },
+  groupLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    marginBottom: 8,
+    marginLeft: 4,
   },
   card: {
     borderRadius: 16,

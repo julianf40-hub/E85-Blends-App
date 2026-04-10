@@ -146,11 +146,11 @@ export default function OnboardingScreen() {
   }, [currentSlide.id, currentIndex, isLastSlide, homeScreenChoice, goToIndex]);
 
   const handleAddVehicle = useCallback(async () => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Save onboarding progress marker so returning from Garage doesn't restart
-    await AsyncStorage.setItem("e85_onboarding_step", "vehicle_done");
-    goToIndex(currentIndex + 1);
-  }, [currentIndex, goToIndex]);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // Mark onboarding complete and send user straight to Garage to add their car
+    await markOnboardingComplete();
+    router.replace("/(tabs)" as never);
+  }, []);
 
   const handleEnableLocation = useCallback(async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -201,8 +201,8 @@ export default function OnboardingScreen() {
               onPress={handleAddVehicle}
               style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
             >
-              <IconSymbol name="plus.circle.fill" size={18} color="#FFFFFF" />
-              <Text style={styles.ctaBtnText}>Add Vehicle</Text>
+              <IconSymbol name="car.fill" size={18} color="#FFFFFF" />
+              <Text style={styles.ctaBtnText}>Set Up in Garage</Text>
             </Pressable>
             <Pressable onPress={handleNext} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
               <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Skip for now</Text>
