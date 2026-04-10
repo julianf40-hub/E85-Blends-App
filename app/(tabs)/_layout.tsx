@@ -110,7 +110,7 @@ export default function TabLayout() {
       />
 
       {/* ── Garage (conditionally shown based on preference) ── */}
-      {showGarage && (
+      {showGarage ? (
         <Tabs.Screen
           name="garage"
           options={{
@@ -120,10 +120,17 @@ export default function TabLayout() {
             ),
           }}
         />
+      ) : (
+        <Tabs.Screen
+          name="garage"
+          options={{
+            href: null, // Hidden when showGarage is false
+          }}
+        />
       )}
 
       {/* ── Reminders (conditionally shown based on preference) ── */}
-      {showReminders && (
+      {showReminders ? (
         <Tabs.Screen
           name="reminders"
           options={{
@@ -133,7 +140,15 @@ export default function TabLayout() {
             ),
           }}
         />
+      ) : (
+        <Tabs.Screen
+          name="reminders"
+          options={{
+            href: null, // Hidden when showReminders is false
+          }}
+        />
       )}
+
 
       {/* ── More / Settings ── */}
       <Tabs.Screen
