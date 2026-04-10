@@ -73,6 +73,8 @@ const MAPPING: Record<string, MaterialIconName> = {
   "chart.bar.fill": "bar-chart",
   "lock.fill": "lock",
   "location.slash.fill": "location-off",
+  "phone.fill": "phone",
+  "dollarsign.circle.fill": "attach-money",
 };
 
 export type IconSymbolName = keyof typeof MAPPING;

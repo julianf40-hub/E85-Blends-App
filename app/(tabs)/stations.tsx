@@ -17,7 +17,6 @@ type Region = { latitude: number; longitude: number; latitudeDelta: number; long
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
-import { LinearGradient } from "expo-linear-gradient";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
@@ -395,20 +394,20 @@ export default function StationsScreen() {
 	                      {summary.updatedLabel ? ` · ${summary.updatedLabel}` : ""}
 	                    </Text>
 	                  </View>
-	                  <Pressable
-	                    onPress={(e) => {
-	                      e.stopPropagation?.();
-	                      openDirections(item);
-	                    }}
-	                    style={({ pressed }) => [
-	                      styles.inlineDirectionsBtn,
-	                      { borderColor: colors.primary, backgroundColor: colors.primary + "12" },
-	                      pressed && { opacity: 0.75 },
-	                    ]}
-	                  >
-	                    <IconSymbol name="navigation.fill" size={14} color={colors.primary} />
-	                    <Text style={[styles.inlineDirectionsText, { color: colors.primary }]}>Directions</Text>
-	                  </Pressable>
+                  <Pressable
+                    onPress={(e) => {
+                      e.stopPropagation?.();
+                      openDirections(item);
+                    }}
+                    style={({ pressed }) => [
+                      styles.inlineDirectionsBtn,
+                      { backgroundColor: colors.primary },
+                      pressed && { opacity: 0.82, transform: [{ scale: 0.96 }] },
+                    ]}
+                  >
+                    <IconSymbol name="navigation.fill" size={16} color="#fff" />
+                    <Text style={[styles.inlineDirectionsText, { color: "#fff" }]}>Directions</Text>
+                  </Pressable>
 	                </View>
 
 	                {trustBadges.length > 0 && (
@@ -577,34 +576,17 @@ export default function StationsScreen() {
 
           {selectedStation?.id === item.id && (
             <Animated.View entering={FadeIn.duration(200)} style={styles.stationActions}>
-              <Pressable
-                onPress={() => openDirections(item)}
-                style={({ pressed }) => [
-                  styles.directionButton,
-                  pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] },
-                ]}
-              >
-                <LinearGradient
-                  colors={[colors.primary, "#15803D"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.directionGradient}
-                >
-                  <IconSymbol name="navigation.fill" size={16} color="#FFFFFF" />
-                  <Text style={styles.directionText}>Get Directions</Text>
-                </LinearGradient>
-              </Pressable>
               <View style={styles.stationActionsSecondary}>
                 <Pressable
                   onPress={() => handlePriceUpdate(item)}
                   style={({ pressed }) => [
                     styles.callButton,
-                    { borderColor: colors.primary, flex: 1 },
+                    { borderColor: colors.border, flex: 1 },
                     pressed && { opacity: 0.7 },
                   ]}
                 >
-                  <IconSymbol name="dollarsign.circle.fill" size={16} color={colors.primary} />
-                  <Text style={[styles.callButtonText, { color: colors.primary }]}>
+                  <IconSymbol name="dollarsign.circle.fill" size={15} color={colors.muted} />
+                  <Text style={[styles.callButtonText, { color: colors.muted }]}>
                     Update Price
                   </Text>
                 </Pressable>
@@ -613,11 +595,12 @@ export default function StationsScreen() {
                     onPress={() => Linking.openURL(`tel:${item.phone}`)}
                     style={({ pressed }) => [
                       styles.callButton,
-                      { borderColor: colors.primary },
+                      { borderColor: colors.border },
                       pressed && { opacity: 0.7 },
                     ]}
                   >
-                    <Text style={[styles.callButtonText, { color: colors.primary }]}>Call</Text>
+                    <IconSymbol name="phone.fill" size={15} color={colors.muted} />
+                    <Text style={[styles.callButtonText, { color: colors.muted }]}>Call</Text>
                   </Pressable>
                 )}
               </View>
@@ -1171,44 +1154,26 @@ const styles = StyleSheet.create({
   },
   stationActions: {
     flexDirection: "column",
-    gap: 8,
-    paddingTop: 4,
+    gap: 0,
+    paddingTop: 2,
   },
   stationActionsSecondary: {
     flexDirection: "row",
     gap: 8,
   },
-  directionButton: {
-    width: "100%",
-    borderRadius: 12,
-    overflow: "hidden",
-  },
-  directionGradient: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-  },
-  directionText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "700",
-  },
   callButton: {
     paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 12,
-    borderWidth: 1.5,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 5,
   },
   callButtonText: {
-    fontSize: 13,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "500",
   },
   confirmedText: {
     fontSize: 11,
@@ -1277,15 +1242,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    minWidth: 100,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
+    minWidth: 120,
+    minHeight: 44,
   },
   inlineDirectionsText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
+    letterSpacing: 0.1,
   },
   badgeRow: {
     flexDirection: "row",
