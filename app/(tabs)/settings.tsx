@@ -925,6 +925,28 @@ export default function SettingsScreen() {
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Help & Support</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
 
+            {/* Advanced Guide */}
+            <Pressable
+              onPress={() => {
+                if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/help/advanced-guide" as never);
+              }}
+              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#00C853" + "18" }]}>
+                  <IconSymbol name="book.fill" size={20} color="#00C853" />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Advanced Guide</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Deep dive into every feature</Text>
+                </View>
+              </View>
+              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
             {/* Help & FAQ */}
             <Pressable
               onPress={() => {

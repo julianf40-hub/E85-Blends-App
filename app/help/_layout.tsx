@@ -9,6 +9,7 @@ export default function HelpLayout() {
       <Stack.Screen name="about" />
       <Stack.Screen name="privacy" />
       <Stack.Screen name="feedback" />
+      <Stack.Screen name="advanced-guide" />
     </Stack>
   );
 }

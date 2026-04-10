@@ -1,9 +1,9 @@
 /**
- * Onboarding screen — shown on first launch only.
- * 4 slides: Welcome, Calculator, Stations, Garage.
+ * Quick Start — shown on first launch only.
+ * 5 slides: Welcome, Set Up Car, Home Screen, Location, You're Ready.
  * Completion is persisted in AsyncStorage so it only shows once.
  */
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   Dimensions,
   FlatList,
   Platform,
+  Alert,
 } from "react-native";
 import Animated, {
   useSharedValue,
@@ -22,11 +23,13 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { savePreferences, loadPreferences } from "@/lib/preferences";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const ONBOARDING_KEY = "e85_onboarding_complete";
@@ -44,98 +47,269 @@ export async function markOnboardingComplete(): Promise<void> {
   await AsyncStorage.setItem(ONBOARDING_KEY, "true");
 }
 
-const SLIDES = [
+// ─── Slide definitions ────────────────────────────────────────────────────────
+
+type SlideId = "welcome" | "vehicle" | "homescreen" | "location" | "ready";
+
+interface Slide {
+  id: SlideId;
+  emoji: string;
+  accent: string;
+  title: string;
+  subtitle: string;
+  bullets?: string[];
+  supportText?: string;
+}
+
+const SLIDES: Slide[] = [
   {
     id: "welcome",
     emoji: "⛽",
+    accent: "#00C853",
     title: "Welcome to 85Blends",
-    subtitle:
-      "The smart companion for flex-fuel drivers. Calculate perfect E85 blends, find nearby stations, and track your fuel savings.",
-    cta: "Get Started",
-    icon: "drop.fill" as const,
-    accent: "#00C853",
+    subtitle: "Plan your blend, find E85 stations, and keep track of your car — all in one place.",
+    bullets: [
+      "Calculate E85 + gas mixes",
+      "Find nearby E85 stations",
+      "Track fill-ups and reminders",
+    ],
   },
   {
-    id: "calculator",
-    emoji: "🧮",
-    title: "Smart Blend Calculator",
-    subtitle:
-      "Tell us your tank size and current ethanol level. We'll calculate exactly how much E85 and gas to add for your target blend.",
-    cta: "Next",
-    icon: "drop.fill" as const,
-    accent: "#00C853",
-  },
-  {
-    id: "stations",
-    emoji: "🗺️",
-    title: "Find E85 Stations",
-    subtitle:
-      "Discover E85 stations near you. Prices shown are state averages from AFDC or prices you report at the pump — always verify at the station.",
-    cta: "Next",
-    icon: "map.fill" as const,
-    accent: "#00B0FF",
-  },
-  {
-    id: "garage",
+    id: "vehicle",
     emoji: "🚗",
-    title: "Set Up Your Garage",
-    subtitle:
-      "Add your flex-fuel vehicle to auto-fill your tank size and preferred blend. You can do this now or any time from the Garage tab.",
-    cta: "Set Up My Car",
-    icon: "car.2.fill" as const,
     accent: "#FF6D00",
+    title: "Set up your car",
+    subtitle: "Add a vehicle so 85Blends can fill in your tank size, preferred octane, and default blend more quickly.",
+    supportText: "You can always change this later in Garage.",
+  },
+  {
+    id: "homescreen",
+    emoji: "🏠",
+    accent: "#00B0FF",
+    title: "Choose your starting screen",
+    subtitle: "Choose which screen opens first when you launch the app.",
+  },
+  {
+    id: "location",
+    emoji: "📍",
+    accent: "#9C27B0",
+    title: "Use location for nearby E85",
+    subtitle: "Allow location access to find nearby E85 stations and make fill-up logging faster.",
+    supportText: "You can still use the calculator without location access.",
+  },
+  {
+    id: "ready",
+    emoji: "✅",
+    accent: "#00C853",
+    title: "You're all set",
+    subtitle: "Start with the calculator, find a nearby station, or finish setting up your car anytime in More.",
   },
 ];
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
   const colors = useColors();
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [homeScreenChoice, setHomeScreenChoice] = useState<"calculator" | "garage">("calculator");
   const scrollX = useSharedValue(0);
 
-  const handleNext = async () => {
-    if (Platform.OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const currentSlide = SLIDES[currentIndex];
+  const isLastSlide = currentIndex === SLIDES.length - 1;
+
+  const goToIndex = useCallback((index: number) => {
+    flatListRef.current?.scrollToIndex({ index, animated: true });
+    setCurrentIndex(index);
+  }, []);
+
+  const handleSkip = useCallback(async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await markOnboardingComplete();
+    router.replace("/(tabs)/calculator" as never);
+  }, []);
+
+  const handleNext = useCallback(async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // On homescreen slide — save the preference before advancing
+    if (currentSlide.id === "homescreen") {
+      try {
+        const prefs = await loadPreferences();
+        await savePreferences({ ...prefs, homeScreen: homeScreenChoice });
+      } catch { /* non-fatal */ }
     }
-    if (currentIndex < SLIDES.length - 1) {
-      const nextIndex = currentIndex + 1;
-      flatListRef.current?.scrollToIndex({ index: nextIndex, animated: true });
-      setCurrentIndex(nextIndex);
-    } else {
-      await markOnboardingComplete();
-      if (Platform.OS !== "web") {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    if (!isLastSlide) {
+      goToIndex(currentIndex + 1);
+    }
+  }, [currentSlide.id, currentIndex, isLastSlide, homeScreenChoice, goToIndex]);
+
+  const handleAddVehicle = useCallback(async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Save onboarding progress marker so returning from Garage doesn't restart
+    await AsyncStorage.setItem("e85_onboarding_step", "vehicle_done");
+    goToIndex(currentIndex + 1);
+  }, [currentIndex, goToIndex]);
+
+  const handleEnableLocation = useCallback(async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status === "granted") {
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
-      // Navigate to Garage tab so user can immediately add their car
-      // Garage tab is the `index` screen inside (tabs)
+    } catch { /* non-fatal */ }
+    goToIndex(currentIndex + 1);
+  }, [currentIndex, goToIndex]);
+
+  const handleFinish = useCallback(async (destination: "calculator" | "stations" | "garage") => {
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    await markOnboardingComplete();
+    if (destination === "calculator") {
+      router.replace("/(tabs)/calculator" as never);
+    } else if (destination === "stations") {
+      router.replace("/(tabs)/stations" as never);
+    } else {
       router.replace("/(tabs)" as never);
     }
-  };
+  }, []);
 
-  const handleSkipToHome = async () => {
-    await markOnboardingComplete();
-    // Default to Calculator on skip
-    router.replace("/(tabs)/calculator" as never);
+  // ── Render bottom action area per slide ──────────────────────────────────────
+  const renderActions = () => {
+    switch (currentSlide.id) {
+      case "welcome":
+        return (
+          <View style={styles.actionsCol}>
+            <Pressable
+              onPress={handleNext}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.ctaBtnText}>Continue</Text>
+              <IconSymbol name="arrow.right" size={18} color="#FFFFFF" />
+            </Pressable>
+            <Pressable onPress={handleSkip} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
+              <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Skip</Text>
+            </Pressable>
+          </View>
+        );
+
+      case "vehicle":
+        return (
+          <View style={styles.actionsCol}>
+            <Pressable
+              onPress={handleAddVehicle}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <IconSymbol name="plus.circle.fill" size={18} color="#FFFFFF" />
+              <Text style={styles.ctaBtnText}>Add Vehicle</Text>
+            </Pressable>
+            <Pressable onPress={handleNext} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
+              <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Skip for now</Text>
+            </Pressable>
+          </View>
+        );
+
+      case "homescreen":
+        return (
+          <View style={styles.actionsCol}>
+            {/* Picker */}
+            <View style={[styles.pickerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={[styles.pickerRow, homeScreenChoice === "calculator" && { backgroundColor: currentSlide.accent + "18" }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setHomeScreenChoice("calculator");
+                }}
+              >
+                <Text style={styles.pickerEmoji}>🧮</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pickerLabel, { color: colors.foreground }]}>Calculator</Text>
+                  <Text style={[styles.pickerDesc, { color: colors.muted }]}>Best for quick blend calculations</Text>
+                </View>
+                {homeScreenChoice === "calculator" && (
+                  <IconSymbol name="checkmark.circle.fill" size={22} color={currentSlide.accent} />
+                )}
+              </Pressable>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <Pressable
+                style={[styles.pickerRow, homeScreenChoice === "garage" && { backgroundColor: currentSlide.accent + "18" }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setHomeScreenChoice("garage");
+                }}
+              >
+                <Text style={styles.pickerEmoji}>🚗</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pickerLabel, { color: colors.foreground }]}>Garage</Text>
+                  <Text style={[styles.pickerDesc, { color: colors.muted }]}>Overview of car, reminders & fill-ups</Text>
+                </View>
+                {homeScreenChoice === "garage" && (
+                  <IconSymbol name="checkmark.circle.fill" size={22} color={currentSlide.accent} />
+                )}
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={handleNext}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.ctaBtnText}>Continue</Text>
+              <IconSymbol name="arrow.right" size={18} color="#FFFFFF" />
+            </Pressable>
+          </View>
+        );
+
+      case "location":
+        return (
+          <View style={styles.actionsCol}>
+            <Pressable
+              onPress={handleEnableLocation}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <IconSymbol name="location.fill" size={18} color="#FFFFFF" />
+              <Text style={styles.ctaBtnText}>Enable Location</Text>
+            </Pressable>
+            <Pressable onPress={handleNext} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
+              <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Not now</Text>
+            </Pressable>
+          </View>
+        );
+
+      case "ready":
+        return (
+          <View style={styles.actionsCol}>
+            <Pressable
+              onPress={() => handleFinish("calculator")}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.ctaBtnText}>Open Calculator</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => handleFinish("stations")}
+              style={({ pressed }) => [styles.ctaBtnOutline, { borderColor: currentSlide.accent }, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={[styles.ctaBtnOutlineText, { color: currentSlide.accent }]}>Find Stations</Text>
+            </Pressable>
+            <Pressable onPress={() => handleFinish("garage")} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
+              <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Go to Garage</Text>
+            </Pressable>
+          </View>
+        );
+
+      default:
+        return null;
+    }
   };
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]} containerClassName="bg-background">
-      {/* Skip button — always visible except on last slide */}
-      {currentIndex < SLIDES.length - 1 && (
+      {/* Skip button — visible on slides 1–3 */}
+      {!isLastSlide && currentSlide.id !== "ready" && (
         <Pressable
-          onPress={handleSkipToHome}
+          onPress={handleSkip}
           style={({ pressed }) => [styles.skipBtn, pressed && { opacity: 0.6 }]}
         >
           <Text style={[styles.skipText, { color: colors.muted }]}>Skip</Text>
-        </Pressable>
-      )}
-      {/* On last slide, show a subtle "Maybe Later" link */}
-      {currentIndex === SLIDES.length - 1 && (
-        <Pressable
-          onPress={handleSkipToHome}
-          style={({ pressed }) => [styles.skipBtn, pressed && { opacity: 0.6 }]}
-        >
-          <Text style={[styles.skipText, { color: colors.muted }]}>Maybe Later</Text>
         </Pressable>
       )}
 
@@ -146,75 +320,61 @@ export default function OnboardingScreen() {
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
-        scrollEnabled
-        onMomentumScrollEnd={(e) => {
-          const newIndex = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
-          if (newIndex !== currentIndex) setCurrentIndex(newIndex);
-        }}
+        scrollEnabled={false}
         keyExtractor={(item) => item.id}
-        onScroll={(e) => {
-          scrollX.value = e.nativeEvent.contentOffset.x;
-        }}
+        onScroll={(e) => { scrollX.value = e.nativeEvent.contentOffset.x; }}
         renderItem={({ item, index }) => (
           <SlideView
             slide={item}
             index={index}
             scrollX={scrollX}
             colors={colors}
+            homeScreenChoice={homeScreenChoice}
           />
         )}
       />
 
-      {/* Dots + CTA */}
-      <View style={styles.footer}>
-        {/* Pagination dots */}
-        <View style={styles.dotsRow}>
-          {SLIDES.map((_, i) => {
-            const isActive = i === currentIndex;
-            return (
-              <View
-                key={i}
-                style={[
-                  styles.dot,
-                  {
-                    backgroundColor: isActive
-                      ? SLIDES[currentIndex].accent
-                      : colors.border,
-                    width: isActive ? 24 : 8,
-                  },
-                ]}
-              />
-            );
-          })}
-        </View>
+      {/* Dots */}
+      <View style={styles.dotsRow}>
+        {SLIDES.map((_, i) => {
+          const isActive = i === currentIndex;
+          return (
+            <View
+              key={i}
+              style={[
+                styles.dot,
+                {
+                  backgroundColor: isActive ? currentSlide.accent : colors.border,
+                  width: isActive ? 24 : 8,
+                },
+              ]}
+            />
+          );
+        })}
+      </View>
 
-        {/* CTA button */}
-        <Pressable
-          onPress={handleNext}
-          style={({ pressed }) => [
-            styles.ctaBtn,
-            { backgroundColor: SLIDES[currentIndex].accent },
-            pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
-          ]}
-        >
-          <Text style={styles.ctaBtnText}>{SLIDES[currentIndex].cta}</Text>
-          <IconSymbol name="arrow.right" size={18} color="#FFFFFF" />
-        </Pressable>
+      {/* Actions */}
+      <View style={styles.footer}>
+        {renderActions()}
       </View>
     </ScreenContainer>
   );
 }
+
+// ─── Slide View ───────────────────────────────────────────────────────────────
 
 function SlideView({
   slide,
   index,
   scrollX,
   colors,
+  homeScreenChoice,
 }: {
-  slide: (typeof SLIDES)[0];
+  slide: Slide;
   index: number;
   scrollX: SharedValue<number>;
   colors: any;
+  homeScreenChoice: "calculator" | "garage";
 }) {
   const animatedStyle = useAnimatedStyle(() => {
     const inputRange = [
@@ -222,45 +382,45 @@ function SlideView({
       index * SCREEN_WIDTH,
       (index + 1) * SCREEN_WIDTH,
     ];
-    const opacity = interpolate(
-      scrollX.value,
-      inputRange,
-      [0.3, 1, 0.3],
-      Extrapolation.CLAMP
-    );
-    const translateY = interpolate(
-      scrollX.value,
-      inputRange,
-      [30, 0, 30],
-      Extrapolation.CLAMP
-    );
+    const opacity = interpolate(scrollX.value, inputRange, [0.3, 1, 0.3], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollX.value, inputRange, [30, 0, 30], Extrapolation.CLAMP);
     return { opacity, transform: [{ translateY }] };
   });
 
   return (
     <View style={[styles.slide, { width: SCREEN_WIDTH }]}>
       <Animated.View style={[styles.slideContent, animatedStyle]}>
-        {/* Emoji illustration */}
-        <View
-          style={[
-            styles.emojiContainer,
-            { backgroundColor: slide.accent + "18" },
-          ]}
-        >
+        {/* Emoji */}
+        <View style={[styles.emojiContainer, { backgroundColor: slide.accent + "18" }]}>
           <Text style={styles.emoji}>{slide.emoji}</Text>
         </View>
 
-        {/* Text */}
-        <Text style={[styles.slideTitle, { color: colors.foreground }]}>
-          {slide.title}
-        </Text>
-        <Text style={[styles.slideSubtitle, { color: colors.muted }]}>
-          {slide.subtitle}
-        </Text>
+        {/* Title + subtitle */}
+        <Text style={[styles.slideTitle, { color: colors.foreground }]}>{slide.title}</Text>
+        <Text style={[styles.slideSubtitle, { color: colors.muted }]}>{slide.subtitle}</Text>
+
+        {/* Bullet points (welcome slide) */}
+        {slide.bullets && (
+          <View style={styles.bulletList}>
+            {slide.bullets.map((b, i) => (
+              <View key={i} style={styles.bulletRow}>
+                <View style={[styles.bulletDot, { backgroundColor: slide.accent }]} />
+                <Text style={[styles.bulletText, { color: colors.foreground }]}>{b}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Support text */}
+        {slide.supportText && (
+          <Text style={[styles.supportText, { color: colors.muted }]}>{slide.supportText}</Text>
+        )}
       </Animated.View>
     </View>
   );
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   skipBtn: {
@@ -283,54 +443,82 @@ const styles = StyleSheet.create({
   },
   slideContent: {
     alignItems: "center",
-    gap: 20,
-    paddingBottom: 40,
+    gap: 16,
+    paddingBottom: 20,
   },
   emojiContainer: {
-    width: 140,
-    height: 140,
-    borderRadius: 40,
+    width: 120,
+    height: 120,
+    borderRadius: 36,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: 4,
   },
   emoji: {
-    fontSize: 72,
+    fontSize: 60,
   },
   slideTitle: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "800",
     textAlign: "center",
-    lineHeight: 34,
+    lineHeight: 32,
   },
   slideSubtitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "400",
     textAlign: "center",
-    lineHeight: 26,
-    maxWidth: 320,
+    lineHeight: 24,
+    maxWidth: 300,
   },
-  footer: {
-    paddingHorizontal: 24,
-    paddingBottom: 32,
-    gap: 24,
+  bulletList: {
+    alignSelf: "stretch",
+    gap: 10,
+    marginTop: 4,
+  },
+  bulletRow: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: 10,
+  },
+  bulletDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  bulletText: {
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  supportText: {
+    fontSize: 13,
+    textAlign: "center",
+    fontStyle: "italic",
+    marginTop: 4,
   },
   dotsRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 6,
+    marginBottom: 16,
   },
   dot: {
     height: 8,
     borderRadius: 4,
+  },
+  footer: {
+    paddingHorizontal: 24,
+    paddingBottom: 32,
+  },
+  actionsCol: {
+    gap: 12,
+    alignItems: "stretch",
   },
   ctaBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    width: "100%",
     paddingVertical: 16,
     borderRadius: 16,
   },
@@ -338,5 +526,52 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+  ctaBtnOutline: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 15,
+    borderRadius: 16,
+    borderWidth: 1.5,
+  },
+  ctaBtnOutlineText: {
+    fontSize: 17,
+    fontWeight: "600",
+  },
+  ghostBtn: {
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  ghostBtnText: {
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  pickerCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  pickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  pickerEmoji: {
+    fontSize: 24,
+  },
+  pickerLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  pickerDesc: {
+    fontSize: 13,
+    marginTop: 1,
+  },
+  divider: {
+    height: 1,
   },
 });
