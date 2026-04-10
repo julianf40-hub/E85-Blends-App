@@ -95,23 +95,23 @@ function getStationPriceSummary(
   // Tier 2: Community price (aggregated local reports)
   if (communityPrice?.e85Price != null && communityPrice.reportCount > 0) {
     const stale = communityPrice.freshestTimestamp != null && isPriceStale(communityPrice.freshestTimestamp);
-    const countLabel = communityPrice.reportCount === 1 ? "1 report" : `${communityPrice.reportCount} reports`;
+    const countLabel = communityPrice.reportCount === 1 ? "1 user report" : `${communityPrice.reportCount} user reports`;
     return {
       price: communityPrice.e85Price,
       sourceLabel: "Community E85",
-      sublabel: stale ? `Community (stale · ${countLabel})` : `Community · ${countLabel}`,
+      sublabel: stale ? `User-reported (stale · ${countLabel})` : `User-reported · ${countLabel}`,
       stale,
       updatedLabel: communityPrice.freshestTimestamp != null ? formatPriceAge(communityPrice.freshestTimestamp) : undefined,
       isEstimate: false,
     };
   }
 
-  // Tier 3: State/regional average fallback
+  // Tier 3: State/regional average fallback (no station-specific data)
   const stateAvg = localPrices?.e85Price ?? getE85StateAverage(station.state);
   return {
     price: stateAvg,
     sourceLabel: `${station.state} avg`,
-    sublabel: "EIA estimate — no reports yet",
+    sublabel: "State average — no station reports",
     stale: false,
     isEstimate: true,
   };
@@ -1079,12 +1079,12 @@ const styles = StyleSheet.create({
   },
   stationCard: {
     borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
   },
   stationCardTop: {
-    gap: 8,
+    gap: 6,
   },
   stationInfo: {
     flexDirection: "row",
@@ -1094,7 +1094,7 @@ const styles = StyleSheet.create({
   stationNameRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
     flex: 1,
   },
   stationIconBg: {
@@ -1127,12 +1127,14 @@ const styles = StyleSheet.create({
   stationAddress: {
     fontSize: 13,
     marginLeft: 46,
+    marginTop: -2,
   },
   stationMeta: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
     marginLeft: 46,
+    marginTop: 2,
   },
   hoursBadge: {
     paddingHorizontal: 10,
