@@ -102,7 +102,7 @@ const SLIDES: Slide[] = [
     emoji: "✅",
     accent: "#00C853",
     title: "You're all set",
-    subtitle: "Start with the calculator, find a nearby station, or finish setting up your car anytime in More.",
+    subtitle: "Start with the calculator, find a nearby station, or finish setting up your car anytime in Garage.",
   },
 ];
 

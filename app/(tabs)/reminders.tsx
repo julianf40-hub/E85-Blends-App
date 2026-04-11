@@ -488,7 +488,7 @@ export default function RemindersScreen() {
         const carOdometer = car.odometer ?? 0;
         const latestMileage = Math.max(fuelLogMileage, carOdometer);
         setCurrentMileage(latestMileage);
-        setReminders(sortRemindersByUrgency(rems, latestMileage));
+        setReminders(sortRemindersByUrgency(rems.filter((r) => !r.completedAt), latestMileage));
       } else {
         setReminders([]);
       }

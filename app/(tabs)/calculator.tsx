@@ -1294,22 +1294,6 @@ export default function CalculatorScreen() {
               <Text style={[styles.quickActionText, { color: colors.primary }]}>Save Blend</Text>
             </Pressable>
 
-            {/* Log Fill-Up */}
-            <Pressable
-              onPress={handleLogFillUp}
-              style={({ pressed }) => [
-                styles.quickActionBtn,
-                {
-                  backgroundColor: colors.success + "18",
-                  borderColor: colors.success + "40",
-                  opacity: pressed ? 0.7 : 1,
-                },
-              ]}
-            >
-              <IconSymbol name="list.bullet.clipboard.fill" size={18} color={colors.success} />
-              <Text style={[styles.quickActionText, { color: colors.success }]}>Log Fill-Up</Text>
-            </Pressable>
-
             {/* Find Nearby Station */}
             <Pressable
               onPress={() => {

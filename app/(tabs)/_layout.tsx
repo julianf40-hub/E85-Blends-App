@@ -110,30 +110,26 @@ export default function TabLayout() {
       />
 
       {/* ── Garage (conditionally shown based on preference) ── */}
-      {showGarage && (
-        <Tabs.Screen
-          name="index"
-          options={{
-            title: "Garage",
-            tabBarIcon: ({ color }) => (
-              <IconSymbol size={26} name="car.fill" color={color} />
-            ),
-          }}
-        />
-      )}
+      <Tabs.Screen
+        name="index"
+        options={showGarage ? {
+          title: "Garage",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="car.fill" color={color} />
+          ),
+        } : { href: null }}
+      />
 
       {/* ── Reminders (conditionally shown based on preference) ── */}
-      {showReminders && (
-        <Tabs.Screen
-          name="reminders"
-          options={{
-            title: "Reminders",
-            tabBarIcon: ({ color }) => (
-              <IconSymbol size={26} name="bell.fill" color={color} />
-            ),
-          }}
-        />
-      )}
+      <Tabs.Screen
+        name="reminders"
+        options={showReminders ? {
+          title: "Reminders",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="bell.fill" color={color} />
+          ),
+        } : { href: null }}
+      />
 
       {/* ── More / Settings ── */}
       <Tabs.Screen
