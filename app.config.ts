@@ -135,4 +135,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;\n// This comment was added to trigger a new EAS build.\n
+export default config;\n// This comment was added to trigger a new EAS build.\n\n// Build trigger comment: 2026-04-11_05-11-21\n
