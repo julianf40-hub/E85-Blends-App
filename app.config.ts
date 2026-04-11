@@ -115,7 +115,7 @@ const config: ExpoConfig = {
   ...(process.env.EXPO_PROJECT_ID
     ? {
         updates: {
-          url: ,
+          url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID}`,
           enabled: true,
           checkAutomatically: "ON_LOAD",
           fallbackToCacheTimeout: 0,
