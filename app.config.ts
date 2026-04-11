@@ -107,7 +107,7 @@ const config: ExpoConfig = {
         image: "./assets/images/splash-icon.png",
         imageWidth: 240,
         resizeMode: "contain",
-        // Match the icon's dark olive/charcoal border color
+        // Match the icon\'s dark olive/charcoal border color
         backgroundColor: "#3a3a2e",
         dark: {
           backgroundColor: "#3a3a2e",
@@ -135,4 +135,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;\n// This comment was added to trigger a new EAS build.\n\n// Build trigger comment: 2026-04-11_05-11-21\n
+export default config;
