@@ -3,7 +3,7 @@ import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
 // Clean production bundle ID — no template/manus namespace
-const bundleId = "com.e85blends.app";
+const bundleId = "com.e85blends.app.ios";
 // Deep link scheme for the app
 const schemeFromBundleId = "e85blends";
 
@@ -123,20 +123,11 @@ const config: ExpoConfig = {
       },
     ],
   ],
-  // OTA updates — only enabled when EXPO_PROJECT_ID is set (required for EAS)
-  ...(process.env.EXPO_PROJECT_ID
-    ? {
-        updates: {
-          url: `https://u.expo.dev/${process.env.EXPO_PROJECT_ID}`,
-          enabled: true,
-          checkAutomatically: "ON_LOAD",
-          fallbackToCacheTimeout: 0,
-        },
-        runtimeVersion: {
-          policy: "appVersion",
-        },
-      }
-    : {}),
+  extra: {
+    eas: {
+      projectId: "b97e3134-95c6-4f69-bb9a-664aa59a7ebc"
+    }
+  },
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
