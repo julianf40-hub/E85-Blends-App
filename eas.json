@@ -7,16 +7,16 @@
     "production": {
       "distribution": "store",
       "ios": {
-        "autoIncrement": false
+        "autoIncrement": true
       }
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "appleId": "julianf40@icloud.com",
-        "ascAppId": "6762037468",
-        "appleTeamId": "89785X96S8"
+        "ascApiKeyPath": "./AuthKey_8867QHS988.p8",
+        "ascApiKeyId": "8867QHS988",
+        "ascApiKeyIssuerId": "87c614d1-e0a6-43bb-8c48-1e791cd51c43"
       }
     }
   }
