@@ -10,3 +10,11 @@ jobs:
     params:
       platform: ios
       profile: production
+  submit_ios:
+    type: submit
+    needs: [build_ios]
+    params:
+      platform: ios
+      profile: production
+      # Use the build from the previous job
+      build_id: ${{ needs.build_ios.outputs.build_id }}

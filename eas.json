@@ -10,5 +10,14 @@
         "autoIncrement": false
       }
     }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "appleId": "julianf40@icloud.com",
+        "ascAppId": "6762037468",
+        "appleTeamId": "89785X96S8"
+      }
+    }
   }
 }
