@@ -3,49 +3,20 @@
     "version": ">= 16.0.0",
     "appVersionSource": "local"
   },
-  "env": {
-    "production": {
-      "NREL_API_KEY": "your-nrel-api-key"
-    }
-  },
   "build": {
-    "development": {
-      "developmentClient": true,
-      "distribution": "internal",
-      "ios": {
-        "simulator": false
-      }
-    },
-    "preview": {
-      "distribution": "internal",
-      "ios": {
-        "simulator": false
-      },
-      "android": {
-        "buildType": "apk"
-      }
-    },
     "production": {
-      "distribution": "store",
-      "env": {
-        "NREL_API_KEY": ""
-      },
-      "ios": {
-        "autoIncrement": true
-      },
-      "android": {
-        "buildType": "aab",
-        "autoIncrement": true
-      }
+      "distribution": "store"
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "appleId": "",
-        "ascAppId": "",
-        "appleTeamId": ""
+        "ascApiKeyPath": "./AuthKey_8867QHS988.p8",
+        "ascApiKeyId": "8867QHS988",
+        "ascApiKeyIssuerId": "87c614d1-e0a6-43bb-8c48-1e791cd51c43",
+        "ascAppId": "6762037468"
       }
     }
   }
 }
+// Triggering a new build after plan upgrade

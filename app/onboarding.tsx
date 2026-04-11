@@ -149,7 +149,7 @@ export default function OnboardingScreen() {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Mark onboarding complete and send user straight to Garage to add their car
     await markOnboardingComplete();
-    router.replace("/(tabs)/index" as never);
+    router.replace("/(tabs)/garage" as never);
   }, []);
 
   const handleEnableLocation = useCallback(async () => {
@@ -171,7 +171,7 @@ export default function OnboardingScreen() {
     } else if (destination === "stations") {
       router.replace("/(tabs)/stations" as never);
     } else {
-      router.replace("/(tabs)/index" as never);
+      router.replace("/(tabs)/garage" as never);
     }
   }, []);
 
