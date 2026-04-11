@@ -31,7 +31,6 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    buildNumber: "2",
     "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -101,19 +100,7 @@ const config: ExpoConfig = {
       },
     ],
     // react-native-maps uses PROVIDER_DEFAULT with OpenStreetMap tiles (no config plugin needed)
-    [
-      "expo-splash-screen",
-      {
-        image: "./assets/images/splash-icon.png",
-        imageWidth: 240,
-        resizeMode: "contain",
-        // Match the icon\'s dark olive/charcoal border color
-        backgroundColor: "#3a3a2e",
-        dark: {
-          backgroundColor: "#3a3a2e",
-        },
-      },
-    ],
+
     [
       "expo-build-properties",
       {
@@ -124,15 +111,25 @@ const config: ExpoConfig = {
       },
     ],
   ],
-  extra: {
-    eas: {
-      projectId: "b97e3134-95c6-4f69-bb9a-664aa59a7ebc"
-    }
-  },
+  // OTA updates — only enabled when EXPO_PROJECT_ID is set (required for EAS)
+  ...(process.env.EXPO_PROJECT_ID
+    ? {
+        updates: {
+          url: ,
+          enabled: true,
+          checkAutomatically: "ON_LOAD",
+          fallbackToCacheTimeout: 0,
+        },
+        runtimeVersion: {
+          policy: "appVersion",
+        },
+      }
+    : {}),
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
   },
 };
 
-export default config;\n// Build trigger comment: 2026-04-11_05-21-06\n
+config.extra = { eas: { projectId: "b97e3134-95c6-4f69-bb9a-664aa59a7ebc" } };
+export default config;
