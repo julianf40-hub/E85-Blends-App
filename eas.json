@@ -5,10 +5,7 @@
   },
   "build": {
     "production": {
-      "distribution": "store",
-      "ios": {
-        "autoIncrement": true
-      }
+      "distribution": "store"
     }
   },
   "submit": {
