@@ -5,7 +5,7 @@ import * as ReactNative from "react-native";
 // e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
 const bundleId = "space.manus.e85.blend.app.t20260325014712";
 const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
+const schemeFromBundleId = "e85blends";
 
 const env = {
   portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? "",
