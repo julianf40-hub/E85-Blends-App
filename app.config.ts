@@ -135,4 +135,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;
+export default config;\n// Build trigger comment: 2026-04-11_05-21-06\n
