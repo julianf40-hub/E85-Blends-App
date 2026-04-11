@@ -117,7 +117,7 @@ export default function TabLayout() {
 
       {/* ── Garage (conditionally shown based on preference) ── */}
       <Tabs.Screen
-        name="index"
+        name="garage"
         options={showGarage ? {
           title: "Garage",
           tabBarIcon: ({ color }) => (
