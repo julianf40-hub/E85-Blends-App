@@ -135,4 +135,4 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;
+export default config;\n// This comment was added to trigger a new EAS build.\n
