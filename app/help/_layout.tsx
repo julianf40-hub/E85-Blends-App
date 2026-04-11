@@ -10,6 +10,7 @@ export default function HelpLayout() {
       <Stack.Screen name="privacy" />
       <Stack.Screen name="feedback" />
       <Stack.Screen name="advanced-guide" />
+      <Stack.Screen name="gear" />
     </Stack>
   );
 }

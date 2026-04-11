@@ -967,6 +967,40 @@ export default function SettingsScreen() {
           </Pressable>
         </Animated.View>
 
+        {/* ── Recommended Gear ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(195)} style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Resources</Text>
+          <Pressable
+            onPress={() => {
+              if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push("/help/gear" as never);
+            }}
+            style={({ pressed }) => [
+              styles.card,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingVertical: 16,
+                opacity: pressed ? 0.7 : 1,
+              },
+            ]}
+          >
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={[styles.sectionIcon, { backgroundColor: "#F59E0B" + "18" }]}>
+                <IconSymbol name="wrench.and.screwdriver.fill" size={22} color="#F59E0B" />
+              </View>
+              <View>
+                <Text style={[styles.cardRowTitle, { color: colors.foreground }]}>Recommended Gear</Text>
+                <Text style={[styles.cardRowSubtitle, { color: colors.muted }]}>Tools & supplies for fuel blending and maintenance</Text>
+              </View>
+            </View>
+            <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+          </Pressable>
+        </Animated.View>
+
         {/* ── Help & Support ── */}
         <Animated.View entering={FadeInDown.duration(300).delay(200)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Help & Support</Text>
