@@ -33,7 +33,6 @@ import {
   REMINDER_CATEGORIES,
   ReminderCategory,
   updateReminder,
-  syncMileageRemindersForCar,
 } from "@/lib/reminders";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -427,13 +426,6 @@ export default function HomeScreen() {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer });
         setCurrentMileage(odometer);
       }
-      // Sync mileage reminders
-      if (activeCar) {
-        const syncCount = await syncMileageRemindersForCar(activeCar.id, odometer);
-        if (syncCount > 0) {
-          Alert.alert("Maintenance Updated", `${syncCount} reminder${syncCount > 1 ? "s" : ""} advanced based on your new mileage.`);
-        }
-      }
       setLogFillUpModalVisible(false);
       setCalculatorModalVisible(false);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -466,7 +458,6 @@ export default function HomeScreen() {
       // Update the active car's odometer field
       if (activeCar) {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer: newOdometer });
-        await syncMileageRemindersForCar(activeCar.id, newOdometer);
         setCurrentMileage(newOdometer);
         setOdometerModalVisible(false);
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
