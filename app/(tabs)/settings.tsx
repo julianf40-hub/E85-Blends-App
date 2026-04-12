@@ -239,28 +239,22 @@ export default function SettingsScreen() {
             ]}
           >
             <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
-            {colorScheme === "dark" ? (
-              <Image
-                source={require("../../assets/images/rvpsupply-logo.png")}
-                style={styles.sponsorLogo}
-                contentFit="contain"
-              />
-            ) : (
-              <View style={[styles.sponsorLogoCard, { backgroundColor: "#1C1C1E" }]}>
-                <Image
-                  source={require("../../assets/images/rvpsupply-logo-transparent.png")}
-                  style={styles.sponsorLogo}
-                  contentFit="contain"
-                />
-              </View>
-            )}
+            <Image
+              source={
+                colorScheme === "dark"
+                  ? require("../../assets/images/rvpsupply-logo-transparent.png")
+                  : require("../../assets/images/rvpsupply-logo.png")
+              }
+              style={styles.sponsorLogo}
+              contentFit="contain"
+            />
           </Pressable>
         </Animated.View>
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 7 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 9 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
@@ -316,11 +310,6 @@ const styles = StyleSheet.create({
   sponsorLogo: {
     width: 220,
     height: 168,
-  },
-  sponsorLogoCard: {
-    borderRadius: 14,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
   },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
