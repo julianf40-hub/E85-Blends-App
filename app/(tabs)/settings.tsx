@@ -19,6 +19,7 @@ import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useColors } from "@/hooks/use-colors";
 import {
   loadPreferences,
@@ -444,6 +445,7 @@ const bc = StyleSheet.create({
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 export default function SettingsScreen() {
   const colors = useColors();
+  const colorScheme = useColorScheme();
   const router = useRouter();
   const { themeMode, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
@@ -1170,19 +1172,29 @@ export default function SettingsScreen() {
           style={({ pressed }) => [styles.sponsorBlock, { opacity: pressed ? 0.75 : 1 }]}
         >
           <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
-          <View style={styles.sponsorLogoCard}>
+          {colorScheme === "dark" ? (
+            // Dark mode: black-bg logo blends directly into the dark background — no card needed
             <Image
               source={require("../../assets/images/rvpsupply-logo.jpg")}
               style={styles.sponsorLogo}
               contentFit="contain"
             />
-          </View>
+          ) : (
+            // Light mode: transparent-bg logo inside a dark card so white text/arcs stay visible
+            <View style={styles.sponsorLogoCard}>
+              <Image
+                source={require("../../assets/images/rvpsupply-logo-transparent.jpg")}
+                style={styles.sponsorLogo}
+                contentFit="contain"
+              />
+            </View>
+          )}
         </Pressable>
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 5 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 6 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
@@ -1303,13 +1315,15 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   sponsorLogoCard: {
-    backgroundColor: "#000",
-    borderRadius: 12,
+    backgroundColor: "#1C1C1E",
+    borderRadius: 14,
     overflow: "hidden",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
   },
   sponsorLogo: {
-    width: 240,
-    height: 183, // 240 × (1145/1500) — original 1500×1145 aspect ratio
+    width: 220,
+    height: 168, // 220 × (436/572) — matches both logo files (~1.31:1 ratio)
   },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
