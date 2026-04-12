@@ -1164,22 +1164,25 @@ export default function SettingsScreen() {
         </Animated.View>
 
         {/* ── Sponsor Block ── */}
+        <View style={[styles.sponsorDivider, { backgroundColor: colors.border }]} />
         <Pressable
           onPress={() => Linking.openURL("https://rvpsupply.com").catch(() => {})}
-          style={({ pressed }) => [styles.sponsorBlock, { borderColor: colors.border, opacity: pressed ? 0.75 : 1 }]}
+          style={({ pressed }) => [styles.sponsorBlock, { opacity: pressed ? 0.75 : 1 }]}
         >
           <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
-          <Image
-            source={require("../../assets/images/rvpsupply-logo.jpg")}
-            style={styles.sponsorLogo}
-            contentFit="contain"
-          />
+          <View style={styles.sponsorLogoCard}>
+            <Image
+              source={require("../../assets/images/rvpsupply-logo.jpg")}
+              style={styles.sponsorLogo}
+              contentFit="contain"
+            />
+          </View>
         </Pressable>
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 3 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 5 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
@@ -1284,19 +1287,25 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   disclaimerText: { fontSize: 13, lineHeight: 19 },
+  sponsorDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 24,
+  },
   sponsorBlock: {
     alignItems: "center",
-    marginHorizontal: 24,
-    marginBottom: 4,
     paddingVertical: 16,
     gap: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
   },
   sponsorLabel: {
     fontSize: 11,
     fontWeight: "500",
     letterSpacing: 0.6,
     textTransform: "uppercase",
+  },
+  sponsorLogoCard: {
+    backgroundColor: "#000",
+    borderRadius: 12,
+    overflow: "hidden",
   },
   sponsorLogo: {
     width: 240,
