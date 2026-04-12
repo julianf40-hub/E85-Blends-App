@@ -1299,8 +1299,8 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   sponsorLogo: {
-    width: 160,
-    height: 60,
+    width: 200,
+    height: 125,
   },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
