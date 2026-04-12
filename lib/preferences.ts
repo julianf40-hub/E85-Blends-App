@@ -20,6 +20,7 @@ export interface UserPreferences {
   homeScreen?: "calculator" | "garage"; // default landing tab
   showReminders?: boolean; // visibility toggle for Reminders tab
   showGarage?: boolean; // visibility toggle for Garage tab
+  showGear?: boolean; // visibility toggle for Recommended Gear tab
   directionsApp?: "apple" | "google" | "waze"; // preferred navigation app
 }
 
@@ -34,6 +35,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   homeScreen: "calculator",
   showReminders: true,
   showGarage: true,
+  showGear: false,
   directionsApp: "apple",
 };
 

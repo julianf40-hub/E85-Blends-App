@@ -14,7 +14,7 @@ import {
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeInDown } from "react-native-reanimated";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -30,6 +30,7 @@ import { loadGarage, CarProfile } from "@/lib/garage";
  */
 export default function SettingsScreen() {
   const colors = useColors();
+  const router = useRouter();
   const colorScheme = useColorScheme();
   const { prefs, updatePref } = usePreferencesContext();
 
@@ -49,7 +50,7 @@ export default function SettingsScreen() {
     }, [fetchGarage])
   );
 
-  const handleToggleTab = (key: "showGarage" | "showReminders", value: boolean) => {
+  const handleToggleTab = (key: "showGarage" | "showReminders" | "showGear", value: boolean) => {
     updatePref(key, value);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -149,6 +150,23 @@ export default function SettingsScreen() {
                 color={prefs?.showReminders !== false ? colors.primary : colors.border}
               />
             </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            <Pressable
+              onPress={() => handleToggleTab("showGear", !prefs?.showGear)}
+              style={styles.settingRow}
+            >
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Recommended Gear Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Still accessible from More when hidden</Text>
+              </View>
+              <IconSymbol
+                name={prefs?.showGear ? "checkmark.circle.fill" : "circle"}
+                size={24}
+                color={prefs?.showGear ? colors.primary : colors.border}
+              />
+            </Pressable>
           </View>
         </Animated.View>
 
@@ -156,6 +174,24 @@ export default function SettingsScreen() {
         <Animated.View entering={FadeInDown.delay(200).duration(400)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.muted, marginBottom: 12 }]}>Tools</Text>
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Pressable
+              onPress={() => router.push("/help/gear")}
+              style={({ pressed }) => [styles.actionButton, pressed && { backgroundColor: colors.border + "40" }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#F59E0B15" }]}>
+                  <IconSymbol name="gearshape.fill" size={20} color="#F59E0B" />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Recommended Gear</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Tools & supplies for fuel blending</Text>
+                </View>
+                <IconSymbol name="chevron.right" size={14} color={colors.border} />
+              </View>
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
             <Pressable
               onPress={() => Linking.openURL("https://85blends.com/guide")}
               style={({ pressed }) => [styles.actionButton, pressed && { backgroundColor: colors.border + "40" }]}
