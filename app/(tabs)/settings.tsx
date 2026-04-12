@@ -5,6 +5,8 @@ import {
   ScrollView,
   Pressable,
   StyleSheet,
+  Image,
+  Linking,
   TextInput,
   Alert,
   Platform,
@@ -1161,9 +1163,22 @@ export default function SettingsScreen() {
           </View>
         </Animated.View>
 
+        {/* ── Sponsor Block ── */}
+        <Pressable
+          onPress={() => Linking.openURL("https://rvpsupply.com").catch(() => {})}
+          style={({ pressed }) => [styles.sponsorBlock, { borderColor: colors.border, opacity: pressed ? 0.75 : 1 }]}
+        >
+          <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
+          <Image
+            source={require("../../assets/images/rvpsupply-logo.png")}
+            style={styles.sponsorLogo}
+            resizeMode="contain"
+          />
+        </Pressable>
+
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
-          <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.0</Text>
+          <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
           <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 1 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
@@ -1269,6 +1284,24 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   disclaimerText: { fontSize: 13, lineHeight: 19 },
+  sponsorBlock: {
+    alignItems: "center",
+    marginHorizontal: 24,
+    marginBottom: 4,
+    paddingVertical: 16,
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  sponsorLabel: {
+    fontSize: 11,
+    fontWeight: "500",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  sponsorLogo: {
+    width: 160,
+    height: 60,
+  },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
   versionFooterSub: { fontSize: 11 },
