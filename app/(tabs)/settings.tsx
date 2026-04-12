@@ -5,7 +5,6 @@ import {
   ScrollView,
   Pressable,
   StyleSheet,
-  Image,
   Linking,
   TextInput,
   Alert,
@@ -14,6 +13,7 @@ import {
   Modal,
   Switch,
 } from "react-native";
+import { Image } from "expo-image";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -1172,14 +1172,14 @@ export default function SettingsScreen() {
           <Image
             source={require("../../assets/images/rvpsupply-logo.png")}
             style={styles.sponsorLogo}
-            resizeMode="contain"
+            contentFit="contain"
           />
         </Pressable>
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 1 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 2 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
