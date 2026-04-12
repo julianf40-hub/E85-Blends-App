@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -14,57 +14,54 @@ import {
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeInDown } from "react-native-reanimated";
-import { useGarage } from "../../lib/garage-context";
-import { useSettings } from "../../lib/settings-context";
-import { useTheme } from "../../lib/theme-context";
-import { ScreenContainer } from "../../components/ScreenContainer";
-import { IconSymbol } from "../../components/ui/IconSymbol";
-import { CarFormModal } from "../../components/CarFormModal";
+import { useFocusEffect } from "expo-router";
 
+import { ScreenContainer } from "@/components/screen-container";
+import { IconSymbol } from "@/components/ui/icon-symbol";
+import { useColors } from "@/hooks/use-colors";
+import { usePreferencesContext } from "@/lib/preferences-context";
+import { loadGarage, CarProfile } from "@/lib/garage";
+
+/**
+ * Settings / More Screen
+ *
+ * Manages user preferences (theme, home screen, tab visibility)
+ * and provides access to secondary features like the Garage and Fill-Up History.
+ */
 export default function SettingsScreen() {
-  const { cars, addCar, updateCar, deleteCar } = useGarage();
-  const { settings, updateSettings, clearAllData } = useSettings();
-  const { colors } = useTheme();
+  const colors = useColors();
   const colorScheme = useColorScheme();
+  const { prefs, updatePref } = usePreferencesContext();
 
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editProfile, setEditProfile] = useState<any>(null);
+  // Garage state (local for this screen, synced on focus)
+  const [cars, setCars] = useState<CarProfile[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const handleAddCar = () => {
-    setEditProfile(null);
-    setModalVisible(true);
+  const fetchGarage = useCallback(async () => {
+    const data = await loadGarage();
+    setCars(data);
+    setLoading(false);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchGarage();
+    }, [fetchGarage])
+  );
+
+  const handleToggleTab = (key: "showGarage" | "showReminders", value: boolean) => {
+    updatePref(key, value);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleEditCar = (car: any) => {
-    setEditProfile(car);
-    setModalVisible(true);
+  const handleSetHome = (tab: string) => {
+    updatePref("homeScreen", tab);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleSaveCar = (carData: any) => {
-    if (editProfile) {
-      updateCar(editProfile.id, carData);
-    } else {
-      addCar(carData);
-    }
-    setModalVisible(false);
-  };
-
-  const confirmClearData = () => {
-    Alert.alert(
-      "Clear All Data",
-      "This will remove all cars from your garage and reset all settings. This action cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Clear Everything",
-          style: "destructive",
-          onPress: () => {
-            clearAllData();
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          },
-        },
-      ]
-    );
+  const openSponsor = () => {
+    Linking.openURL("https://rvpsupply.com").catch(() => {});
+    Haptics.selectionAsync();
   };
 
   return (
@@ -77,236 +74,152 @@ export default function SettingsScreen() {
           <Text style={[styles.headerTitle, { color: colors.foreground }]}>More</Text>
         </View>
 
-        {/* ── Garage Section ── */}
+        {/* ── Preferences Section ── */}
         <Animated.View entering={FadeInDown.delay(100).duration(400)} style={styles.section}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Garage</Text>
-            <Pressable
-              onPress={handleAddCar}
-              style={({ pressed }) => [
-                styles.sectionAddBtn,
-                { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 },
-              ]}
-            >
-              <IconSymbol name="plus" size={14} color="#fff" />
-              <Text style={styles.sectionAddBtnText}>Add Car</Text>
-            </Pressable>
-          </View>
-
+          <Text style={[styles.sectionTitle, { color: colors.muted, marginBottom: 12 }]}>Preferences</Text>
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            {cars.length === 0 ? (
-              <View style={styles.emptyGarageCard}>
-                <Text style={styles.emptyGarageEmoji}>🏎️</Text>
-                <View>
-                  <Text style={[styles.emptyGarageTitle, { color: colors.foreground }]}>Your garage is empty</Text>
-                  <Text style={[styles.emptyGarageSub, { color: colors.muted }]}>Add your car to save fuel settings</Text>
-                </View>
-              </View>
-            ) : (
-              cars.map((car, index) => (
-                <React.Fragment key={car.id}>
-                  <Pressable
-                    onPress={() => handleEditCar(car)}
-                    style={({ pressed }) => [
-                      styles.settingRow,
-                      pressed && { backgroundColor: colors.border + "40" },
-                    ]}
-                  >
-                    <View style={[styles.sectionIcon, { backgroundColor: car.color + "20" }]}>
-                      <IconSymbol name="car.fill" size={20} color={car.color} />
-                    </View>
-                    <View style={styles.settingLabel}>
-                      <Text style={[styles.settingName, { color: colors.foreground }]}>{car.name}</Text>
-                      <Text style={[styles.settingDesc, { color: colors.muted }]}>
-                        {car.year} {car.make} {car.model}
-                      </Text>
-                    </View>
-                    <IconSymbol name="chevron.right" size={16} color={colors.muted} />
-                  </Pressable>
-                  {index < cars.length - 1 && (
-                    <View style={[styles.divider, { backgroundColor: colors.border }]} />
-                  )}
-                </React.Fragment>
-              ))
-            )}
-          </View>
-        </Animated.View>
-
-        {/* ── Fuel Settings Section ── */}
-        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.foreground, marginBottom: 12 }]}>Fuel Defaults</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            
-            {/* Pump E-Content */}
+            {/* Home Screen */}
             <View style={styles.settingRow}>
               <View style={styles.settingLabel}>
-                <Text style={[styles.settingName, { color: colors.foreground }]}>Pump E-Content</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Standard pump gas ethanol %</Text>
-              </View>
-              <View style={styles.numericFieldRow}>
-                <Pressable 
-                  onPress={() => updateSettings({ pumpEthanol: Math.max(0, settings.pumpEthanol - 1) })}
-                  style={[styles.decimalBtn, { backgroundColor: colors.border + "60" }]}
-                >
-                  <Text style={[styles.decimalBtnText, { color: colors.foreground }]}>-</Text>
-                </Pressable>
-                <TextInput
-                  style={[styles.numberInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
-                  value={String(settings.pumpEthanol)}
-                  onChangeText={(val) => updateSettings({ pumpEthanol: parseInt(val) || 0 })}
-                  keyboardType="number-pad"
-                />
-                <Pressable 
-                  onPress={() => updateSettings({ pumpEthanol: Math.min(25, settings.pumpEthanol + 1) })}
-                  style={[styles.decimalBtn, { backgroundColor: colors.border + "60" }]}
-                >
-                  <Text style={[styles.decimalBtnText, { color: colors.foreground }]}>+</Text>
-                </Pressable>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Default Home Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Screen shown on app launch</Text>
               </View>
             </View>
-
-            <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-            {/* E85 E-Content */}
-            <View style={styles.settingRow}>
-              <View style={styles.settingLabel}>
-                <Text style={[styles.settingName, { color: colors.foreground }]}>E85 E-Content</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Standard E85 ethanol %</Text>
-              </View>
-              <View style={styles.numericFieldRow}>
-                <Pressable 
-                  onPress={() => updateSettings({ e85Ethanol: Math.max(50, settings.e85Ethanol - 1) })}
-                  style={[styles.decimalBtn, { backgroundColor: colors.border + "60" }]}
+            <View style={styles.themeToggleRow}>
+              {["calculator", "garage"].map((tab) => (
+                <Pressable
+                  key={tab}
+                  onPress={() => handleSetHome(tab)}
+                  style={[
+                    styles.themeOption,
+                    {
+                      borderColor: prefs?.homeScreen === tab ? colors.primary : colors.border,
+                      backgroundColor: prefs?.homeScreen === tab ? colors.primary + "10" : "transparent",
+                    },
+                  ]}
                 >
-                  <Text style={[styles.decimalBtnText, { color: colors.foreground }]}>-</Text>
-                </Pressable>
-                <TextInput
-                  style={[styles.numberInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
-                  value={String(settings.e85Ethanol)}
-                  onChangeText={(val) => updateSettings({ e85Ethanol: parseInt(val) || 0 })}
-                  keyboardType="number-pad"
-                />
-                <Pressable 
-                  onPress={() => updateSettings({ e85Ethanol: Math.min(100, settings.e85Ethanol + 1) })}
-                  style={[styles.decimalBtn, { backgroundColor: colors.border + "60" }]}
-                >
-                  <Text style={[styles.decimalBtnText, { color: colors.foreground }]}>+</Text>
-                </Pressable>
-              </View>
-            </View>
-
-          </View>
-        </Animated.View>
-
-        {/* ── App Settings Section ── */}
-        <Animated.View entering={FadeInDown.delay(300).duration(400)} style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.foreground, marginBottom: 12 }]}>App Settings</Text>
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            
-            {/* Theme Toggle */}
-            <View style={{ paddingTop: 14 }}>
-              <View style={[styles.settingRow, { paddingBottom: 8 }]}>
-                <View style={styles.settingLabel}>
-                  <Text style={[styles.settingName, { color: colors.foreground }]}>Appearance</Text>
-                  <Text style={[styles.settingDesc, { color: colors.muted }]}>Choose your preferred theme</Text>
-                </View>
-              </View>
-              <View style={styles.themeToggleRow}>
-                {(["system", "light", "dark"] as const).map((t) => (
-                  <Pressable
-                    key={t}
-                    onPress={() => updateSettings({ theme: t })}
+                  <IconSymbol
+                    name={tab === "calculator" ? "fuelpump.fill" : "car.fill"}
+                    size={14}
+                    color={prefs?.homeScreen === tab ? colors.primary : colors.muted}
+                  />
+                  <Text
                     style={[
-                      styles.themeOption,
-                      { 
-                        borderColor: settings.theme === t ? colors.primary : colors.border,
-                        backgroundColor: settings.theme === t ? colors.primary + "10" : "transparent"
-                      }
+                      styles.themeOptionText,
+                      { color: prefs?.homeScreen === tab ? colors.primary : colors.muted },
                     ]}
                   >
-                    <IconSymbol 
-                      name={t === "system" ? "desktopcomputer" : t === "light" ? "sun.max.fill" : "moon.fill"} 
-                      size={14} 
-                      color={settings.theme === t ? colors.primary : colors.muted} 
-                    />
-                    <Text style={[
-                      styles.themeOptionText, 
-                      { color: settings.theme === t ? colors.primary : colors.muted }
-                    ]}>
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
 
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
-            {/* Clear Data */}
+            {/* Tab Visibility */}
             <Pressable
-              onPress={confirmClearData}
-              style={({ pressed }) => [
-                styles.settingRow,
-                pressed && { backgroundColor: colors.border + "40" },
-              ]}
+              onPress={() => handleToggleTab("showGarage", !prefs?.showGarage)}
+              style={styles.settingRow}
             >
               <View style={styles.settingLabel}>
-                <Text style={[styles.settingName, { color: "#EF4444" }]}>Clear All Data</Text>
-                <Text style={[styles.settingDesc, { color: colors.muted }]}>Reset garage and settings</Text>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Garage Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Manage multiple car profiles</Text>
               </View>
-              <IconSymbol name="trash.fill" size={18} color="#EF4444" />
+              <IconSymbol
+                name={prefs?.showGarage !== false ? "checkmark.circle.fill" : "circle"}
+                size={24}
+                color={prefs?.showGarage !== false ? colors.primary : colors.border}
+              />
             </Pressable>
 
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            <Pressable
+              onPress={() => handleToggleTab("showReminders", !prefs?.showReminders)}
+              style={styles.settingRow}
+            >
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Reminders Tab</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Maintenance & service alerts</Text>
+              </View>
+              <IconSymbol
+                name={prefs?.showReminders !== false ? "checkmark.circle.fill" : "circle"}
+                size={24}
+                color={prefs?.showReminders !== false ? colors.primary : colors.border}
+              />
+            </Pressable>
           </View>
         </Animated.View>
 
-        {/* ── Support Section ── */}
-        <Animated.View entering={FadeInDown.delay(400).duration(400)} style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.foreground, marginBottom: 12 }]}>Support</Text>
+        {/* ── Tools & History ── */}
+        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.muted, marginBottom: 12 }]}>Tools</Text>
           <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            
             <Pressable
-              onPress={() => Linking.openURL("mailto:support@85blends.app").catch(() => {})}
-              style={({ pressed }) => [styles.actionButton, pressed && { opacity: 0.7 }]}
+              onPress={() => Linking.openURL("https://85blends.com/guide")}
+              style={({ pressed }) => [styles.actionButton, pressed && { backgroundColor: colors.border + "40" }]}
             >
               <View style={styles.actionButtonContent}>
-                <View style={[styles.actionIconBg, { backgroundColor: colors.primary + "18" }]}>
-                  <IconSymbol name="paperplane.fill" size={20} color={colors.primary} />
+                <View style={[styles.actionIconBg, { backgroundColor: colors.primary + "15" }]}>
+                  <IconSymbol name="book.fill" size={20} color={colors.primary} />
+                </View>
+                <View style={styles.actionTextCol}>
+                  <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Ethanol Guide</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Learn about blending & tuning</Text>
+                </View>
+                <IconSymbol name="chevron.right" size={14} color={colors.border} />
+              </View>
+            </Pressable>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            <Pressable
+              onPress={() => Linking.openURL("mailto:support@85blends.com")}
+              style={({ pressed }) => [styles.actionButton, pressed && { backgroundColor: colors.border + "40" }]}
+            >
+              <View style={styles.actionButtonContent}>
+                <View style={[styles.actionIconBg, { backgroundColor: "#8B5CF615" }]}>
+                  <IconSymbol name="envelope.fill" size={20} color="#8B5CF6" />
                 </View>
                 <View style={styles.actionTextCol}>
                   <Text style={[styles.actionButtonText, { color: colors.foreground }]}>Send Feedback</Text>
-                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Bug reports, ideas & beta feedback</Text>
+                  <Text style={[styles.actionButtonDesc, { color: colors.muted }]}>Report bugs or suggest features</Text>
                 </View>
+                <IconSymbol name="chevron.right" size={14} color={colors.border} />
               </View>
-              <IconSymbol name="chevron.right" size={16} color={colors.muted} />
             </Pressable>
-
           </View>
         </Animated.View>
 
-        {/* ── Sponsor Block ── */}
-        <View style={[styles.sponsorDivider, { backgroundColor: colors.border }]} />
-        <Pressable
-          onPress={() => Linking.openURL("https://rvpsupply.com").catch(() => {})}
-          style={({ pressed }) => [styles.sponsorBlock, { opacity: pressed ? 0.75 : 1 }]}
-        >
-          <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
-          {colorScheme === "dark" ? (
-            // Dark mode: transparent-background logo
-            <Image
-              source={require("../../assets/images/rvpsupply-logo-transparent.png")}
-              style={styles.sponsorLogo}
-              contentFit="contain"
-            />
-          ) : (
-            // Light mode: original black-background logo
-            <Image
-              source={require("../../assets/images/rvpsupply-logo.png")}
-              style={styles.sponsorLogo}
-              contentFit="contain"
-            />
-          )}
-        </Pressable>
+        {/* ── Sponsor Section ── */}
+        <Animated.View entering={FadeInDown.delay(300).duration(400)}>
+          <View style={[styles.sponsorDivider, { backgroundColor: colors.border }]} />
+          <Pressable
+            onPress={openSponsor}
+            style={({ pressed }) => [
+              styles.sponsorBlock,
+              pressed && { opacity: 0.8 },
+            ]}
+          >
+            <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
+            {colorScheme === "dark" ? (
+              <Image
+                source={require("../../assets/images/rvpsupply-logo.png")}
+                style={styles.sponsorLogo}
+                contentFit="contain"
+              />
+            ) : (
+              <View style={[styles.sponsorLogoCard, { backgroundColor: "#1C1C1E" }]}>
+                <Image
+                  source={require("../../assets/images/rvpsupply-logo-transparent.png")}
+                  style={styles.sponsorLogo}
+                  contentFit="contain"
+                />
+              </View>
+            )}
+          </Pressable>
+        </Animated.View>
 
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
@@ -316,22 +229,12 @@ export default function SettingsScreen() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
-
-      <CarFormModal
-        visible={modalVisible}
-        editProfile={editProfile}
-        onClose={() => setModalVisible(false)}
-        onSave={handleSaveCar}
-        colors={colors}
-      />
     </ScreenContainer>
   );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   scrollContent: { paddingBottom: 24 },
-  loadingText: { fontSize: 15, textAlign: "center", marginTop: 40 },
   header: {
     paddingHorizontal: 20,
     paddingTop: 16,
@@ -343,45 +246,12 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   section: { paddingHorizontal: 16, marginBottom: 24 },
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 12,
-  },
-  sectionTitle: { fontSize: 18, fontWeight: "700", letterSpacing: -0.3 },
-  sectionAddBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 14,
-  },
-  sectionAddBtnText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-  emptyGarageCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 16,
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  emptyGarageEmoji: { fontSize: 28 },
-  emptyGarageTitle: { fontSize: 15, fontWeight: "600" },
-  emptyGarageSub: { fontSize: 12, marginTop: 2 },
+  sectionTitle: { fontSize: 13, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
   card: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, overflow: "hidden" },
   settingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 14, gap: 12 },
   settingLabel: { flex: 1 },
   settingName: { fontSize: 15, fontWeight: "600" },
   settingDesc: { fontSize: 12, marginTop: 2 },
-  numericFieldRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  numberInput: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14, fontWeight: "600", minWidth: 72, textAlign: "center" },
-  decimalBtn: { width: 32, height: 36, borderRadius: 8, alignItems: "center", justifyContent: "center" },
-  decimalBtnText: { fontSize: 20, fontWeight: "800" },
-  octaneButtons: { flexDirection: "row", gap: 6 },
-  octaneButton: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7, alignItems: "center", justifyContent: "center" },
-  octaneButtonText: { fontSize: 13, fontWeight: "700" },
   divider: { height: StyleSheet.hairlineWidth, marginHorizontal: 16 },
   themeToggleRow: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingBottom: 14 },
   themeOption: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5 },
@@ -392,30 +262,6 @@ const styles = StyleSheet.create({
   actionTextCol: { flex: 1 },
   actionButtonText: { fontSize: 15, fontWeight: "600" },
   actionButtonDesc: { fontSize: 12, marginTop: 2 },
-  aboutContent: { padding: 20, alignItems: "center", gap: 4 },
-  aboutTitle: { fontSize: 16, fontWeight: "700" },
-  aboutVersion: { fontSize: 13 },
-  aboutDesc: { fontSize: 13, textAlign: "center", lineHeight: 18, marginTop: 4 },
-  clearAllBtn: { paddingHorizontal: 10, paddingVertical: 4 },
-  clearAllBtnText: { fontSize: 13, fontWeight: "600" },
-  disclaimerBox: { padding: 16, borderRadius: 0 },
-  disclaimerTitle: { fontSize: 14, fontWeight: "700", marginBottom: 6 },
-  sectionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardRowTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  cardRowSubtitle: {
-    fontSize: 12,
-    marginTop: 2,
-  },
-  disclaimerText: { fontSize: 13, lineHeight: 19 },
   sponsorDivider: {
     height: StyleSheet.hairlineWidth,
     marginHorizontal: 24,
@@ -434,6 +280,11 @@ const styles = StyleSheet.create({
   sponsorLogo: {
     width: 220,
     height: 168,
+  },
+  sponsorLogoCard: {
+    borderRadius: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
   },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
