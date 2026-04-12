@@ -1170,7 +1170,7 @@ export default function SettingsScreen() {
         >
           <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
           <Image
-            source={require("../../assets/images/rvpsupply-logo.png")}
+            source={require("../../assets/images/rvpsupply-logo.jpg")}
             style={styles.sponsorLogo}
             contentFit="contain"
           />
@@ -1179,7 +1179,7 @@ export default function SettingsScreen() {
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 2 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 3 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
@@ -1299,8 +1299,8 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   sponsorLogo: {
-    width: 200,
-    height: 125,
+    width: 240,
+    height: 183, // 240 × (1145/1500) — original 1500×1145 aspect ratio
   },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
