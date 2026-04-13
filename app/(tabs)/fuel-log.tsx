@@ -42,6 +42,7 @@ export default function FuelLogScreen() {
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
   const [preferredOctane, setPreferredOctane] = useState<number>(87);
+  const [selectedGasOctane, setSelectedGasOctane] = useState<number>(87);
 
   const loadBlends = useCallback(async () => {
     const b = await getSavedBlends();
@@ -128,6 +129,7 @@ export default function FuelLogScreen() {
       setEntries(logs);
       setStats(stats);
       setPreferredOctane(prefs.preferredOctane ?? 87);
+      setSelectedGasOctane(prefs.preferredOctane ?? 87);
       await loadBlends();
     } catch (error) {
       console.error("Failed to load fuel log:", error);
@@ -160,6 +162,7 @@ export default function FuelLogScreen() {
         gallonsAdded: derivedTotal,
         e85Gallons: derivedE85 > 0 ? derivedE85 : undefined,
         gasGallons: derivedGas > 0 ? derivedGas : undefined,
+        gasOctane: derivedGas > 0 ? selectedGasOctane : undefined,
         e85PricePerGallon: derivedE85Price > 0 ? derivedE85Price : undefined,
         gasPricePerGallon: derivedGasPrice > 0 ? derivedGasPrice : undefined,
         pricePerGallon: derivedBlendedPrice,
@@ -176,7 +179,7 @@ export default function FuelLogScreen() {
       // Auto-update station price community record with octane-mapped grade
       if (newEntry.stationId && (derivedE85Price > 0 || derivedGasPrice > 0)) {
         try {
-          const octane = preferredOctane;
+          const octane = selectedGasOctane;
           const gradeField =
             octane >= 93 ? "octane9194Price" :
             octane === 91 || octane === 92 ? "octane9194Price" :
@@ -225,12 +228,13 @@ export default function FuelLogScreen() {
         odometer: "",
         notes: "",
       });
+      setSelectedGasOctane(preferredOctane);
       setShowModal(false);
       await loadData();
     } catch (error) {
       Alert.alert("Error", "Failed to add fuel entry.");
     }
-  }, [formData, derivedTotal, derivedE85, derivedGas, derivedE85Price, derivedGasPrice, derivedEthanolPct, derivedBlendedPrice, derivedTotalCost, loadData]);
+  }, [formData, derivedTotal, derivedE85, derivedGas, derivedE85Price, derivedGasPrice, derivedEthanolPct, derivedBlendedPrice, derivedTotalCost, selectedGasOctane, preferredOctane, loadData]);
 
   const handleDeleteEntry = useCallback(
     (id: string) => {
@@ -701,7 +705,25 @@ export default function FuelLogScreen() {
                   />
                 </View>
                 <View style={styles.formGroupHalf}>
-                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Octane {preferredOctane} $/gal</Text>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Gasoline {selectedGasOctane} $/gal</Text>
+                  <View style={styles.octanePills}>
+                    {([87, 89, 91, 93] as const).map((oct) => (
+                      <Pressable
+                        key={oct}
+                        onPress={() => setSelectedGasOctane(oct)}
+                        style={[
+                          styles.octanePill,
+                          selectedGasOctane === oct
+                            ? { backgroundColor: colors.primary }
+                            : { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 },
+                        ]}
+                      >
+                        <Text style={[styles.octanePillText, { color: selectedGasOctane === oct ? "#fff" : colors.muted }]}>
+                          {oct}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
                   <TextInput
                     style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
                     placeholder="3.49"
@@ -1104,6 +1126,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
     lineHeight: 16,
+  },
+  octanePills: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 6,
+  },
+  octanePill: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  octanePillText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   // Saved Blends section
   blendsSection: {
