@@ -268,7 +268,6 @@ export default function CalculatorScreen() {
     if (!blendResult) return;
     try {
       const { addFuelEntry } = await import("@/lib/fuel-log");
-      const { syncMileageRemindersForCar } = await import("@/lib/reminders");
       // Use user-edited actual gallons; fall back to calculated values if blank
       const actualE85 = parseFloat(logFillUpE85Gallons) || blendResult.e85Gallons;
       const actualGas = parseFloat(logFillUpGasGallons) || blendResult.gasGallons;
@@ -303,7 +302,6 @@ export default function CalculatorScreen() {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer });
         setCurrentMileage(odometer);
       }
-      if (activeCar) await syncMileageRemindersForCar(activeCar.id, odometer);
       setLogFillUpModalVisible(false);
       if (Platform.OS !== "web")
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

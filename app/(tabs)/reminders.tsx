@@ -52,10 +52,12 @@ function formatUrgency(
 
   if (isOverdue) {
     if (milesLeft !== undefined && milesLeft <= 0) {
-      return { label: `${Math.abs(milesLeft).toLocaleString()} mi overdue`, color: "#EF4444" };
+      if (milesLeft === 0) return { label: "Due now", color: "#EF4444" };
+      return { label: `Overdue by ${Math.abs(milesLeft).toLocaleString()} mi`, color: "#EF4444" };
     }
     if (daysLeft !== undefined && daysLeft <= 0) {
-      return { label: `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue`, color: "#EF4444" };
+      if (daysLeft === 0) return { label: "Due today", color: "#EF4444" };
+      return { label: `Overdue by ${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""}`, color: "#EF4444" };
     }
   }
 

@@ -157,32 +157,6 @@ export async function completeReminder(id: string, currentMileage: number): Prom
 }
 
 /**
- * Advance/complete mileage-based reminders for a car when a new odometer value is logged.
- * Returns number of reminders that were processed.
- */
-export async function syncMileageRemindersForCar(
-  carId: string,
-  odometer: number
-): Promise<number> {
-  const reminders = await loadRemindersForCar(carId);
-  let processed = 0;
-
-  for (const reminder of reminders) {
-    if (
-      reminder.mileageEnabled &&
-      reminder.nextReminderMileage !== undefined &&
-      !reminder.completedAt &&
-      odometer >= reminder.nextReminderMileage
-    ) {
-      await completeReminder(reminder.id, odometer);
-      processed += 1;
-    }
-  }
-
-  return processed;
-}
-
-/**
  * Calculate urgency of a reminder given current mileage.
  * Returns miles remaining (negative = overdue) or days remaining for date-based.
  */

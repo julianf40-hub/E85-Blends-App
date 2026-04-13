@@ -33,7 +33,6 @@ import {
   REMINDER_CATEGORIES,
   ReminderCategory,
   updateReminder,
-  syncMileageRemindersForCar,
 } from "@/lib/reminders";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -46,10 +45,14 @@ function getUrgencyLabel(reminder: Reminder, currentMileage: number): { label: s
   const { milesLeft, daysLeft, isOverdue } = getReminderUrgency(reminder, currentMileage);
 
   if (isOverdue) {
-    if (milesLeft !== undefined && milesLeft <= 0)
-      return { label: `${Math.abs(milesLeft).toLocaleString()} mi overdue`, color: "#EF4444" };
-    if (daysLeft !== undefined && daysLeft <= 0)
-      return { label: `${Math.abs(daysLeft)}d overdue`, color: "#EF4444" };
+    if (milesLeft !== undefined && milesLeft <= 0) {
+      if (milesLeft === 0) return { label: "Due now", color: "#EF4444" };
+      return { label: `Overdue by ${Math.abs(milesLeft).toLocaleString()} mi`, color: "#EF4444" };
+    }
+    if (daysLeft !== undefined && daysLeft <= 0) {
+      if (daysLeft === 0) return { label: "Due today", color: "#EF4444" };
+      return { label: `Overdue by ${Math.abs(daysLeft)}d`, color: "#EF4444" };
+    }
   }
 
   const parts: string[] = [];
@@ -423,13 +426,6 @@ export default function HomeScreen() {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer });
         setCurrentMileage(odometer);
       }
-      // Sync mileage reminders
-      if (activeCar) {
-        const syncCount = await syncMileageRemindersForCar(activeCar.id, odometer);
-        if (syncCount > 0) {
-          Alert.alert("Maintenance Updated", `${syncCount} reminder${syncCount > 1 ? "s" : ""} advanced based on your new mileage.`);
-        }
-      }
       setLogFillUpModalVisible(false);
       setCalculatorModalVisible(false);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -462,7 +458,6 @@ export default function HomeScreen() {
       // Update the active car's odometer field
       if (activeCar) {
         await updateCarProfile(activeCar.id, { ...activeCar, odometer: newOdometer });
-        await syncMileageRemindersForCar(activeCar.id, newOdometer);
         setCurrentMileage(newOdometer);
         setOdometerModalVisible(false);
         if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
