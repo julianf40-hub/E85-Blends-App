@@ -3,7 +3,7 @@ import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
 // Clean production bundle ID — no template/manus namespace
-const bundleId = "com.e85blends.app";
+const bundleId = "com.e85blends.app.ios";
 // Deep link scheme for the app
 const schemeFromBundleId = "e85blends";
 
@@ -37,6 +37,7 @@ const config: ExpoConfig = {
     },
   },
   android: {
+    versionCode: 11,
     adaptiveIcon: {
       backgroundColor: "#000000",
       foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -101,19 +102,7 @@ const config: ExpoConfig = {
       },
     ],
     // react-native-maps uses PROVIDER_DEFAULT with OpenStreetMap tiles (no config plugin needed)
-    [
-      "expo-splash-screen",
-      {
-        image: "./assets/images/splash-icon.png",
-        imageWidth: 240,
-        resizeMode: "contain",
-        // Match the icon's dark olive/charcoal border color
-        backgroundColor: "#3a3a2e",
-        dark: {
-          backgroundColor: "#3a3a2e",
-        },
-      },
-    ],
+
     [
       "expo-build-properties",
       {
@@ -144,4 +133,5 @@ const config: ExpoConfig = {
   },
 };
 
+config.extra = { eas: { projectId: "b97e3134-95c6-4f69-bb9a-664aa59a7ebc" } };
 export default config;

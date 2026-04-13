@@ -53,9 +53,6 @@ importers:
       expo:
         specifier: ~54.0.29
         version: 54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      expo-audio:
-        specifier: ~1.1.0
-        version: 1.1.0(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       expo-blur:
         specifier: ~15.0.8
         version: 15.0.8(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
@@ -80,9 +77,6 @@ importers:
       expo-image:
         specifier: ~3.0.11
         version: 3.0.11(expo@54.0.29)(react-native-web@0.21.2(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      expo-keep-awake:
-        specifier: ~15.0.8
-        version: 15.0.8(expo@54.0.29)(react@19.1.0)
       expo-linear-gradient:
         specifier: ~15.0.8
         version: 15.0.8(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
@@ -119,12 +113,6 @@ importers:
       expo-updates:
         specifier: ~29.0.16
         version: 29.0.16(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      expo-video:
-        specifier: ~3.0.15
-        version: 3.0.15(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      expo-web-browser:
-        specifier: ~15.0.10
-        version: 15.0.10(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))
       express:
         specifier: ^4.22.1
         version: 4.22.1
@@ -3536,14 +3524,6 @@ packages:
       react: '*'
       react-native: '*'
 
-  expo-audio@1.1.0:
-    resolution: {integrity: sha512-B6SlDVQ8AHzCo8ImzO3C/5BzZ8vxULTCj9Ubx9bBSdcyDmU1DpDi0Tr4znEXOvBGn+u8eaTaPDN2a8RCAyXyXw==}
-    peerDependencies:
-      expo: '*'
-      expo-asset: '*'
-      react: '*'
-      react-native: '*'
-
   expo-blur@15.0.8:
     resolution: {integrity: sha512-rWyE1NBRZEu9WD+X+5l7gyPRszw7n12cW3IRNAb5i6KFzaBp8cxqT5oeaphJapqURvcqhkOZn2k5EtBSbsuU7w==}
     peerDependencies:
@@ -3746,19 +3726,6 @@ packages:
     peerDependencies:
       expo: '*'
       react: '*'
-      react-native: '*'
-
-  expo-video@3.0.15:
-    resolution: {integrity: sha512-KmxHVCtOBb1fnxXL6DpgLbEe7Qlv/vHNGTLfz0u/eY8fBC9s5cncD2BhPunEffrGvNMftBzYMYDaO86x+IYpnA==}
-    peerDependencies:
-      expo: '*'
-      react: '*'
-      react-native: '*'
-
-  expo-web-browser@15.0.10:
-    resolution: {integrity: sha512-fvDhW4bhmXAeWFNFiInmsGCK83PAqAcQaFyp/3pE/jbdKmFKoRCWr46uZGIfN4msLK/OODhaQ/+US7GSJNDHJg==}
-    peerDependencies:
-      expo: '*'
       react-native: '*'
 
   expo@54.0.29:
@@ -9835,13 +9802,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  expo-audio@1.1.0(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0):
-    dependencies:
-      expo: 54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      expo-asset: 12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      react: 19.1.0
-      react-native: 0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0)
-
   expo-blur@15.0.8(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0):
     dependencies:
       expo: 54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
@@ -10078,17 +10038,6 @@ snapshots:
       resolve-from: 5.0.0
     transitivePeerDependencies:
       - supports-color
-
-  expo-video@3.0.15(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0):
-    dependencies:
-      expo: 54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      react: 19.1.0
-      react-native: 0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0)
-
-  expo-web-browser@15.0.10(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0)):
-    dependencies:
-      expo: 54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      react-native: 0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0)
 
   expo@54.0.29(@babel/core@7.28.5)(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0):
     dependencies:

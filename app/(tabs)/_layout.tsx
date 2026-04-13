@@ -46,6 +46,12 @@ function GlassTabBarBackground() {
   );
 }
 
+// Explicitly declare calculator as the initial/default tab route.
+// This prevents Expo Router from looking for an index.tsx fallback.
+export const unstable_settings = {
+  initialRouteName: "calculator",
+};
+
 export default function TabLayout() {
   const colors = useColors();
   const colorScheme = useColorScheme();
@@ -55,6 +61,7 @@ export default function TabLayout() {
   const { prefs } = usePreferencesContext();
   const showReminders = prefs?.showReminders !== false;
   const showGarage = prefs?.showGarage !== false;
+  const showGear = prefs?.showGear === true;
 
   // Border color adapts to scheme: subtle on glass
   const borderColor =
@@ -111,7 +118,7 @@ export default function TabLayout() {
 
       {/* ── Garage (conditionally shown based on preference) ── */}
       <Tabs.Screen
-        name="index"
+        name="garage"
         options={showGarage ? {
           title: "Garage",
           tabBarIcon: ({ color }) => (
@@ -127,6 +134,17 @@ export default function TabLayout() {
           title: "Reminders",
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="bell.fill" color={color} />
+          ),
+        } : { href: null }}
+      />
+
+      {/* ── Recommended Gear (conditionally shown based on preference) ── */}
+      <Tabs.Screen
+        name="gear"
+        options={showGear ? {
+          title: "Gear",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="gearshape.fill" color={color} />
           ),
         } : { href: null }}
       />

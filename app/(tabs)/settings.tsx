@@ -11,7 +11,10 @@ import {
   FlatList,
   Modal,
   Switch,
+  Linking,
+  useColorScheme,
 } from "react-native";
+import { Image } from "expo-image";
 import Animated, { FadeIn, FadeInDown } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -443,6 +446,7 @@ const bc = StyleSheet.create({
 export default function SettingsScreen() {
   const colors = useColors();
   const router = useRouter();
+  const colorScheme = useColorScheme();
   const { themeMode, setColorScheme } = useThemeContext();
   const [prefs, setPrefs] = useState<UserPreferences | null>(null);
   const [loading, setLoading] = useState(true);
@@ -591,6 +595,11 @@ export default function SettingsScreen() {
         },
       ]
     );
+  }, []);
+
+  const openSponsor = useCallback(() => {
+    Linking.openURL("https://rvpsupply.com").catch(() => {});
+    if (Platform.OS !== "web") Haptics.selectionAsync();
   }, []);
 
   if (loading || !prefs) {
@@ -812,6 +821,25 @@ export default function SettingsScreen() {
                 onValueChange={(val) => handleSavePreference("showReminders", val)}
                 trackColor={{ false: colors.border, true: colors.primary + "44" }}
                 thumbColor={prefs.showReminders !== false ? colors.primary : colors.muted}
+              />
+            </View>
+
+            {/* Show Recommended Gear in Tab Bar */}
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={styles.settingRow}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>Show Recommended Gear in Tab Bar</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                  {prefs.showGear === false
+                    ? "Still accessible from More"
+                    : "Shown in the tab bar"}
+                </Text>
+              </View>
+              <Switch
+                value={prefs.showGear !== false}
+                onValueChange={(val) => handleSavePreference("showGear", val)}
+                trackColor={{ false: colors.border, true: colors.primary + "44" }}
+                thumbColor={prefs.showGear !== false ? colors.primary : colors.muted}
               />
             </View>
 
@@ -1161,6 +1189,29 @@ export default function SettingsScreen() {
           </View>
         </Animated.View>
 
+        {/* ── Sponsor Section ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(205)}>
+          <View style={[styles.sponsorDivider, { backgroundColor: colors.border }]} />
+          <Pressable
+            onPress={openSponsor}
+            style={({ pressed }) => [
+              styles.sponsorBlock,
+              pressed && { opacity: 0.8 },
+            ]}
+          >
+            <Text style={[styles.sponsorLabel, { color: colors.muted }]}>Sponsored by</Text>
+            <Image
+              source={
+                colorScheme === "dark"
+                  ? require("../../assets/images/rvpsupply-logo-transparent.png")
+                  : require("../../assets/images/rvpsupply-logo.png")
+              }
+              style={styles.sponsorLogo}
+              contentFit="contain"
+            />
+          </Pressable>
+        </Animated.View>
+
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
@@ -1269,6 +1320,25 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   disclaimerText: { fontSize: 13, lineHeight: 19 },
+  sponsorDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 24,
+  },
+  sponsorBlock: {
+    alignItems: "center",
+    paddingVertical: 16,
+    gap: 10,
+  },
+  sponsorLabel: {
+    fontSize: 11,
+    fontWeight: "500",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+  sponsorLogo: {
+    width: 220,
+    height: 168,
+  },
   versionFooter: { alignItems: "center", paddingVertical: 12, gap: 4 },
   versionFooterText: { fontSize: 13, fontWeight: "500" },
   versionFooterSub: { fontSize: 11 },

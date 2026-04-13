@@ -51,7 +51,7 @@ export default function OAuthCallback() {
 
           setStatus("success");
           setTimeout(() => {
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/calculator");
           }, 1000);
           return;
         }
@@ -123,7 +123,7 @@ export default function OAuthCallback() {
           // No need to fetch from API
           setStatus("success");
           setTimeout(() => {
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/calculator");
           }, 1000);
           return;
         }
@@ -160,7 +160,7 @@ export default function OAuthCallback() {
 
           // Redirect to home after a short delay
           setTimeout(() => {
-            router.replace("/(tabs)");
+            router.replace("/(tabs)/calculator");
           }, 1000);
         } else {
           console.error("[OAuth] No session token in OAuth exchange result");

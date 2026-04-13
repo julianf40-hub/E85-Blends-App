@@ -103,9 +103,8 @@ export default function RootLayout() {
         const prefs = await loadPreferences();
         const homeScreen = prefs.homeScreen ?? "calculator";
         if (homeScreen === "garage") {
-          // Garage tab is the `index` screen inside (tabs)
-          // Cast needed because typed routes don't expose /(tabs)/index directly
-          router.replace("/(tabs)" as never);
+          // Garage tab
+          router.replace("/(tabs)/garage" as never);
         } else {
           // Calculator tab
           router.replace("/(tabs)/calculator" as never);
