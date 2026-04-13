@@ -1215,7 +1215,7 @@ export default function SettingsScreen() {
         {/* ── Version Footer ── */}
         <View style={styles.versionFooter}>
           <Text style={[styles.versionFooterText, { color: colors.muted }]}>85Blends · v1.0.1</Text>
-          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 11 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
+          <Text style={[styles.versionFooterSub, { color: colors.border }]}>Build 12 · {Platform.OS === "ios" ? "iOS" : Platform.OS === "android" ? "Android" : "Web"}</Text>
         </View>
 
         <View style={{ height: 40 }} />
