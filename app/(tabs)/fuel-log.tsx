@@ -43,7 +43,6 @@ export default function FuelLogScreen() {
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
   const [preferredOctane, setPreferredOctane] = useState<number>(87);
-  const [selectedGasOctane, setSelectedGasOctane] = useState<number>(87);
 
   const loadBlends = useCallback(async () => {
     const b = await getSavedBlends();
@@ -246,7 +245,6 @@ export default function FuelLogScreen() {
         odometer: "",
         notes: "",
       });
-      setSelectedGasOctane(preferredOctane);
       setShowModal(false);
       await loadData();
     } catch (error) {
