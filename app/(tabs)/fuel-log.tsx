@@ -43,7 +43,6 @@ export default function FuelLogScreen() {
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
   const [preferredOctane, setPreferredOctane] = useState<number>(87);
-  const [selectedGasOctane, setSelectedGasOctane] = useState<number>(87);
 
   const loadBlends = useCallback(async () => {
     const b = await getSavedBlends();
@@ -174,10 +173,9 @@ export default function FuelLogScreen() {
         gallonsAdded: derivedTotal,
         e85Gallons: derivedE85 > 0 ? derivedE85 : undefined,
         gasGallons: derivedGas > 0 ? derivedGas : undefined,
-        gasOctane: derivedGas > 0 ? selectedGasOctane : undefined,
+        gasOctane: derivedGas > 0 ? formData.gasOctane : undefined,
         e85PricePerGallon: derivedE85Price > 0 ? derivedE85Price : undefined,
         gasPricePerGallon: derivedGasPrice > 0 ? derivedGasPrice : undefined,
-        gasOctane: formData.gasOctane,
         pricePerGallon: derivedBlendedPrice,
         totalPrice: derivedTotalCost,
         odometer: parseFloat(formData.odometer),
@@ -247,7 +245,6 @@ export default function FuelLogScreen() {
         odometer: "",
         notes: "",
       });
-      setSelectedGasOctane(preferredOctane);
       setShowModal(false);
       await loadData();
     } catch (error) {
