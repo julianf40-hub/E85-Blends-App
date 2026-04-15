@@ -50,13 +50,18 @@ function formatUrgency(
 ): { label: string; color: string } {
   const { milesLeft, daysLeft, isOverdue } = getReminderUrgency(reminder, currentMileage);
 
+  if (milesLeft === 0) {
+    return { label: "Due now", color: "#F59E0B" };
+  }
+  if (daysLeft === 0) {
+    return { label: "Due today", color: "#F59E0B" };
+  }
+
   if (isOverdue) {
-    if (milesLeft !== undefined && milesLeft <= 0) {
-      if (milesLeft === 0) return { label: "Due now", color: "#EF4444" };
+    if (milesLeft !== undefined && milesLeft < 0) {
       return { label: `Overdue by ${Math.abs(milesLeft).toLocaleString()} mi`, color: "#EF4444" };
     }
-    if (daysLeft !== undefined && daysLeft <= 0) {
-      if (daysLeft === 0) return { label: "Due today", color: "#EF4444" };
+    if (daysLeft !== undefined && daysLeft < 0) {
       return { label: `Overdue by ${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""}`, color: "#EF4444" };
     }
   }
@@ -66,8 +71,7 @@ function formatUrgency(
     parts.push(`in ${milesLeft.toLocaleString()} mi`);
   }
   if (daysLeft !== undefined) {
-    if (daysLeft === 0) parts.push("today");
-    else if (daysLeft === 1) parts.push("tomorrow");
+    if (daysLeft === 1) parts.push("tomorrow");
     else parts.push(`in ${daysLeft} days`);
   }
 

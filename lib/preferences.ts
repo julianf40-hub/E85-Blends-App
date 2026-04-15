@@ -35,7 +35,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   homeScreen: "calculator",
   showReminders: true,
   showGarage: true,
-  showGear: false,
+  showGear: true,
   directionsApp: "apple",
 };
 

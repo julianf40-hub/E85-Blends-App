@@ -19,6 +19,7 @@ export interface FuelEntry {
   gasOctane?: number; // octane rating of the gasoline used (87, 89, 91, 93)
   e85PricePerGallon?: number; // price per gallon of E85
   gasPricePerGallon?: number; // price per gallon of regular gas
+  gasOctane?: "87" | "89" | "91/92" | "93";
   pricePerGallon: number; // blended average price per gallon
   totalPrice: number;
   odometer: number;

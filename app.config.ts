@@ -31,13 +31,13 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    buildNumber: "12",
+    buildNumber: "13",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
-    versionCode: 11,
+    versionCode: 13,
     adaptiveIcon: {
       backgroundColor: "#000000",
       foregroundImage: "./assets/images/android-icon-foreground.png",

@@ -61,7 +61,7 @@ export default function TabLayout() {
   const { prefs } = usePreferencesContext();
   const showReminders = prefs?.showReminders !== false;
   const showGarage = prefs?.showGarage !== false;
-  const showGear = prefs?.showGear === true;
+  const showGear = prefs?.showGear !== false;
 
   // Border color adapts to scheme: subtle on glass
   const borderColor =
@@ -119,34 +119,37 @@ export default function TabLayout() {
       {/* ── Garage (conditionally shown based on preference) ── */}
       <Tabs.Screen
         name="garage"
-        options={showGarage ? {
+        options={{
           title: "Garage",
+          href: showGarage ? "/garage" : null,
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="car.fill" color={color} />
           ),
-        } : { href: null }}
+        }}
       />
 
       {/* ── Reminders (conditionally shown based on preference) ── */}
       <Tabs.Screen
         name="reminders"
-        options={showReminders ? {
+        options={{
           title: "Reminders",
+          href: showReminders ? "/reminders" : null,
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="bell.fill" color={color} />
           ),
-        } : { href: null }}
+        }}
       />
 
       {/* ── Recommended Gear (conditionally shown based on preference) ── */}
       <Tabs.Screen
         name="gear"
-        options={showGear ? {
+        options={{
           title: "Gear",
+          href: showGear ? "/gear" : null,
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="gearshape.fill" color={color} />
           ),
-        } : { href: null }}
+        }}
       />
 
       {/* ── More / Settings ── */}
@@ -164,12 +167,14 @@ export default function TabLayout() {
       <Tabs.Screen
         name="fuel-log"
         options={{
+          tabBarButton: () => null,
           href: null, // Fuel Log accessible via More tab → Fill-Up History
         }}
       />
       <Tabs.Screen
         name="blends"
         options={{
+          tabBarButton: () => null,
           href: null,
         }}
       />
