@@ -16,6 +16,7 @@ export interface FuelEntry {
   gallonsAdded: number; // total gallons (e85Gallons + gasGallons)
   e85Gallons?: number; // gallons of E85 added
   gasGallons?: number; // gallons of regular gas added
+  gasOctane?: number; // octane rating of the gasoline used (87, 89, 91, 93)
   e85PricePerGallon?: number; // price per gallon of E85
   gasPricePerGallon?: number; // price per gallon of regular gas
   gasOctane?: "87" | "89" | "91/92" | "93";

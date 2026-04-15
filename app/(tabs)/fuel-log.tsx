@@ -43,6 +43,7 @@ export default function FuelLogScreen() {
   const [blends, setBlends] = useState<SavedBlend[]>([]);
   const [blendsExpanded, setBlendsExpanded] = useState(true);
   const [preferredOctane, setPreferredOctane] = useState<number>(87);
+  const [selectedGasOctane, setSelectedGasOctane] = useState<number>(87);
 
   const loadBlends = useCallback(async () => {
     const b = await getSavedBlends();
@@ -173,6 +174,7 @@ export default function FuelLogScreen() {
         gallonsAdded: derivedTotal,
         e85Gallons: derivedE85 > 0 ? derivedE85 : undefined,
         gasGallons: derivedGas > 0 ? derivedGas : undefined,
+        gasOctane: derivedGas > 0 ? selectedGasOctane : undefined,
         e85PricePerGallon: derivedE85Price > 0 ? derivedE85Price : undefined,
         gasPricePerGallon: derivedGasPrice > 0 ? derivedGasPrice : undefined,
         gasOctane: formData.gasOctane,
@@ -245,6 +247,7 @@ export default function FuelLogScreen() {
         odometer: "",
         notes: "",
       });
+      setSelectedGasOctane(preferredOctane);
       setShowModal(false);
       await loadData();
     } catch (error) {
@@ -1172,6 +1175,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
     lineHeight: 16,
+  },
+  octanePills: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 6,
+  },
+  octanePill: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  octanePillText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   // Saved Blends section
   blendsSection: {
