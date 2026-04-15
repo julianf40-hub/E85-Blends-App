@@ -31,6 +31,8 @@ import { fetchNearbyStations } from "@/lib/station-data";
 import { loadPreferences } from "@/lib/preferences";
 import { addStationPrice } from "@/lib/station-prices";
 
+const GAS_OCTANE_OPTIONS = ["87", "89", "91/92", "93"] as const;
+
 export default function FuelLogScreen() {
   const colors = useColors();
   const [entries, setEntries] = useState<FuelEntry[]>([]);
@@ -92,6 +94,7 @@ export default function FuelLogScreen() {
     gasGallons: "",
     e85Price: "",
     gasPrice: "",
+    gasOctane: "87" as (typeof GAS_OCTANE_OPTIONS)[number],
     currentEthanolPct: "",
     odometer: "",
     notes: "",
@@ -127,6 +130,17 @@ export default function FuelLogScreen() {
       setEntries(logs);
       setStats(stats);
       setPreferredOctane(prefs.preferredOctane ?? 87);
+      setFormData((prev) => ({
+        ...prev,
+        gasOctane:
+          prefs.preferredOctane >= 93
+            ? "93"
+            : prefs.preferredOctane === 89
+              ? "89"
+              : prefs.preferredOctane === 91 || prefs.preferredOctane === 92
+                ? "91/92"
+                : "87",
+      }));
       await loadBlends();
     } catch (error) {
       console.error("Failed to load fuel log:", error);
@@ -161,6 +175,7 @@ export default function FuelLogScreen() {
         gasGallons: derivedGas > 0 ? derivedGas : undefined,
         e85PricePerGallon: derivedE85Price > 0 ? derivedE85Price : undefined,
         gasPricePerGallon: derivedGasPrice > 0 ? derivedGasPrice : undefined,
+        gasOctane: formData.gasOctane,
         pricePerGallon: derivedBlendedPrice,
         totalPrice: derivedTotalCost,
         odometer: parseFloat(formData.odometer),
@@ -175,10 +190,17 @@ export default function FuelLogScreen() {
       // Auto-update station price community record with octane-mapped grade
       if (newEntry.stationId && (derivedE85Price > 0 || derivedGasPrice > 0)) {
         try {
-          const octane = preferredOctane;
+          const octane =
+            formData.gasOctane === "93"
+              ? 93
+              : formData.gasOctane === "91/92"
+                ? 91
+                : formData.gasOctane === "89"
+                  ? 89
+                  : 87;
           const gradeField =
             octane >= 93 ? "octane9194Price" :
-            octane === 91 || octane === 92 ? "octane9194Price" :
+            octane === 91 ? "octane9194Price" :
             octane === 89 ? "octane89Price" :
             "octane87Price";
           await addStationPrice({
@@ -211,6 +233,14 @@ export default function FuelLogScreen() {
         gasGallons: "",
         e85Price: "",
         gasPrice: "",
+        gasOctane:
+          preferredOctane >= 93
+            ? "93"
+            : preferredOctane === 89
+              ? "89"
+              : preferredOctane === 91 || preferredOctane === 92
+                ? "91/92"
+                : "87",
         currentEthanolPct: "",
         odometer: "",
         notes: "",
@@ -220,7 +250,7 @@ export default function FuelLogScreen() {
     } catch (error) {
       Alert.alert("Error", "Failed to add fuel entry.");
     }
-  }, [formData, derivedTotal, derivedE85, derivedGas, derivedE85Price, derivedGasPrice, derivedEthanolPct, derivedBlendedPrice, derivedTotalCost, loadData]);
+  }, [formData, preferredOctane, derivedTotal, derivedE85, derivedGas, derivedE85Price, derivedGasPrice, derivedEthanolPct, derivedBlendedPrice, derivedTotalCost, loadData]);
 
   const handleDeleteEntry = useCallback(
     (id: string) => {
@@ -309,7 +339,9 @@ export default function FuelLogScreen() {
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.statItem}>
-                  <Text style={[styles.statLabel, { color: colors.muted }]}>Gas gal</Text>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>
+                    {`Gas${item.gasOctane ? ` ${item.gasOctane}` : ""} gal`}
+                  </Text>
                   <Text style={[styles.statValue, { color: colors.foreground }]}>{(item.gasGallons ?? 0).toFixed(2)}</Text>
                 </View>
               </>
@@ -677,6 +709,37 @@ export default function FuelLogScreen() {
 
               {/* ── Price Section ── */}
               <Text style={[styles.formSectionHeader, { color: colors.muted }]}>PRICE PER GALLON (optional)</Text>
+              <View style={styles.formGroup}>
+                <Text style={[styles.formLabel, { color: colors.foreground }]}>Gasoline Grade / Octane</Text>
+                <View style={styles.octaneChipRow}>
+                  {GAS_OCTANE_OPTIONS.map((opt) => {
+                    const selected = formData.gasOctane === opt;
+                    return (
+                      <Pressable
+                        key={opt}
+                        onPress={() => setFormData({ ...formData, gasOctane: opt })}
+                        style={({ pressed }) => [
+                          styles.octaneChip,
+                          {
+                            borderColor: selected ? colors.primary : colors.border,
+                            backgroundColor: selected ? colors.primary + "14" : colors.surface,
+                            opacity: pressed ? 0.75 : 1,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.octaneChipText,
+                            { color: selected ? colors.primary : colors.foreground },
+                          ]}
+                        >
+                          {opt}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
               <View style={styles.formRow}>
                 <View style={[styles.formGroupHalf, { marginRight: 8 }]}>
                   <Text style={[styles.formLabel, { color: colors.foreground }]}>E85 $/gal</Text>
@@ -691,7 +754,7 @@ export default function FuelLogScreen() {
                   />
                 </View>
                 <View style={styles.formGroupHalf}>
-                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Octane {preferredOctane} $/gal</Text>
+                  <Text style={[styles.formLabel, { color: colors.foreground }]}>Gasoline ({formData.gasOctane}) $/gal</Text>
                   <TextInput
                     style={[styles.formInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
                     placeholder="3.49"
@@ -1078,6 +1141,21 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     marginBottom: 8,
     marginTop: 4,
+  },
+  octaneChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  octaneChip: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  octaneChipText: {
+    fontSize: 13,
+    fontWeight: "700",
   },
   derivedSummary: {
     borderWidth: 1,

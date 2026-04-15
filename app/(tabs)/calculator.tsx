@@ -119,6 +119,9 @@ export default function CalculatorScreen() {
   const [logFillUpStation, setLogFillUpStation] = useState("");
   const [logFillUpPriceE85, setLogFillUpPriceE85] = useState("");
   const [logFillUpPriceGas, setLogFillUpPriceGas] = useState("");
+  const [logFillUpE85Gallons, setLogFillUpE85Gallons] = useState("");
+  const [logFillUpGasGallons, setLogFillUpGasGallons] = useState("");
+  const [logFillUpGasOctane, setLogFillUpGasOctane] = useState<"87" | "89" | "91/92" | "93">("91/92");
 
   // ── Load active car on focus ──────────────────────────────────────────────
   useFocusEffect(
@@ -253,19 +256,36 @@ export default function CalculatorScreen() {
     setLogFillUpStation("");
     setLogFillUpPriceE85("");
     setLogFillUpPriceGas("");
+    setLogFillUpE85Gallons(blendResult.e85Gallons.toFixed(2));
+    setLogFillUpGasGallons(blendResult.gasGallons.toFixed(2));
+    setLogFillUpGasOctane(
+      blendInputs.gasOctane >= 93
+        ? "93"
+        : blendInputs.gasOctane === 89
+          ? "89"
+          : blendInputs.gasOctane === 91 || blendInputs.gasOctane === 92
+            ? "91/92"
+            : "87"
+    );
     setLogFillUpModalVisible(true);
-  }, [blendResult, currentMileage]);
+  }, [blendResult, currentMileage, blendInputs.gasOctane]);
 
   const handleConfirmLogFillUp = useCallback(async () => {
     if (!blendResult) return;
     try {
       const { addFuelEntry } = await import("@/lib/fuel-log");
-      const totalGallons = blendResult.e85Gallons + blendResult.gasGallons;
+      const actualE85Gallons = parseFloat(logFillUpE85Gallons) || 0;
+      const actualGasGallons = parseFloat(logFillUpGasGallons) || 0;
+      const totalGallons = actualE85Gallons + actualGasGallons;
+      if (totalGallons <= 0) {
+        Alert.alert("Invalid gallons", "Please enter actual pumped gallons greater than 0.");
+        return;
+      }
       const priceE85 = parseFloat(logFillUpPriceE85) || 0;
       const priceGas = parseFloat(logFillUpPriceGas) || 0;
       const blendedPricePerGal =
         totalGallons > 0
-          ? (priceE85 * blendResult.e85Gallons + priceGas * blendResult.gasGallons) /
+          ? (priceE85 * actualE85Gallons + priceGas * actualGasGallons) /
             totalGallons
           : 0;
       const odometer = parseInt(logFillUpOdometer) || currentMileage;
@@ -274,8 +294,9 @@ export default function CalculatorScreen() {
         stationName: logFillUpStation.trim() || "Unknown station",
         blendRatio: blendResult.finalEthanolPercent,
         gallonsAdded: totalGallons,
-        e85Gallons: blendResult.e85Gallons > 0 ? blendResult.e85Gallons : undefined,
-        gasGallons: blendResult.gasGallons > 0 ? blendResult.gasGallons : undefined,
+        e85Gallons: actualE85Gallons > 0 ? actualE85Gallons : undefined,
+        gasGallons: actualGasGallons > 0 ? actualGasGallons : undefined,
+        gasOctane: logFillUpGasOctane,
         e85PricePerGallon: priceE85 > 0 ? priceE85 : undefined,
         gasPricePerGallon: priceGas > 0 ? priceGas : undefined,
         pricePerGallon: blendedPricePerGal,
@@ -300,6 +321,9 @@ export default function CalculatorScreen() {
     logFillUpStation,
     logFillUpPriceE85,
     logFillUpPriceGas,
+    logFillUpE85Gallons,
+    logFillUpGasGallons,
+    logFillUpGasOctane,
     currentMileage,
     activeCar,
   ]);
@@ -366,6 +390,67 @@ export default function CalculatorScreen() {
               returnKeyType="next"
             />
             <Text style={[styles.modalLabel, { color: colors.foreground }]}>
+              Actual E85 Gallons Pumped
+            </Text>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground },
+              ]}
+              placeholder={blendResult?.e85Gallons.toFixed(2) ?? "0"}
+              placeholderTextColor={colors.muted}
+              keyboardType="decimal-pad"
+              value={logFillUpE85Gallons}
+              onChangeText={(v) => setLogFillUpE85Gallons(v.replace(/[^\d.]/g, ""))}
+              returnKeyType="next"
+            />
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>
+              Actual Gasoline Gallons Pumped
+            </Text>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground },
+              ]}
+              placeholder={blendResult?.gasGallons.toFixed(2) ?? "0"}
+              placeholderTextColor={colors.muted}
+              keyboardType="decimal-pad"
+              value={logFillUpGasGallons}
+              onChangeText={(v) => setLogFillUpGasGallons(v.replace(/[^\d.]/g, ""))}
+              returnKeyType="next"
+            />
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>
+              Gasoline Grade / Octane
+            </Text>
+            <View style={styles.modalOctaneRow}>
+              {(["87", "89", "91/92", "93"] as const).map((opt) => {
+                const selected = logFillUpGasOctane === opt;
+                return (
+                  <Pressable
+                    key={opt}
+                    onPress={() => setLogFillUpGasOctane(opt)}
+                    style={({ pressed }) => [
+                      styles.modalOctaneChip,
+                      {
+                        backgroundColor: selected ? colors.primary + "18" : colors.surface,
+                        borderColor: selected ? colors.primary : colors.border,
+                        opacity: pressed ? 0.75 : 1,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.modalOctaneChipText,
+                        { color: selected ? colors.primary : colors.foreground },
+                      ]}
+                    >
+                      {opt}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.modalLabel, { color: colors.foreground }]}>
               Odometer (miles)
             </Text>
             <TextInput
@@ -396,7 +481,7 @@ export default function CalculatorScreen() {
               returnKeyType="next"
             />
             <Text style={[styles.modalLabel, { color: colors.foreground }]}>
-              Gas Price / gal (optional)
+              Gasoline ({logFillUpGasOctane}) Price / gal (optional)
             </Text>
             <TextInput
               style={[
@@ -1590,6 +1675,14 @@ const styles = StyleSheet.create({
   modalSaveText: { fontSize: 16, fontWeight: "600", textAlign: "right" },
   modalContent: { padding: 16 },
   modalLabel: { fontSize: 14, fontWeight: "600", marginBottom: 6 },
+  modalOctaneRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
+  modalOctaneChip: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  modalOctaneChipText: { fontSize: 13, fontWeight: "700" },
   modalInput: {
     borderWidth: 1,
     borderRadius: 10,

@@ -146,8 +146,10 @@ export async function completeReminder(id: string, currentMileage: number): Prom
 
   // Advance date trigger if repeat is set
   if (reminder.dateEnabled && reminder.repeatDateInterval && reminder.nextReminderDate) {
-    const nextDate = new Date(reminder.nextReminderDate);
-    nextDate.setDate(nextDate.getDate() + reminder.repeatDateInterval);
+    const completionDate = new Date(now);
+    completionDate.setHours(0, 0, 0, 0);
+    completionDate.setDate(completionDate.getDate() + reminder.repeatDateInterval);
+    const nextDate = completionDate;
     updates.nextReminderDate = nextDate.toISOString().split("T")[0];
     updates.completedAt = undefined;
   }
@@ -170,7 +172,7 @@ export function getReminderUrgency(
 
   if (reminder.mileageEnabled && reminder.nextReminderMileage !== undefined) {
     milesLeft = reminder.nextReminderMileage - currentMileage;
-    if (milesLeft <= 0) isOverdue = true;
+    if (milesLeft < 0) isOverdue = true;
   }
 
   if (reminder.dateEnabled && reminder.nextReminderDate) {
@@ -179,7 +181,7 @@ export function getReminderUrgency(
     const due = new Date(reminder.nextReminderDate);
     due.setHours(0, 0, 0, 0);
     daysLeft = Math.round((due.getTime() - today.getTime()) / 86400000);
-    if (daysLeft <= 0) isOverdue = true;
+    if (daysLeft < 0) isOverdue = true;
   }
 
   return { milesLeft, daysLeft, isOverdue };
