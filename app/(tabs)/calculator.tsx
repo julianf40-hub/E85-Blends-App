@@ -300,7 +300,7 @@ export default function CalculatorScreen() {
         e85PricePerGallon: priceE85 > 0 ? priceE85 : undefined,
         gasPricePerGallon: priceGas > 0 ? priceGas : undefined,
         pricePerGallon: blendedPricePerGal,
-        totalPrice: blendedPricePerGal * actualTotal,
+        totalPrice: blendedPricePerGal * totalGallons,
         odometer,
         notes: `Calculator blend: ${blendResult.blendLabel}`,
       });
@@ -311,7 +311,7 @@ export default function CalculatorScreen() {
       setLogFillUpModalVisible(false);
       if (Platform.OS !== "web")
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert("Logged!", `${actualTotal.toFixed(2)} gal fill-up added to Fuel Log.`);
+      Alert.alert("Logged!", `${totalGallons.toFixed(2)} gal fill-up added to Fuel Log.`);
     } catch {
       Alert.alert("Error", "Failed to log fill-up.");
     }
@@ -504,7 +504,7 @@ export default function CalculatorScreen() {
               Gasoline ({logFillUpGasOctane}) Price / gal (optional)
             </Text>
             <View style={styles.octanePills}>
-              {([87, 89, 91, 93] as const).map((oct) => (
+              {(["87", "89", "91/92", "93"] as const).map((oct) => (
                 <Pressable
                   key={oct}
                   onPress={() => setLogFillUpGasOctane(oct)}
