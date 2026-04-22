@@ -22,6 +22,7 @@ export interface UserPreferences {
   showGarage?: boolean; // visibility toggle for Garage tab
   showGear?: boolean; // visibility toggle for Recommended Gear tab
   directionsApp?: "apple" | "google" | "waze"; // preferred navigation app
+  appLayoutMode?: "simple" | "full"; // onboarding layout preset (can be changed later)
 }
 
 const PREFERENCES_KEY = "e85_user_preferences";
@@ -37,7 +38,32 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   showGarage: true,
   showGear: true,
   directionsApp: "apple",
+  appLayoutMode: "full",
 };
+
+export function applyLayoutModeToPreferences(
+  prefs: UserPreferences,
+  mode: "simple" | "full",
+): UserPreferences {
+  if (mode === "simple") {
+    return {
+      ...prefs,
+      appLayoutMode: "simple",
+      homeScreen: "calculator",
+      showGarage: false,
+      showReminders: false,
+      showGear: false,
+    };
+  }
+
+  return {
+    ...prefs,
+    appLayoutMode: "full",
+    showGarage: true,
+    showReminders: true,
+    showGear: true,
+  };
+}
 
 /**
  * Load user preferences from AsyncStorage
