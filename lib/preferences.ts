@@ -22,6 +22,7 @@ export interface UserPreferences {
   showGarage?: boolean; // visibility toggle for Garage tab
   showGear?: boolean; // visibility toggle for Recommended Gear tab
   directionsApp?: "apple" | "google" | "waze"; // preferred navigation app
+  pumpModeDetection?: "off" | "suggest" | "auto"; // smart pump detection behavior
 }
 
 const PREFERENCES_KEY = "e85_user_preferences";
@@ -37,6 +38,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   showGarage: true,
   showGear: true,
   directionsApp: "apple",
+  pumpModeDetection: "suggest",
 };
 
 /**
