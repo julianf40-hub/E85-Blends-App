@@ -73,6 +73,8 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { getActiveCar, type CarProfile, updateCarProfile } from "@/lib/garage";
 import { getSavedBlends, type SavedBlend } from "@/lib/blend-storage";
+import { usePreferencesContext } from "@/lib/preferences-context";
+import { detectNearbyStation, shouldShowSuggestion } from "@/lib/pump-detection";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -122,6 +124,12 @@ export default function CalculatorScreen() {
   const [logFillUpE85Gallons, setLogFillUpE85Gallons] = useState("");
   const [logFillUpGasGallons, setLogFillUpGasGallons] = useState("");
   const [logFillUpGasOctane, setLogFillUpGasOctane] = useState<"87" | "89" | "91/92" | "93">("91/92");
+
+  // Smart pump detection
+  const { prefs } = usePreferencesContext();
+  const [showPumpSuggestion, setShowPumpSuggestion] = useState(false);
+  const [suggestedStation, setSuggestedStation] = useState<string | null>(null);
+  const [lastPumpSuggestionTime, setLastPumpSuggestionTime] = useState<number | null>(null);
 
   // ── Load active car on focus ──────────────────────────────────────────────
   useFocusEffect(
@@ -334,6 +342,43 @@ export default function CalculatorScreen() {
 
   return (
     <ScreenContainer>
+      {/* ── Pump Mode Suggestion Modal ── */}
+      <Modal
+        visible={showPumpSuggestion}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowPumpSuggestion(false)}
+      >
+        <View style={[styles.modalOverlay, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
+          <View style={[styles.pumpSuggestionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.pumpSuggestionTitle, { color: colors.foreground }]}>
+              Looks like you're at a station
+            </Text>
+            <Text style={[styles.pumpSuggestionSubtitle, { color: colors.muted }]}>
+              {suggestedStation ? `${suggestedStation} nearby` : "Open At-Pump Mode?"}
+            </Text>
+            <View style={styles.pumpSuggestionButtons}>
+              <Pressable
+                onPress={() => setShowPumpSuggestion(false)}
+                style={({ pressed }) => [styles.pumpSuggestionBtn, { opacity: pressed ? 0.7 : 1 }]}
+              >
+                <Text style={[styles.pumpSuggestionBtnText, { color: colors.muted }]}>Not now</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setPumpMode(true);
+                  setShowPumpSuggestion(false);
+                  setLastPumpSuggestionTime(Date.now());
+                }}
+                style={({ pressed }) => [styles.pumpSuggestionBtnPrimary, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}
+              >
+                <Text style={[styles.pumpSuggestionBtnTextPrimary, { color: colors.background }]}>Open</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Log Fill-Up Modal ── */}
       <Modal
         visible={logFillUpModalVisible}
@@ -1842,4 +1887,58 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   blendGuideFooterText: { fontSize: 11, textAlign: "center" },
+
+  // Pump suggestion modal styles
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pumpSuggestionCard: {
+    marginHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 20,
+    paddingVertical: 24,
+    gap: 12,
+  },
+  pumpSuggestionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  pumpSuggestionSubtitle: {
+    fontSize: 14,
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  pumpSuggestionButtons: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 8,
+  },
+  pumpSuggestionBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.1)",
+  },
+  pumpSuggestionBtnText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  pumpSuggestionBtnPrimary: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pumpSuggestionBtnTextPrimary: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
 });
