@@ -26,6 +26,7 @@ import {
   savePreferences,
   resetPreferences,
   UserPreferences,
+  applyLayoutModeToPreferences,
 } from "@/lib/preferences";
 import { usePreferencesContext } from "@/lib/preferences-context";
 import { clearFuelLog } from "@/lib/fuel-log";
@@ -490,6 +491,19 @@ export default function SettingsScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, [prefs, updatePref]);
 
+  const handleApplyLayoutMode = useCallback(async (mode: "simple" | "full") => {
+    if (!prefs) return;
+    const updated = applyLayoutModeToPreferences(prefs, mode);
+    setPrefs(updated);
+    await savePreferences(updated);
+    updatePref("appLayoutMode", updated.appLayoutMode);
+    updatePref("homeScreen", updated.homeScreen);
+    updatePref("showGarage", updated.showGarage);
+    updatePref("showReminders", updated.showReminders);
+    updatePref("showGear", updated.showGear);
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, [prefs, updatePref]);
+
   // Garage handlers
   const handleAddCar = useCallback(() => {
     setEditProfile(null);
@@ -744,6 +758,36 @@ export default function SettingsScreen() {
         <Animated.View entering={FadeInDown.duration(300).delay(100)} style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Navigation</Text>
           <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {/* App Layout picker */}
+            <View style={[styles.settingRow, { paddingBottom: 6 }]}>
+              <View style={styles.settingLabel}>
+                <Text style={[styles.settingName, { color: colors.foreground }]}>App Layout</Text>
+                <Text style={[styles.settingDesc, { color: colors.muted }]}>Simple hides extra tabs by default; Full shows all tabs</Text>
+              </View>
+            </View>
+            <View style={[styles.themeToggleRow, { paddingTop: 0 }]}>
+              {([
+                { key: "simple", label: "Simple" },
+                { key: "full", label: "Full" },
+              ] as const).map(({ key, label }) => {
+                const isActive = (prefs.appLayoutMode ?? "full") === key;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => { handleApplyLayoutMode(key); }}
+                    style={({ pressed }) => [
+                      styles.themeOption,
+                      { backgroundColor: isActive ? colors.primary : colors.background, borderColor: isActive ? colors.primary : colors.border },
+                      pressed && { opacity: 0.75 },
+                    ]}
+                  >
+                    <Text style={[styles.themeOptionText, { color: isActive ? "#fff" : colors.foreground }]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
             {/* Home Screen picker */}
             <View style={[styles.settingRow, { paddingBottom: 6 }]}>

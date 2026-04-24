@@ -29,7 +29,11 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { savePreferences, loadPreferences } from "@/lib/preferences";
+import {
+  savePreferences,
+  loadPreferences,
+  applyLayoutModeToPreferences,
+} from "@/lib/preferences";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const ONBOARDING_KEY = "e85_onboarding_complete";
@@ -49,7 +53,7 @@ export async function markOnboardingComplete(): Promise<void> {
 
 // ─── Slide definitions ────────────────────────────────────────────────────────
 
-type SlideId = "welcome" | "vehicle" | "homescreen" | "location" | "ready";
+type SlideId = "welcome" | "layout" | "vehicle" | "homescreen" | "location" | "ready";
 
 interface Slide {
   id: SlideId;
@@ -73,6 +77,14 @@ const SLIDES: Slide[] = [
       "Find nearby E85 stations",
       "Track fill-ups and reminders",
     ],
+  },
+  {
+    id: "layout",
+    emoji: "🧭",
+    accent: "#0EA5E9",
+    title: "Choose your app layout",
+    subtitle: "Simple: Calculator + Stations only. Full: All features enabled.",
+    supportText: "You can change this later in Settings.",
   },
   {
     id: "vehicle",
@@ -113,6 +125,7 @@ export default function OnboardingScreen() {
   const flatListRef = useRef<FlatList>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [homeScreenChoice, setHomeScreenChoice] = useState<"calculator" | "garage">("calculator");
+  const [layoutChoice, setLayoutChoice] = useState<"simple" | "full">("full");
   const scrollX = useSharedValue(0);
 
   const currentSlide = SLIDES[currentIndex];
@@ -125,6 +138,10 @@ export default function OnboardingScreen() {
 
   const handleSkip = useCallback(async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const prefs = await loadPreferences();
+      await savePreferences(applyLayoutModeToPreferences(prefs, "full"));
+    } catch { /* non-fatal */ }
     await markOnboardingComplete();
     router.replace("/(tabs)/calculator" as never);
   }, []);
@@ -132,8 +149,12 @@ export default function OnboardingScreen() {
   const handleNext = useCallback(async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    // On homescreen slide — save the preference before advancing
-    if (currentSlide.id === "homescreen") {
+    if (currentSlide.id === "layout") {
+      try {
+        const prefs = await loadPreferences();
+        await savePreferences(applyLayoutModeToPreferences(prefs, layoutChoice));
+      } catch { /* non-fatal */ }
+    } else if (currentSlide.id === "homescreen") {
       try {
         const prefs = await loadPreferences();
         await savePreferences({ ...prefs, homeScreen: homeScreenChoice });
@@ -143,7 +164,7 @@ export default function OnboardingScreen() {
     if (!isLastSlide) {
       goToIndex(currentIndex + 1);
     }
-  }, [currentSlide.id, currentIndex, isLastSlide, homeScreenChoice, goToIndex]);
+  }, [currentSlide.id, currentIndex, isLastSlide, homeScreenChoice, layoutChoice, goToIndex]);
 
   const handleAddVehicle = useCallback(async () => {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -206,6 +227,54 @@ export default function OnboardingScreen() {
             </Pressable>
             <Pressable onPress={handleNext} style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.6 }]}>
               <Text style={[styles.ghostBtnText, { color: colors.muted }]}>Skip for now</Text>
+            </Pressable>
+          </View>
+        );
+
+      case "layout":
+        return (
+          <View style={styles.actionsCol}>
+            <View style={[styles.pickerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable
+                style={[styles.pickerRow, layoutChoice === "simple" && { backgroundColor: currentSlide.accent + "18" }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setLayoutChoice("simple");
+                }}
+              >
+                <Text style={styles.pickerEmoji}>✨</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pickerLabel, { color: colors.foreground }]}>Simple</Text>
+                  <Text style={[styles.pickerDesc, { color: colors.muted }]}>Calculator + Stations only</Text>
+                </View>
+                {layoutChoice === "simple" && (
+                  <IconSymbol name="checkmark.circle.fill" size={22} color={currentSlide.accent} />
+                )}
+              </Pressable>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <Pressable
+                style={[styles.pickerRow, layoutChoice === "full" && { backgroundColor: currentSlide.accent + "18" }]}
+                onPress={() => {
+                  if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setLayoutChoice("full");
+                }}
+              >
+                <Text style={styles.pickerEmoji}>🚀</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.pickerLabel, { color: colors.foreground }]}>Full</Text>
+                  <Text style={[styles.pickerDesc, { color: colors.muted }]}>All features enabled</Text>
+                </View>
+                {layoutChoice === "full" && (
+                  <IconSymbol name="checkmark.circle.fill" size={22} color={currentSlide.accent} />
+                )}
+              </Pressable>
+            </View>
+            <Pressable
+              onPress={handleNext}
+              style={({ pressed }) => [styles.ctaBtn, { backgroundColor: currentSlide.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] }]}
+            >
+              <Text style={styles.ctaBtnText}>Continue</Text>
+              <IconSymbol name="arrow.right" size={18} color="#FFFFFF" />
             </Pressable>
           </View>
         );
