@@ -1,4 +1,4 @@
-# Code Conventions & Style Guide for i10x
+# Code Conventions & Style Guide
 
 Follow these patterns to keep the codebase consistent and maintainable.
 
