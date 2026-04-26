@@ -1,4 +1,4 @@
-# Code Conventions & Style Guide for i10x
+# Code Conventions & Style Guide
 
 Follow these patterns to keep the codebase consistent and maintainable.
 
@@ -456,7 +456,7 @@ feat: Add swipe-to-delete gesture for reminders
 // ✅ Good: Bug fix
 fix: Stations API not loading on TestFlight
 
-- Added automatic Manus backend fallback for native builds
+- Set EXPO_PUBLIC_API_BASE_URL for native builds
 - Removed silent error swallowing
 - Updated error messages
 

@@ -18,9 +18,8 @@ export const trpc = createTRPCReact<AppRouter>();
  * Creates the tRPC client with proper configuration.
  * Call this once in your app's root layout.
  *
- * On native/TestFlight:
- * - If EXPO_PUBLIC_API_BASE_URL is set, uses it
- * - Otherwise, uses fallback Manus backend (no manual config needed)
+ * On native/TestFlight: set EXPO_PUBLIC_API_BASE_URL via EAS secrets.
+ * On web: API base URL is derived automatically from window.location.
  */
 export function createTRPCClient() {
   const apiBaseUrl = getApiBaseUrl();

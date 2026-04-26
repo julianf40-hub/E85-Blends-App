@@ -38,17 +38,15 @@ pnpm dev
 
 ## EAS Build Setup (TestFlight / App Store)
 
-### Automatic Fallback (No Manual Config Needed!)
+### API Base URL (Required for Native Builds)
 
-The app now automatically uses the Manus backend (`e85blend-pagwdikw.manus.space`) on TestFlight without requiring manual environment variable setup. **Your cousin doesn't need to enter any code!**
-
-If you want to use a custom backend server instead, set this optional variable:
+Set your backend server URL as an EAS secret so TestFlight builds can reach the API:
 
 ```bash
 eas secret set EXPO_PUBLIC_API_BASE_URL https://your-api-server.com
 ```
 
-### NREL API Key (Server-side) — Still Required
+### NREL API Key (Server-side) — Required
 
 ```bash
 eas secret set NREL_API_KEY your_actual_api_key_here
@@ -58,7 +56,7 @@ This stores the key securely in EAS and injects it into the backend server. The 
 
 ### Summary
 - **NREL_API_KEY**: Required (backend needs it to call NREL API)
-- **EXPO_PUBLIC_API_BASE_URL**: Optional (defaults to Manus backend on TestFlight)
+- **EXPO_PUBLIC_API_BASE_URL**: Required for native/TestFlight builds (set to your API server URL)
 
 ## Verifying the Setup
 
@@ -69,9 +67,9 @@ This stores the key securely in EAS and injects it into the backend server. The 
 
 | Issue | Solution |
 |---|---|
-| Stations don't load on TestFlight | Check that `NREL_API_KEY` is set in EAS. The app auto-uses Manus backend, no manual URL config needed. |
-| "Cannot reach server" error on TestFlight | The Manus backend is unreachable (rare). Check your internet connection. |
-| Stations work on web but not iOS/Android | Usually means `NREL_API_KEY` is not set. Verify it's in EAS. |
+| Stations don't load on TestFlight | Check that `NREL_API_KEY` and `EXPO_PUBLIC_API_BASE_URL` are set in EAS. |
+| "Cannot reach server" error on TestFlight | Verify `EXPO_PUBLIC_API_BASE_URL` points to your running API server. |
+| Stations work on web but not iOS/Android | Usually means `NREL_API_KEY` or `EXPO_PUBLIC_API_BASE_URL` is not set. Verify both are in EAS. |
 | Rate limit errors (429) | Verify the API key is valid and not expired at developer.nrel.gov |
 | "NREL API key is not configured on the server" | Set `NREL_API_KEY` in your backend environment and restart the server. |
 

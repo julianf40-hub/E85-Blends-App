@@ -1,10 +1,6 @@
 import * as Linking from "expo-linking";
 import * as ReactNative from "react-native";
 
-// Extract scheme from bundle ID (last segment timestamp, prefixed with "manus")
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const bundleId = "space.manus.e85.blend.app.t20260325014712";
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
 const schemeFromBundleId = "e85blends";
 
 const env = {
@@ -25,46 +21,37 @@ export const OWNER_NAME = env.ownerName;
 export const API_BASE_URL = env.apiBaseUrl;
 
 /**
- * Get the API base URL, deriving from current hostname if not set.
- * Metro runs on 8081, API server runs on 3000.
- * URL pattern: https://PORT-sandboxid.region.domain
- *
- * Smart fallback for native/TestFlight:
- * - If EXPO_PUBLIC_API_BASE_URL is set, use it
- * - On web, auto-derive from window.location
- * - On native, use the Manus backend as fallback (no manual config needed)
+ * Get the API base URL.
+ * - If EXPO_PUBLIC_API_BASE_URL is set, use it (explicit config takes priority)
+ * - On web, auto-derive from window.location (Metro on 8081, API on 3000)
+ * - On native without explicit config, logs a warning and returns empty string.
+ *   Set EXPO_PUBLIC_API_BASE_URL (EAS secret) for TestFlight/production builds.
  */
 export function getApiBaseUrl(): string {
-  // If API_BASE_URL is set, use it (explicit config takes priority)
   if (API_BASE_URL) {
     return API_BASE_URL.replace(/\/$/, "");
   }
 
-  // On web, derive from current hostname by replacing port 8081 with 3000
   if (ReactNative.Platform.OS === "web" && typeof window !== "undefined" && window.location) {
     const { protocol, hostname } = window.location;
-    // Pattern: 8081-sandboxid.region.domain -> 3000-sandboxid.region.domain
     const apiHostname = hostname.replace(/^8081-/, "3000-");
     if (apiHostname !== hostname) {
       return `${protocol}//${apiHostname}`;
     }
   }
 
-  // On native without explicit config, use Manus backend as fallback
-  // This allows TestFlight builds to work without manual env var setup
   if (ReactNative.Platform.OS !== "web") {
-    const fallbackUrl = "https://e85blend-pagwdikw.manus.space";
-    console.info(
-      "[API] Using fallback Manus backend for native build: " + fallbackUrl
+    console.warn(
+      "[API] EXPO_PUBLIC_API_BASE_URL is not set. API calls will fail on this native build. " +
+      "Set this variable via EAS secrets for TestFlight/production builds."
     );
-    return fallbackUrl;
   }
 
   return "";
 }
 
 export const SESSION_TOKEN_KEY = "app_session_token";
-export const USER_INFO_KEY = "manus-runtime-user-info";
+export const USER_INFO_KEY = "app-user-info";
 
 const encodeState = (value: string) => {
   if (typeof globalThis.btoa === "function") {
