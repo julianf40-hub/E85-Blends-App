@@ -24,7 +24,8 @@ export const API_BASE_URL = env.apiBaseUrl;
  * Get the API base URL.
  * - If EXPO_PUBLIC_API_BASE_URL is set, use it (explicit config takes priority)
  * - On web, auto-derive from window.location (Metro on 8081, API on 3000)
- * - On native without explicit config, returns empty string (set EXPO_PUBLIC_API_BASE_URL)
+ * - On native without explicit config, logs a warning and returns empty string.
+ *   Set EXPO_PUBLIC_API_BASE_URL (EAS secret) for TestFlight/production builds.
  */
 export function getApiBaseUrl(): string {
   if (API_BASE_URL) {
@@ -37,6 +38,13 @@ export function getApiBaseUrl(): string {
     if (apiHostname !== hostname) {
       return `${protocol}//${apiHostname}`;
     }
+  }
+
+  if (ReactNative.Platform.OS !== "web") {
+    console.warn(
+      "[API] EXPO_PUBLIC_API_BASE_URL is not set. API calls will fail on this native build. " +
+      "Set this variable via EAS secrets for TestFlight/production builds."
+    );
   }
 
   return "";
