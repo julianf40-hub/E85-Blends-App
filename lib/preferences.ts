@@ -18,6 +18,7 @@ export interface UserPreferences {
   mpgRegularGas?: number;
   mpgE85?: number;
   homeScreen?: "calculator" | "garage"; // default landing tab
+  appLayoutMode?: "simple" | "full"; // tab visibility preset
   showReminders?: boolean; // visibility toggle for Reminders tab
   showGarage?: boolean; // visibility toggle for Garage tab
   showGear?: boolean; // visibility toggle for Recommended Gear tab
@@ -34,6 +35,7 @@ const DEFAULT_PREFERENCES: UserPreferences = {
   searchRadius: 25,
   defaultBlend: 30,
   homeScreen: "calculator",
+  appLayoutMode: "full",
   showReminders: true,
   showGarage: true,
   showGear: true,

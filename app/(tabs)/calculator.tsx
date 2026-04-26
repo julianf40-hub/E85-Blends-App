@@ -352,7 +352,7 @@ export default function CalculatorScreen() {
         <View style={[styles.modalOverlay, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
           <View style={[styles.pumpSuggestionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Text style={[styles.pumpSuggestionTitle, { color: colors.foreground }]}>
-              Looks like you're at a station
+              Looks like you’re at a station
             </Text>
             <Text style={[styles.pumpSuggestionSubtitle, { color: colors.muted }]}>
               {suggestedStation ? `${suggestedStation} nearby` : "Open At-Pump Mode?"}
