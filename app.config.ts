@@ -27,17 +27,18 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
-  newArchEnabled: true,
+  // Hotfix: disable New Architecture for TestFlight startup stability
+  newArchEnabled: false,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    buildNumber: "12",
+    buildNumber: "13",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
-    versionCode: 12,
+    versionCode: 13,
     adaptiveIcon: {
       backgroundColor: "#000000",
       foregroundImage: "./assets/images/android-icon-foreground.png",
@@ -129,7 +130,8 @@ const config: ExpoConfig = {
     : {}),
   experiments: {
     typedRoutes: true,
-    reactCompiler: true,
+    // Hotfix: disable React Compiler while investigating startup crash
+    reactCompiler: false,
   },
 };
 

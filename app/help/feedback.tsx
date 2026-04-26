@@ -90,7 +90,7 @@ export default function FeedbackScreen() {
       >
         {/* Intro */}
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>We'd love to hear from you</Text>
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>We’d love to hear from you</Text>
           <Text style={[styles.cardBody, { color: colors.muted }]}>
             Your feedback directly shapes what gets built next. Bug reports, feature ideas, and general impressions are all welcome.
           </Text>
