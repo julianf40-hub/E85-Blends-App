@@ -87,7 +87,7 @@ export default function AboutScreen() {
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Our Mission</Text>
           <Text style={[styles.cardBody, { color: colors.muted }]}>
-            85Blends was built for flex-fuel drivers and enthusiasts who want precise control over their fuel blends. Whether you're chasing power on a built motor, maximizing savings at the pump, or just curious about ethanol content — 85Blends gives you the tools to do it right.
+            85Blends was built for flex-fuel drivers and enthusiasts who want precise control over their fuel blends. Whether you’re chasing power on a built motor, maximizing savings at the pump, or just curious about ethanol content — 85Blends gives you the tools to do it right.
           </Text>
           <Text style={[styles.cardBody, { color: colors.muted, marginTop: 8 }]}>
             No ads. No accounts. No cloud required. Your data stays on your device.
@@ -96,7 +96,7 @@ export default function AboutScreen() {
 
         {/* Features */}
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>What's Inside</Text>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>What’s Inside</Text>
           <View style={styles.pillGrid}>
             <FeaturePill icon="⛽" label="Blend Calculator" colors={colors} />
             <FeaturePill icon="🗺️" label="Station Finder" colors={colors} />

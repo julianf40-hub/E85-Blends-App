@@ -702,7 +702,7 @@ export default function RemindersScreen() {
       {loadError && (
         <View style={styles.emptyState}>
           <Text style={styles.emptyEmoji}>⚠️</Text>
-          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn't load reminders</Text>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load reminders</Text>
           <Text style={[styles.emptySubtitle, { color: colors.muted }]}>Something went wrong. Tap to try again.</Text>
           <Pressable
             onPress={loadData}

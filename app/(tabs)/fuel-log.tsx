@@ -589,7 +589,7 @@ export default function FuelLogScreen() {
             Every fill-up you log builds your fuel history — MPG trends, cost tracking, and blend records over time.
           </Text>
           <Text style={[styles.emptySubtitle, { color: colors.muted, marginTop: -6 }]}>
-            Tap the + button above to log your first fill-up, or calculate a blend in the Calculator tab and tap "Log This Fill-Up" there.
+            Tap the + button above to log your first fill-up, or calculate a blend in the Calculator tab and tap “Log This Fill-Up” there.
           </Text>
         </View>
       ) : (
