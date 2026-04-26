@@ -1,10 +1,18 @@
 import { Redirect } from "expo-router";
+import { ActivityIndicator, View } from "react-native";
+import { usePrefs } from "@/lib/rebuild/preferences";
 
-/**
- * Root index file to handle the initial app entry.
- * Redirects to the (tabs) group, which then handles the logic
- * for onboarding vs. main app in its own layout or via RootLayout.
- */
 export default function Index() {
-  return <Redirect href="/(tabs)/calculator" />;
+  const { prefs, loading } = usePrefs();
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#000" }}>
+        <ActivityIndicator color="#22C55E" />
+      </View>
+    );
+  }
+
+  if (!prefs.hasOnboarded) return <Redirect href="/onboarding" />;
+  return <Redirect href={`/(tabs)/${prefs.homeTab}` as never} />;
 }
