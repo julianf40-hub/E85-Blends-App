@@ -9,47 +9,46 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @AppStorage(AppPreferenceKey.hasCompletedOnboarding) private var hasCompletedOnboarding = false
+    @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
+    @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        Group {
+            if hasCompletedOnboarding {
+                TabView {
+                    CalculatorView()
+                    .tabItem {
+                        Label("Calculator", systemImage: "fuelpump")
                     }
-                }
-                .onDelete(perform: deleteItems)
-            }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
+
+                    StationsView()
+                        .tabItem {
+                            Label("Stations", systemImage: "mappin.and.ellipse")
+                        }
+
+                    if showGarageTab {
+                        GarageView()
+                            .tabItem {
+                                Label("Garage", systemImage: "car.fill")
+                            }
                     }
+
+                    if showRemindersTab {
+                        RemindersView()
+                            .tabItem {
+                                Label("Reminders", systemImage: "bell.badge")
+                            }
+                    }
+
+                    MoreView()
+                        .tabItem {
+                            Label("More", systemImage: "ellipsis.circle")
+                        }
                 }
-            }
-        } detail: {
-            Text("Select an item")
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+                .tint(AppTheme.Colors.primaryGreen)
+            } else {
+                OnboardingView()
             }
         }
     }
@@ -57,5 +56,13 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .modelContainer(
+            for: [
+                VehicleProfile.self,
+                FuelLogEntry.self,
+                MaintenanceReminder.self,
+                FuelStation.self,
+            ],
+            inMemory: true
+        )
 }
