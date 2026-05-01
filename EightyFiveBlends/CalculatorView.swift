@@ -17,7 +17,7 @@ struct CalculatorView: View {
     private var fuelLogEntries: [FuelLogEntry]
 
     @State private var selectedBlend = "E50"
-    @State private var isGuideExpanded = true
+    @State private var isGuideExpanded = false
     @State private var isAdvancedExpanded = false
     @State private var isInstructionsExpanded = false
     @State private var tankSize = "15.5"
@@ -177,10 +177,12 @@ struct CalculatorView: View {
                 }
                 .padding(16)
             }
+            .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationBarHidden(true)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        .keyboardDoneToolbar()
         .onAppear {
             applyDefaultsIfNeeded(for: activeVehicleKey)
         }
@@ -677,7 +679,7 @@ private struct BlendGuideSection: View {
             range: "E20-E30",
             title: "Daily / Range",
             octane: "91-94 oct",
-            description: "Longest range with a mild ethanol bump for everyday driving.",
+            description: "Best range with a modest ethanol bump.",
             rangeDots: 4,
             powerDots: 1
         ),
@@ -685,7 +687,7 @@ private struct BlendGuideSection: View {
             range: "E40-E50",
             title: "Balanced",
             octane: "95-98 oct",
-            description: "A strong middle ground for street use, response, and repeatability.",
+            description: "A strong middle ground for street use.",
             rangeDots: 3,
             powerDots: 3
         ),
@@ -693,7 +695,7 @@ private struct BlendGuideSection: View {
             range: "E60-E70",
             title: "Performance",
             octane: "99-102 oct",
-            description: "Higher ethanol for more knock resistance and harder driving.",
+            description: "Higher ethanol for harder driving.",
             rangeDots: 2,
             powerDots: 4
         ),
@@ -701,16 +703,16 @@ private struct BlendGuideSection: View {
             range: "E85",
             title: "Highest Blend",
             octane: "105+ oct",
-            description: "Highest ethanol content commonly sold at the pump, with the shortest range and the most setup sensitivity.",
+            description: "Highest common pump blend with the shortest range.",
             rangeDots: 1,
             powerDots: 5
         ),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Tap a tier to apply")
-                .font(.caption.weight(.medium))
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textMuted)
 
             ForEach(tiers) { tier in
@@ -740,7 +742,7 @@ private struct BlendGuideRow: View {
 
     var body: some View {
         Button(action: applyAction) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(tier.range)
@@ -770,15 +772,17 @@ private struct BlendGuideRow: View {
                 }
 
                 Text(tier.description)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineLimit(2)
 
-                HStack(spacing: 18) {
+                HStack(spacing: 16) {
                     indicatorRow(title: "Range", filledDots: tier.rangeDots)
                     indicatorRow(title: "Power", filledDots: tier.powerDots)
                 }
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isActive ? AppTheme.Colors.softGreenBackground.opacity(0.78) : AppTheme.Colors.cardBackground)
             .overlay(

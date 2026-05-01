@@ -36,6 +36,7 @@ struct AddEditVehicleView: View {
                 }
                 .padding(16)
             }
+            .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationTitle(vehicle == nil ? "Add Vehicle" : "Edit Vehicle")
             .navigationBarTitleDisplayMode(.inline)
@@ -56,6 +57,7 @@ struct AddEditVehicleView: View {
                 }
             }
         }
+        .keyboardDoneToolbar()
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
     }

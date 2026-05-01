@@ -17,6 +17,7 @@ struct EightyFiveBlendsApp: App {
             VehicleProfile.self,
             FuelLogEntry.self,
             MaintenanceReminder.self,
+            ReminderCompletionRecord.self,
             FuelStation.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)

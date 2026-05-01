@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>comgooglemaps</string>
+		<string>waze</string>
+	</array>
+	<key>NLR_API_KEY</key>
+	<string>oZqG4yF2uqSegQ8BIJtrUFq6DbtPQjB1XG6OPrck</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>85Blends uses your location to show nearby E85 stations when you request it.</string>
+</dict>
 </plist>

@@ -22,6 +22,7 @@ final class MaintenanceReminder {
     var notes: String
     var isCompleted: Bool
     var completedAt: Date?
+    var completedMileage: Int?
     var createdAt: Date
     var updatedAt: Date
 
@@ -38,6 +39,7 @@ final class MaintenanceReminder {
         notes: String = "",
         isCompleted: Bool = false,
         completedAt: Date? = nil,
+        completedMileage: Int? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -53,6 +55,7 @@ final class MaintenanceReminder {
         self.notes = notes
         self.isCompleted = isCompleted
         self.completedAt = completedAt
+        self.completedMileage = completedMileage
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

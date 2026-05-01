@@ -44,19 +44,17 @@ struct FuelLogView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    headerSection
-                    summaryCard
-                    entriesSection
-                }
-                .padding(16)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                headerSection
+                summaryCard
+                entriesSection
             }
-            .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            .padding(16)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        .navigationTitle("Fuel Log")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $sheetContext) { context in
             AddEditFuelLogView(entry: context.entry, initialDraft: context.draft) { draft in
                 saveLog(from: draft, editing: context.entry)

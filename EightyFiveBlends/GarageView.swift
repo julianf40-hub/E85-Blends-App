@@ -416,10 +416,18 @@ private struct VehicleSummary: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
-            HStack(spacing: 18) {
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(minimum: 90), spacing: 12, alignment: .leading),
+                    GridItem(.flexible(minimum: 90), spacing: 12, alignment: .leading)
+                ],
+                alignment: .leading,
+                spacing: 10
+            ) {
                 summaryMetric(title: "Tank", value: "\(display(vehicle.tankSizeGallons, places: 1)) gal")
                 summaryMetric(title: "Octane", value: display(vehicle.requiredOctane, places: 0))
                 summaryMetric(title: "Target", value: "E\(display(vehicle.defaultTargetEthanolPercent, places: 0))")
+                summaryMetric(title: "Odometer", value: odometerText)
             }
         }
     }
@@ -440,6 +448,7 @@ private struct VehicleSummary: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func display(_ value: Double, places: Int) -> String {
@@ -448,6 +457,10 @@ private struct VehicleSummary: View {
         }
 
         return String(format: "%.\(places)f", value)
+    }
+
+    private var odometerText: String {
+        "\(vehicle.currentOdometer.formatted(.number.grouping(.automatic))) mi"
     }
 }
 

@@ -13,6 +13,8 @@ struct RemindersView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \MaintenanceReminder.updatedAt, order: .reverse)
     private var reminders: [MaintenanceReminder]
+    @Query(sort: \ReminderCompletionRecord.completedAt, order: .reverse)
+    private var completionRecords: [ReminderCompletionRecord]
     @Query(sort: \VehicleProfile.nickname, order: .forward)
     private var vehicles: [VehicleProfile]
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
@@ -21,6 +23,12 @@ struct RemindersView: View {
     @State private var sheetReminder: MaintenanceReminder?
     @State private var isAddingReminder = false
     @State private var reminderPendingDeletion: MaintenanceReminder?
+    @State private var completionRecordPendingDeletion: ReminderCompletionRecord?
+    @State private var completionContext: ReminderCompletionContext?
+    @State private var completionMileageInput = ""
+    @State private var completionDate = Date()
+    @State private var completionMileageError: String?
+    @State private var reminderFeedbackMessage: String?
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
@@ -59,12 +67,26 @@ struct RemindersView: View {
             .sorted(by: ReminderStatusInfo.sortOrder)
     }
 
+    private var recurringCompletionRecords: [ReminderCompletionRecord] {
+        completionRecords.filter { record in
+            completedReminders.contains(where: { matchesCompletionRecord(record, to: $0.reminder) }) == false
+        }
+    }
+
+    private var completedHistoryItems: [CompletedHistoryItem] {
+        let reminderItems = completedReminders.map(CompletedHistoryItem.reminder)
+        let recordItems = recurringCompletionRecords.map(CompletedHistoryItem.record)
+        return (reminderItems + recordItems).sorted { lhs, rhs in
+            lhs.completedAt > rhs.completedAt
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     headerSection
-                    if reminders.isEmpty {
+                    if reminders.isEmpty && completionRecords.isEmpty {
                         EmptyStateView(
                             title: "No reminders yet.",
                             message: "Create maintenance reminders to stay ahead of service intervals, dates, and recurring vehicle tasks.",
@@ -73,7 +95,7 @@ struct RemindersView: View {
                     } else {
                         groupedSection(title: "Overdue", reminders: overdueReminders)
                         groupedSection(title: "Upcoming", reminders: upcomingReminders)
-                        groupedSection(title: "Completed", reminders: completedReminders)
+                        completedSection
                     }
                 }
                 .padding(16)
@@ -82,6 +104,13 @@ struct RemindersView: View {
             .navigationBarHidden(true)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        .overlay(alignment: .top) {
+            if let reminderFeedbackMessage {
+                feedbackBanner(text: reminderFeedbackMessage)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .sheet(isPresented: $isAddingReminder) {
             AddEditReminderView(
                 reminder: nil,
@@ -100,6 +129,18 @@ struct RemindersView: View {
                 updateReminder(reminder, from: draft)
             }
         }
+        .sheet(item: $completionContext) { context in
+            ReminderCompletionSheet(
+                context: context,
+                completionMileageInput: $completionMileageInput,
+                completionDate: $completionDate,
+                validationMessage: $completionMileageError,
+                confirmAction: { confirmCompletion(using: context) },
+                cancelAction: dismissCompletionSheet
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .alert("Delete Reminder?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
                 confirmDeletion()
@@ -109,6 +150,16 @@ struct RemindersView: View {
             }
         } message: {
             Text("This reminder will be removed from your maintenance schedule.")
+        }
+        .alert("Delete Completed History?", isPresented: completionRecordDeleteAlertBinding) {
+            Button("Delete", role: .destructive) {
+                confirmCompletionRecordDeletion()
+            }
+            Button("Cancel", role: .cancel) {
+                completionRecordPendingDeletion = nil
+            }
+        } message: {
+            Text("This completed history entry will be removed. The recurring reminder itself will stay intact.")
         }
     }
 
@@ -162,7 +213,7 @@ struct RemindersView: View {
                 ForEach(reminders) { info in
                     ReminderRowCard(
                         info: info,
-                        completeAction: { completeReminder(info.reminder) },
+                        completeAction: { beginCompletion(for: info.reminder) },
                         editAction: { sheetReminder = info.reminder },
                         deleteAction: { reminderPendingDeletion = info.reminder }
                     )
@@ -179,12 +230,53 @@ struct RemindersView: View {
         )
     }
 
+    @ViewBuilder
+    private var completedSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Completed",
+                subtitle: sectionSubtitle(for: "Completed")
+            )
+
+            if completedHistoryItems.isEmpty {
+                emptySectionCard(title: "Completed")
+            } else {
+                ForEach(completedHistoryItems) { item in
+                    switch item {
+                    case .reminder(let info):
+                        ReminderRowCard(
+                            info: info,
+                            completeAction: { },
+                            editAction: { sheetReminder = info.reminder },
+                            deleteAction: { reminderPendingDeletion = info.reminder }
+                        )
+                    case .record(let record):
+                        ReminderCompletionRecordCard(record: record) {
+                            completionRecordPendingDeletion = record
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var deleteAlertBinding: Binding<Bool> {
         Binding(
             get: { reminderPendingDeletion != nil },
             set: { isPresented in
                 if isPresented == false {
                     reminderPendingDeletion = nil
+                }
+            }
+        )
+    }
+
+    private var completionRecordDeleteAlertBinding: Binding<Bool> {
+        Binding(
+            get: { completionRecordPendingDeletion != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    completionRecordPendingDeletion = nil
                 }
             }
         )
@@ -212,6 +304,7 @@ struct RemindersView: View {
             notes: draft.notes,
             isCompleted: draft.isCompleted,
             completedAt: draft.isCompleted ? .now : nil,
+            completedMileage: nil,
             createdAt: .now,
             updatedAt: .now
         )
@@ -234,39 +327,110 @@ struct RemindersView: View {
         reminder.notes = draft.notes
         reminder.isCompleted = draft.isCompleted
         reminder.completedAt = draft.isCompleted ? (reminder.completedAt ?? .now) : nil
+        reminder.completedMileage = draft.isCompleted ? reminder.completedMileage : nil
         reminder.updatedAt = .now
 
         try? modelContext.save()
         AppHaptics.success()
     }
 
-    private func completeReminder(_ reminder: MaintenanceReminder) {
+    private func beginCompletion(for reminder: MaintenanceReminder) {
+        let initialMileage = activeVehicle?.currentOdometer ?? reminder.dueMileage
+        completionMileageInput = reminder.mileageEnabled ? String(initialMileage) : ""
+        completionDate = .now
+        completionMileageError = nil
+        completionContext = ReminderCompletionContext(
+            reminder: reminder,
+            activeVehicleOdometer: activeVehicle?.currentOdometer,
+            currentVehicleOdometer: odometer(for: reminder),
+            initialMileage: initialMileage
+        )
+    }
+
+    private func confirmCompletion(using context: ReminderCompletionContext) {
+        let completionMileage = context.reminder.mileageEnabled ? validatedCompletionMileage(for: context) : nil
+        guard context.reminder.mileageEnabled == false || completionMileage != nil else {
+            AppHaptics.warning()
+            return
+        }
+
+        completeReminder(
+            context.reminder,
+            completionMileage: completionMileage,
+            completionDate: completionDate
+        )
+        dismissCompletionSheet()
+    }
+
+    private func dismissCompletionSheet() {
+        completionContext = nil
+        completionMileageInput = ""
+        completionDate = .now
+        completionMileageError = nil
+    }
+
+    private func validatedCompletionMileage(for context: ReminderCompletionContext) -> Int? {
+        let trimmedMileage = completionMileageInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let completionMileage = Int(trimmedMileage), completionMileage >= 0 else {
+            completionMileageError = "Enter a valid completion mileage to continue."
+            return nil
+        }
+
+        if let currentVehicleOdometer = context.currentVehicleOdometer, completionMileage < currentVehicleOdometer {
+            completionMileageError = "Completion mileage cannot be lower than the current vehicle odometer."
+            return nil
+        }
+
+        completionMileageError = nil
+        return completionMileage
+    }
+
+    private func completeReminder(_ reminder: MaintenanceReminder, completionMileage: Int?, completionDate: Date) {
         let repeatsMileage = reminder.repeatMileageInterval > 0
         let repeatsDate = reminder.repeatDateIntervalDays > 0
 
-        if repeatsMileage {
-            reminder.dueMileage += reminder.repeatMileageInterval
+        let completionRecord = ReminderCompletionRecord(
+            reminderTitle: reminder.title,
+            vehicleName: reminder.vehicleName,
+            category: reminder.category,
+            completedAt: completionDate,
+            completedMileage: completionMileage,
+            notes: reminder.notes.isEmpty ? nil : reminder.notes,
+            createdAt: .now
+        )
+        modelContext.insert(completionRecord)
+
+        if repeatsMileage, let completionMileage {
+            reminder.dueMileage = completionMileage + reminder.repeatMileageInterval
         }
 
         if repeatsDate {
             reminder.dueDate = Calendar.current.date(
                 byAdding: .day,
                 value: reminder.repeatDateIntervalDays,
-                to: reminder.dueDate
+                to: completionDate
             ) ?? reminder.dueDate
         }
 
         if repeatsMileage || repeatsDate {
             reminder.isCompleted = false
-            reminder.completedAt = nil
+            reminder.completedAt = completionDate
         } else {
             reminder.isCompleted = true
-            reminder.completedAt = .now
+            reminder.completedAt = completionDate
+        }
+
+        reminder.completedMileage = completionMileage
+
+        if let completionMileage, let activeVehicle, completionMileage > activeVehicle.currentOdometer {
+            activeVehicle.currentOdometer = completionMileage
+            activeVehicle.updatedAt = .now
         }
 
         reminder.updatedAt = .now
         try? modelContext.save()
         AppHaptics.success()
+        showReminderFeedback("Reminder updated.")
     }
 
     private func confirmDeletion() {
@@ -275,6 +439,15 @@ struct RemindersView: View {
         try? modelContext.save()
         self.reminderPendingDeletion = nil
         AppHaptics.warning()
+    }
+
+    private func confirmCompletionRecordDeletion() {
+        guard let completionRecordPendingDeletion else { return }
+        modelContext.delete(completionRecordPendingDeletion)
+        try? modelContext.save()
+        self.completionRecordPendingDeletion = nil
+        AppHaptics.warning()
+        showReminderFeedback("Completed history deleted.")
     }
 
     private func sectionSubtitle(for title: String) -> String {
@@ -302,11 +475,52 @@ struct RemindersView: View {
             "No reminders available."
         }
     }
+
+    private func matchesCompletionRecord(_ record: ReminderCompletionRecord, to reminder: MaintenanceReminder) -> Bool {
+        guard let reminderCompletedAt = reminder.completedAt else {
+            return false
+        }
+
+        return record.reminderTitle == reminder.title &&
+            record.vehicleName == reminder.vehicleName &&
+            record.category == reminder.category &&
+            record.completedAt == reminderCompletedAt &&
+            record.completedMileage == reminder.completedMileage
+    }
+
+    private func showReminderFeedback(_ message: String) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            reminderFeedbackMessage = message
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation(.easeIn(duration: 0.2)) {
+                if reminderFeedbackMessage == message {
+                    reminderFeedbackMessage = nil
+                }
+            }
+        }
+    }
+
+    private func feedbackBanner(text: String) -> some View {
+        Text(text)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                Capsule()
+                    .stroke(AppTheme.Colors.accentGreen.opacity(0.7), lineWidth: 1)
+            )
+            .clipShape(Capsule())
+            .shadow(color: Color.black.opacity(0.22), radius: 10, x: 0, y: 6)
+    }
 }
 
 #Preview {
     RemindersView()
-        .modelContainer(for: [MaintenanceReminder.self, VehicleProfile.self], inMemory: true)
+        .modelContainer(for: [MaintenanceReminder.self, ReminderCompletionRecord.self, VehicleProfile.self], inMemory: true)
 }
 
 @MainActor
@@ -405,6 +619,22 @@ private struct ReminderStatusInfo: Identifiable {
             return -Int(completedAtInterval)
         }
     }
+
+    var lastCompletedDateText: String? {
+        guard group != .completed, let completedAt = reminder.completedAt else {
+            return nil
+        }
+
+        return "Last completed: \(completedAt.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    var lastCompletedMileageText: String? {
+        guard group != .completed, let completedMileage = reminder.completedMileage else {
+            return nil
+        }
+
+        return "At: \(completedMileage.formatted(.number.grouping(.automatic))) mi"
+    }
 }
 
 private struct ReminderRowCard: View {
@@ -443,10 +673,27 @@ private struct ReminderRowCard: View {
 
             HStack(spacing: 18) {
                 if info.reminder.mileageEnabled {
-                    reminderMetric(title: "Due Mileage", value: "\(info.reminder.dueMileage)")
+                    reminderMetric(title: info.group == .completed ? "Completed Mileage" : "Due Mileage", value: mileageValue)
                 }
                 if info.reminder.dateEnabled {
-                    reminderMetric(title: "Due Date", value: info.reminder.dueDate.formatted(date: .abbreviated, time: .omitted))
+                    reminderMetric(
+                        title: info.group == .completed ? "Completed Date" : "Due Date",
+                        value: dateValue
+                    )
+                }
+            }
+
+            if let lastCompletedDateText = info.lastCompletedDateText {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(lastCompletedDateText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    if let lastCompletedMileageText = info.lastCompletedMileageText {
+                        Text(lastCompletedMileageText)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
                 }
             }
 
@@ -564,7 +811,243 @@ private struct ReminderRowCard: View {
         }
     }
 
+    private var mileageValue: String {
+        let mileage = info.group == .completed ? info.reminder.completedMileage : info.reminder.dueMileage
+        guard let mileage else {
+            return "Unavailable"
+        }
+
+        return "\(mileage.formatted(.number.grouping(.automatic))) mi"
+    }
+
+    private var dateValue: String {
+        let date = info.group == .completed ? (info.reminder.completedAt ?? info.reminder.dueDate) : info.reminder.dueDate
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
     private func reminderMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+}
+
+private enum CompletedHistoryItem: Identifiable {
+    case reminder(ReminderStatusInfo)
+    case record(ReminderCompletionRecord)
+
+    var id: String {
+        switch self {
+        case .reminder(let info):
+            return "reminder-\(info.id)"
+        case .record(let record):
+            return "record-\(record.persistentModelID)"
+        }
+    }
+
+    var completedAt: Date {
+        switch self {
+        case .reminder(let info):
+            return info.reminder.completedAt ?? info.reminder.updatedAt
+        case .record(let record):
+            return record.completedAt
+        }
+    }
+}
+
+private struct ReminderCompletionRecordCard: View {
+    let record: ReminderCompletionRecord
+    let deleteAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(record.reminderTitle.isEmpty ? "Untitled Reminder" : record.reminderTitle)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text(record.vehicleName.isEmpty ? "No Vehicle Selected" : record.vehicleName)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Text(record.category)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(AppTheme.Colors.surface)
+                    .clipShape(Capsule())
+            }
+
+            Text("Completed \(record.completedAt.formatted(date: .abbreviated, time: .omitted))")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            HStack(spacing: 18) {
+                reminderMetric(title: "Completed Date", value: record.completedAt.formatted(date: .abbreviated, time: .omitted))
+
+                if let completedMileage = record.completedMileage {
+                    reminderMetric(
+                        title: "Completed Mileage",
+                        value: "\(completedMileage.formatted(.number.grouping(.automatic))) mi"
+                    )
+                }
+            }
+
+            if let notes = record.notes, notes.isEmpty == false {
+                Text(notes)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", role: .destructive, action: deleteAction)
+        }
+    }
+
+    private func reminderMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+}
+
+private struct ReminderCompletionContext: Identifiable {
+    let id = UUID()
+    let reminder: MaintenanceReminder
+    let activeVehicleOdometer: Int?
+    let currentVehicleOdometer: Int?
+    let initialMileage: Int
+}
+
+private struct ReminderCompletionSheet: View {
+    let context: ReminderCompletionContext
+    @Binding var completionMileageInput: String
+    @Binding var completionDate: Date
+    @Binding var validationMessage: String?
+    let confirmAction: () -> Void
+    let cancelAction: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(context.reminder.title.isEmpty ? "Untitled Reminder" : context.reminder.title)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Text("Enter the mileage when this service was completed so 85Blends can calculate the next interval.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        if context.reminder.mileageEnabled {
+                            completionMetric(
+                                title: "Current Active Vehicle Odometer",
+                                value: context.activeVehicleOdometer.map { "\($0.formatted(.number.grouping(.automatic))) mi" } ?? "Unavailable"
+                            )
+                            completionMetric(
+                                title: "Due Mileage",
+                                value: "\(context.reminder.dueMileage.formatted(.number.grouping(.automatic))) mi"
+                            )
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Completion Mileage")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                                TextField("Completion Mileage", text: $completionMileageInput)
+                                    .keyboardType(.numberPad)
+                                    .font(.headline)
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    .background(AppTheme.Colors.surface)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Completion Date")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                            DatePicker(
+                                "Completion Date",
+                                selection: $completionDate,
+                                displayedComponents: .date
+                            )
+                            .labelsHidden()
+                            .datePickerStyle(.compact)
+                            .tint(AppTheme.Colors.accentGreen)
+                        }
+
+                        if let validationMessage {
+                            Text(validationMessage)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+                .padding(16)
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Confirm Completion")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: cancelAction)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Confirm Completion", action: confirmAction)
+                        .foregroundStyle(AppTheme.Colors.accentGreen)
+                }
+            }
+        }
+        .keyboardDoneToolbar()
+    }
+
+    private func completionMetric(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.caption.weight(.medium))

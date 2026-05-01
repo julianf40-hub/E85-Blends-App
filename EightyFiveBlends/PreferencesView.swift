@@ -13,7 +13,10 @@ struct PreferencesView: View {
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
+    @AppStorage(AppPreferenceKey.showGearTab) private var showGearTab = true
     @AppStorage(AppPreferenceKey.hasCompletedOnboarding) private var hasCompletedOnboarding = true
+    @AppStorage(AppPreferenceKey.hasAcknowledgedDisclaimer) private var hasAcknowledgedDisclaimer = false
+    @AppStorage(AppPreferenceKey.disclaimerAcknowledgedAt) private var disclaimerAcknowledgedAt = 0.0
 
     var body: some View {
         ScrollView {
@@ -61,9 +64,12 @@ struct PreferencesView: View {
 
             PreferenceToggleRow(title: "Show Garage Tab", isOn: $showGarageTab)
             PreferenceToggleRow(title: "Show Reminders Tab", isOn: $showRemindersTab)
+            PreferenceToggleRow(title: "Show Gear Tab", isOn: $showGearTab)
 
             Button {
                 hasCompletedOnboarding = false
+                hasAcknowledgedDisclaimer = false
+                disclaimerAcknowledgedAt = 0
                 AppHaptics.selection()
             } label: {
                 HStack {

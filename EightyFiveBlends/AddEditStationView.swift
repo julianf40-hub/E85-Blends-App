@@ -30,6 +30,7 @@ struct AddEditStationView: View {
                 }
                 .padding(16)
             }
+            .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationTitle(station == nil ? "Add Station" : "Edit Station")
             .navigationBarTitleDisplayMode(.inline)
@@ -52,6 +53,7 @@ struct AddEditStationView: View {
                 }
             }
         }
+        .keyboardDoneToolbar()
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
     }
@@ -69,6 +71,7 @@ struct AddEditStationView: View {
             StationStringField(title: "State", text: $draft.state)
             StationStringField(title: "Zip Code", text: $draft.zipCode)
             StationDoubleField(title: "Last Known E85 Price", value: $draft.lastKnownE85Price)
+            advancedLocationSection
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Notes")
@@ -112,6 +115,18 @@ struct AddEditStationView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 18, y: 8)
     }
+
+    private var advancedLocationSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Advanced Location",
+                subtitle: "Optional coordinates let this station appear on the saved map."
+            )
+
+            StationOptionalDoubleField(title: "Latitude", value: $draft.latitude)
+            StationOptionalDoubleField(title: "Longitude", value: $draft.longitude)
+        }
+    }
 }
 
 struct StationDraft {
@@ -120,6 +135,8 @@ struct StationDraft {
     var city: String
     var state: String
     var zipCode: String
+    var latitude: Double?
+    var longitude: Double?
     var lastKnownE85Price: Double
     var notes: String
     var isFavorite: Bool
@@ -131,6 +148,8 @@ struct StationDraft {
         city = station?.city ?? ""
         state = station?.state ?? ""
         zipCode = station?.zipCode ?? ""
+        latitude = station?.latitude
+        longitude = station?.longitude
         lastKnownE85Price = station?.lastKnownE85Price ?? 0
         notes = station?.notes ?? ""
         isFavorite = station?.isFavorite ?? false
@@ -182,6 +201,48 @@ private struct StationDoubleField: View {
                         .stroke(AppTheme.Colors.border, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+}
+
+private struct StationOptionalDoubleField: View {
+    let title: String
+    @Binding var value: Double?
+    @State private var text: String
+
+    init(title: String, value: Binding<Double?>) {
+        self.title = title
+        _value = value
+        _text = State(initialValue: value.wrappedValue.map { String($0) } ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            TextField(title, text: $text)
+                .keyboardType(.decimalPad)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .onChange(of: text) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    value = trimmed.isEmpty ? nil : Double(trimmed)
+                }
+                .onChange(of: value) { _, newValue in
+                    let updatedText = newValue.map { String($0) } ?? ""
+                    if text != updatedText {
+                        text = updatedText
+                    }
+                }
         }
     }
 }

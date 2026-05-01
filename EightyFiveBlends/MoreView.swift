@@ -9,6 +9,10 @@ import SwiftUI
 import SwiftData
 
 struct MoreView: View {
+    @Environment(\.openURL) private var openURL
+
+    @State private var sponsorLinkMessage: String?
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -27,6 +31,8 @@ struct MoreView: View {
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
+
+                    sponsorCard
 
                     VStack(spacing: 12) {
                         MoreNavigationRow(
@@ -108,6 +114,61 @@ struct MoreView: View {
             .navigationBarHidden(true)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+    }
+
+    private var sponsorCard: some View {
+        Button {
+            openSponsorLink()
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                Image("RVPSupplyLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .padding(.horizontal, 10)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sponsored by RVP Supply")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text("Tap to visit the shop")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                if let sponsorLinkMessage {
+                    Text(sponsorLinkMessage)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(AppTheme.Colors.stationYellow.opacity(0.24), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func openSponsorLink() {
+        sponsorLinkMessage = nil
+
+        guard let url = URL(string: "https://rvpsupply.com") else {
+            sponsorLinkMessage = "Shop link is unavailable right now."
+            return
+        }
+
+        openURL(url) { accepted in
+            if accepted == false {
+                sponsorLinkMessage = "Unable to open the shop link right now."
+            }
+        }
     }
 }
 

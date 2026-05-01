@@ -39,6 +39,7 @@ struct AddEditReminderView: View {
                 }
                 .padding(16)
             }
+            .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationTitle(reminder == nil ? "Add Reminder" : "Edit Reminder")
             .navigationBarTitleDisplayMode(.inline)
@@ -59,6 +60,7 @@ struct AddEditReminderView: View {
                 }
             }
         }
+        .keyboardDoneToolbar()
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
     }

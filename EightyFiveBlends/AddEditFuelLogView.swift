@@ -36,6 +36,7 @@ struct AddEditFuelLogView: View {
                 }
                 .padding(16)
             }
+            .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationTitle(entry == nil ? "Add Fill-Up" : "Edit Fill-Up")
             .navigationBarTitleDisplayMode(.inline)
@@ -56,6 +57,7 @@ struct AddEditFuelLogView: View {
                 }
             }
         }
+        .keyboardDoneToolbar()
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
     }
