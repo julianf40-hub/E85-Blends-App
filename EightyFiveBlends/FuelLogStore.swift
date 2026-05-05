@@ -16,7 +16,7 @@ enum FuelLogStore {
         entries: [FuelLogEntry],
         activeVehicle: VehicleProfile?,
         modelContext: ModelContext
-    ) {
+    ) -> FuelLogSaveOutcome {
         let gallonsAdded = round(draft.computedGallonsAdded, places: 2)
         let totalCost = round(draft.computedTotalCost, places: 2)
         let mpg = calculateMPG(for: draft, gallonsAdded: gallonsAdded, editing: entry, entries: entries)
@@ -63,9 +63,17 @@ enum FuelLogStore {
             activeVehicle.updatedAt = .now
         }
 
-        updateStationIfNeeded(from: draft, modelContext: modelContext)
+        let linkedStation = updateStationIfNeeded(from: draft, modelContext: modelContext)
         try? modelContext.save()
         AppHaptics.success()
+
+        return FuelLogSaveOutcome(
+            stationName: draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines),
+            e85PricePerGallon: round(draft.e85PricePerGallon, places: 2),
+            e85Gallons: round(draft.e85Gallons, places: 2),
+            fillUpDate: draft.date,
+            linkedStation: linkedStation
+        )
     }
 
     static func prefillDraft(from result: BlendCalculator.Result, vehicle: VehicleProfile?) -> FuelLogDraft {
@@ -141,10 +149,10 @@ enum FuelLogStore {
         return (value * factor).rounded() / factor
     }
 
-    private static func updateStationIfNeeded(from draft: FuelLogDraft, modelContext: ModelContext) {
+    private static func updateStationIfNeeded(from draft: FuelLogDraft, modelContext: ModelContext) -> FuelStation? {
         let trimmedName = draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedName.isEmpty == false, draft.e85PricePerGallon > 0 else {
-            return
+            return nil
         }
 
         let lowercasedName = trimmedName.lowercased()
@@ -155,6 +163,7 @@ enum FuelLogStore {
             station.lastKnownE85Price = round(draft.e85PricePerGallon, places: 2)
             station.lastUpdated = .now
             station.updatedAt = .now
+            return station
         } else {
             let station = FuelStation(
                 name: trimmedName,
@@ -164,6 +173,19 @@ enum FuelLogStore {
                 updatedAt: .now
             )
             modelContext.insert(station)
+            return station
         }
+    }
+}
+
+struct FuelLogSaveOutcome {
+    let stationName: String
+    let e85PricePerGallon: Double
+    let e85Gallons: Double
+    let fillUpDate: Date
+    let linkedStation: FuelStation?
+
+    var shouldOfferCommunityPriceReport: Bool {
+        stationName.isEmpty == false && e85PricePerGallon > 0 && e85Gallons > 0
     }
 }

@@ -48,7 +48,16 @@ struct AboutView: View {
                         subtitle: "Recent product-facing updates."
                     )
 
-                    changelogItem("Completed reminder history can now be deleted.")
+                    changelogItem("Fixed Supabase community price request path.")
+                    changelogItem("Community price report upload diagnostics improved.")
+                    changelogItem("Station price updates can now report community prices.")
+                    changelogItem("Fuel Log can detect nearby station name.")
+                    changelogItem("Latest community E85 prices now show on station cards.")
+                    changelogItem("Fuel Log can prompt users to report E85 prices.")
+                    changelogItem("Community E85 price sync foundation added.")
+                    changelogItem("Local E85 price reporting added to Stations.")
+                    changelogItem("Garage active vehicle odometer quick update added.")
+                    changelogItem("Completed reminder history swipe-delete fixed.")
                     changelogItem("Onboarding now lets users choose visible tabs.")
                     changelogItem("Saved station filter simplified into a gold toggle button.")
                     changelogItem("Reminder completion history added for recurring service.")

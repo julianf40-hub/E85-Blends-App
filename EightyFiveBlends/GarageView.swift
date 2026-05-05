@@ -16,6 +16,9 @@ struct GarageView: View {
     @State private var sheetContext: VehicleSheetContext?
     @State private var vehiclePendingDeletion: VehicleProfile?
     @State private var deletionMessage = ""
+    @State private var odometerUpdateContext: ActiveOdometerUpdateContext?
+    @State private var odometerInput = ""
+    @State private var odometerValidationMessage: String?
 
     private var activeVehicle: VehicleProfile? {
         vehicles.first(where: { $0.isActive })
@@ -30,7 +33,8 @@ struct GarageView: View {
                     if let activeVehicle {
                         ActiveVehicleCard(
                             vehicle: activeVehicle,
-                            editAction: { sheetContext = .edit(activeVehicle) }
+                            editAction: { sheetContext = .edit(activeVehicle) },
+                            odometerAction: { beginOdometerUpdate(for: activeVehicle) }
                         )
                     } else {
                         EmptyGarageCard()
@@ -51,6 +55,17 @@ struct GarageView: View {
             ) { draft in
                 saveVehicle(from: draft, editing: context.vehicle)
             }
+        }
+        .sheet(item: $odometerUpdateContext) { context in
+            ActiveOdometerUpdateSheet(
+                context: context,
+                odometerInput: $odometerInput,
+                validationMessage: $odometerValidationMessage,
+                saveAction: { saveOdometerUpdate(for: context) },
+                cancelAction: dismissOdometerSheet
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
         .alert("Delete Vehicle?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
@@ -224,6 +239,37 @@ struct GarageView: View {
         self.vehiclePendingDeletion = nil
         AppHaptics.warning()
     }
+
+    private func beginOdometerUpdate(for vehicle: VehicleProfile) {
+        odometerInput = String(vehicle.currentOdometer)
+        odometerValidationMessage = nil
+        odometerUpdateContext = ActiveOdometerUpdateContext(vehicle: vehicle)
+    }
+
+    private func dismissOdometerSheet() {
+        odometerUpdateContext = nil
+        odometerInput = ""
+        odometerValidationMessage = nil
+    }
+
+    private func saveOdometerUpdate(for context: ActiveOdometerUpdateContext) {
+        let trimmedInput = odometerInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let newOdometer = Int(trimmedInput) else {
+            odometerValidationMessage = "Enter a valid odometer value."
+            return
+        }
+
+        guard newOdometer >= context.vehicle.currentOdometer else {
+            odometerValidationMessage = "New odometer cannot be lower than the current reading."
+            return
+        }
+
+        context.vehicle.currentOdometer = newOdometer
+        context.vehicle.updatedAt = .now
+        try? modelContext.save()
+        AppHaptics.success()
+        dismissOdometerSheet()
+    }
 }
 
 #Preview {
@@ -234,6 +280,7 @@ struct GarageView: View {
 private struct ActiveVehicleCard: View {
     let vehicle: VehicleProfile
     let editAction: () -> Void
+    let odometerAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -270,18 +317,16 @@ private struct ActiveVehicleCard: View {
 
             VehicleSummary(vehicle: vehicle)
 
-            Button(action: editAction) {
-                Text("Edit Active Vehicle")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(AppTheme.Colors.surface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(AppTheme.Colors.border, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    activeVehicleActionButton(title: "Edit Active Vehicle", action: editAction)
+                    activeVehicleActionButton(title: "Update Odometer", action: odometerAction)
+                }
+
+                VStack(spacing: 10) {
+                    activeVehicleActionButton(title: "Edit Active Vehicle", action: editAction)
+                    activeVehicleActionButton(title: "Update Odometer", action: odometerAction)
+                }
             }
         }
         .padding(18)
@@ -292,6 +337,23 @@ private struct ActiveVehicleCard: View {
                 .stroke(AppTheme.Colors.accentGreen.opacity(0.45), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func activeVehicleActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
     }
 }
 
@@ -472,5 +534,104 @@ private struct VehicleSheetContext: Identifiable {
 
     static func edit(_ vehicle: VehicleProfile) -> VehicleSheetContext {
         VehicleSheetContext(vehicle: vehicle)
+    }
+}
+
+private struct ActiveOdometerUpdateContext: Identifiable {
+    let id = UUID()
+    let vehicle: VehicleProfile
+}
+
+private struct ActiveOdometerUpdateSheet: View {
+    let context: ActiveOdometerUpdateContext
+    @Binding var odometerInput: String
+    @Binding var validationMessage: String?
+    let saveAction: () -> Void
+    let cancelAction: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(context.vehicle.nickname.isEmpty ? "Active Vehicle" : context.vehicle.nickname)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Text("Quickly update the active vehicle odometer without editing the full profile.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        odometerMetric(
+                            title: "Current Odometer",
+                            value: "\(context.vehicle.currentOdometer.formatted(.number.grouping(.automatic))) mi"
+                        )
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("New Odometer")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                            TextField("New Odometer", text: $odometerInput)
+                                .keyboardType(.numberPad)
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(AppTheme.Colors.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+
+                        if let validationMessage {
+                            Text(validationMessage)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+                .padding(16)
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Update Odometer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: cancelAction)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: saveAction)
+                        .foregroundStyle(AppTheme.Colors.accentGreen)
+                }
+            }
+        }
+        .keyboardDoneToolbar()
+    }
+
+    private func odometerMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
     }
 }

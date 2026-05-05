@@ -198,7 +198,7 @@ struct CalculatorView: View {
         .sheet(isPresented: calculatorFuelLogSheetBinding) {
             if let calculatorFuelLogDraft {
                 AddEditFuelLogView(entry: nil, initialDraft: calculatorFuelLogDraft) { draft in
-                    FuelLogStore.save(
+                    _ = FuelLogStore.save(
                         draft: draft,
                         editing: nil,
                         entries: fuelLogEntries,

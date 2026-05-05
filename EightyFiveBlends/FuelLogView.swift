@@ -14,9 +14,14 @@ struct FuelLogView: View {
     private var entries: [FuelLogEntry]
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
+    @Query(sort: \FuelStation.updatedAt, order: .reverse)
+    private var stations: [FuelStation]
 
     @State private var sheetContext: FuelLogSheetContext?
     @State private var entryPendingDeletion: FuelLogEntry?
+    @State private var communityReportContext: FuelLogCommunityReportContext?
+    @State private var communityReportMessage: String?
+    @State private var isSubmittingCommunityPrice = false
 
     let initialDraft: FuelLogDraft?
 
@@ -60,6 +65,16 @@ struct FuelLogView: View {
                 saveLog(from: draft, editing: context.entry)
             }
         }
+        .sheet(item: $communityReportContext) { context in
+            FuelLogCommunityReportSheet(
+                context: context,
+                isSubmitting: isSubmittingCommunityPrice,
+                reportAction: { submitCommunityPriceReport(for: context) },
+                cancelAction: { communityReportContext = nil }
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
         .onAppear {
             if let initialDraft {
                 sheetContext = .add(initialDraft)
@@ -74,6 +89,13 @@ struct FuelLogView: View {
             }
         } message: {
             Text("This fill-up entry will be removed from your log history.")
+        }
+        .alert("Fuel Log", isPresented: communityReportMessageBinding) {
+            Button("OK", role: .cancel) {
+                communityReportMessage = nil
+            }
+        } message: {
+            Text(communityReportMessage ?? "")
         }
     }
 
@@ -181,13 +203,106 @@ struct FuelLogView: View {
     }
 
     private func saveLog(from draft: FuelLogDraft, editing entry: FuelLogEntry?) {
-        FuelLogStore.save(
+        let outcome = FuelLogStore.save(
             draft: draft,
             editing: entry,
             entries: entries,
             activeVehicle: activeVehicle,
             modelContext: modelContext
         )
+
+        guard outcome.shouldOfferCommunityPriceReport else { return }
+
+        let station = matchedStation(for: outcome)
+        communityReportContext = FuelLogCommunityReportContext(
+            stationName: outcome.stationName,
+            e85PricePerGallon: outcome.e85PricePerGallon,
+            fillUpDate: outcome.fillUpDate,
+            streetAddress: station?.address ?? outcome.linkedStation?.address ?? "",
+            city: station?.city ?? outcome.linkedStation?.city ?? "",
+            state: station?.state ?? outcome.linkedStation?.state ?? "",
+            zipCode: station?.zipCode ?? outcome.linkedStation?.zipCode ?? "",
+            latitude: station?.latitude ?? outcome.linkedStation?.latitude,
+            longitude: station?.longitude ?? outcome.linkedStation?.longitude
+        )
+    }
+
+    private func matchedStation(for outcome: FuelLogSaveOutcome) -> FuelStation? {
+        let normalizedName = normalizedStationText(outcome.stationName)
+        guard normalizedName.isEmpty == false else { return nil }
+        return stations.first(where: { normalizedStationText($0.name) == normalizedName }) ?? outcome.linkedStation
+    }
+
+    private func submitCommunityPriceReport(for context: FuelLogCommunityReportContext) {
+        guard isSubmittingCommunityPrice == false else { return }
+
+        isSubmittingCommunityPrice = true
+
+        Task {
+            defer {
+                Task { @MainActor in
+                    isSubmittingCommunityPrice = false
+                }
+            }
+
+            do {
+                let service = try CommunityPriceService()
+                let normalizedStationKey = normalizedStationKey(for: context)
+
+                let station = try await service.upsertCommunityStation(
+                    normalizedStationKey: normalizedStationKey,
+                    name: context.stationName,
+                    streetAddress: context.optionalStreetAddress,
+                    city: context.optionalCity,
+                    state: context.optionalState,
+                    zip: context.optionalZipCode,
+                    latitude: context.latitude,
+                    longitude: context.longitude
+                )
+
+                _ = try await service.submitPriceReport(
+                    normalizedStationKey: normalizedStationKey,
+                    stationID: station.id,
+                    price: context.e85PricePerGallon,
+                    reportedAt: context.fillUpDate
+                )
+
+                await MainActor.run {
+                    communityReportContext = nil
+                    communityReportMessage = "Community E85 price reported."
+                    AppHaptics.success()
+                }
+            } catch {
+                await MainActor.run {
+                    communityReportContext = nil
+                    if let serviceError = error as? CommunityPriceServiceError,
+                       case .notConfigured = serviceError {
+                        communityReportMessage = "Community price sync is not configured yet."
+                    } else {
+                        communityReportMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    private func normalizedStationKey(for context: FuelLogCommunityReportContext) -> String {
+        let components = [
+            normalizedStationText(context.stationName),
+            normalizedStationText(context.streetAddress),
+            normalizedStationText(context.city),
+            normalizedStationText(context.state),
+            normalizedStationText(context.zipCode)
+        ]
+        .filter { $0.isEmpty == false }
+
+        return components.joined(separator: "|")
+    }
+
+    private func normalizedStationText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
     private func confirmDeletion() {
@@ -229,11 +344,22 @@ struct FuelLogView: View {
         }
     }
 
+    private var communityReportMessageBinding: Binding<Bool> {
+        Binding(
+            get: { communityReportMessage != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    communityReportMessage = nil
+                }
+            }
+        )
+    }
+
 }
 
 #Preview {
     FuelLogView()
-        .modelContainer(for: [FuelLogEntry.self, VehicleProfile.self], inMemory: true)
+        .modelContainer(for: [FuelLogEntry.self, VehicleProfile.self, FuelStation.self], inMemory: true)
 }
 
 private struct FuelLogSheetContext: Identifiable {
@@ -247,6 +373,114 @@ private struct FuelLogSheetContext: Identifiable {
 
     static func edit(_ entry: FuelLogEntry) -> FuelLogSheetContext {
         FuelLogSheetContext(entry: entry, draft: nil)
+    }
+}
+
+private struct FuelLogCommunityReportContext: Identifiable {
+    let id = UUID()
+    let stationName: String
+    let e85PricePerGallon: Double
+    let fillUpDate: Date
+    let streetAddress: String
+    let city: String
+    let state: String
+    let zipCode: String
+    let latitude: Double?
+    let longitude: Double?
+
+    var optionalStreetAddress: String? {
+        streetAddress.isEmpty ? nil : streetAddress
+    }
+
+    var optionalCity: String? {
+        city.isEmpty ? nil : city
+    }
+
+    var optionalState: String? {
+        state.isEmpty ? nil : state
+    }
+
+    var optionalZipCode: String? {
+        zipCode.isEmpty ? nil : zipCode
+    }
+}
+
+private struct FuelLogCommunityReportSheet: View {
+    let context: FuelLogCommunityReportContext
+    let isSubmitting: Bool
+    let reportAction: () -> Void
+    let cancelAction: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Report this E85 price?")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Text("Community-reported. Verify at pump.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        reportRow(title: "Station", value: context.stationName)
+                        reportRow(title: "E85 Price", value: "\(formattedPrice)/gal")
+                        reportRow(title: "Fill-Up Date", value: context.fillUpDate.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+                .padding(16)
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Report E85 Price")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Not Now", action: cancelAction)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .disabled(isSubmitting)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: reportAction) {
+                        if isSubmitting {
+                            ProgressView()
+                                .tint(AppTheme.Colors.accentGreen)
+                        } else {
+                            Text("Report Price")
+                                .foregroundStyle(AppTheme.Colors.accentGreen)
+                        }
+                    }
+                    .disabled(isSubmitting)
+                }
+            }
+        }
+    }
+
+    private func reportRow(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+
+    private var formattedPrice: String {
+        String(format: "$%.2f", context.e85PricePerGallon)
     }
 }
 

@@ -23,6 +23,7 @@ struct StationsView: View {
     @State private var savedStationsFilter: SavedStationsFilter = .allStations
     @State private var selectedRadius = "25 mi"
     @State private var sheetStation: FuelStation?
+    @State private var priceUpdateContext: StationPriceUpdateContext?
     @State private var isAddingStation = false
     @State private var stationPendingDeletion: FuelStation?
     @State private var infoMessage: String?
@@ -34,8 +35,19 @@ struct StationsView: View {
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
     @State private var pendingLiveSearch = false
+    @State private var priceInput = ""
+    @State private var priceNoteInput = ""
+    @State private var priceValidationMessage: String?
+    @State private var isSubmittingCommunityPrice = false
+    @State private var communityPriceSummaries: [String: CommunityPriceSummary] = [:]
+    @State private var communityPriceSyncMessage: String?
+    @State private var communityPriceTask: Task<Void, Never>?
 
     private let radiusOptions = ["10 mi", "25 mi", "50 mi", "100 mi"]
+
+    private var appVersionString: String? {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
 
     private var filteredStations: [FuelStation] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -112,9 +124,16 @@ struct StationsView: View {
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .onAppear {
             recenterMap()
+            refreshCommunityPricePreviews()
         }
         .onChange(of: mappableStations) { _, _ in
             recenterMap()
+        }
+        .onChange(of: searchText) { _, _ in
+            refreshCommunityPricePreviews()
+        }
+        .onChange(of: savedStationsFilter) { _, _ in
+            refreshCommunityPricePreviews()
         }
         .onChange(of: locationManager.latestCoordinate) { _, coordinate in
             guard let coordinate else { return }
@@ -135,6 +154,20 @@ struct StationsView: View {
             AddEditStationView(station: station) { draft in
                 updateStation(station, from: draft)
             }
+        }
+        .sheet(item: $priceUpdateContext) { context in
+            StationPriceUpdateSheet(
+                context: context,
+                priceInput: $priceInput,
+                noteInput: $priceNoteInput,
+                validationMessage: $priceValidationMessage,
+                isSubmittingCommunityPrice: isSubmittingCommunityPrice,
+                saveLocalAction: { savePriceUpdate(for: context, reportToCommunity: false) },
+                saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
+                cancelAction: dismissPriceUpdateSheet
+            )
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
         .alert("Delete Station?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
@@ -463,11 +496,17 @@ struct StationsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Nearby E85 Stations", subtitle: "\(liveStations.count) live results within \(selectedRadius).")
 
+                if let communityPriceSyncMessage {
+                    communitySyncMessageRow(communityPriceSyncMessage)
+                }
+
                 ForEach(liveStations) { station in
                     LiveStationRowCard(
                         station: station,
                         isSaved: isLiveStationSaved(station),
+                        communitySummary: communitySummary(for: station),
                         directionsAction: { directionsMessage(for: station) },
+                        reportPriceAction: { beginPriceUpdate(for: station) },
                         saveAction: { saveLiveStation(station) }
                     )
                 }
@@ -508,6 +547,10 @@ struct StationsView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Saved Stations", subtitle: "Favorites are pinned first, then recently updated stops.")
 
+            if let communityPriceSyncMessage {
+                communitySyncMessageRow(communityPriceSyncMessage)
+            }
+
             if filteredStations.isEmpty {
                 if savedStationsFilter == .favorites {
                     favoritesEmptyStateCard
@@ -518,7 +561,9 @@ struct StationsView: View {
                 ForEach(filteredStations) { station in
                     StationRowCard(
                         station: station,
+                        communitySummary: communitySummary(for: station),
                         directionsAction: { directionsMessage(for: station) },
+                        updatePriceAction: { beginPriceUpdate(for: station) },
                         favoriteAction: { toggleFavorite(station) },
                         editAction: { sheetStation = station },
                         deleteAction: { stationPendingDeletion = station }
@@ -576,6 +621,19 @@ struct StationsView: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func communitySyncMessageRow(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "person.3.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.stationYellow)
+
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+        .padding(.horizontal, 2)
     }
 
     private var emptyStateCard: some View {
@@ -684,6 +742,7 @@ struct StationsView: View {
         modelContext.insert(station)
         try? modelContext.save()
         AppHaptics.success()
+        refreshCommunityPricePreviews()
     }
 
     private func updateStation(_ station: FuelStation, from draft: StationDraft) {
@@ -701,6 +760,7 @@ struct StationsView: View {
         station.updatedAt = .now
         try? modelContext.save()
         AppHaptics.success()
+        refreshCommunityPricePreviews()
     }
 
     private func toggleFavorite(_ station: FuelStation) {
@@ -708,6 +768,7 @@ struct StationsView: View {
         station.updatedAt = .now
         try? modelContext.save()
         AppHaptics.selection()
+        refreshCommunityPricePreviews()
     }
 
     private func confirmDeletion() {
@@ -716,6 +777,7 @@ struct StationsView: View {
         try? modelContext.save()
         self.stationPendingDeletion = nil
         AppHaptics.warning()
+        refreshCommunityPricePreviews()
     }
 
     private func recenterMap() {
@@ -839,12 +901,14 @@ struct StationsView: View {
                 if results.isEmpty {
                     liveSearchError = "No E85 stations found within \(selectedRadius)."
                 }
+                refreshCommunityPricePreviews()
             } catch {
                 if case NRELServiceError.missingAPIKey = error {
                     liveSearchError = "Live station search is not configured yet."
                 } else {
                     liveSearchError = error.localizedDescription
                 }
+                refreshCommunityPricePreviews()
             }
             isSearchingLive = false
         }
@@ -873,6 +937,8 @@ struct StationsView: View {
         modelContext.insert(saved)
         try? modelContext.save()
         AppHaptics.success()
+        refreshCommunityPricePreviews()
+        beginPriceUpdate(for: saved)
     }
 
     private func isLiveStationSaved(_ station: LiveFuelStation) -> Bool {
@@ -911,6 +977,118 @@ struct StationsView: View {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private func normalizedStationKey(for station: FuelStation) -> String? {
+        normalizedStationKey(
+            name: station.name,
+            streetAddress: station.address,
+            city: station.city,
+            state: station.state,
+            zip: station.zipCode
+        )
+    }
+
+    private func normalizedStationKey(for station: LiveFuelStation) -> String? {
+        normalizedStationKey(
+            name: station.name,
+            streetAddress: station.address,
+            city: station.city,
+            state: station.state,
+            zip: station.zip
+        )
+    }
+
+    private func normalizedStationKey(
+        name: String,
+        streetAddress: String,
+        city: String,
+        state: String,
+        zip: String
+    ) -> String? {
+        let components = [
+            normalizedStationText(name),
+            normalizedStationText(streetAddress),
+            normalizedStationText(city),
+            normalizedStationText(state),
+            normalizedStationText(zip)
+        ]
+
+        guard components.contains(where: { $0.isEmpty == false }) else {
+            return nil
+        }
+
+        return components.joined(separator: "|")
+    }
+
+    private func communitySummary(for station: FuelStation) -> CommunityPriceSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityPriceSummaries[key]
+    }
+
+    private func communitySummary(for station: LiveFuelStation) -> CommunityPriceSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityPriceSummaries[key]
+    }
+
+    private func refreshCommunityPricePreviews() {
+        communityPriceTask?.cancel()
+
+        let keys = Set(
+            filteredStations.compactMap(normalizedStationKey(for:)) +
+            liveStations.compactMap(normalizedStationKey(for:))
+        )
+
+        guard keys.isEmpty == false else {
+            communityPriceSummaries = [:]
+            communityPriceSyncMessage = nil
+            return
+        }
+
+        communityPriceTask = Task {
+            do {
+                let service = try CommunityPriceService()
+                let summaries = try await fetchCommunitySummaries(keys: keys, service: service)
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityPriceSummaries = summaries
+                    communityPriceSyncMessage = nil
+                }
+            } catch {
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityPriceSummaries = [:]
+                    if let serviceError = error as? CommunityPriceServiceError,
+                       case .notConfigured = serviceError {
+                        communityPriceSyncMessage = "Community price sync is not configured yet."
+                    } else {
+                        communityPriceSyncMessage = "Community price previews are temporarily unavailable."
+                    }
+                }
+            }
+        }
+    }
+
+    private func fetchCommunitySummaries(
+        keys: Set<String>,
+        service: CommunityPriceService
+    ) async throws -> [String: CommunityPriceSummary] {
+        try await withThrowingTaskGroup(of: (String, CommunityPriceSummary?).self) { group in
+            for key in keys {
+                group.addTask {
+                    let summary = try await service.fetchLatestPrice(forNormalizedStationKey: key)
+                    return (key, summary)
+                }
+            }
+
+            var summaries: [String: CommunityPriceSummary] = [:]
+            for try await (key, summary) in group {
+                if let summary {
+                    summaries[key] = summary
+                }
+            }
+            return summaries
+        }
     }
 
     private func directionsMessage(for station: FuelStation) -> String? {
@@ -952,6 +1130,172 @@ struct StationsView: View {
 
         return message
     }
+
+    private func beginPriceUpdate(for station: FuelStation) {
+        priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
+        priceNoteInput = station.notes
+        priceValidationMessage = nil
+        priceUpdateContext = .saved(station)
+    }
+
+    private func beginPriceUpdate(for station: LiveFuelStation) {
+        priceInput = ""
+        priceNoteInput = ""
+        priceValidationMessage = nil
+        priceUpdateContext = .live(station)
+    }
+
+    private func dismissPriceUpdateSheet() {
+        isSubmittingCommunityPrice = false
+        priceUpdateContext = nil
+        priceInput = ""
+        priceNoteInput = ""
+        priceValidationMessage = nil
+    }
+
+    private func savePriceUpdate(for context: StationPriceUpdateContext, reportToCommunity: Bool) {
+        let trimmedPrice = priceInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsedPrice = Double(trimmedPrice), parsedPrice > 0 else {
+            priceValidationMessage = "Enter a valid E85 price to continue."
+            return
+        }
+
+        let roundedLocalPrice = roundedPrice(parsedPrice)
+        let trimmedNote = priceNoteInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = upsertLocalStation(for: context, price: roundedLocalPrice, note: trimmedNote)
+        try? modelContext.save()
+        AppHaptics.success()
+        refreshCommunityPricePreviews()
+
+        guard reportToCommunity else {
+            dismissPriceUpdateSheet()
+            return
+        }
+
+        isSubmittingCommunityPrice = true
+
+        Task {
+            let message: String
+
+            do {
+                let service = try CommunityPriceService()
+                let normalizedKey = normalizedStationKey(for: context)
+                let communityStation = try await service.upsertCommunityStation(
+                    normalizedStationKey: normalizedKey,
+                    name: context.stationName,
+                    streetAddress: context.optionalAddress,
+                    city: context.optionalCity,
+                    state: context.optionalState,
+                    zip: context.optionalZipCode,
+                    latitude: context.latitude,
+                    longitude: context.longitude
+                )
+
+                _ = try await service.submitPriceReport(
+                    normalizedStationKey: normalizedKey,
+                    stationID: communityStation.id,
+                    price: roundedLocalPrice,
+                    reportedAt: .now,
+                    notes: trimmedNote.isEmpty ? nil : trimmedNote,
+                    appVersion: appVersionString
+                )
+                message = "Price saved and reported."
+            } catch {
+#if DEBUG
+                print("Community price report failed:", error)
+#endif
+                if let serviceError = error as? CommunityPriceServiceError,
+                   case .notConfigured = serviceError {
+                    message = "Saved locally. Community price sync is not configured yet."
+                } else {
+                    message = "Saved locally, but community report failed."
+                }
+            }
+
+            await MainActor.run {
+                infoMessage = message
+                refreshCommunityPricePreviews()
+                dismissPriceUpdateSheet()
+            }
+        }
+    }
+
+    private func roundedPrice(_ price: Double) -> Double {
+        (price * 100).rounded() / 100
+    }
+
+    private func upsertLocalStation(
+        for context: StationPriceUpdateContext,
+        price: Double,
+        note: String
+    ) -> FuelStation {
+        let station: FuelStation
+
+        if let existingStation = context.station {
+            station = existingStation
+        } else if let matchedSavedStation = matchingSavedStation(for: context) {
+            station = matchedSavedStation
+        } else {
+            let createdStation = FuelStation(
+                name: context.stationName,
+                address: context.address,
+                city: context.city,
+                state: context.state,
+                zipCode: context.zipCode,
+                latitude: context.latitude,
+                longitude: context.longitude
+            )
+            modelContext.insert(createdStation)
+            station = createdStation
+        }
+
+        station.name = context.stationName
+        station.address = context.address
+        station.city = context.city
+        station.state = context.state
+        station.zipCode = context.zipCode
+        station.latitude = context.latitude
+        station.longitude = context.longitude
+        station.lastKnownE85Price = price
+        station.lastUpdated = .now
+        station.updatedAt = .now
+        station.notes = note
+        return station
+    }
+
+    private func matchingSavedStation(for context: StationPriceUpdateContext) -> FuelStation? {
+        stations.first { savedStation in
+            if normalizedStationText(savedStation.name) == normalizedStationText(context.stationName),
+               normalizedStationText(savedStation.address) == normalizedStationText(context.address),
+               normalizedStationText(savedStation.city) == normalizedStationText(context.city),
+               normalizedStationText(savedStation.state) == normalizedStationText(context.state),
+               normalizedStationText(savedStation.zipCode) == normalizedStationText(context.zipCode) {
+                return true
+            }
+
+            guard
+                let savedLatitude = savedStation.latitude,
+                let savedLongitude = savedStation.longitude,
+                let contextLatitude = context.latitude,
+                let contextLongitude = context.longitude
+            else {
+                return false
+            }
+
+            return abs(savedLatitude - contextLatitude) <= stationCoordinateTolerance &&
+                abs(savedLongitude - contextLongitude) <= stationCoordinateTolerance
+        }
+    }
+
+    private func normalizedStationKey(for context: StationPriceUpdateContext) -> String {
+        normalizedStationKey(
+            name: context.stationName,
+            streetAddress: context.address,
+            city: context.city,
+            state: context.state,
+            zip: context.zipCode
+        ) ?? normalizedStationText(context.stationName)
+    }
 }
 
 #Preview {
@@ -975,7 +1319,9 @@ private enum SavedStationsFilter: CaseIterable {
 
 private struct StationRowCard: View {
     let station: FuelStation
+    let communitySummary: CommunityPriceSummary?
     let directionsAction: () -> String?
+    let updatePriceAction: () -> Void
     let favoriteAction: () -> Void
     let editAction: () -> Void
     let deleteAction: () -> Void
@@ -1030,62 +1376,90 @@ private struct StationRowCard: View {
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
 
-                    Text("Distance available with live station search")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    Text(priceStatusText)
+                        .font(.caption.weight(priceStale ? .semibold : .medium))
+                        .foregroundStyle(priceStatusColor)
                 }
 
-                Spacer()
+                if station.lastKnownE85Price > 0 {
+                    Spacer()
 
-                VStack(alignment: .trailing, spacing: 6) {
-                    Text("LAST E85")
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.0)
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text("YOUR SAVED E85")
+                            .font(.caption2.weight(.bold))
+                            .tracking(1.0)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
 
-                    Text(station.lastKnownE85Price > 0 ? "$\(String(format: "%.2f", station.lastKnownE85Price))" : "--")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.primaryGreen)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(AppTheme.Colors.primaryGreen.opacity(0.10))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        Text(station.lastKnownE85Price.currencyText)
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.primaryGreen)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(AppTheme.Colors.primaryGreen.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
                 }
             }
 
-            if station.notes.isEmpty == false {
-                Text(station.notes)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            VStack(alignment: .leading, spacing: 6) {
+                if station.lastKnownE85Price > 0 {
+                    Text(priceFreshnessText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(priceStatusColor)
+                } else {
+                    Text("No E85 price saved yet")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                if station.notes.isEmpty == false {
+                    Text(station.notes)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                communityPricePreview
             }
 
             HStack {
-                Text("Last updated \(station.lastUpdated.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-
-                Spacer()
-
                 Text(station.isFavorite ? "Favorite" : "Saved")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(station.isFavorite ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
+
+                Spacer()
+
+                Text("Last updated \(station.lastUpdated.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    directionsMessage = directionsAction()
-                } label: {
-                    Label("Directions", systemImage: "location.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(AppTheme.Colors.primaryGreen.opacity(0.20))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(AppTheme.Colors.primaryGreen, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    Button {
+                        directionsMessage = directionsAction()
+                    } label: {
+                        Label("Directions", systemImage: "location.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(AppTheme.Colors.primaryGreen.opacity(0.20))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(AppTheme.Colors.primaryGreen, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+
+                    Button(action: updatePriceAction) {
+                        Label("Update Price", systemImage: "tag.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.charcoal)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(AppTheme.Colors.stationYellow)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
                 }
 
                 HStack(spacing: 8) {
@@ -1114,6 +1488,8 @@ private struct StationRowCard: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
+
+                    Spacer()
                 }
             }
         }
@@ -1144,6 +1520,32 @@ private struct StationRowCard: View {
             .joined(separator: " • ")
     }
 
+    private var daysSincePriceUpdate: Int {
+        Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: station.lastUpdated), to: Calendar.current.startOfDay(for: .now)).day ?? 0
+    }
+
+    private var priceFreshnessText: String {
+        if Calendar.current.isDateInToday(station.lastUpdated) {
+            return "Updated today"
+        }
+
+        let days = max(daysSincePriceUpdate, 0)
+        let baseText = "Updated \(days) day\(days == 1 ? "" : "s") ago"
+        return days > 14 ? "\(baseText) • Price may be stale" : baseText
+    }
+
+    private var priceStatusText: String {
+        station.lastKnownE85Price > 0 ? "Local E85 price available" : "No E85 price saved yet"
+    }
+
+    private var priceStale: Bool {
+        station.lastKnownE85Price > 0 && daysSincePriceUpdate > 14
+    }
+
+    private var priceStatusColor: Color {
+        priceStale ? AppTheme.Colors.stationYellow : (station.lastKnownE85Price > 0 ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+    }
+
     private var directionsAlertBinding: Binding<Bool> {
         Binding(
             get: { directionsMessage != nil },
@@ -1153,6 +1555,42 @@ private struct StationRowCard: View {
                 }
             }
         )
+    }
+
+    @ViewBuilder
+    private var communityPricePreview: some View {
+        if let communitySummary,
+           let latestPrice = communitySummary.latestPrice,
+           let latestReportedAt = communitySummary.latestReportedAt {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Community E85")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                HStack(spacing: 8) {
+                    Text("\(latestPrice.communityPriceText)/gal")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    Text(latestReportedAt.communityReportedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+
+                if latestReportedAt.communityPriceIsStale {
+                    Text("Community price may be stale")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+            }
+            .padding(.top, 2)
+        } else if station.lastKnownE85Price <= 0 {
+            Text("No community price yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .padding(.top, 2)
+        }
     }
 }
 
@@ -1232,7 +1670,9 @@ private struct LiveStationMapPin: View {
 private struct LiveStationRowCard: View {
     let station: LiveFuelStation
     let isSaved: Bool
+    let communitySummary: CommunityPriceSummary?
     let directionsAction: () -> String?
+    let reportPriceAction: () -> Void
     let saveAction: () -> Void
     @State private var directionsMessage: String?
 
@@ -1284,6 +1724,8 @@ private struct LiveStationRowCard: View {
                 }
             }
 
+            communityPricePreview
+
             HStack(spacing: 10) {
                 Button {
                     directionsMessage = directionsAction()
@@ -1298,6 +1740,17 @@ private struct LiveStationRowCard: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
                         )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: reportPriceAction) {
+                    Label("Report Price", systemImage: "tag.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.charcoal)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(AppTheme.Colors.stationYellow)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
@@ -1356,6 +1809,224 @@ private struct LiveStationRowCard: View {
             }
         )
     }
+
+    @ViewBuilder
+    private var communityPricePreview: some View {
+        if let communitySummary,
+           let latestPrice = communitySummary.latestPrice,
+           let latestReportedAt = communitySummary.latestReportedAt {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Community E85")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                HStack(spacing: 8) {
+                    Text("\(latestPrice.communityPriceText)/gal")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    Text(latestReportedAt.communityReportedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+
+                if latestReportedAt.communityPriceIsStale {
+                    Text("Community price may be stale")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+            }
+        } else {
+            Text("No community price yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+    }
+}
+
+private struct StationPriceUpdateContext: Identifiable {
+    let id = UUID()
+    let station: FuelStation?
+    let stationName: String
+    let address: String
+    let city: String
+    let state: String
+    let zipCode: String
+    let latitude: Double?
+    let longitude: Double?
+
+    static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
+        StationPriceUpdateContext(
+            station: station,
+            stationName: station.name,
+            address: station.address,
+            city: station.city,
+            state: station.state,
+            zipCode: station.zipCode,
+            latitude: station.latitude,
+            longitude: station.longitude
+        )
+    }
+
+    static func live(_ station: LiveFuelStation) -> StationPriceUpdateContext {
+        StationPriceUpdateContext(
+            station: nil,
+            stationName: station.name,
+            address: station.address,
+            city: station.city,
+            state: station.state,
+            zipCode: station.zip,
+            latitude: station.latitude == 0 ? nil : station.latitude,
+            longitude: station.longitude == 0 ? nil : station.longitude
+        )
+    }
+
+    var optionalAddress: String? {
+        address.isEmpty ? nil : address
+    }
+
+    var optionalCity: String? {
+        city.isEmpty ? nil : city
+    }
+
+    var optionalState: String? {
+        state.isEmpty ? nil : state
+    }
+
+    var optionalZipCode: String? {
+        zipCode.isEmpty ? nil : zipCode
+    }
+}
+
+private struct StationPriceUpdateSheet: View {
+    let context: StationPriceUpdateContext
+    @Binding var priceInput: String
+    @Binding var noteInput: String
+    @Binding var validationMessage: String?
+    let isSubmittingCommunityPrice: Bool
+    let saveLocalAction: () -> Void
+    let saveAndReportAction: () -> Void
+    let cancelAction: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(context.stationName.isEmpty ? "Station" : context.stationName)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Text("Save a local user-reported E85 price preview for this station, or report it to the community price feed.")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("E85 Price")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                            TextField("E85 Price", text: $priceInput)
+                                .keyboardType(.decimalPad)
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(AppTheme.Colors.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Note")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                            TextField("Optional local note", text: $noteInput, axis: .vertical)
+                                .lineLimit(2...4)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(AppTheme.Colors.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+
+                        if let validationMessage {
+                            Text(validationMessage)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+                        }
+
+                        VStack(spacing: 10) {
+                            Button(action: saveLocalAction) {
+                                Text("Save Locally")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(AppTheme.Colors.surface)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSubmittingCommunityPrice)
+
+                            Button(action: saveAndReportAction) {
+                                HStack(spacing: 8) {
+                                    if isSubmittingCommunityPrice {
+                                        ProgressView()
+                                            .tint(AppTheme.Colors.textPrimary)
+                                    }
+                                    Text(isSubmittingCommunityPrice ? "Reporting…" : "Save & Report")
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(AppTheme.Colors.primaryGreen)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSubmittingCommunityPrice)
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+                .padding(16)
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Update Price")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: cancelAction)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .disabled(isSubmittingCommunityPrice)
+                }
+            }
+        }
+        .keyboardDoneToolbar()
+    }
 }
 
 private struct Triangle: Shape {
@@ -1372,5 +2043,33 @@ private struct Triangle: Shape {
 private extension Double {
     var currencyText: String {
         String(format: "$%.2f", self)
+    }
+
+    var communityPriceText: String {
+        String(format: "$%.2f", self)
+    }
+}
+
+private extension Date {
+    var communityReportedText: String {
+        if Calendar.current.isDateInToday(self) {
+            return "Reported today"
+        }
+
+        if Calendar.current.isDateInYesterday(self) {
+            return "Reported yesterday"
+        }
+
+        let start = Calendar.current.startOfDay(for: self)
+        let now = Calendar.current.startOfDay(for: .now)
+        let days = max(Calendar.current.dateComponents([.day], from: start, to: now).day ?? 0, 0)
+        return "Reported \(days) day\(days == 1 ? "" : "s") ago"
+    }
+
+    var communityPriceIsStale: Bool {
+        let start = Calendar.current.startOfDay(for: self)
+        let now = Calendar.current.startOfDay(for: .now)
+        let days = max(Calendar.current.dateComponents([.day], from: start, to: now).day ?? 0, 0)
+        return days > 14
     }
 }

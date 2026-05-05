@@ -887,6 +887,20 @@ private struct ReminderCompletionRecordCard: View {
                     .padding(.vertical, 6)
                     .background(AppTheme.Colors.surface)
                     .clipShape(Capsule())
+
+                Button(action: deleteAction) {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color(red: 0.95, green: 0.47, blue: 0.44))
+                        .frame(width: 40, height: 40)
+                        .background(AppTheme.Colors.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(AppTheme.Colors.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
 
             Text("Completed \(record.completedAt.formatted(date: .abbreviated, time: .omitted))")
@@ -918,6 +932,7 @@ private struct ReminderCompletionRecordCard: View {
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(Rectangle())
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Delete", role: .destructive, action: deleteAction)
         }

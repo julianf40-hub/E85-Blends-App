@@ -6,15 +6,25 @@
 //
 
 import SwiftUI
+import SwiftData
+import CoreLocation
 
 struct AddEditFuelLogView: View {
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \FuelStation.updatedAt, order: .reverse)
+    private var savedStations: [FuelStation]
 
     let entry: FuelLogEntry?
     let initialDraft: FuelLogDraft?
     let onSave: (FuelLogDraft) -> Void
 
     @State private var draft: FuelLogDraft
+    @State private var locationManager = StationLocationManager()
+    @State private var isDetectingStation = false
+    @State private var detectStationMessage: String?
+    @State private var detectedStationName: String?
+    @State private var overwriteCandidate: DetectedFuelStationCandidate?
+    @State private var confirmOverwrite = false
 
     @MainActor
     init(
@@ -60,6 +70,31 @@ struct AddEditFuelLogView: View {
         .keyboardDoneToolbar()
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .onChange(of: locationManager.latestCoordinate) { _, coordinate in
+            guard isDetectingStation, let coordinate else { return }
+            handleDetectedCoordinate(coordinate)
+        }
+        .onChange(of: locationManager.authorizationStatus) { _, status in
+            guard isDetectingStation else { return }
+
+            switch status {
+            case .denied, .restricted:
+                isDetectingStation = false
+                detectStationMessage = "Location access is off. Enable it in Settings to detect a nearby station."
+            default:
+                break
+            }
+        }
+        .alert("Use detected station?", isPresented: $confirmOverwrite) {
+            Button("Use Detected Station") {
+                applyDetectedStationCandidate()
+            }
+            Button("Keep Current Name", role: .cancel) {
+                overwriteCandidate = nil
+            }
+        } message: {
+            Text("Replace the current station name with \(overwriteCandidate?.station.name ?? "this station")?")
+        }
     }
 
     private var formCard: some View {
@@ -79,7 +114,7 @@ struct AddEditFuelLogView: View {
             .foregroundStyle(AppTheme.Colors.textPrimary)
 
             FuelStringInputField(title: "Vehicle Name", text: $draft.vehicleName)
-            FuelStringInputField(title: "Station Name", text: $draft.stationName)
+            stationNameSection
             FuelIntInputField(title: "Odometer", value: $draft.odometer)
             FuelDoubleInputField(title: "Target Blend Percent", value: $draft.targetBlendPercent)
             FuelDoubleInputField(title: "Final Blend Percent", value: $draft.finalBlendPercent)
@@ -127,6 +162,131 @@ struct AddEditFuelLogView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
+
+    private var stationNameSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                Text("Station Name")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Spacer()
+
+                Button {
+                    detectNearestStation()
+                } label: {
+                    HStack(spacing: 6) {
+                        if isDetectingStation {
+                            ProgressView()
+                                .tint(AppTheme.Colors.charcoal)
+                                .scaleEffect(0.85)
+                        } else {
+                            Image(systemName: "location.magnifyingglass")
+                        }
+                        Text(isDetectingStation ? "Detecting…" : "Detect Station")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.charcoal)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(AppTheme.Colors.stationYellow)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isDetectingStation)
+            }
+
+            TextField("Station Name", text: $draft.stationName)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            if let detectedStationName {
+                Text("Detected: \(detectedStationName)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+            } else if let detectStationMessage {
+                Text(detectStationMessage)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            } else if draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Tap Detect Station to autofill from your location.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+    }
+
+    private func detectNearestStation() {
+        detectStationMessage = nil
+        detectedStationName = nil
+        overwriteCandidate = nil
+        isDetectingStation = true
+        locationManager.requestUserLocation()
+    }
+
+    private func handleDetectedCoordinate(_ coordinate: StationCoordinate) {
+        isDetectingStation = false
+
+        guard let candidate = nearestSavedStation(to: coordinate.clCoordinate) else {
+            detectStationMessage = "No nearby saved station found."
+            return
+        }
+
+        let currentName = draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentName.isEmpty == false,
+           currentName.caseInsensitiveCompare(candidate.station.name) != .orderedSame {
+            overwriteCandidate = candidate
+            confirmOverwrite = true
+            return
+        }
+
+        applyDetectedStation(candidate)
+    }
+
+    private func nearestSavedStation(to coordinate: CLLocationCoordinate2D) -> DetectedFuelStationCandidate? {
+        let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        let candidates: [DetectedFuelStationCandidate] = savedStations.compactMap { station -> DetectedFuelStationCandidate? in
+            guard let latitude = station.latitude, let longitude = station.longitude else {
+                return nil
+            }
+
+            let stationLocation = CLLocation(latitude: latitude, longitude: longitude)
+            let distance = userLocation.distance(from: stationLocation)
+            guard distance <= 804.67 else { return nil }
+
+            return DetectedFuelStationCandidate(station: station, distance: distance)
+        }
+
+        return candidates.sorted { lhs, rhs in
+            lhs.distance < rhs.distance
+        }.first
+    }
+
+    private func applyDetectedStationCandidate() {
+        guard let overwriteCandidate else { return }
+        applyDetectedStation(overwriteCandidate)
+        self.overwriteCandidate = nil
+    }
+
+    private func applyDetectedStation(_ candidate: DetectedFuelStationCandidate) {
+        draft.stationName = candidate.station.name
+        detectedStationName = candidate.station.name
+        detectStationMessage = nil
+        AppHaptics.success()
+    }
+}
+
+private struct DetectedFuelStationCandidate {
+    let station: FuelStation
+    let distance: CLLocationDistance
 }
 
 struct FuelLogDraft {
