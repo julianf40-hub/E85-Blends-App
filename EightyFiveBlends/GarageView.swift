@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct GarageView: View {
     @Environment(\.modelContext) private var modelContext
@@ -171,6 +172,7 @@ struct GarageView: View {
             vehicle.requiredOctane = draft.requiredOctane
             vehicle.isFlexFuel = draft.isFlexFuel
             vehicle.isActive = shouldBeActive
+            vehicle.vehiclePhotoData = draft.vehiclePhotoData
             vehicle.updatedAt = .now
         } else {
             let newVehicle = VehicleProfile(
@@ -188,6 +190,7 @@ struct GarageView: View {
                 requiredOctane: draft.requiredOctane,
                 isFlexFuel: draft.isFlexFuel,
                 isActive: shouldBeActive,
+                vehiclePhotoData: draft.vehiclePhotoData,
                 createdAt: .now,
                 updatedAt: .now
             )
@@ -284,14 +287,18 @@ private struct ActiveVehicleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let photo = vehicle.uiImage {
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+
             HStack {
                 HStack(spacing: 10) {
-                    Image(systemName: "car.fill")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.primaryGreen)
-                        .frame(width: 38, height: 38)
-                        .background(AppTheme.Colors.primaryGreen.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VehicleThumbnail(vehicle: vehicle, size: CGSize(width: 38, height: 38), accentColor: AppTheme.Colors.primaryGreen)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Active Vehicle")
@@ -361,7 +368,7 @@ private struct EmptyGarageCard: View {
     var body: some View {
         EmptyStateView(
             title: "No Active Vehicle",
-            message: "Add your first vehicle to unlock calculator auto-fill and active blend defaults.",
+            message: "Add your first vehicle to personalize blends, reminders, and At the Pump mode.",
             systemImage: "car.circle"
         )
     }
@@ -370,8 +377,8 @@ private struct EmptyGarageCard: View {
 private struct EmptySavedVehiclesCard: View {
     var body: some View {
         EmptyStateView(
-            title: "No vehicles saved yet.",
-            message: "Use Add Vehicle to create a garage profile with your fuel and blend defaults.",
+            title: "No Vehicles Yet",
+            message: "Tap Add Vehicle above to save your tank size, ethanol targets, and calculator defaults.",
             systemImage: "car.fill"
         )
     }
@@ -386,12 +393,11 @@ private struct VehicleRowCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: vehicle.isActive ? "checkmark.circle.fill" : "car.fill")
-                    .font(.headline)
-                    .foregroundStyle(vehicle.isActive ? AppTheme.Colors.primaryGreen : AppTheme.Colors.stationYellow)
-                    .frame(width: 40, height: 40)
-                    .background((vehicle.isActive ? AppTheme.Colors.primaryGreen : AppTheme.Colors.stationYellow).opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VehicleThumbnail(
+                    vehicle: vehicle,
+                    size: CGSize(width: 64, height: 64),
+                    accentColor: vehicle.isActive ? AppTheme.Colors.primaryGreen : AppTheme.Colors.stationYellow
+                )
 
                 VehicleSummary(vehicle: vehicle)
 
@@ -523,6 +529,41 @@ private struct VehicleSummary: View {
 
     private var odometerText: String {
         "\(vehicle.currentOdometer.formatted(.number.grouping(.automatic))) mi"
+    }
+}
+
+private struct VehicleThumbnail: View {
+    let vehicle: VehicleProfile
+    let size: CGSize
+    let accentColor: Color
+
+    var body: some View {
+        Group {
+            if let photo = vehicle.uiImage {
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: vehicle.isActive ? "checkmark.circle.fill" : "car.fill")
+                    .font(.headline)
+                    .foregroundStyle(accentColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(accentColor.opacity(0.12))
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(accentColor.opacity(vehicle.uiImage == nil ? 0 : 0.25), lineWidth: vehicle.uiImage == nil ? 0 : 1)
+        )
+    }
+}
+
+private extension VehicleProfile {
+    var uiImage: UIImage? {
+        guard let vehiclePhotoData else { return nil }
+        return UIImage(data: vehiclePhotoData)
     }
 }
 

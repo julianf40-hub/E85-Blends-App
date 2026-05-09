@@ -40,24 +40,40 @@ enum AppTheme {
             ) ?? .system
         }
 
-        private static var isOLED: Bool {
+        static var isOLEDThemeActive: Bool {
             themePreference == .oledDark
         }
 
         static var oledBackground: Color {
-            dynamic(light: Color(red: 0.97, green: 0.98, blue: 0.99), dark: Color.black, oled: Color.black)
+            dynamic(
+                light: Color(red: 0.97, green: 0.98, blue: 0.99),
+                dark: Color(red: 0.04, green: 0.04, blue: 0.045),
+                oled: .black
+            )
         }
 
         static var cardBackground: Color {
-            dynamic(light: Color.white, dark: Color(red: 0.07, green: 0.07, blue: 0.07), oled: Color(red: 0.043, green: 0.043, blue: 0.043))
+            dynamic(
+                light: .white,
+                dark: Color(red: 0.08, green: 0.08, blue: 0.085),
+                oled: Color(red: 0.004, green: 0.004, blue: 0.005)
+            )
         }
 
         static var elevatedCardBackground: Color {
-            dynamic(light: Color(red: 0.95, green: 0.96, blue: 0.98), dark: Color(red: 0.10, green: 0.10, blue: 0.10), oled: Color(red: 0.063, green: 0.063, blue: 0.063))
+            dynamic(
+                light: Color(red: 0.95, green: 0.96, blue: 0.98),
+                dark: Color(red: 0.11, green: 0.11, blue: 0.115),
+                oled: Color(red: 0.015, green: 0.015, blue: 0.018)
+            )
         }
 
         static var borderColor: Color {
-            dynamic(light: Color.black.opacity(0.08), dark: Color.white.opacity(0.08), oled: Color.white.opacity(0.09))
+            dynamic(
+                light: Color.black.opacity(0.08),
+                dark: Color.white.opacity(0.08),
+                oled: Color.white.opacity(0.12)
+            )
         }
 
         static let primaryGreen = Color(red: 0.19, green: 0.92, blue: 0.48)
@@ -90,7 +106,7 @@ enum AppTheme {
         static var groupedBackground: Color { oledBackground }
 
         private static func dynamic(light: Color, dark: Color, oled: Color) -> Color {
-            let darkValue = isOLED ? oled : dark
+            let darkValue = isOLEDThemeActive ? oled : dark
             #if os(iOS)
             return Color(
                 UIColor { traits in
@@ -202,10 +218,10 @@ struct WarningCard: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.gasOrange.opacity(0.14))
+        .background(AppTheme.Colors.surfaceElevated)
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.gasOrange.opacity(0.45), lineWidth: 1)
+                .stroke(AppTheme.Colors.gasOrange.opacity(0.5), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }

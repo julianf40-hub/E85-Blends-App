@@ -24,7 +24,7 @@ struct MoreView: View {
                             .foregroundStyle(AppTheme.Colors.textMuted)
 
                         Text("More")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
                             .foregroundStyle(AppTheme.Colors.textPrimary)
 
                         Text("Settings, support, and app information in one place.")
@@ -73,7 +73,7 @@ struct MoreView: View {
 
                         MoreNavigationRow(
                             title: "Recommended Gear",
-                            subtitle: "Coming soon: hand-picked tools and accessories for ethanol-focused setups.",
+                            subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
                             systemImage: "wrench.and.screwdriver",
                             tint: AppTheme.Colors.accentGreen
                         ) {

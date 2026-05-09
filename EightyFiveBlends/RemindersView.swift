@@ -43,6 +43,16 @@ struct RemindersView: View {
         return names.isEmpty ? [defaultVehicleName] : names
     }
 
+    private var reminderTemplates: [ReminderTemplate] {
+        [
+            ReminderTemplate(title: "Oil Change", category: "Oil Change", mileageInterval: 5000),
+            ReminderTemplate(title: "Tire Rotation", category: "Tire Rotation", mileageInterval: 7500),
+            ReminderTemplate(title: "Air Filter", category: "Air Filter", mileageInterval: 15000),
+            ReminderTemplate(title: "Spark Plugs", category: "Spark Plugs", mileageInterval: 30000),
+            ReminderTemplate(title: "Brake Fluid", category: "Brake Fluid", mileageInterval: 25000)
+        ]
+    }
+
     private var reminderInfos: [ReminderStatusInfo] {
         reminders.map { reminder in
             ReminderStatusInfo(reminder: reminder, currentOdometer: odometer(for: reminder))
@@ -86,10 +96,15 @@ struct RemindersView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     headerSection
+                    if reminders.isEmpty {
+                        ReminderTemplateCard(templates: reminderTemplates) { template in
+                            createReminder(from: template)
+                        }
+                    }
                     if reminders.isEmpty && completionRecords.isEmpty {
                         EmptyStateView(
-                            title: "No reminders yet.",
-                            message: "Create maintenance reminders to stay ahead of service intervals, dates, and recurring vehicle tasks.",
+                            title: "No Reminders Yet",
+                            message: "Track oil changes, tire rotations, and more. Tap Add Reminder or pick a Quick Start template above.",
                             systemImage: "bell.badge"
                         )
                     } else {
@@ -314,6 +329,31 @@ struct RemindersView: View {
         AppHaptics.success()
     }
 
+    private func createReminder(from template: ReminderTemplate) {
+        let currentOdometer = activeVehicle?.currentOdometer ?? 0
+        let reminder = MaintenanceReminder(
+            vehicleName: activeVehicle?.nickname ?? defaultVehicleName,
+            title: template.title,
+            category: template.category,
+            mileageEnabled: true,
+            dueMileage: currentOdometer + template.mileageInterval,
+            repeatMileageInterval: template.mileageInterval,
+            dateEnabled: false,
+            dueDate: .now,
+            repeatDateIntervalDays: 0,
+            notes: "",
+            isCompleted: false,
+            completedAt: nil,
+            completedMileage: nil,
+            createdAt: .now,
+            updatedAt: .now
+        )
+
+        modelContext.insert(reminder)
+        try? modelContext.save()
+        AppHaptics.success()
+    }
+
     private func updateReminder(_ reminder: MaintenanceReminder, from draft: ReminderDraft) {
         reminder.vehicleName = draft.vehicleName
         reminder.title = draft.title
@@ -466,11 +506,11 @@ struct RemindersView: View {
     private func emptySectionMessage(for title: String) -> String {
         switch title {
         case "Overdue":
-            "Your active schedule has nothing overdue right now."
+            "Nothing overdue right now — you're all caught up."
         case "Upcoming":
-            "Add reminders with mileage or date targets to populate this section."
+            "Add reminders with mileage or date targets to see upcoming service here."
         case "Completed":
-            "Completed reminders will appear here after one-time tasks are finished."
+            "Completed service history will appear here as you finish tasks."
         default:
             "No reminders available."
         }
@@ -834,6 +874,70 @@ private struct ReminderRowCard: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+}
+
+private struct ReminderTemplate: Identifiable {
+    let title: String
+    let category: String
+    let mileageInterval: Int
+
+    var id: String {
+        title
+    }
+
+    var subtitle: String {
+        "Due every \(mileageInterval.formatted()) miles"
+    }
+}
+
+private struct ReminderTemplateCard: View {
+    let templates: [ReminderTemplate]
+    let templateAction: (ReminderTemplate) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Quick Start Templates",
+                subtitle: "Tap any template to add it instantly."
+            )
+
+            ForEach(templates) { template in
+                Button {
+                    templateAction(template)
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(template.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                            Text(template.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "plus")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .frame(width: 32, height: 32)
+                            .background(AppTheme.Colors.accentGreen)
+                            .clipShape(Circle())
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }

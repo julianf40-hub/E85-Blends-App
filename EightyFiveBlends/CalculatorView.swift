@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import CoreLocation
 
 struct CalculatorView: View {
     @Environment(\.modelContext) private var modelContext
@@ -15,6 +16,8 @@ struct CalculatorView: View {
     private var activeVehicles: [VehicleProfile]
     @Query(sort: \FuelLogEntry.date, order: .reverse)
     private var fuelLogEntries: [FuelLogEntry]
+    @Query(sort: \FuelStation.updatedAt, order: .reverse)
+    private var savedStations: [FuelStation]
 
     @State private var selectedBlend = "E50"
     @State private var isGuideExpanded = false
@@ -32,6 +35,11 @@ struct CalculatorView: View {
     @State private var loadedDefaultsKey = ""
     @State private var calculatorFuelLogDraft: FuelLogDraft?
     @State private var infoMessage: String?
+    @State private var locationManager = StationLocationManager()
+    @State private var pumpModeStation: FuelStation?
+    @State private var isShowingPumpMode = false
+    @State private var didAutoPromptPumpMode = false
+    @State private var autoPromptStation: FuelStation?
 
     private var fallbackDefaults: CalculatorDefaults {
         CalculatorDefaults(
@@ -47,6 +55,10 @@ struct CalculatorView: View {
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
+    }
+
+    private var pumpModeActiveVehicle: VehicleProfile? {
+        activeVehicles.first(where: { $0.isActive }) ?? activeVehicles.first
     }
 
     private var activeVehicleKey: String {
@@ -159,7 +171,7 @@ struct CalculatorView: View {
                         },
                         findStationAction: {
                             AppHaptics.selection()
-                            infoMessage = "Use the Stations tab to manage saved E85 stops until live search is added."
+                            infoMessage = "Head to the Stations tab to find and save nearby E85 stations."
                         }
                     )
 
@@ -185,6 +197,7 @@ struct CalculatorView: View {
         .keyboardDoneToolbar()
         .onAppear {
             applyDefaultsIfNeeded(for: activeVehicleKey)
+            requestPumpModeLocationIfNeeded()
         }
         .onChange(of: activeVehicleKey) { _, newValue in
             applyDefaultsIfNeeded(for: newValue)
@@ -194,6 +207,13 @@ struct CalculatorView: View {
                 loadedDefaultsKey = ""
                 applyDefaultsIfNeeded(for: activeVehicleKey)
             }
+        }
+        .onChange(of: locationManager.authorizationStatus) { _, newValue in
+            handleAuthorizationChange(newValue)
+        }
+        .onChange(of: locationManager.latestCoordinate) { _, _ in
+            refreshPumpModeStation()
+            evaluateAutoPromptPumpMode()
         }
         .sheet(isPresented: calculatorFuelLogSheetBinding) {
             if let calculatorFuelLogDraft {
@@ -209,12 +229,45 @@ struct CalculatorView: View {
                 }
             }
         }
+        .sheet(isPresented: $isShowingPumpMode) {
+            AtThePumpView(
+                initialTankSizeGallons: doubleValue(from: tankSize),
+                initialCurrentFuelLevelPercent: doubleValue(from: currentLevel),
+                initialCurrentFuelEthanolPercent: doubleValue(from: currentFuelEthanol),
+                initialTargetEthanolPercent: doubleValue(from: targetFuelEthanol),
+                initialE85EthanolPercent: doubleValue(from: e85Ethanol),
+                initialGasEthanolPercent: doubleValue(from: gasEthanol),
+                initialE85Octane: doubleValue(from: e85Octane),
+                initialGasOctane: doubleValue(from: gasOctane),
+                activeVehicle: pumpModeActiveVehicle,
+                nearestStation: pumpModeStation,
+                locationAccessDenied: locationManager.authorizationDenied,
+                logFillUpAction: { updatedCalculation in
+                    openPumpModeFuelLog(with: updatedCalculation)
+                },
+                closeAction: {
+                    isShowingPumpMode = false
+                }
+            )
+        }
         .alert("Coming Soon", isPresented: infoAlertBinding) {
             Button("OK", role: .cancel) {
                 infoMessage = nil
             }
         } message: {
             Text(infoMessage ?? "")
+        }
+        .alert("At the Pump?", isPresented: autoPromptAlertBinding) {
+            Button("Not Now", role: .cancel) {
+                autoPromptStation = nil
+            }
+            Button("Open Pump Mode") {
+                pumpModeStation = autoPromptStation
+                autoPromptStation = nil
+                isShowingPumpMode = true
+            }
+        } message: {
+            Text("You're near \(autoPromptStation?.name ?? "a saved station"). Open pump mode for one-handed blend guidance?")
         }
     }
 
@@ -244,6 +297,17 @@ struct CalculatorView: View {
         )
     }
 
+    private var autoPromptAlertBinding: Binding<Bool> {
+        Binding(
+            get: { autoPromptStation != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    autoPromptStation = nil
+                }
+            }
+        )
+    }
+
     private func formatted(_ value: Double) -> String {
         if value.rounded() == value {
             return String(Int(value))
@@ -256,6 +320,110 @@ struct CalculatorView: View {
         let options = [20.0, 30.0, 40.0, 50.0, 60.0, 85.0]
         let nearest = options.min { abs($0 - value) < abs($1 - value) } ?? 30
         return "E\(Int(nearest))"
+    }
+
+    private func requestPumpModeLocationIfNeeded() {
+        guard locationManager.isAuthorizedForUserLocation else {
+            return
+        }
+
+        locationManager.requestUserLocation()
+    }
+
+    private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationManager.requestUserLocation()
+        case .denied, .restricted:
+            pumpModeStation = nil
+        default:
+            break
+        }
+    }
+
+    private func refreshPumpModeStation() {
+        guard let coordinate = locationManager.latestCoordinate else {
+            if locationManager.authorizationDenied {
+                pumpModeStation = nil
+            }
+            return
+        }
+
+        pumpModeStation = nearestSavedStation(to: coordinate)
+    }
+
+    private func evaluateAutoPromptPumpMode() {
+        guard didAutoPromptPumpMode == false else {
+            return
+        }
+
+        guard locationManager.isAuthorizedForUserLocation else {
+            return
+        }
+
+        guard let nearbyStation = pumpModeStation else {
+            return
+        }
+
+        didAutoPromptPumpMode = true
+        autoPromptStation = nearbyStation
+    }
+
+    private func nearestSavedStation(to coordinate: StationCoordinate) -> FuelStation? {
+        let currentLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let maxDistanceMeters = 804.67
+
+        return savedStations
+            .compactMap { station -> (station: FuelStation, distance: CLLocationDistance)? in
+                guard let latitude = station.latitude, let longitude = station.longitude else {
+                    return nil
+                }
+
+                let stationLocation = CLLocation(latitude: latitude, longitude: longitude)
+                let distance = currentLocation.distance(from: stationLocation)
+                guard distance <= maxDistanceMeters else {
+                    return nil
+                }
+
+                return (station, distance)
+            }
+            .min { $0.distance < $1.distance }?
+            .station
+    }
+
+    private func openPumpMode() {
+        AppHaptics.selection()
+
+        if locationManager.authorizationStatus == .notDetermined || locationManager.isAuthorizedForUserLocation {
+            locationManager.requestUserLocation()
+        }
+
+        refreshPumpModeStation()
+        isShowingPumpMode = true
+    }
+
+    private func openPumpModeFuelLog(with result: BlendCalculator.Result) {
+        let draft = pumpModeFuelLogDraft(from: result)
+        isShowingPumpMode = false
+
+        Task { @MainActor in
+            await Task.yield()
+            calculatorFuelLogDraft = draft
+        }
+    }
+
+    private func pumpModeFuelLogDraft(from result: BlendCalculator.Result) -> FuelLogDraft {
+        var draft = FuelLogStore.prefillDraft(from: result, vehicle: activeVehicle)
+
+        if let pumpModeStation {
+            draft.stationName = pumpModeStation.name
+
+            if pumpModeStation.lastKnownE85Price > 0 {
+                draft.e85PricePerGallon = pumpModeStation.lastKnownE85Price
+            }
+        }
+
+        return draft
     }
 
     @MainActor
@@ -296,8 +464,7 @@ struct CalculatorView: View {
             Spacer()
 
             Button {
-                AppHaptics.selection()
-                infoMessage = "Pump-specific station lookup and route tools can be added in a later update."
+                openPumpMode()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "fuelpump.fill")
@@ -341,7 +508,7 @@ struct CalculatorView: View {
 
 #Preview {
     CalculatorView()
-        .modelContainer(for: [VehicleProfile.self, FuelLogEntry.self], inMemory: true)
+        .modelContainer(for: [VehicleProfile.self, FuelLogEntry.self, FuelStation.self], inMemory: true)
 }
 
 private struct CalculatorDefaults {
@@ -639,10 +806,10 @@ private struct BottomActionsSection: View {
                     .foregroundStyle(AppTheme.Colors.stationYellow)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(AppTheme.Colors.gasOrange.opacity(0.10))
+                    .background(AppTheme.Colors.surfaceElevated)
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(AppTheme.Colors.gasOrange.opacity(0.9), lineWidth: 1.2)
+                            .stroke(AppTheme.Colors.gasOrange.opacity(0.72), lineWidth: 1.2)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }

@@ -36,10 +36,10 @@ struct RecommendedGearView: View {
                 .foregroundStyle(AppTheme.Colors.textMuted)
 
             Text("Recommended Gear")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
 
-            Text("A dedicated home for future ethanol-focused tools, accessories, and sponsor-ready gear highlights.")
+            Text("Recommended E85 tools, accessories, and sponsor picks for ethanol-focused builds.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
@@ -96,11 +96,11 @@ struct RecommendedGearView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Gear picks are coming soon")
+                    Text("Coming Soon")
                         .font(.headline)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text("This tab is ready for future testers, funnels, containers, and ethanol-friendly shop essentials once the catalog is curated.")
+                    Text("Ethanol testers, funnels, containers, and shop essentials will appear here as gear picks are finalized.")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }

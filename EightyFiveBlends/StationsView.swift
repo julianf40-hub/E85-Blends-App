@@ -182,9 +182,9 @@ struct StationsView: View {
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("Location access is off. Enable it in Settings to center the map near you.")
+            Text("Location access is turned off. Enable it in Settings → Privacy → Location Services to find E85 stations near you.")
         }
-        .alert("Stations", isPresented: infoAlertBinding) {
+        .alert(infoAlertTitle, isPresented: infoAlertBinding) {
             Button("OK", role: .cancel) {
                 infoMessage = nil
             }
@@ -647,11 +647,11 @@ struct StationsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("No saved E85 stations yet")
+                    Text("No Saved Stations")
                         .font(.headline)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text("Add stations manually now. Live station search can be added later.")
+                    Text("Tap Find Nearby E85 above to discover stations, or add one manually.")
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
@@ -721,6 +721,14 @@ struct StationsView: View {
                 }
             }
         )
+    }
+
+    private var infoAlertTitle: String {
+        infoMessage == thankYouCommunityReportMessage ? "Thank You! 🙌" : "Stations"
+    }
+
+    private var thankYouCommunityReportMessage: String {
+        "Your E85 price report is live and helps other drivers in your area find the best price."
     }
 
     private func createStation(from draft: StationDraft) {
@@ -899,12 +907,12 @@ struct StationsView: View {
                 )
                 liveStations = results
                 if results.isEmpty {
-                    liveSearchError = "No E85 stations found within \(selectedRadius)."
+                    liveSearchError = "No E85 stations found within \(selectedRadius). Try a larger search radius."
                 }
                 refreshCommunityPricePreviews()
             } catch {
                 if case NRELServiceError.missingAPIKey = error {
-                    liveSearchError = "Live station search is not configured yet."
+                    liveSearchError = "Live station search is not available right now. You can still add stations manually."
                 } else {
                     liveSearchError = error.localizedDescription
                 }
@@ -1060,9 +1068,9 @@ struct StationsView: View {
                     communityPriceSummaries = [:]
                     if let serviceError = error as? CommunityPriceServiceError,
                        case .notConfigured = serviceError {
-                        communityPriceSyncMessage = "Community price sync is not configured yet."
+                        communityPriceSyncMessage = "Community prices are not available right now."
                     } else {
-                        communityPriceSyncMessage = "Community price previews are temporarily unavailable."
+                        communityPriceSyncMessage = "Community prices are temporarily unavailable. Local prices are still shown."
                     }
                 }
             }
@@ -1199,16 +1207,16 @@ struct StationsView: View {
                     notes: trimmedNote.isEmpty ? nil : trimmedNote,
                     appVersion: appVersionString
                 )
-                message = "Price saved and reported."
+                message = thankYouCommunityReportMessage
             } catch {
 #if DEBUG
                 print("Community price report failed:", error)
 #endif
                 if let serviceError = error as? CommunityPriceServiceError,
                    case .notConfigured = serviceError {
-                    message = "Saved locally. Community price sync is not configured yet."
+                    message = "Price saved locally. Community reporting is not available right now."
                 } else {
-                    message = "Saved locally, but community report failed."
+                    message = "Price saved locally. Community report could not be submitted — please try again later."
                 }
             }
 
@@ -1375,6 +1383,8 @@ private struct StationRowCard: View {
                     Text(locationLine)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    priceFreshnessBadge
 
                     Text(priceStatusText)
                         .font(.caption.weight(priceStale ? .semibold : .medium))
@@ -1544,6 +1554,44 @@ private struct StationRowCard: View {
 
     private var priceStatusColor: Color {
         priceStale ? AppTheme.Colors.stationYellow : (station.lastKnownE85Price > 0 ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+    }
+
+    private var priceFreshnessBadgeLabel: String {
+        guard station.lastKnownE85Price > 0 else { return "No Price" }
+
+        if daysSincePriceUpdate <= 7 {
+            return "Fresh"
+        }
+
+        if daysSincePriceUpdate <= 14 {
+            return "Check Price"
+        }
+
+        return "Stale"
+    }
+
+    private var priceFreshnessBadgeColor: Color {
+        guard station.lastKnownE85Price > 0 else { return AppTheme.Colors.textMuted }
+
+        if daysSincePriceUpdate <= 7 {
+            return AppTheme.Colors.primaryGreen
+        }
+
+        if daysSincePriceUpdate <= 14 {
+            return AppTheme.Colors.stationYellow
+        }
+
+        return AppTheme.Colors.warningRed
+    }
+
+    private var priceFreshnessBadge: some View {
+        Text(priceFreshnessBadgeLabel)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.charcoal)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(priceFreshnessBadgeColor)
+            .clipShape(Capsule())
     }
 
     private var directionsAlertBinding: Binding<Bool> {

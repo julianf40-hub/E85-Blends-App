@@ -29,27 +29,70 @@ struct OnboardingView: View {
 
     private let steps: [OnboardingStep] = [
         .init(
+            emoji: "👋",
             title: "Welcome to 85Blends",
-            subtitle: "Build cleaner ethanol routines with a local-first app for blend planning, saved stations, and vehicle-specific fuel tracking."
+            subtitle: "Let’s get you set up so blend planning, station finding, and fuel tracking feel seamless from day one.",
+            bulletPoints: [
+                "Save your vehicle setup once and reuse it everywhere.",
+                "Find E85 stations, report community prices, and plan blends in one place.",
+                "Use At the Pump mode for quick blend guidance while fueling.",
+                "You can tweak everything later in Preferences."
+            ]
         ),
         .init(
-            title: "Set up your vehicle",
-            subtitle: "Start with the core details your calculator and logs will use every day."
+            emoji: "🚗",
+            title: "Set Up Your Garage",
+            subtitle: "Add the vehicle details your calculator, fuel log, and reminders will use every day."
         ),
         .init(
-            title: "Calculate smarter blends",
-            subtitle: "Use your tank size, fuel assumptions, and target ethanol content to get a faster, more consistent starting estimate."
+            emoji: "⛽",
+            title: "Calculate Better Blends",
+            subtitle: "Use your tank size, fuel assumptions, and ethanol target to get a faster, more consistent starting estimate.",
+            bulletPoints: [
+                "Start with saved defaults instead of entering everything each time.",
+                "Compare fuel assumptions before you head to the pump.",
+                "Build a cleaner estimate for your next mix."
+            ]
         ),
         .init(
-            title: "Track fuel logs and reminders",
-            subtitle: "Save fill-ups, monitor costs, and stay ahead of maintenance with reminders tied to your vehicle."
+            emoji: "📍",
+            title: "Find & Save E85 Stations",
+            subtitle: "Keep your go-to E85 stops saved, discover new ones nearby, and track prices over time.",
+            bulletPoints: [
+                "Tap Find Nearby E85 to discover stations near you.",
+                "Save local stations you trust for quick access.",
+                "Update and share E85 prices with the community."
+            ]
         ),
         .init(
-            title: "Choose your tabs",
-            subtitle: "Pick which optional tabs should be visible from day one."
+            emoji: "🤝",
+            title: "Help Keep Prices Fresh",
+            subtitle: "When you report a station price, you’re helping other drivers find better fuel stops nearby.",
+            bulletPoints: [
+                "Update local E85 prices for saved stations.",
+                "Share community price reports to help other drivers.",
+                "Community reports help keep pricing more up to date.",
+                "A thank-you confirmation appears after you successfully share a price."
+            ]
         ),
         .init(
-            title: "Acknowledge safety notes",
+            emoji: "🧾",
+            title: "Track Fill-Ups and Maintenance",
+            subtitle: "Save fill-ups, monitor costs, and use At the Pump mode for one-handed blend guidance at the station.",
+            bulletPoints: [
+                "Log fuel spend, blends, and station details.",
+                "Use At the Pump mode for guided blending while fueling.",
+                "Build a clearer picture of how your setup performs over time."
+            ]
+        ),
+        .init(
+            emoji: "🧭",
+            title: "Choose Your Tabs",
+            subtitle: "Pick which tabs to show. You can always change these later in More → Preferences."
+        ),
+        .init(
+            emoji: "⚠️",
+            title: "Safety First",
             subtitle: "Review and accept the key warnings before entering the app."
         )
     ]
@@ -112,7 +155,7 @@ struct OnboardingView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
 
-            Text("First-launch setup")
+            Text("Quick setup to get you started")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
@@ -145,6 +188,24 @@ struct OnboardingView: View {
                 .tracking(1.2)
                 .foregroundStyle(AppTheme.Colors.textMuted)
 
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                AppTheme.Colors.softGreenBackground.opacity(0.72),
+                                AppTheme.Colors.stationYellow.opacity(0.12)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                Text(step.emoji)
+                    .font(.system(size: 36))
+            }
+            .frame(width: 72, height: 72)
+
             Text(step.title)
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
@@ -152,6 +213,24 @@ struct OnboardingView: View {
             Text(step.subtitle)
                 .font(.title3)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            if step.bulletPoints.isEmpty == false {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(step.bulletPoints, id: \.self) { bullet in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(AppTheme.Colors.accentGreen)
+                                .padding(.top, 2)
+
+                            Text(bullet)
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -170,6 +249,9 @@ struct OnboardingView: View {
                     .font(.caption.weight(.bold))
                     .tracking(1.2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
+
+                Text(steps[currentStep].emoji)
+                    .font(.system(size: 36))
 
                 Text(steps[currentStep].title)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
@@ -317,6 +399,9 @@ struct OnboardingView: View {
                         .tracking(1.2)
                         .foregroundStyle(AppTheme.Colors.textMuted)
 
+                    Text(steps[currentStep].emoji)
+                        .font(.system(size: 36))
+
                     Text(steps[currentStep].title)
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
@@ -392,6 +477,9 @@ struct OnboardingView: View {
                     .font(.caption.weight(.bold))
                     .tracking(1.2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
+
+                Text(steps[currentStep].emoji)
+                    .font(.system(size: 36))
 
                 Text(steps[currentStep].title)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
@@ -564,8 +652,17 @@ struct OnboardingView: View {
 }
 
 private struct OnboardingStep {
+    let emoji: String
     let title: String
     let subtitle: String
+    let bulletPoints: [String]
+
+    init(emoji: String, title: String, subtitle: String, bulletPoints: [String] = []) {
+        self.emoji = emoji
+        self.title = title
+        self.subtitle = subtitle
+        self.bulletPoints = bulletPoints
+    }
 }
 
 private struct DisclaimerAcknowledgementState {

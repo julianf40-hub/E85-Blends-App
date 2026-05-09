@@ -18,7 +18,7 @@ struct DisclaimerView: View {
                         .foregroundStyle(AppTheme.Colors.textMuted)
 
                     Text("Disclaimer")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                 }
 
@@ -88,10 +88,10 @@ struct WarningInfoCard: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(red: 0.18, green: 0.11, blue: 0.07))
+        .background(AppTheme.Colors.surfaceElevated)
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.accentYellow.opacity(0.4), lineWidth: 1)
+                .stroke(AppTheme.Colors.accentYellow.opacity(0.45), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }

@@ -90,7 +90,7 @@ struct FuelLogView: View {
         } message: {
             Text("This fill-up entry will be removed from your log history.")
         }
-        .alert("Fuel Log", isPresented: communityReportMessageBinding) {
+        .alert(communityReportAlertTitle, isPresented: communityReportMessageBinding) {
             Button("OK", role: .cancel) {
                 communityReportMessage = nil
             }
@@ -185,8 +185,8 @@ struct FuelLogView: View {
 
     private var emptyStateCard: some View {
         EmptyStateView(
-            title: "No fill-ups logged yet.",
-            message: "Add your first fill-up to start tracking costs, blend history, and mileage.",
+            title: "No Fill-Ups Yet",
+            message: "Log your first fill-up to start tracking ethanol prices, blend history, and mileage over time.",
             systemImage: "fuelpump"
         )
     }
@@ -269,7 +269,7 @@ struct FuelLogView: View {
 
                 await MainActor.run {
                     communityReportContext = nil
-                    communityReportMessage = "Community E85 price reported."
+                    communityReportMessage = thankYouCommunityReportMessage
                     AppHaptics.success()
                 }
             } catch {
@@ -277,9 +277,9 @@ struct FuelLogView: View {
                     communityReportContext = nil
                     if let serviceError = error as? CommunityPriceServiceError,
                        case .notConfigured = serviceError {
-                        communityReportMessage = "Community price sync is not configured yet."
+                        communityReportMessage = "Community price reporting is not available right now. Your fill-up was saved locally."
                     } else {
-                        communityReportMessage = error.localizedDescription
+                        communityReportMessage = "Unable to submit the community price report. Your fill-up was saved locally. Please try again later."
                     }
                 }
             }
@@ -342,6 +342,14 @@ struct FuelLogView: View {
         default:
             AppTheme.Colors.textPrimary
         }
+    }
+
+    private var communityReportAlertTitle: String {
+        communityReportMessage == thankYouCommunityReportMessage ? "Thank You! 🙌" : "Fuel Log"
+    }
+
+    private var thankYouCommunityReportMessage: String {
+        "Your E85 price report is live and helps other drivers in your area find the best price."
     }
 
     private var communityReportMessageBinding: Binding<Bool> {

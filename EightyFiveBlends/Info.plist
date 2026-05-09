@@ -2,16 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleVersion</key>
+	<string>44</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>comgooglemaps</string>
 		<string>waze</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>85Blends uses your location to show nearby E85 stations and help detect when you are at a saved station.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>85Blends lets you choose a vehicle photo for your Garage profile.</string>
 	<key>NLR_API_KEY</key>
 	<string>oZqG4yF2uqSegQ8BIJtrUFq6DbtPQjB1XG6OPrck</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplZmtidHNjaWVva2tkZW52bmtnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MjkzMDIsImV4cCI6MjA5MzIwNTMwMn0.LodTN0rF5HIkYr_TrxzsqaBrWrbF-0sFoIqD26Xgpwo</string>
 	<key>SUPABASE_URL</key>
 	<string>https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

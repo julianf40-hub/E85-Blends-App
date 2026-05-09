@@ -24,6 +24,7 @@ final class VehicleProfile {
     var requiredOctane: Double
     var isFlexFuel: Bool
     var isActive: Bool
+    var vehiclePhotoData: Data?
     var createdAt: Date
     var updatedAt: Date
 
@@ -42,6 +43,7 @@ final class VehicleProfile {
         requiredOctane: Double = 91,
         isFlexFuel: Bool = false,
         isActive: Bool = false,
+        vehiclePhotoData: Data? = nil,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -59,6 +61,7 @@ final class VehicleProfile {
         self.requiredOctane = requiredOctane
         self.isFlexFuel = isFlexFuel
         self.isActive = isActive
+        self.vehiclePhotoData = vehiclePhotoData
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
