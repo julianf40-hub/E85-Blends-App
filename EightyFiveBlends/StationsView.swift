@@ -10,9 +10,10 @@ import SwiftData
 import MapKit
 
 struct StationsView: View {
-    private static let phoenixRegion = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 33.4484, longitude: -112.0740),
-        span: MKCoordinateSpan(latitudeDelta: 0.22, longitudeDelta: 0.22)
+    // Neutral continental-US overview — used only when no location or station data exists.
+    private static let neutralUSRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 38.5, longitude: -96.0),
+        span: MKCoordinateSpan(latitudeDelta: 28.0, longitudeDelta: 50.0)
     )
 
     @Environment(\.modelContext) private var modelContext
@@ -27,7 +28,7 @@ struct StationsView: View {
     @State private var isAddingStation = false
     @State private var stationPendingDeletion: FuelStation?
     @State private var infoMessage: String?
-    @State private var mapPosition: MapCameraPosition = .region(StationsView.phoenixRegion)
+    @State private var mapPosition: MapCameraPosition = .region(StationsView.neutralUSRegion)
     @State private var selectedMapStationID: PersistentIdentifier?
     @State private var locationManager = StationLocationManager()
     @State private var locationDeniedAlert = false
@@ -401,9 +402,10 @@ struct StationsView: View {
                 .mapStyle(.standard)
 
                 if mappableStations.isEmpty, liveMapStations.isEmpty {
-                    Text("Add coordinates to show pins")
+                    Text("Enable location or search nearby E85 to center the map near you.")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(.ultraThinMaterial)
@@ -784,8 +786,15 @@ struct StationsView: View {
             updatedAt: .now
         )
         modelContext.insert(station)
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: station create save failed:", error)
+            #endif
+            infoMessage = "Couldn't save changes. Please try again."
+        }
         refreshCommunityPricePreviews()
     }
 
@@ -802,32 +811,61 @@ struct StationsView: View {
         station.isFavorite = draft.isFavorite
         station.lastUpdated = .now
         station.updatedAt = .now
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: station update save failed:", error)
+            #endif
+            infoMessage = "Couldn't save changes. Please try again."
+        }
         refreshCommunityPricePreviews()
     }
 
     private func toggleFavorite(_ station: FuelStation) {
         station.isFavorite.toggle()
         station.updatedAt = .now
-        try? modelContext.save()
-        AppHaptics.selection()
+        do {
+            try modelContext.save()
+            AppHaptics.selection()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: favorite toggle save failed:", error)
+            #endif
+            infoMessage = "Couldn't save changes. Please try again."
+        }
         refreshCommunityPricePreviews()
     }
 
     private func confirmDeletion() {
         guard let stationPendingDeletion else { return }
         modelContext.delete(stationPendingDeletion)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            AppHaptics.warning()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: station deletion save failed:", error)
+            #endif
+            infoMessage = "Couldn't save changes. Please try again."
+        }
         self.stationPendingDeletion = nil
-        AppHaptics.warning()
         refreshCommunityPricePreviews()
     }
 
     private func recenterMap() {
         guard mappableStations.isEmpty == false else {
             selectedMapStationID = nil
-            mapPosition = .region(StationsView.phoenixRegion)
+            // Fallback priority: user location → live stations → neutral US overview.
+            if let userCoord = locationManager.latestCoordinate?.clCoordinate,
+               locationManager.isAuthorizedForUserLocation {
+                centerMap(on: userCoord)
+            } else if liveMapStations.isEmpty == false {
+                fitMapToLiveStations()
+            } else {
+                mapPosition = .region(StationsView.neutralUSRegion)
+            }
             return
         }
         selectedMapStationID = selectedMapStation.flatMap(\.id)
@@ -881,7 +919,6 @@ struct StationsView: View {
             guard isValidCoordinate(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude) else {
                 liveStations = []
                 liveSearchError = "Current location is unavailable. Try again in a moment."
-                mapPosition = .region(StationsView.phoenixRegion)
                 return
             }
 
@@ -906,6 +943,40 @@ struct StationsView: View {
         }
     }
 
+    private func fitMapToLiveStations() {
+        let coords = liveMapStations.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        }
+        guard coords.isEmpty == false else { return }
+
+        if coords.count == 1 {
+            mapPosition = .region(MKCoordinateRegion(
+                center: coords[0],
+                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            ))
+            return
+        }
+
+        let latitudes = coords.map(\.latitude)
+        let longitudes = coords.map(\.longitude)
+        guard let minLat = latitudes.min(), let maxLat = latitudes.max(),
+              let minLon = longitudes.min(), let maxLon = longitudes.max() else { return }
+
+        let latPad = max((maxLat - minLat) * 0.35, 0.05)
+        let lonPad = max((maxLon - minLon) * 0.35, 0.05)
+
+        mapPosition = .region(MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minLat + maxLat) / 2,
+                longitude: (minLon + maxLon) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: (maxLat - minLat) + latPad,
+                longitudeDelta: (maxLon - minLon) + lonPad
+            )
+        ))
+    }
+
     private func handleAuthorizationStatusChange(_ status: CLAuthorizationStatus) {
         guard status == .denied || status == .restricted else { return }
 
@@ -913,7 +984,7 @@ struct StationsView: View {
         locationDeniedAlert = true
 
         if locationManager.latestCoordinate == nil, mappableStations.isEmpty, liveStations.isEmpty {
-            mapPosition = .region(StationsView.phoenixRegion)
+            mapPosition = .region(StationsView.neutralUSRegion)
         }
     }
 
@@ -987,7 +1058,15 @@ struct StationsView: View {
             longitude: station.longitude == 0 ? nil : station.longitude
         )
         modelContext.insert(saved)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: live station save failed:", error)
+            #endif
+            infoMessage = "Couldn't save station. Please try again."
+            return
+        }
         AppHaptics.success()
         refreshCommunityPricePreviews()
         beginPriceUpdate(for: saved)
@@ -1219,8 +1298,15 @@ struct StationsView: View {
         let roundedLocalPrice = roundedPrice(parsedPrice)
         let trimmedNote = priceNoteInput.trimmingCharacters(in: .whitespacesAndNewlines)
         _ = upsertLocalStation(for: context, price: roundedLocalPrice, note: trimmedNote)
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: price update save failed:", error)
+            #endif
+            infoMessage = "Couldn't save changes. Please try again."
+        }
         refreshCommunityPricePreviews()
 
         guard reportToCommunity else {

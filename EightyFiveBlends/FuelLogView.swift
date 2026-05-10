@@ -22,6 +22,7 @@ struct FuelLogView: View {
     @State private var communityReportContext: FuelLogCommunityReportContext?
     @State private var communityReportMessage: String?
     @State private var isSubmittingCommunityPrice = false
+    @State private var saveErrorMessage: String?
 
     let initialDraft: FuelLogDraft?
 
@@ -193,6 +194,14 @@ struct FuelLogView: View {
             }
         } message: {
             Text(communityReportMessage ?? "")
+        }
+        .alert("Save Error", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -416,9 +425,16 @@ struct FuelLogView: View {
     private func confirmDeletion() {
         guard let entryPendingDeletion else { return }
         modelContext.delete(entryPendingDeletion)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            AppHaptics.warning()
+        } catch {
+            #if DEBUG
+            print("[85Blends] FuelLogView: entry deletion save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't delete entry. Please try again."
+        }
         self.entryPendingDeletion = nil
-        AppHaptics.warning()
     }
 
     private func summaryMetric(title: String, value: String) -> some View {

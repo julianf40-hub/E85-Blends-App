@@ -13,19 +13,17 @@ struct RecommendedGearView: View {
     @State private var sponsorLinkMessage: String?
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    headerSection
-                    sponsorCard
-                    gearPreviewCard
-                }
-                .padding(16)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                headerSection
+                sponsorCard
+                gearPreviewCard
             }
-            .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            .padding(16)
         }
-        .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        .background(AppTheme.Colors.charcoal)
+        .navigationTitle("Recommended Gear")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var headerSection: some View {
@@ -86,44 +84,23 @@ struct RecommendedGearView: View {
     }
 
     private var gearPreviewCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Image(systemName: "shippingbox")
-                    .font(.title3)
-                    .foregroundStyle(AppTheme.Colors.accentYellow)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.Colors.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        HStack(spacing: 12) {
+            Image(systemName: "shippingbox")
+                .font(.title3)
+                .foregroundStyle(AppTheme.Colors.accentYellow)
+                .frame(width: 44, height: 44)
+                .background(AppTheme.Colors.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Coming Soon")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("More Gear Coming Soon")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text("Ethanol testers, funnels, containers, and shop essentials will appear here as gear picks are finalized.")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
+                Text("Ethanol testers, funnels, and shop essentials will appear here as picks are finalized.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                gearPlaceholderRow(
-                    title: "Testing & measuring",
-                    subtitle: "Space for future ethanol-content testers and measuring tools."
-                )
-                gearPlaceholderRow(
-                    title: "Fill-up equipment",
-                    subtitle: "Reserved for containers, hoses, and practical garage accessories."
-                )
-                gearPlaceholderRow(
-                    title: "Partner gear cards",
-                    subtitle: "Ready for sponsor-safe highlights once product recommendations are finalized."
-                )
-            }
-
-            Text("Find settings, legal screens, Fuel Log, and support in the More tab.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -133,26 +110,6 @@ struct RecommendedGearView: View {
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    private func gearPlaceholderRow(title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func openSponsorLink() {

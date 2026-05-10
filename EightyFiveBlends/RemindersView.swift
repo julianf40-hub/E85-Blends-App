@@ -29,6 +29,7 @@ struct RemindersView: View {
     @State private var completionDate = Date()
     @State private var completionMileageError: String?
     @State private var reminderFeedbackMessage: String?
+    @State private var saveErrorMessage: String?
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
@@ -175,6 +176,14 @@ struct RemindersView: View {
             }
         } message: {
             Text("This completed history entry will be removed. The recurring reminder itself will stay intact.")
+        }
+        .alert("Save Error", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -329,8 +338,15 @@ struct RemindersView: View {
         )
 
         modelContext.insert(reminder)
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: reminder create failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func createReminder(from template: ReminderTemplate) {
@@ -354,8 +370,15 @@ struct RemindersView: View {
         )
 
         modelContext.insert(reminder)
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: reminder from template save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func updateReminder(_ reminder: MaintenanceReminder, from draft: ReminderDraft) {
@@ -376,8 +399,15 @@ struct RemindersView: View {
         reminder.completedMileage = draft.isCompleted ? reminder.completedMileage : nil
         reminder.updatedAt = .now
 
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: reminder update save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func beginCompletion(for reminder: MaintenanceReminder) {
@@ -474,26 +504,47 @@ struct RemindersView: View {
         }
 
         reminder.updatedAt = .now
-        try? modelContext.save()
-        AppHaptics.success()
-        showReminderFeedback("Reminder updated.")
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+            showReminderFeedback("Reminder updated.")
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: reminder completion save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func confirmDeletion() {
         guard let reminderPendingDeletion else { return }
         modelContext.delete(reminderPendingDeletion)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            AppHaptics.warning()
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: reminder deletion save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't delete reminder. Please try again."
+        }
         self.reminderPendingDeletion = nil
-        AppHaptics.warning()
     }
 
     private func confirmCompletionRecordDeletion() {
         guard let completionRecordPendingDeletion else { return }
         modelContext.delete(completionRecordPendingDeletion)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            AppHaptics.warning()
+            showReminderFeedback("Completed history deleted.")
+        } catch {
+            #if DEBUG
+            print("[85Blends] RemindersView: completion record deletion save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't delete history. Please try again."
+        }
         self.completionRecordPendingDeletion = nil
-        AppHaptics.warning()
-        showReminderFeedback("Completed history deleted.")
     }
 
     private func sectionSubtitle(for title: String) -> String {
@@ -597,7 +648,8 @@ private struct ReminderStatusInfo: Identifiable {
     }
 
     var isMileageOverdue: Bool {
-        reminder.mileageEnabled && currentOdometer != nil && currentOdometer! >= reminder.dueMileage
+        guard reminder.mileageEnabled, let odometer = currentOdometer else { return false }
+        return odometer >= reminder.dueMileage
     }
 
     var isDateOverdue: Bool {

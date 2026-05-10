@@ -15,7 +15,6 @@ enum AppPreferenceKey {
     static let themePreference = "themePreference"
     static let showGarageTab = "showGarageTab"
     static let showRemindersTab = "showRemindersTab"
-    static let showGearTab = "showGearTab"
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
     static let hasAcknowledgedDisclaimer = "hasAcknowledgedDisclaimer"
     static let disclaimerAcknowledgedAt = "disclaimerAcknowledgedAt"
@@ -128,11 +127,8 @@ enum MapsRoutingHelper {
 
     private static func openAppleMaps(to destination: MapsRoutingDestination) {
         if let coordinate = destination.coordinate {
-            let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            let item = MKMapItem(
-                location: location,
-                address: mapAddress(for: destination)
-            )
+            let placemark = MKPlacemark(coordinate: coordinate)
+            let item = MKMapItem(placemark: placemark)
             item.name = destination.name.isEmpty ? "Station" : destination.name
             item.openInMaps(launchOptions: [
                 MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
@@ -148,17 +144,6 @@ enum MapsRoutingHelper {
             URLQueryItem(name: "dirflg", value: "d")
         ]
         _ = openURL(components?.url)
-    }
-
-    private static func mapAddress(for destination: MapsRoutingDestination) -> MKAddress? {
-        guard let fullAddress = destination.addressQuery else { return nil }
-
-        let shortAddressParts = [destination.streetAddress, destination.city]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.isEmpty == false }
-        let shortAddress = shortAddressParts.isEmpty ? nil : shortAddressParts.joined(separator: ", ")
-
-        return MKAddress(fullAddress: fullAddress, shortAddress: shortAddress)
     }
 
     private static func googleMapsURL(for destination: MapsRoutingDestination) -> URL? {

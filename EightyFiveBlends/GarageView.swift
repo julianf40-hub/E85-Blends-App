@@ -20,6 +20,7 @@ struct GarageView: View {
     @State private var odometerUpdateContext: ActiveOdometerUpdateContext?
     @State private var odometerInput = ""
     @State private var odometerValidationMessage: String?
+    @State private var saveErrorMessage: String?
 
     private var activeVehicle: VehicleProfile? {
         vehicles.first(where: { $0.isActive })
@@ -78,6 +79,14 @@ struct GarageView: View {
             }
         } message: {
             Text(deletionMessage)
+        }
+        .alert("Save Error", isPresented: Binding(
+            get: { saveErrorMessage != nil },
+            set: { if !$0 { saveErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveErrorMessage = nil }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -197,16 +206,30 @@ struct GarageView: View {
             modelContext.insert(newVehicle)
         }
 
-        try? modelContext.save()
-        AppHaptics.success()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+        } catch {
+            #if DEBUG
+            print("[85Blends] GarageView: vehicle save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func setActiveVehicle(_ vehicle: VehicleProfile) {
         clearActiveFlag(except: vehicle)
         vehicle.isActive = true
         vehicle.updatedAt = .now
-        try? modelContext.save()
-        AppHaptics.selection()
+        do {
+            try modelContext.save()
+            AppHaptics.selection()
+        } catch {
+            #if DEBUG
+            print("[85Blends] GarageView: set active vehicle save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save changes. Please try again."
+        }
     }
 
     private func clearActiveFlag(except vehicle: VehicleProfile?) {
@@ -238,9 +261,16 @@ struct GarageView: View {
             replacement.updatedAt = .now
         }
 
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            AppHaptics.warning()
+        } catch {
+            #if DEBUG
+            print("[85Blends] GarageView: vehicle deletion save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't delete vehicle. Please try again."
+        }
         self.vehiclePendingDeletion = nil
-        AppHaptics.warning()
     }
 
     private func beginOdometerUpdate(for vehicle: VehicleProfile) {
@@ -269,9 +299,16 @@ struct GarageView: View {
 
         context.vehicle.currentOdometer = newOdometer
         context.vehicle.updatedAt = .now
-        try? modelContext.save()
-        AppHaptics.success()
-        dismissOdometerSheet()
+        do {
+            try modelContext.save()
+            AppHaptics.success()
+            dismissOdometerSheet()
+        } catch {
+            #if DEBUG
+            print("[85Blends] GarageView: odometer save failed:", error)
+            #endif
+            saveErrorMessage = "Couldn't save odometer. Please try again."
+        }
     }
 }
 

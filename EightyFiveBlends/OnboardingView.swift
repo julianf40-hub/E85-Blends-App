@@ -18,7 +18,6 @@ struct OnboardingView: View {
     @AppStorage(AppPreferenceKey.disclaimerAcknowledgedAt) private var disclaimerAcknowledgedAt = 0.0
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
-    @AppStorage(AppPreferenceKey.showGearTab) private var showGearTab = true
 
     @State private var currentStep = 0
     @State private var draft = VehicleDraft(vehicle: nil, existingVehiclesCount: 0)
@@ -28,72 +27,48 @@ struct OnboardingView: View {
     @State private var disclaimerGuidanceMessage: String?
 
     private let steps: [OnboardingStep] = [
-        .init(
-            emoji: "👋",
-            title: "Welcome to 85Blends",
-            subtitle: "Let’s get you set up so blend planning, station finding, and fuel tracking feel seamless from day one.",
-            bulletPoints: [
-                "Save your vehicle setup once and reuse it everywhere.",
-                "Find E85 stations, report community prices, and plan blends in one place.",
-                "Use At the Pump mode for quick blend guidance while fueling.",
-                "You can tweak everything later in Preferences."
-            ]
-        ),
+        // 0: Welcome
         .init(
             emoji: "🚗",
-            title: "Set Up Your Garage",
-            subtitle: "Add the vehicle details your calculator, fuel log, and reminders will use every day."
+            title: "Welcome to 85Blends",
+            subtitle: "Your all-in-one E85 blend calculator, station finder, fuel tracker, and garage companion.",
+            bulletPoints: [
+                "Blend Calculator & At the Pump mode",
+                "Nearby E85 Stations & community pricing",
+                "Fuel Logs, MPG trends & cost tracking",
+                "Garage, Reminders & cost comparisons"
+            ]
         ),
+        // 1: Vehicle setup (optional form — body routes here via currentStep == 1)
+        .init(
+            emoji: "🔧",
+            title: "Manage Your Build",
+            subtitle: "Optional — add your vehicle to personalize blend defaults. You can skip this and add it later in Garage."
+        ),
+        // 2: Feature overview
         .init(
             emoji: "⛽",
-            title: "Calculate Better Blends",
-            subtitle: "Use your tank size, fuel assumptions, and ethanol target to get a faster, more consistent starting estimate.",
+            title: "Blend, Find & Track",
+            subtitle: "Everything you need at the pump and beyond.",
             bulletPoints: [
-                "Start with saved defaults instead of entering everything each time.",
-                "Compare fuel assumptions before you head to the pump.",
-                "Build a cleaner estimate for your next mix."
+                "Blend Calculator — E30, E50, E60, or E85 in seconds.",
+                "At the Pump mode for one-handed fueling guidance.",
+                "Nearby E85 stations with community-reported prices.",
+                "Fuel Log with MPG, spend, and trend tracking.",
+                "Cost Calculator to compare blends vs gasoline."
             ]
         ),
+        // 3: Tab selection (steps.count - 2 = 3)
         .init(
-            emoji: "📍",
-            title: "Find & Save E85 Stations",
-            subtitle: "Keep your go-to E85 stops saved, discover new ones nearby, and track prices over time.",
-            bulletPoints: [
-                "Tap Find Nearby E85 to discover stations near you.",
-                "Save local stations you trust for quick access.",
-                "Update and share E85 prices with the community."
-            ]
+            emoji: "🎨",
+            title: "Make It Yours",
+            subtitle: "Pick which tabs to show. OLED dark mode, blend defaults, and map app can be customized in More \u{2192} Preferences."
         ),
+        // 4: Disclaimer / finish (steps.count - 1 = 4)
         .init(
-            emoji: "🤝",
-            title: "Help Keep Prices Fresh",
-            subtitle: "When you report a station price, you’re helping other drivers find better fuel stops nearby.",
-            bulletPoints: [
-                "Update local E85 prices for saved stations.",
-                "Share community price reports to help other drivers.",
-                "Community reports help keep pricing more up to date.",
-                "A thank-you confirmation appears after you successfully share a price."
-            ]
-        ),
-        .init(
-            emoji: "🧾",
-            title: "Track Fill-Ups and Maintenance",
-            subtitle: "Save fill-ups, monitor costs, and use At the Pump mode for one-handed blend guidance at the station.",
-            bulletPoints: [
-                "Log fuel spend, blends, and station details.",
-                "Use At the Pump mode for guided blending while fueling.",
-                "Build a clearer picture of how your setup performs over time."
-            ]
-        ),
-        .init(
-            emoji: "🧭",
-            title: "Choose Your Tabs",
-            subtitle: "Pick which tabs to show. You can always change these later in More → Preferences."
-        ),
-        .init(
-            emoji: "⚠️",
-            title: "Safety First",
-            subtitle: "Review and accept the key warnings before entering the app."
+            emoji: "🔥",
+            title: "Ready to Blend?",
+            subtitle: "Track fuel, find stations, manage your build, and make every fill-up smarter."
         )
     ]
 
@@ -146,7 +121,7 @@ struct OnboardingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("FIRST-LAUNCH SETUP")
+            Text("GETTING STARTED")
                 .font(.caption.weight(.bold))
                 .tracking(1.4)
                 .foregroundStyle(AppTheme.Colors.textMuted)
@@ -155,7 +130,7 @@ struct OnboardingView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
 
-            Text("Quick setup to get you started")
+            Text("Your ethanol toolkit, set up in under a minute")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
@@ -250,8 +225,19 @@ struct OnboardingView: View {
                     .tracking(1.2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
 
-                Text(steps[currentStep].emoji)
-                    .font(.system(size: 36))
+                HStack(spacing: 10) {
+                    Text(steps[currentStep].emoji)
+                        .font(.system(size: 36))
+
+                    Text("OPTIONAL")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(AppTheme.Colors.accentGreen)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(AppTheme.Colors.accentGreen.opacity(0.12))
+                        .clipShape(Capsule())
+                }
 
                 Text(steps[currentStep].title)
                     .font(.system(size: 28, weight: .bold, design: .rounded))
@@ -262,18 +248,14 @@ struct OnboardingView: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
 
                 OnboardingStringField(title: "Nickname", text: $draft.nickname)
-                OnboardingStringField(title: "Year", text: $draft.year, keyboard: .numberPad)
                 OnboardingStringField(title: "Make", text: $draft.make)
                 OnboardingStringField(title: "Model", text: $draft.model)
-                OnboardingStringField(title: "Trim", text: $draft.trim)
-                OnboardingDoubleField(title: "Tank Size Gallons", value: $draft.tankSizeGallons)
-                OnboardingIntField(title: "Current Odometer", value: $draft.currentOdometer)
-                OnboardingDoubleField(title: "Required Octane", value: $draft.requiredOctane)
-                OnboardingDoubleField(title: "Default Target Ethanol %", value: $draft.defaultTargetEthanolPercent)
-                OnboardingDoubleField(title: "Default Current Ethanol %", value: $draft.defaultCurrentEthanolPercent)
-                OnboardingDoubleField(title: "Default Pump Ethanol %", value: $draft.defaultPumpEthanolPercent)
-                OnboardingDoubleField(title: "Gas Ethanol %", value: $draft.gasEthanolPercent)
+                OnboardingDoubleField(title: "Tank Size (gallons)", value: $draft.tankSizeGallons)
                 OnboardingToggleRow(title: "Flex Fuel Vehicle", isOn: $draft.isFlexFuel)
+
+                Text("All details can be edited later in Garage.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -330,7 +312,7 @@ struct OnboardingView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
 
-                Button(currentStep == steps.count - 1 ? "Finish" : "Continue") {
+                Button(currentStep == steps.count - 1 ? "Start Blending" : "Continue") {
                     handlePrimaryAction()
                 }
                 .font(.headline)
@@ -381,7 +363,13 @@ struct OnboardingView: View {
             )
 
             modelContext.insert(vehicle)
-            try? modelContext.save()
+            do {
+                try modelContext.save()
+            } catch {
+                #if DEBUG
+                print("[85Blends] OnboardingView: vehicle save failed:", error)
+                #endif
+            }
         }
 
         hasAcknowledgedDisclaimer = true
@@ -409,6 +397,11 @@ struct OnboardingView: View {
                     Text(steps[currentStep].subtitle)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    Text("Review and accept the safety notes below to get started.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .padding(.top, 4)
 
                     disclaimerAcknowledgementRow(
                         id: .estimates,
@@ -451,6 +444,12 @@ struct OnboardingView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     .buttonStyle(.plain)
+
+                    Text("Built for the ethanol community.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -503,15 +502,7 @@ struct OnboardingView: View {
                     tint: AppTheme.Colors.stationYellow,
                     isOn: $showRemindersTab
                 )
-                onboardingTabToggleCard(
-                    title: "Gear",
-                    description: "View recommended ethanol tools, accessories, sponsor links, and future gear picks.",
-                    systemImage: "wrench.and.screwdriver.fill",
-                    tint: AppTheme.Colors.accentGreen,
-                    isOn: $showGearTab
-                )
-
-                Text("Calculator, Stations, and More always stay visible. You can change these later in More → Preferences.")
+                Text("Calculator, Stations, and More always stay visible. Theme, blend defaults, and preferred maps app can be changed anytime in More \u{2192} Preferences.")
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
@@ -601,7 +592,6 @@ struct OnboardingView: View {
     private func resetOptionalTabsToDefault() {
         showGarageTab = true
         showRemindersTab = true
-        showGearTab = true
     }
 
     private func guideToFirstMissingAcknowledgement() {
@@ -622,20 +612,12 @@ struct OnboardingView: View {
 
         let hasIdentityInput = [
             draft.nickname,
-            draft.year,
             draft.make,
-            draft.model,
-            draft.trim
+            draft.model
         ].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
 
         let hasCustomizedDefaults =
             draft.tankSizeGallons != baselineDraft.tankSizeGallons ||
-            draft.currentOdometer != baselineDraft.currentOdometer ||
-            draft.requiredOctane != baselineDraft.requiredOctane ||
-            draft.defaultTargetEthanolPercent != baselineDraft.defaultTargetEthanolPercent ||
-            draft.defaultCurrentEthanolPercent != baselineDraft.defaultCurrentEthanolPercent ||
-            draft.defaultPumpEthanolPercent != baselineDraft.defaultPumpEthanolPercent ||
-            draft.gasEthanolPercent != baselineDraft.gasEthanolPercent ||
             draft.isFlexFuel != baselineDraft.isFlexFuel
 
         return hasIdentityInput || hasCustomizedDefaults
@@ -699,31 +681,6 @@ private struct OnboardingStringField: View {
 
             TextField(title, text: $text)
                 .keyboardType(keyboard)
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
-                .background(AppTheme.Colors.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-    }
-}
-
-private struct OnboardingIntField: View {
-    let title: String
-    @Binding var value: Int
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-
-            TextField(title, value: $value, format: .number)
-                .keyboardType(.numberPad)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)

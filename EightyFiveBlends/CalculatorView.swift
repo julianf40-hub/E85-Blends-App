@@ -31,10 +31,8 @@ struct CalculatorView: View {
     @State private var e85Octane = "105"
     @State private var gasEthanol = "10"
     @State private var gasOctane = "91"
-    @State private var blendName = ""
     @State private var loadedDefaultsKey = ""
     @State private var calculatorFuelLogDraft: FuelLogDraft?
-    @State private var infoMessage: String?
     @State private var locationManager = StationLocationManager()
     @State private var pumpModeStation: FuelStation?
     @State private var isShowingPumpMode = false
@@ -163,18 +161,6 @@ struct CalculatorView: View {
 
                     BlendResultCard(result: calculation)
 
-                    BottomActionsSection(
-                        blendName: $blendName,
-                        saveBlendAction: {
-                            AppHaptics.selection()
-                            infoMessage = "Saved custom blend presets can be added in a future update."
-                        },
-                        findStationAction: {
-                            AppHaptics.selection()
-                            infoMessage = "Head to the Stations tab to find and save nearby E85 stations."
-                        }
-                    )
-
                     ExpandableSection(
                         title: "Pump Instructions",
                         subtitle: nil,
@@ -250,13 +236,6 @@ struct CalculatorView: View {
                 }
             )
         }
-        .alert("Coming Soon", isPresented: infoAlertBinding) {
-            Button("OK", role: .cancel) {
-                infoMessage = nil
-            }
-        } message: {
-            Text(infoMessage ?? "")
-        }
         .alert("At the Pump?", isPresented: autoPromptAlertBinding) {
             Button("Not Now", role: .cancel) {
                 autoPromptStation = nil
@@ -286,16 +265,7 @@ struct CalculatorView: View {
         )
     }
 
-    private var infoAlertBinding: Binding<Bool> {
-        Binding(
-            get: { infoMessage != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    infoMessage = nil
-                }
-            }
-        )
-    }
+
 
     private var autoPromptAlertBinding: Binding<Bool> {
         Binding(
@@ -771,69 +741,6 @@ private struct BlendResultCard: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
-        }
-    }
-}
-
-private struct BottomActionsSection: View {
-    @Binding var blendName: String
-    let saveBlendAction: () -> Void
-    let findStationAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Button(action: saveBlendAction) {
-                    Label("Save Blend", systemImage: "bookmark.fill")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(AppTheme.Colors.primaryGreen.opacity(0.12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(AppTheme.Colors.primaryGreen.opacity(0.8), lineWidth: 1.2)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .buttonStyle(ScalePressButtonStyle())
-
-                Button(action: findStationAction) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "mappin.circle.fill")
-                        Text("Find Station")
-                    }
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(AppTheme.Colors.surfaceElevated)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(AppTheme.Colors.gasOrange.opacity(0.72), lineWidth: 1.2)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .buttonStyle(ScalePressButtonStyle())
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Name this blend (optional, e.g. Track Day E50)")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                TextField("Track Day E50", text: $blendName)
-                    .textInputAutocapitalization(.words)
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 14)
-                    .background(AppTheme.Colors.cardBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
         }
     }
 }

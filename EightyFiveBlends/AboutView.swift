@@ -48,6 +48,16 @@ struct AboutView: View {
                         subtitle: "Recent product-facing updates."
                     )
 
+                    changelogItem("Final App Store readiness QA fixes.")
+                    changelogItem("Improved data container recovery handling.")
+                    changelogItem("Improved save error handling.")
+                    changelogItem("Station map fallback improved for all regions.")
+                    changelogItem("Onboarding simplified for faster first launch.")
+                    changelogItem("Main tab bar simplified for App Store readiness.")
+                    changelogItem("Removed unfinished saved blend placeholder before release.")
+                    changelogItem("Recommended Gear navigation back button fixed.")
+                    changelogItem("Improved iOS 17.6 compatibility for map directions.")
+                    changelogItem("Onboarding modernized with premium feature walkthrough.")
                     changelogItem("Blend cost comparison expanded.")
                     changelogItem("At the Pump mode polished for faster fueling.")
                     changelogItem("Fuel Log recent trend insights added.")

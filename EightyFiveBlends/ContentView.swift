@@ -12,7 +12,6 @@ struct ContentView: View {
     @AppStorage(AppPreferenceKey.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
-    @AppStorage(AppPreferenceKey.showGearTab) private var showGearTab = true
 
     var body: some View {
         Group {
@@ -39,13 +38,6 @@ struct ContentView: View {
                         RemindersView()
                             .tabItem {
                                 Label("Reminders", systemImage: "bell.badge")
-                            }
-                    }
-
-                    if showGearTab {
-                        RecommendedGearView()
-                            .tabItem {
-                                Label("Gear", systemImage: "wrench.and.screwdriver")
                             }
                     }
 
