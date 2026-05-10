@@ -9,12 +9,14 @@
 /* Begin PBXBuildFile section */
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
+		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		44A838512FA1EAAB00D200DA /* StationLocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationLocationManager.swift; sourceTree = "<group>"; };
 		44A838532FA1EB1100D200DA /* NRELStationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NRELStationService.swift; sourceTree = "<group>"; };
 		44A9BC202FA0865900A9920E /* EightyFiveBlends.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EightyFiveBlends.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculatorView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -56,6 +58,7 @@
 				44A9BC212FA0865900A9920E /* Products */,
 				44A838512FA1EAAB00D200DA /* StationLocationManager.swift */,
 				44A838532FA1EB1100D200DA /* NRELStationService.swift */,
+				44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -142,6 +145,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */,
+				44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */,
 				44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -277,7 +281,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 56;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -285,7 +289,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to show nearby E85 stations when you request it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to show nearby E85 stations and help detect when you are at a saved station.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -316,7 +320,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 56;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -324,7 +328,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to show nearby E85 stations when you request it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to show nearby E85 stations and help detect when you are at a saved station.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

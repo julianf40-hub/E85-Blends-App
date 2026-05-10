@@ -100,6 +100,7 @@ struct AtThePumpView: View {
                     blendResultCard
                     pumpStepsCard
                     stationContextCard
+                    safetyDisclaimer
                     actionButtons
                 }
                 .padding(16)
@@ -124,7 +125,7 @@ struct AtThePumpView: View {
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                Text(nearestStation.map { "Detected near \($0.name)" } ?? "Quick blend guidance while you fuel")
+                Text(nearestStation.map { "At: \($0.name)" } ?? "Quick blend guidance while you fuel")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
@@ -342,6 +343,26 @@ struct AtThePumpView: View {
                 }
             }
         }
+    }
+
+    private var safetyDisclaimer: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(AppTheme.Colors.accentYellow)
+                .font(.subheadline)
+
+            Text("Estimate only. Verify pump ethanol content and fuel compatibility.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.accentYellow.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var actionButtons: some View {
@@ -607,6 +628,7 @@ private struct PumpPresetGrid: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Set target blend to \(item.label)")
             }
         }
     }
@@ -709,6 +731,7 @@ private struct PumpBlendGuideRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(PumpBlendGuideButtonStyle(isActive: isActive))
+        .accessibilityLabel("Apply \(tier.title), \(tier.range)")
         .animation(.spring(response: 0.28, dampingFraction: 0.74), value: isActive)
     }
 
@@ -747,6 +770,7 @@ private struct PumpBlendGuideRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Set target blend to \(title)")
     }
 }
 

@@ -48,6 +48,18 @@ struct AboutView: View {
                         subtitle: "Recent product-facing updates."
                     )
 
+                    changelogItem("Blend cost comparison expanded.")
+                    changelogItem("At the Pump mode polished for faster fueling.")
+                    changelogItem("Fuel Log recent trend insights added.")
+                    changelogItem("Fuel Log analytics summary expanded.")
+                    changelogItem("Maintenance reminders can now save multiple parts links.")
+                    changelogItem("Fixed purchase link field focus and paste interaction behavior.")
+                    changelogItem("Release candidate stability and polish improvements.")
+                    changelogItem("App Store readiness safety fixes added.")
+                    changelogItem("Maintenance reminders can now save parts links.")
+                    changelogItem("E85 vs gas cost calculator added.")
+                    changelogItem("Station map price summary now shows community prices.")
+                    changelogItem("Reminder titles now default to category when left blank.")
                     changelogItem("App Store readiness stabilization and polish pass — empty states, onboarding, At the Pump, and UI consistency.")
                     changelogItem("App Store readiness polish, privacy copy, and stability checks completed.")
                     changelogItem("At the Pump blend guide can now collapse after selecting a target.")

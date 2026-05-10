@@ -218,7 +218,7 @@ struct CalculatorView: View {
         .sheet(isPresented: calculatorFuelLogSheetBinding) {
             if let calculatorFuelLogDraft {
                 AddEditFuelLogView(entry: nil, initialDraft: calculatorFuelLogDraft) { draft in
-                    _ = FuelLogStore.save(
+                    _ = try FuelLogStore.save(
                         draft: draft,
                         editing: nil,
                         entries: fuelLogEntries,
@@ -677,6 +677,7 @@ private struct TankInputSection: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .accessibilityLabel("Set current fuel level to \(title)")
     }
 }
 
@@ -961,6 +962,7 @@ private struct BlendGuideRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(BlendGuideTierButtonStyle(isActive: isActive))
+        .accessibilityLabel("Apply \(tier.title), \(tier.range)")
         .animation(.spring(response: 0.28, dampingFraction: 0.74), value: isActive)
     }
 

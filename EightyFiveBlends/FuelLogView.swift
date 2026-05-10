@@ -48,11 +48,107 @@ struct FuelLogView: View {
         return entries.reduce(0) { $0 + $1.finalBlendPercent } / Double(entries.count)
     }
 
+    private var totalGallons: Double {
+        entries.reduce(0) { $0 + $1.gallonsAdded }
+    }
+
+    private var averageCostPerGallon: Double {
+        guard totalGallons > 0 else { return 0 }
+        return totalSpent / totalGallons
+    }
+
+    private var totalMilesDriven: Int {
+        let vehicleGroups = Dictionary(grouping: entries.filter { $0.odometer > 0 }, by: \.vehicleName)
+        var totalMiles = 0
+        for (_, vehicleEntries) in vehicleGroups {
+            let odometers = vehicleEntries.map(\.odometer)
+            if let maxOdo = odometers.max(), let minOdo = odometers.min(), maxOdo > minOdo {
+                totalMiles += maxOdo - minOdo
+            }
+        }
+        return totalMiles
+    }
+
+    private var costPerMile: Double? {
+        guard totalMilesDriven > 0, totalSpent > 0 else { return nil }
+        return totalSpent / Double(totalMilesDriven)
+    }
+
+    private var mostUsedStation: String? {
+        let stationNames = entries.compactMap { name in
+            let trimmed = name.stationName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        guard stationNames.isEmpty == false else { return nil }
+        let counts = Dictionary(grouping: stationNames, by: { $0.lowercased() })
+        guard let topKey = counts.max(by: { $0.value.count < $1.value.count })?.key else { return nil }
+        return stationNames.first(where: { $0.lowercased() == topKey })
+    }
+
+    private var averageE85Price: Double {
+        let validEntries = entries.filter { $0.e85PricePerGallon > 0 }
+        guard validEntries.isEmpty == false else { return 0 }
+        return validEntries.reduce(0) { $0 + $1.e85PricePerGallon } / Double(validEntries.count)
+    }
+
+    private var mostRecentBlend: Double? {
+        entries.first?.finalBlendPercent
+    }
+
+    private var thisMonthSpend: Double {
+        let calendar = Calendar.current
+        guard let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now)) else { return 0 }
+        return entries.filter { $0.date >= startOfMonth }.reduce(0) { $0 + $1.totalCost }
+    }
+
+    private var thisMonthFillUps: Int {
+        let calendar = Calendar.current
+        guard let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: .now)) else { return 0 }
+        return entries.filter { $0.date >= startOfMonth }.count
+    }
+
+    private var last30DaysSpend: Double {
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: .now) else { return 0 }
+        return entries.filter { $0.date >= cutoff }.reduce(0) { $0 + $1.totalCost }
+    }
+
+    private var recentMPG: Double? {
+        let valid = Array(entries.filter { $0.mpg > 0 }.prefix(3))
+        guard valid.count >= 2 else { return nil }
+        return valid.reduce(0) { $0 + $1.mpg } / Double(valid.count)
+    }
+
+    private var recentAverageBlend: Double? {
+        let recent = Array(entries.prefix(3))
+        guard recent.isEmpty == false else { return nil }
+        return recent.reduce(0) { $0 + $1.finalBlendPercent } / Double(recent.count)
+    }
+
+    private var recentE85Price: Double? {
+        let valid = Array(entries.filter { $0.e85PricePerGallon > 0 }.prefix(3))
+        guard valid.isEmpty == false else { return nil }
+        return valid.reduce(0) { $0 + $1.e85PricePerGallon } / Double(valid.count)
+    }
+
+    private var fuelingFrequencyDays: Int? {
+        let sortedDates = entries.map(\.date).sorted()
+        guard sortedDates.count >= 2,
+              let first = sortedDates.first,
+              let last = sortedDates.last else { return nil }
+        let totalDays = Calendar.current.dateComponents([.day], from: first, to: last).day ?? 0
+        guard totalDays > 0 else { return nil }
+        return totalDays / (sortedDates.count - 1)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 headerSection
                 summaryCard
+                if entries.isEmpty == false {
+                    insightsCard
+                    trendsCard
+                }
                 entriesSection
             }
             .padding(16)
@@ -62,7 +158,7 @@ struct FuelLogView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $sheetContext) { context in
             AddEditFuelLogView(entry: context.entry, initialDraft: context.draft) { draft in
-                saveLog(from: draft, editing: context.entry)
+                try saveLog(from: draft, editing: context.entry)
             }
         }
         .sheet(item: $communityReportContext) { context in
@@ -74,6 +170,7 @@ struct FuelLogView: View {
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
+            .interactiveDismissDisabled(isSubmittingCommunityPrice)
         }
         .onAppear {
             if let initialDraft {
@@ -151,6 +248,17 @@ struct FuelLogView: View {
                 summaryMetric(title: "Average Blend", value: entries.isEmpty ? "--" : String(format: "E%.1f", averageBlend))
                 summaryMetric(title: "Total Fill-Ups", value: "\(entries.count)")
             }
+
+            HStack(spacing: 12) {
+                summaryMetric(
+                    title: "Avg Cost/Gal",
+                    value: averageCostPerGallon > 0 ? String(format: "$%.2f", averageCostPerGallon) : "--"
+                )
+                summaryMetric(
+                    title: "Cost/Mile",
+                    value: costPerMile.map { String(format: "$%.2f", $0) } ?? "--"
+                )
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -202,8 +310,8 @@ struct FuelLogView: View {
         )
     }
 
-    private func saveLog(from draft: FuelLogDraft, editing entry: FuelLogEntry?) {
-        let outcome = FuelLogStore.save(
+    private func saveLog(from draft: FuelLogDraft, editing entry: FuelLogEntry?) throws {
+        let outcome = try FuelLogStore.save(
             draft: draft,
             editing: entry,
             entries: entries,
@@ -279,7 +387,7 @@ struct FuelLogView: View {
                        case .notConfigured = serviceError {
                         communityReportMessage = "Community price reporting is not available right now. Your fill-up was saved locally."
                     } else {
-                        communityReportMessage = "Unable to submit the community price report. Your fill-up was saved locally. Please try again later."
+                        communityReportMessage = "Couldn’t reach community price reporting. Your fill-up was saved locally."
                     }
                 }
             }
@@ -333,9 +441,179 @@ struct FuelLogView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
+    private var insightsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "Insights",
+                subtitle: "Quick highlights from your fill-up history."
+            )
+
+            insightRow(
+                icon: "fuelpump",
+                text: "You have logged \(entries.count) fill-up\(entries.count == 1 ? "" : "s")."
+            )
+
+            if let mostRecentBlend {
+                insightRow(
+                    icon: "drop.fill",
+                    text: "Most recent blend: E\(String(format: "%.0f", mostRecentBlend))",
+                    accent: AppTheme.Colors.stationYellow
+                )
+            }
+
+            if let mostUsedStation {
+                insightRow(
+                    icon: "mappin.circle.fill",
+                    text: "Most used station: \(mostUsedStation)",
+                    accent: AppTheme.Colors.stationYellow
+                )
+            }
+
+            if averageE85Price > 0 {
+                insightRow(
+                    icon: "dollarsign.circle.fill",
+                    text: "Average E85 price: \(String(format: "$%.2f", averageE85Price))/gal",
+                    accent: AppTheme.Colors.primaryGreen
+                )
+            }
+
+            if costPerMile == nil && entries.count < 2 {
+                insightRow(
+                    icon: "info.circle",
+                    text: "Log more fill-ups to unlock cost-per-mile tracking.",
+                    accent: AppTheme.Colors.textMuted
+                )
+            } else if costPerMile == nil {
+                insightRow(
+                    icon: "info.circle",
+                    text: "Need odometer history to calculate cost per mile.",
+                    accent: AppTheme.Colors.textMuted
+                )
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func insightRow(icon: String, text: String, accent: Color = AppTheme.Colors.textSecondary) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(accent)
+                .frame(width: 20)
+
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+    }
+
+    private var trendsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "Recent Trends",
+                subtitle: "Based on your most recent fill-ups."
+            )
+
+            HStack(spacing: 12) {
+                trendMetric(
+                    title: "This Month",
+                    value: thisMonthFillUps > 0 ? String(format: "$%.2f", thisMonthSpend) : "--",
+                    subtitle: thisMonthFillUps > 0 ? "\(thisMonthFillUps) fill-up\(thisMonthFillUps == 1 ? "" : "s")" : "No fill-ups this month",
+                    accent: AppTheme.Colors.primaryGreen
+                )
+                trendMetric(
+                    title: "Last 30 Days",
+                    value: last30DaysSpend > 0 ? String(format: "$%.2f", last30DaysSpend) : "--",
+                    subtitle: nil,
+                    accent: AppTheme.Colors.primaryGreen
+                )
+            }
+
+            HStack(spacing: 12) {
+                trendMetric(
+                    title: "Recent MPG",
+                    value: recentMPG.map { String(format: "%.1f", $0) } ?? "--",
+                    subtitle: recentMPG == nil ? "Need more fill-ups" : "Last 3 entries",
+                    accent: AppTheme.Colors.textPrimary
+                )
+                trendMetric(
+                    title: "Recent Blend",
+                    value: recentAverageBlend.map { String(format: "E%.0f", $0) } ?? "--",
+                    subtitle: recentAverageBlend != nil ? "Last 3 entries" : nil,
+                    accent: AppTheme.Colors.stationYellow
+                )
+            }
+
+            if let recentE85Price {
+                insightRow(
+                    icon: "dollarsign.circle.fill",
+                    text: "Recent E85 price: \(String(format: "$%.2f", recentE85Price))/gal (last 3)",
+                    accent: AppTheme.Colors.primaryGreen
+                )
+            }
+
+            if let fuelingFrequencyDays {
+                insightRow(
+                    icon: "calendar.badge.clock",
+                    text: "About every \(fuelingFrequencyDays) day\(fuelingFrequencyDays == 1 ? "" : "s")",
+                    accent: AppTheme.Colors.stationYellow
+                )
+            } else if entries.count < 2 {
+                insightRow(
+                    icon: "calendar.badge.clock",
+                    text: "Log more fill-ups to see fueling frequency.",
+                    accent: AppTheme.Colors.textMuted
+                )
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func trendMetric(title: String, value: String, subtitle: String?, accent: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(value == "--" ? AppTheme.Colors.textMuted : accent)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private func metricColor(for title: String) -> Color {
         switch title {
-        case "Total Spent":
+        case "Total Spent", "Avg Cost/Gal", "Cost/Mile":
             AppTheme.Colors.primaryGreen
         case "Average Blend":
             AppTheme.Colors.stationYellow

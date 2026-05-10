@@ -230,7 +230,8 @@ struct RemindersView: View {
                         info: info,
                         completeAction: { beginCompletion(for: info.reminder) },
                         editAction: { sheetReminder = info.reminder },
-                        deleteAction: { reminderPendingDeletion = info.reminder }
+                        deleteAction: { reminderPendingDeletion = info.reminder },
+                        linkOpenFailedAction: { showReminderFeedback("Couldn’t open this link.") }
                     )
                 }
             }
@@ -263,7 +264,8 @@ struct RemindersView: View {
                             info: info,
                             completeAction: { },
                             editAction: { sheetReminder = info.reminder },
-                            deleteAction: { reminderPendingDeletion = info.reminder }
+                            deleteAction: { reminderPendingDeletion = info.reminder },
+                            linkOpenFailedAction: { showReminderFeedback("Couldn’t open this link.") }
                         )
                     case .record(let record):
                         ReminderCompletionRecordCard(record: record) {
@@ -317,6 +319,8 @@ struct RemindersView: View {
             dueDate: draft.dueDate,
             repeatDateIntervalDays: draft.repeatDateIntervalDays,
             notes: draft.notes,
+            purchaseURLString: draft.purchaseLinks.first?.urlString,
+            purchaseLinksJSON: MaintenanceReminder.encodePurchaseLinks(draft.purchaseLinks),
             isCompleted: draft.isCompleted,
             completedAt: draft.isCompleted ? .now : nil,
             completedMileage: nil,
@@ -365,6 +369,8 @@ struct RemindersView: View {
         reminder.dueDate = draft.dueDate
         reminder.repeatDateIntervalDays = draft.repeatDateIntervalDays
         reminder.notes = draft.notes
+        reminder.purchaseURLString = draft.purchaseLinks.first?.urlString
+        reminder.purchaseLinksJSON = MaintenanceReminder.encodePurchaseLinks(draft.purchaseLinks)
         reminder.isCompleted = draft.isCompleted
         reminder.completedAt = draft.isCompleted ? (reminder.completedAt ?? .now) : nil
         reminder.completedMileage = draft.isCompleted ? reminder.completedMileage : nil
@@ -678,10 +684,14 @@ private struct ReminderStatusInfo: Identifiable {
 }
 
 private struct ReminderRowCard: View {
+    @Environment(\.openURL) private var openURL
+    @State private var isShowingPurchaseLinks = false
+
     let info: ReminderStatusInfo
     let completeAction: () -> Void
     let editAction: () -> Void
     let deleteAction: () -> Void
+    let linkOpenFailedAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -743,6 +753,26 @@ private struct ReminderRowCard: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary.opacity(info.group == .completed ? 0.8 : 1))
             }
 
+            if purchaseLinks.isEmpty == false {
+                Button {
+                    isShowingPurchaseLinks = true
+                } label: {
+                    Text(purchaseLinksButtonTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(AppTheme.Colors.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(AppTheme.Colors.accentGreen.opacity(0.7), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show parts links for \(reminderTitle)")
+            }
+
             HStack(spacing: 10) {
                 Button(action: completeAction) {
                     Text(info.group == .completed ? "Completed" : "Mark Complete")
@@ -758,6 +788,7 @@ private struct ReminderRowCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
                 .disabled(info.group == .completed)
+                .accessibilityLabel(info.group == .completed ? "\(reminderTitle) completed" : "Mark \(reminderTitle) complete")
 
                 Button(action: editAction) {
                     Text("Edit")
@@ -772,6 +803,7 @@ private struct ReminderRowCard: View {
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+                .accessibilityLabel("Edit \(reminderTitle)")
 
                 Button(action: deleteAction) {
                     Image(systemName: "trash")
@@ -785,6 +817,7 @@ private struct ReminderRowCard: View {
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+                .accessibilityLabel("Delete \(reminderTitle)")
             }
         }
         .padding(18)
@@ -796,6 +829,15 @@ private struct ReminderRowCard: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .opacity(info.group == .completed ? 0.72 : 1)
+        .sheet(isPresented: $isShowingPurchaseLinks) {
+            ReminderPurchaseLinksSheet(
+                title: reminderTitle,
+                links: purchaseLinks,
+                openAction: openPurchaseLink
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
     private var cardBackground: Color {
@@ -805,6 +847,10 @@ private struct ReminderRowCard: View {
         case .upcoming, .completed:
             return AppTheme.Colors.surfaceElevated
         }
+    }
+
+    private var reminderTitle: String {
+        info.reminder.title.isEmpty ? "Untitled Reminder" : info.reminder.title
     }
 
     private var cardBorder: Color {
@@ -865,6 +911,36 @@ private struct ReminderRowCard: View {
         return date.formatted(date: .abbreviated, time: .omitted)
     }
 
+    private var purchaseLinks: [ReminderPurchaseLink] {
+        info.reminder.purchaseLinks
+    }
+
+    private var purchaseLinksButtonTitle: String {
+        guard let firstLink = purchaseLinks.first else {
+            return "Parts Links"
+        }
+
+        if purchaseLinks.count == 1 {
+            return firstLink.label.isEmpty ? "Parts Link" : firstLink.label
+        }
+
+        return "\(firstLink.label.isEmpty ? "Parts Links" : firstLink.label) +\(purchaseLinks.count - 1)"
+    }
+
+    private func openPurchaseLink(_ link: ReminderPurchaseLink) {
+        guard let normalizedURLString = MaintenanceReminder.normalizedPurchaseURLString(from: link.urlString),
+              let url = URL(string: normalizedURLString) else {
+            linkOpenFailedAction()
+            return
+        }
+
+        openURL(url) { accepted in
+            if accepted == false {
+                linkOpenFailedAction()
+            }
+        }
+    }
+
     private func reminderMetric(title: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
@@ -874,6 +950,60 @@ private struct ReminderRowCard: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+}
+
+private struct ReminderPurchaseLinksSheet: View {
+    let title: String
+    let links: [ReminderPurchaseLink]
+    let openAction: (ReminderPurchaseLink) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(links) { link in
+                        Button {
+                            openAction(link)
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(link.label.isEmpty ? "Parts Link" : link.label)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                                    Text(link.urlString)
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.accentGreen)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(AppTheme.Colors.surfaceElevated)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open \(link.label.isEmpty ? "parts link" : link.label)")
+                    }
+                }
+                .padding(16)
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Parts Links")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }

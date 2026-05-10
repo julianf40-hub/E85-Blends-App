@@ -54,7 +54,9 @@ struct AddEditVehicleView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        onSave(draft)
+                        var finalDraft = draft
+                        finalDraft.normalizeForSave()
+                        onSave(finalDraft)
                         dismiss()
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
@@ -343,6 +345,16 @@ struct VehicleDraft {
         isFlexFuel = vehicle?.isFlexFuel ?? false
         isActive = vehicle?.isActive ?? (existingVehiclesCount == 0)
         vehiclePhotoData = vehicle?.vehiclePhotoData
+    }
+
+    mutating func normalizeForSave() {
+        tankSizeGallons = max(tankSizeGallons, 0)
+        currentOdometer = max(currentOdometer, 0)
+        requiredOctane = max(requiredOctane, 0)
+        defaultTargetEthanolPercent = min(max(defaultTargetEthanolPercent, 0), 100)
+        defaultCurrentEthanolPercent = min(max(defaultCurrentEthanolPercent, 0), 100)
+        defaultPumpEthanolPercent = min(max(defaultPumpEthanolPercent, 0), 100)
+        gasEthanolPercent = min(max(gasEthanolPercent, 0), 100)
     }
 }
 

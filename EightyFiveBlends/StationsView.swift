@@ -35,6 +35,7 @@ struct StationsView: View {
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
     @State private var pendingLiveSearch = false
+    @State private var liveSearchTask: Task<Void, Never>?
     @State private var priceInput = ""
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
@@ -126,6 +127,12 @@ struct StationsView: View {
             recenterMap()
             refreshCommunityPricePreviews()
         }
+        .onDisappear {
+            liveSearchTask?.cancel()
+            communityPriceTask?.cancel()
+            isSearchingLive = false
+            pendingLiveSearch = false
+        }
         .onChange(of: mappableStations) { _, _ in
             recenterMap()
         }
@@ -168,6 +175,7 @@ struct StationsView: View {
             )
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
+            .interactiveDismissDisabled(isSubmittingCommunityPrice)
         }
         .alert("Delete Station?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
@@ -680,6 +688,8 @@ struct StationsView: View {
 
     @ViewBuilder
     private func selectedMapStationCard(_ station: SavedStationMapItem) -> some View {
+        let community = selectedMapStationCommunityPrice(for: station)
+
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(station.name.isEmpty ? "Unnamed Station" : station.name)
@@ -690,6 +700,20 @@ struct StationsView: View {
                     Text("Last E85 \(station.lastKnownE85Price.currencyText)")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    if let community {
+                        Text("Community \(community.price.currencyText) · \(community.daysAgoText)")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                } else if let community {
+                    Text("Community E85 \(community.price.currencyText)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    Text("Reported \(community.daysAgoText)")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
                 } else {
                     Text("No E85 price saved yet")
                         .font(.subheadline)
@@ -710,6 +734,18 @@ struct StationsView: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func selectedMapStationCommunityPrice(for mapItem: SavedStationMapItem) -> (price: Double, daysAgoText: String)? {
+        guard let fuelStation = stations.first(where: { $0.persistentModelID == mapItem.id }),
+              let summary = communitySummary(for: fuelStation),
+              let latestPrice = summary.latestPrice,
+              let latestReportedAt = summary.latestReportedAt else {
+            return nil
+        }
+        let days = Calendar.current.dateComponents([.day], from: latestReportedAt, to: .now).day ?? 0
+        let daysText = days == 0 ? "today" : days == 1 ? "1 day ago" : "\(days) days ago"
+        return (price: latestPrice, daysAgoText: daysText)
     }
 
     private var infoAlertBinding: Binding<Bool> {
@@ -882,6 +918,8 @@ struct StationsView: View {
     }
 
     private func fetchLiveStations(at coordinate: CLLocationCoordinate2D) {
+        liveSearchTask?.cancel()
+
         guard isValidCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
             liveStations = []
             liveSearchError = "Current location is unavailable. Try again in a moment."
@@ -897,7 +935,7 @@ struct StationsView: View {
         let radiusValue = Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
         let service = NLRStationService()
 
-        Task {
+        liveSearchTask = Task { @MainActor in
             do {
                 let results = try await service.fetchNearbyE85Stations(
                     latitude: coordinate.latitude,
@@ -905,20 +943,26 @@ struct StationsView: View {
                     radius: radiusValue,
                     limit: 20
                 )
+                guard Task.isCancelled == false else { return }
                 liveStations = results
                 if results.isEmpty {
                     liveSearchError = "No E85 stations found within \(selectedRadius). Try a larger search radius."
                 }
                 refreshCommunityPricePreviews()
             } catch {
+                guard Task.isCancelled == false else { return }
                 if case NRELServiceError.missingAPIKey = error {
                     liveSearchError = "Live station search is not available right now. You can still add stations manually."
+                } else if let urlError = error as? URLError,
+                          urlError.code == .timedOut || urlError.code == .notConnectedToInternet {
+                    liveSearchError = "Live station search is temporarily unavailable. Saved stations still work offline."
                 } else {
-                    liveSearchError = error.localizedDescription
+                    liveSearchError = "Live station search failed. Saved stations still work offline."
                 }
                 refreshCommunityPricePreviews()
             }
             isSearchingLive = false
+            liveSearchTask = nil
         }
     }
 
@@ -1162,6 +1206,10 @@ struct StationsView: View {
     }
 
     private func savePriceUpdate(for context: StationPriceUpdateContext, reportToCommunity: Bool) {
+        if reportToCommunity, isSubmittingCommunityPrice {
+            return
+        }
+
         let trimmedPrice = priceInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsedPrice = Double(trimmedPrice), parsedPrice > 0 else {
             priceValidationMessage = "Enter a valid E85 price to continue."
@@ -1460,6 +1508,7 @@ private struct StationRowCard: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
+                    .accessibilityLabel("Get directions to \(station.name)")
 
                     Button(action: updatePriceAction) {
                         Label("Update Price", systemImage: "tag.fill")
@@ -1470,6 +1519,7 @@ private struct StationRowCard: View {
                             .background(AppTheme.Colors.stationYellow)
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
+                    .accessibilityLabel("Update E85 price for \(station.name)")
                 }
 
                 HStack(spacing: 8) {
@@ -1485,6 +1535,7 @@ private struct StationRowCard: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
+                    .accessibilityLabel("Edit \(station.name)")
 
                     Button(action: deleteAction) {
                         Image(systemName: "trash")
@@ -1498,6 +1549,7 @@ private struct StationRowCard: View {
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
+                    .accessibilityLabel("Delete \(station.name)")
 
                     Spacer()
                 }
@@ -1791,6 +1843,7 @@ private struct LiveStationRowCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Get directions to \(station.name)")
 
                 Button(action: reportPriceAction) {
                     Label("Report Price", systemImage: "tag.fill")
@@ -1802,6 +1855,7 @@ private struct LiveStationRowCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Report E85 price for \(station.name)")
 
                 Button(action: saveAction) {
                     Label(isSaved ? "Saved" : "Save Station", systemImage: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down")
@@ -1818,6 +1872,7 @@ private struct LiveStationRowCard: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isSaved)
+                .accessibilityLabel(isSaved ? "\(station.name) already saved" : "Save \(station.name)")
             }
         }
         .padding(16)

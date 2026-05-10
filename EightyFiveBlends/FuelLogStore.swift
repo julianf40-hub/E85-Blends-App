@@ -8,6 +8,17 @@
 import Foundation
 import SwiftData
 
+enum FuelLogStoreError: LocalizedError {
+    case saveFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .saveFailed:
+            return "Couldn’t save this fill-up. Please try again."
+        }
+    }
+}
+
 @MainActor
 enum FuelLogStore {
     static func save(
@@ -16,7 +27,10 @@ enum FuelLogStore {
         entries: [FuelLogEntry],
         activeVehicle: VehicleProfile?,
         modelContext: ModelContext
-    ) -> FuelLogSaveOutcome {
+    ) throws -> FuelLogSaveOutcome {
+        var draft = draft
+        draft.normalizeForSave()
+
         let gallonsAdded = round(draft.computedGallonsAdded, places: 2)
         let totalCost = round(draft.computedTotalCost, places: 2)
         let mpg = calculateMPG(for: draft, gallonsAdded: gallonsAdded, editing: entry, entries: entries)
@@ -64,7 +78,13 @@ enum FuelLogStore {
         }
 
         let linkedStation = updateStationIfNeeded(from: draft, modelContext: modelContext)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            AppHaptics.warning()
+            throw FuelLogStoreError.saveFailed
+        }
+
         AppHaptics.success()
 
         return FuelLogSaveOutcome(

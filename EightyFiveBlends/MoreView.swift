@@ -45,10 +45,19 @@ struct MoreView: View {
                         }
 
                         MoreNavigationRow(
+                            title: "Cost Calculator",
+                            subtitle: "Compare blend cost, range, and savings.",
+                            systemImage: "dollarsign.circle",
+                            tint: AppTheme.Colors.accentYellow
+                        ) {
+                            CostCalculatorView()
+                        }
+
+                        MoreNavigationRow(
                             title: "Preferences",
                             subtitle: "Choose maps, default blend, theme, and tab visibility.",
                             systemImage: "slider.horizontal.3",
-                            tint: AppTheme.Colors.accentYellow
+                            tint: AppTheme.Colors.accentGreen
                         ) {
                             PreferencesView()
                         }

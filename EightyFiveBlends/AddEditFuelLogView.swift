@@ -16,9 +16,10 @@ struct AddEditFuelLogView: View {
 
     let entry: FuelLogEntry?
     let initialDraft: FuelLogDraft?
-    let onSave: (FuelLogDraft) -> Void
+    let onSave: (FuelLogDraft) throws -> Void
 
     @State private var draft: FuelLogDraft
+    @State private var saveErrorMessage: String?
     @State private var locationManager = StationLocationManager()
     @State private var isDetectingStation = false
     @State private var detectStationMessage: String?
@@ -30,7 +31,7 @@ struct AddEditFuelLogView: View {
     init(
         entry: FuelLogEntry?,
         initialDraft: FuelLogDraft? = nil,
-        onSave: @escaping (FuelLogDraft) -> Void
+        onSave: @escaping (FuelLogDraft) throws -> Void
     ) {
         self.entry = entry
         self.initialDraft = initialDraft
@@ -60,8 +61,12 @@ struct AddEditFuelLogView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        onSave(draft)
-                        dismiss()
+                        do {
+                            try onSave(draft)
+                            dismiss()
+                        } catch {
+                            saveErrorMessage = error.localizedDescription
+                        }
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
                 }
@@ -95,6 +100,24 @@ struct AddEditFuelLogView: View {
         } message: {
             Text("Replace the current station name with \(overwriteCandidate?.station.name ?? "this station")?")
         }
+        .alert("Couldn’t Save Fill-Up", isPresented: saveErrorBinding) {
+            Button("OK", role: .cancel) {
+                saveErrorMessage = nil
+            }
+        } message: {
+            Text(saveErrorMessage ?? "Please try again.")
+        }
+    }
+
+    private var saveErrorBinding: Binding<Bool> {
+        Binding(
+            get: { saveErrorMessage != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    saveErrorMessage = nil
+                }
+            }
+        )
     }
 
     private var formCard: some View {
@@ -309,6 +332,17 @@ struct FuelLogDraft {
 
     var computedTotalCost: Double {
         (e85Gallons * e85PricePerGallon) + (gasGallons * gasPricePerGallon)
+    }
+
+    mutating func normalizeForSave() {
+        odometer = max(odometer, 0)
+        targetBlendPercent = min(max(targetBlendPercent, 0), 100)
+        finalBlendPercent = min(max(finalBlendPercent, 0), 100)
+        e85Gallons = max(e85Gallons, 0)
+        gasGallons = max(gasGallons, 0)
+        e85PricePerGallon = max(e85PricePerGallon, 0)
+        gasPricePerGallon = max(gasPricePerGallon, 0)
+        mpg = max(mpg, 0)
     }
 
     init(

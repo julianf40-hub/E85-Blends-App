@@ -31,12 +31,15 @@ enum CommunityPriceServiceError: LocalizedError {
 }
 
 struct CommunityPriceService {
+    private static let maximumNoteLength = 500
+    private static let defaultTimeoutInterval: TimeInterval = 18
+
     private let config: SupabaseConfig
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    init(session: URLSession = .shared) throws {
+    init(session: URLSession = CommunityPriceService.defaultSession) throws {
         do {
             self.config = try SupabaseConfig.load()
         } catch {
@@ -52,6 +55,13 @@ struct CommunityPriceService {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         self.encoder = encoder
+    }
+
+    private static var defaultSession: URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = defaultTimeoutInterval
+        configuration.timeoutIntervalForResource = defaultTimeoutInterval
+        return URLSession(configuration: configuration)
     }
 
     static var anonymousReporterID: String {
@@ -190,12 +200,13 @@ struct CommunityPriceService {
             resolvedStationID = stationID
         }
 
+        let limitedNotes = Self.limitedNote(from: notes)
         let payload = CommunityPriceReportPayload(
             stationID: resolvedStationID,
             price: roundedPrice(price),
             reportedAt: reportedAt,
             reporterID: Self.anonymousReporterID,
-            note: notes?.trimmingCharacters(in: .whitespacesAndNewlines),
+            note: limitedNotes,
             appVersion: appVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
         )
 
@@ -217,7 +228,7 @@ struct CommunityPriceService {
                 price: roundedPrice(price),
                 reportedAt: reportedAt,
                 reporterID: Self.anonymousReporterID,
-                notes: notes?.trimmingCharacters(in: .whitespacesAndNewlines),
+                notes: limitedNotes,
                 createdAt: nil
             )
         }
@@ -353,6 +364,15 @@ struct CommunityPriceService {
 
     private func roundedPrice(_ price: Double) -> Double {
         (price * 100).rounded() / 100
+    }
+
+    private static func limitedNote(from notes: String?) -> String? {
+        guard let trimmedNotes = notes?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmedNotes.isEmpty == false else {
+            return nil
+        }
+
+        return String(trimmedNotes.prefix(maximumNoteLength))
     }
 
     private func isResponseBodyEmpty(_ data: Data) -> Bool {

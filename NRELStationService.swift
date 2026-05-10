@@ -98,11 +98,19 @@ enum NLRServiceError: LocalizedError, Equatable {
 
 struct NLRStationService {
     private static let baseURL = "https://developer.nlr.gov/api/alt-fuel-stations/v1/nearest.json"
+    private static let defaultTimeoutInterval: TimeInterval = 18
 
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = NLRStationService.defaultSession) {
         self.session = session
+    }
+
+    static var defaultSession: URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = defaultTimeoutInterval
+        configuration.timeoutIntervalForResource = defaultTimeoutInterval
+        return URLSession(configuration: configuration)
     }
 
     func fetchNearbyE85Stations(
@@ -168,7 +176,7 @@ struct NLRStationService {
             throw NLRServiceError.invalidURL
         }
 
-        return URLRequest(url: url)
+        return URLRequest(url: url, timeoutInterval: defaultTimeoutInterval)
     }
 }
 
@@ -177,7 +185,7 @@ typealias NRELServiceError = NLRServiceError
 struct NRELStationService {
     private let service: NLRStationService
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = NLRStationService.defaultSession) {
         service = NLRStationService(session: session)
     }
 
