@@ -77,3 +77,5 @@ Before submitting to App Store Connect:
 - [ ] Dashboard policy screenshots archived in release notes or internal docs
 
 **Verified by:** ___________________  **Date:** ___________________
+
+## Xcode Cloud workflow updated to App Store Connect distribution — 2.1.1 (91)
