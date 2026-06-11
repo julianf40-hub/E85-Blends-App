@@ -30,7 +30,7 @@ final class FuelLogEntry {
         date: Date = .now,
         stationName: String = "",
         odometer: Int = 0,
-        targetBlendPercent: Double = 85,
+        targetBlendPercent: Double = 30,
         finalBlendPercent: Double = 0,
         gallonsAdded: Double = 0,
         e85Gallons: Double = 0,

@@ -16,7 +16,7 @@ enum AppTheme {
         #if os(iOS)
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = UIColor(Colors.oledBackground)
+        appearance.backgroundColor = UIColor(Colors.tabBarBackground)
         appearance.shadowColor = UIColor(Colors.borderColor)
 
         let selected = UIColor(Colors.primaryGreen)
@@ -34,10 +34,31 @@ enum AppTheme {
     }
 
     enum Colors {
+        // Cached theme preference — updated via NotificationCenter when UserDefaults changes
+        // so we never hit UserDefaults on every color access.
+        private static var _cachedThemePreference: ThemePreferenceOption = {
+            let raw = UserDefaults.standard.string(forKey: AppPreferenceKey.themePreference)
+                ?? ThemePreferenceOption.system.rawValue
+            return ThemePreferenceOption(rawValue: raw) ?? .system
+        }()
+
+        // Observe UserDefaults changes once, lazily, via a stored token we keep alive.
+        private static let _observer: NSObjectProtocol = {
+            NotificationCenter.default.addObserver(
+                forName: UserDefaults.didChangeNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                let raw = UserDefaults.standard.string(forKey: AppPreferenceKey.themePreference)
+                    ?? ThemePreferenceOption.system.rawValue
+                _cachedThemePreference = ThemePreferenceOption(rawValue: raw) ?? .system
+            }
+        }()
+
         private static var themePreference: ThemePreferenceOption {
-            ThemePreferenceOption(
-                rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.themePreference) ?? ThemePreferenceOption.system.rawValue
-            ) ?? .system
+            // Referencing _observer here ensures the lazy initialiser has run at least once.
+            _ = _observer
+            return _cachedThemePreference
         }
 
         static var isOLEDThemeActive: Bool {
@@ -45,14 +66,16 @@ enum AppTheme {
         }
 
         static var oledBackground: Color {
+            // Light: #F5F7FA — subtle gray page so white cards visibly elevate.
             dynamic(
-                light: Color(red: 0.97, green: 0.98, blue: 0.99),
+                light: Color(red: 0.961, green: 0.969, blue: 0.980),
                 dark: Color(red: 0.04, green: 0.04, blue: 0.045),
                 oled: .black
             )
         }
 
         static var cardBackground: Color {
+            // Light: #FFFFFF — used for inputs, chips, and small surfaces.
             dynamic(
                 light: .white,
                 dark: Color(red: 0.08, green: 0.08, blue: 0.085),
@@ -61,39 +84,69 @@ enum AppTheme {
         }
 
         static var elevatedCardBackground: Color {
+            // Light: #FFFFFF — outer cards float on the gray page; borders provide hierarchy.
             dynamic(
-                light: Color(red: 0.95, green: 0.96, blue: 0.98),
+                light: .white,
                 dark: Color(red: 0.11, green: 0.11, blue: 0.115),
                 oled: Color(red: 0.015, green: 0.015, blue: 0.018)
             )
         }
 
         static var borderColor: Color {
+            // Light: #E3E8EF — soft but clearly visible.
             dynamic(
-                light: Color.black.opacity(0.08),
+                light: Color(red: 0.890, green: 0.910, blue: 0.937),
                 dark: Color.white.opacity(0.08),
                 oled: Color.white.opacity(0.12)
             )
         }
 
-        static let primaryGreen = Color(red: 0.19, green: 0.92, blue: 0.48)
-        static let softGreenBackground = Color(red: 0.13, green: 0.28, blue: 0.20)
+        static var tabBarBackground: Color {
+            // Light: pure white tab bar for a cleaner separation from the gray page.
+            dynamic(
+                light: .white,
+                dark: Color(red: 0.04, green: 0.04, blue: 0.045),
+                oled: .black
+            )
+        }
+
+        static var primaryGreen: Color { AccentThemeStore.shared.current.primaryColor }
+        // Light mode: soft tint of the active accent so selected chips, icon halos, and active states
+        // read as the accent without the muddy dark-sage/dark-navy used on dark surfaces.
+        // Dark/OLED: keeps the existing dark muted fill from AppAccentTheme.softFillColor for contrast.
+        static var softGreenBackground: Color {
+            let primary = AccentThemeStore.shared.current.primaryColor
+            let darkFill = AccentThemeStore.shared.current.softFillColor
+            return dynamic(
+                light: primary.opacity(0.16),
+                dark: darkFill,
+                oled: darkFill
+            )
+        }
         static let warningRed = Color(red: 0.91, green: 0.33, blue: 0.36)
         static let gasOrange = Color(red: 0.98, green: 0.58, blue: 0.16)
         static let stationYellow = Color(red: 0.98, green: 0.78, blue: 0.20)
         static let powerRed = Color(red: 1.0, green: 0.35, blue: 0.30)
         static let rangeBlue = Color(red: 0.32, green: 0.69, blue: 1.0)
+        // In Performance Blue the range badge is stationYellow so it doesn't
+        // compete visually with the primary royal-blue accent.
+        static var rangeColor: Color {
+            AccentThemeStore.shared.current == .performanceBlue ? stationYellow : rangeBlue
+        }
 
         static var textPrimary: Color {
-            dynamic(light: Color.black.opacity(0.92), dark: .white, oled: .white)
+            // Light: #111827 — near-black for high contrast titles.
+            dynamic(light: Color(red: 0.067, green: 0.094, blue: 0.153), dark: .white, oled: .white)
         }
 
         static var textSecondary: Color {
-            dynamic(light: Color(red: 0.30, green: 0.36, blue: 0.44), dark: Color(red: 0.61, green: 0.69, blue: 0.79), oled: Color(red: 0.60, green: 0.69, blue: 0.80))
+            // Light: #667085 — calm slate for body copy.
+            dynamic(light: Color(red: 0.400, green: 0.439, blue: 0.522), dark: Color(red: 0.61, green: 0.69, blue: 0.79), oled: Color(red: 0.60, green: 0.69, blue: 0.80))
         }
 
         static var textMuted: Color {
-            dynamic(light: Color(red: 0.43, green: 0.49, blue: 0.57), dark: Color(red: 0.42, green: 0.52, blue: 0.62), oled: Color(red: 0.40, green: 0.50, blue: 0.60))
+            // Light: #8A95A5 — muted slate for hints/captions.
+            dynamic(light: Color(red: 0.541, green: 0.584, blue: 0.647), dark: Color(red: 0.42, green: 0.52, blue: 0.62), oled: Color(red: 0.40, green: 0.50, blue: 0.60))
         }
 
         static var darkBlue: Color { textMuted }
@@ -264,5 +317,26 @@ struct SecondaryButton: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Accent Theme Store
+// Single source of truth for the active accent theme. Using @Observable means any SwiftUI
+// view body that accesses AppTheme.Colors.primaryGreen (which reads shared.current) is
+// automatically tracked and re-rendered when the theme changes — no @EnvironmentObject needed.
+@Observable
+final class AccentThemeStore {
+    static let shared = AccentThemeStore()
+
+    private(set) var current: AppAccentTheme
+
+    private init() {
+        let raw = UserDefaults.standard.string(forKey: AppPreferenceKey.accentTheme) ?? ""
+        current = AppAccentTheme(rawValue: raw) ?? .originalGreen
+    }
+
+    func select(_ theme: AppAccentTheme) {
+        current = theme
+        UserDefaults.standard.set(theme.rawValue, forKey: AppPreferenceKey.accentTheme)
     }
 }

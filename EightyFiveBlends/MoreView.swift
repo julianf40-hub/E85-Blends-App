@@ -35,6 +35,17 @@ struct MoreView: View {
                     sponsorCard
 
                     VStack(spacing: 12) {
+                        #if DEBUG || INTERNAL_BUILD
+                        MoreNavigationRow(
+                            title: "85Blends Pro",
+                            subtitle: "Support the app and unlock expanded limits.",
+                            systemImage: "crown.fill",
+                            tint: AppTheme.Colors.stationYellow
+                        ) {
+                            ProUpgradeView()
+                        }
+                        #endif
+
                         MoreNavigationRow(
                             title: "Fuel Log",
                             subtitle: "Review fill-up history, spend, and MPG trends.",
@@ -202,7 +213,7 @@ private struct MoreNavigationRow<Destination: View>: View {
                     .font(.title3)
                     .foregroundStyle(tint)
                     .frame(width: 42, height: 42)
-                    .background(AppTheme.Colors.surface)
+                    .background(tint.opacity(0.14))
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -219,7 +230,7 @@ private struct MoreNavigationRow<Destination: View>: View {
 
                 Image(systemName: "chevron.right")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)

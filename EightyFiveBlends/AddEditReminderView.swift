@@ -274,7 +274,6 @@ struct ReminderDraft {
     var dueDate: Date
     var repeatDateIntervalDays: Int
     var notes: String
-    var purchaseURLString: String
     var purchaseLinks: [ReminderPurchaseLink]
     var isCompleted: Bool
 
@@ -290,14 +289,9 @@ struct ReminderDraft {
         dueDate = reminder?.dueDate ?? .now
         repeatDateIntervalDays = reminder?.repeatDateIntervalDays ?? 0
         notes = reminder?.notes ?? ""
-        purchaseURLString = reminder?.purchaseURLString ?? ""
         let links = reminder?.purchaseLinks ?? []
         purchaseLinks = links.isEmpty ? [ReminderPurchaseLink()] : links
         isCompleted = reminder?.isCompleted ?? false
-    }
-
-    static func normalizedPurchaseURLString(from value: String) -> String? {
-        MaintenanceReminder.normalizedPurchaseURLString(from: value)
     }
 
     mutating func normalizeForSave() {
@@ -305,7 +299,6 @@ struct ReminderDraft {
         repeatMileageInterval = max(repeatMileageInterval, 0)
         repeatDateIntervalDays = max(repeatDateIntervalDays, 0)
         purchaseLinks = MaintenanceReminder.normalizedPurchaseLinks(purchaseLinks)
-        purchaseURLString = purchaseLinks.first?.urlString ?? ""
     }
 }
 

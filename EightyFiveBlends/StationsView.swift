@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import MapKit
+import CoreLocation
 
 struct StationsView: View {
     // Neutral continental-US overview — used only when no location or station data exists.
@@ -21,16 +22,15 @@ struct StationsView: View {
     private var stations: [FuelStation]
 
     @State private var searchText = ""
-    @State private var savedStationsFilter: SavedStationsFilter = .allStations
+    @State private var stationListFilter: StationListFilter = .all
     @State private var selectedRadius = "25 mi"
     @State private var sheetStation: FuelStation?
     @State private var priceUpdateContext: StationPriceUpdateContext?
-    @State private var isAddingStation = false
     @State private var stationPendingDeletion: FuelStation?
     @State private var infoMessage: String?
     @State private var mapPosition: MapCameraPosition = .region(StationsView.neutralUSRegion)
     @State private var selectedMapStationID: PersistentIdentifier?
-    @State private var locationManager = StationLocationManager()
+    @Environment(StationLocationManager.self) private var locationManager
     @State private var locationDeniedAlert = false
     @State private var liveStations: [LiveFuelStation] = []
     @State private var isSearchingLive = false
@@ -45,38 +45,93 @@ struct StationsView: View {
     @State private var communityPriceSyncMessage: String?
     @State private var communityPriceTask: Task<Void, Never>?
 
+    // Trip-planner / typed-location search
+    @State private var locationSearchText = ""
+    @State private var locationSearchValidationMessage: String?
+    @State private var isGeocodingLocation = false
+    @State private var stationSearchSource: StationSearchSource = .currentLocation
+    @FocusState private var isTripPlannerFieldFocused: Bool
+
     private let radiusOptions = ["10 mi", "25 mi", "50 mi", "100 mi"]
 
     private var appVersionString: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
     }
 
-    private var filteredStations: [FuelStation] {
+    // MARK: - Unified display model
+
+    private var unifiedItems: [StationDisplayItem] {
+        var items: [StationDisplayItem] = []
+        var mergedNearbyIDs = Set<UUID>()
+
+        for saved in stations {
+            if let nearby = liveStations.first(where: { matchesSavedStation(saved, liveStation: $0) }) {
+                mergedNearbyIDs.insert(nearby.id)
+                items.append(StationDisplayItem(saved: saved, nearby: nearby))
+            } else {
+                items.append(StationDisplayItem(saved: saved))
+            }
+        }
+
+        for nearby in liveStations where !mergedNearbyIDs.contains(nearby.id) {
+            items.append(StationDisplayItem(nearby: nearby))
+        }
+
+        return items
+    }
+
+    private var filteredUnifiedItems: [StationDisplayItem] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var items = unifiedItems
 
-        return stations
-            .filter { station in
-                if savedStationsFilter == .favorites, station.isFavorite == false {
-                    return false
-                }
+        switch stationListFilter {
+        case .all:
+            break
+        case .saved:
+            items = items.filter { $0.isSaved }
+        case .nearby:
+            items = items.filter { $0.isNearby }
+        }
 
-                guard trimmed.isEmpty == false else { return true }
-                let needle = trimmed.lowercased()
-                return station.name.lowercased().contains(needle) ||
-                    station.city.lowercased().contains(needle) ||
-                    station.state.lowercased().contains(needle) ||
-                    station.address.lowercased().contains(needle)
+        if trimmed.isEmpty == false {
+            let needle = trimmed.lowercased()
+            items = items.filter { item in
+                item.displayName.lowercased().contains(needle) ||
+                item.displayAddress.lowercased().contains(needle) ||
+                item.displayCity.lowercased().contains(needle) ||
+                item.displayState.lowercased().contains(needle)
             }
-            .sorted { lhs, rhs in
-                if lhs.isFavorite != rhs.isFavorite {
-                    return lhs.isFavorite && !rhs.isFavorite
+        }
+
+        switch stationListFilter {
+        case .nearby:
+            items.sort { ($0.distanceMiles ?? .infinity) < ($1.distanceMiles ?? .infinity) }
+        case .all:
+            items.sort { lhs, rhs in
+                if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite }
+                if lhs.isSaved != rhs.isSaved { return lhs.isSaved }
+                if lhs.isSaved, rhs.isSaved,
+                   let ls = lhs.savedStation, let rs = rhs.savedStation {
+                    if ls.isFavorite != rs.isFavorite { return ls.isFavorite }
+                    return ls.updatedAt > rs.updatedAt
                 }
-                return lhs.updatedAt > rhs.updatedAt
+                return (lhs.distanceMiles ?? .infinity) < (rhs.distanceMiles ?? .infinity)
             }
+        case .saved:
+            items.sort { lhs, rhs in
+                if lhs.isFavorite != rhs.isFavorite { return lhs.isFavorite }
+                if let ls = lhs.savedStation, let rs = rhs.savedStation {
+                    return ls.updatedAt > rs.updatedAt
+                }
+                return false
+            }
+        }
+
+        return items
     }
 
     private var mappableStations: [SavedStationMapItem] {
-        filteredStations.compactMap { station in
+        stations.compactMap { station in
             guard let latitude = station.latitude, let longitude = station.longitude else {
                 return nil
             }
@@ -108,20 +163,33 @@ struct StationsView: View {
 
     private var stationsContent: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    headerSection
-                    mapSection
-                    topActionSection
-                    radiusSelector
-                    nearbyStationsSection
-                    searchCard
-                    stationsSection
+            // GeometryReader pins the ScrollView and its content to the viewport
+            // width and clips overflow so the entire page can never translate
+            // horizontally — no two-finger / long-press drag can shift the screen.
+            GeometryReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        headerSection
+                        mapSection
+                        findNearbyButton
+                        radiusSelector
+                        locationSearchCard
+                        activeTripBanner
+                        searchCard
+                        filterChipsRow
+                        unifiedStationsSection
+                    }
+                    .padding(16)
+                    .frame(width: proxy.size.width, alignment: .leading)
                 }
-                .padding(16)
+                .scrollIndicators(.visible, axes: .vertical)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .background(AppTheme.Colors.charcoal)
             }
-            .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
+            .keyboardDoneToolbar()
+            .dismissKeyboardOnTap()
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .onAppear {
@@ -140,7 +208,7 @@ struct StationsView: View {
         .onChange(of: searchText) { _, _ in
             refreshCommunityPricePreviews()
         }
-        .onChange(of: savedStationsFilter) { _, _ in
+        .onChange(of: stationListFilter) { _, _ in
             refreshCommunityPricePreviews()
         }
         .onChange(of: locationManager.latestCoordinate) { _, coordinate in
@@ -152,11 +220,6 @@ struct StationsView: View {
         }
         .onChange(of: locationManager.authorizationStatus) { _, status in
             handleAuthorizationStatusChange(status)
-        }
-        .sheet(isPresented: $isAddingStation) {
-            AddEditStationView(station: nil) { draft in
-                createStation(from: draft)
-            }
         }
         .sheet(item: $sheetStation) { station in
             AddEditStationView(station: station) { draft in
@@ -212,8 +275,7 @@ struct StationsView: View {
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.95)
-                        .fixedSize(horizontal: true, vertical: false)
+                        .minimumScaleFactor(0.75)
 
                     Text("Saved stations stay local. Nearby live E85 search is available on demand.")
                         .font(.subheadline)
@@ -225,10 +287,6 @@ struct StationsView: View {
                 refreshButton
             }
 
-            HStack {
-                Spacer(minLength: 0)
-                addStationButton
-            }
         }
     }
 
@@ -262,29 +320,12 @@ struct StationsView: View {
         .buttonStyle(.plain)
     }
 
-    private var addStationButton: some View {
-        Button {
-            isAddingStation = true
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                Text("Add Station")
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(AppTheme.Colors.primaryGreen)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-    }
-
     private var searchCard: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
-            TextField("Search saved stations", text: $searchText)
+            TextField("Filter stations", text: $searchText)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .textInputAutocapitalization(.words)
                 .autocorrectionDisabled()
@@ -299,19 +340,268 @@ struct StationsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    @ViewBuilder
-    private var topActionSection: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                findNearbyButton
-                savedStationsFilterButton
-            }
-
-            VStack(spacing: 12) {
-                findNearbyButton
-                savedStationsFilterButton
+    private var filterChipsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(StationListFilter.allCases, id: \.rawValue) { filter in
+                    filterChip(filter)
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func filterChip(_ filter: StationListFilter) -> some View {
+        let isSelected = stationListFilter == filter
+        return Button {
+            stationListFilter = filter
+            AppHaptics.selection()
+        } label: {
+            Text(filter.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(isSelected ? AppTheme.Colors.textPrimary : AppTheme.Colors.textSecondary)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 11)
+                .background(isSelected ? AppTheme.Colors.primaryGreen.opacity(0.22) : AppTheme.Colors.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.borderColor, lineWidth: 1)
+                )
+                .scaleEffect(isSelected ? 1.03 : 1)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .animation(.spring(response: 0.28, dampingFraction: 0.76), value: stationListFilter)
+    }
+
+    @ViewBuilder
+    private var unifiedStationsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: sectionTitle, subtitle: sectionSubtitle)
+
+            if stations.count >= SubscriptionManager.freeSavedStationLimit, !SubscriptionManager.shared.isPro {
+                ProLimitBannerView(message: "Pro supports more saved stations.")
+            }
+
+            if let communityPriceSyncMessage {
+                communitySyncMessageRow(communityPriceSyncMessage)
+            }
+
+            if let liveSearchError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                    Text(liveSearchError)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                .padding(.horizontal, 2)
+            }
+
+            if isSearchingLive {
+                liveSearchLoadingCard
+            } else if filteredUnifiedItems.isEmpty {
+                emptyStateForCurrentFilter
+            } else {
+                ForEach(filteredUnifiedItems) { item in
+                    unifiedStationCard(for: item)
+                }
+            }
+        }
+    }
+
+    private var sectionTitle: String {
+        switch stationListFilter {
+        case .all: return "Stations"
+        case .saved: return "Saved Stations"
+        case .nearby: return "Nearby E85"
+        }
+    }
+
+    private var sectionSubtitle: String {
+        switch stationListFilter {
+        case .all:
+            var parts: [String] = []
+            if stations.count > 0 { parts.append("\(stations.count) saved") }
+            if liveStations.count > 0 { parts.append("\(liveStations.count) nearby") }
+            return parts.isEmpty ? "Find and save E85 stations." : parts.joined(separator: " · ")
+        case .saved:
+            return "Favorites pinned first, then recently updated."
+        case .nearby:
+            if liveStations.isEmpty {
+                return "Tap Find Nearby E85 or search an area above."
+            }
+            return "\(liveStations.count) results near \(stationSearchSource.displayName) within \(selectedRadius)."
+        }
+    }
+
+    @ViewBuilder
+    private func unifiedStationCard(for item: StationDisplayItem) -> some View {
+        switch item.content {
+        case .savedOnly(let saved):
+            StationRowCard(
+                station: saved,
+                communitySummary: communitySummary(for: saved),
+                directionsAction: { directionsMessage(for: saved) },
+                updatePriceAction: { beginPriceUpdate(for: saved) },
+                favoriteAction: { toggleFavorite(saved) },
+                editAction: { sheetStation = saved },
+                deleteAction: { stationPendingDeletion = saved }
+            )
+        case .nearbyOnly(let live):
+            LiveStationRowCard(
+                station: live,
+                isSaved: false,
+                communitySummary: communitySummary(for: live),
+                directionsAction: { directionsMessage(for: live) },
+                reportPriceAction: { beginPriceUpdate(for: live) },
+                saveAction: { saveLiveStation(live) }
+            )
+        case .merged(let saved, let live):
+            if stationListFilter == .nearby {
+                LiveStationRowCard(
+                    station: live,
+                    isSaved: true,
+                    communitySummary: communitySummary(for: saved),
+                    directionsAction: { directionsMessage(for: live) },
+                    reportPriceAction: { beginPriceUpdate(for: saved) },
+                    saveAction: { }
+                )
+            } else {
+                StationRowCard(
+                    station: saved,
+                    communitySummary: communitySummary(for: saved),
+                    directionsAction: { directionsMessage(for: saved) },
+                    updatePriceAction: { beginPriceUpdate(for: saved) },
+                    favoriteAction: { toggleFavorite(saved) },
+                    editAction: { sheetStation = saved },
+                    deleteAction: { stationPendingDeletion = saved }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var emptyStateForCurrentFilter: some View {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch stationListFilter {
+        case .all:
+            if trimmed.isEmpty == false {
+                searchNoResultsCard
+            } else if stations.isEmpty {
+                allEmptyStateCard
+            }
+        case .saved:
+            if trimmed.isEmpty == false {
+                searchNoResultsCard
+            } else {
+                allEmptyStateCard
+            }
+        case .nearby:
+            if trimmed.isEmpty == false {
+                searchNoResultsCard
+            } else if liveSearchError == nil {
+                nearbyPromptCard
+            }
+        }
+    }
+
+    private var allEmptyStateCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.title2)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                    .frame(width: 44, height: 44)
+                    .background(AppTheme.Colors.stationYellow.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No Saved Stations")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text("Use Find Nearby E85 or Trip Planner to search for stations. Saved stations stay local on this device.")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.elevatedCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var nearbyPromptCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+                    .frame(width: 38, height: 38)
+                    .background(AppTheme.Colors.primaryGreen.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No nearby results yet.")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text("Tap Find Nearby E85 to search near your current location, or enter a city/state/ZIP in Trip Planner to plan ahead.")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.elevatedCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var searchNoResultsCard: some View {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .frame(width: 38, height: 38)
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No stations match your search.")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    if trimmed.isEmpty == false {
+                        Text("No results for \"\(trimmed)\".")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.elevatedCardBackground)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var radiusSelector: some View {
@@ -340,6 +630,7 @@ struct StationsView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var mapSection: some View {
@@ -355,11 +646,12 @@ struct StationsView: View {
 
                 Spacer()
 
-                if mappableStations.isEmpty == false {
+                if mappableStations.isEmpty == false || liveMapStations.isEmpty == false {
                     Button {
                         recenterMap()
+                        AppHaptics.selection()
                     } label: {
-                        Label("Fit", systemImage: "scope")
+                        Label("Show All", systemImage: "scope")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                             .padding(.horizontal, 10)
@@ -461,6 +753,211 @@ struct StationsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
+    private var locationSearchCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "map.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                Text("Trip Planner")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Text("· Plan E85 stops before you leave.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    TextField("Search city, state, or ZIP", text: $locationSearchText)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .submitLabel(.search)
+                        .focused($isTripPlannerFieldFocused)
+                        .onSubmit { searchStationsNearTypedLocation() }
+
+                    if locationSearchText.isEmpty == false {
+                        Button {
+                            locationSearchText = ""
+                            locationSearchValidationMessage = nil
+                            isTripPlannerFieldFocused = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .background(AppTheme.Colors.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(
+                            locationSearchValidationMessage != nil
+                                ? AppTheme.Colors.warningRed.opacity(0.6)
+                                : AppTheme.Colors.borderColor,
+                            lineWidth: 1
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                Button {
+                    isTripPlannerFieldFocused = false
+                    searchStationsNearTypedLocation()
+                } label: {
+                    Group {
+                        if isGeocodingLocation {
+                            ProgressView()
+                                .tint(AppTheme.Colors.textPrimary)
+                                .frame(width: 20, height: 20)
+                        } else {
+                            Text("Search")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .background(AppTheme.Colors.primaryGreen)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isGeocodingLocation || isSearchingLive)
+            }
+
+            if let msg = locationSearchValidationMessage {
+                Text(msg)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.warningRed)
+                    .padding(.horizontal, 2)
+            }
+        }
+        .padding(14)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var activeTripBanner: some View {
+        if case .typedLocation(let name) = stationSearchSource {
+            HStack(spacing: 10) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Searching Near")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    Text(name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Button {
+                    clearTrip()
+                } label: {
+                    Text("Clear Trip")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(AppTheme.Colors.cardBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.primaryGreen.opacity(0.10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(AppTheme.Colors.primaryGreen.opacity(0.35), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private func clearTrip() {
+        liveSearchTask?.cancel()
+        liveStations = []
+        liveSearchError = nil
+        isSearchingLive = false
+        pendingLiveSearch = false
+        stationSearchSource = .currentLocation
+        stationListFilter = .all
+        AppHaptics.selection()
+    }
+
+    private func searchStationsNearTypedLocation() {
+        let trimmed = locationSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else {
+            locationSearchValidationMessage = "Enter a city, state, or ZIP code to search."
+            return
+        }
+
+        locationSearchValidationMessage = nil
+        isGeocodingLocation = true
+        liveSearchError = nil
+        AppHaptics.selection()
+
+        Task { @MainActor in
+            defer { isGeocodingLocation = false }
+            do {
+                let placemarks = try await CLGeocoder().geocodeAddressString(trimmed)
+                guard let placemark = placemarks.first, let location = placemark.location else {
+                    liveSearchError = "Couldn't find that location. Try a city/state or ZIP code."
+                    return
+                }
+                let coordinate = location.coordinate
+                guard isValidCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
+                    liveSearchError = "The location returned invalid coordinates. Try a different search."
+                    return
+                }
+                let parts = [placemark.locality, placemark.administrativeArea]
+                    .compactMap { $0 }
+                    .filter { $0.isEmpty == false }
+                let displayName = parts.isEmpty ? trimmed : parts.joined(separator: ", ")
+                stationSearchSource = .typedLocation(name: displayName)
+                stationListFilter = .nearby
+                centerMap(on: coordinate)
+                fetchLiveStations(at: coordinate, limit: 50)
+            } catch let clError as CLError {
+                switch clError.code {
+                case .geocodeFoundNoResult:
+                    liveSearchError = "We couldn't find \"\(trimmed)\". Try a city, state, or ZIP code."
+                case .network:
+                    liveSearchError = "Location search failed. Check your connection and try again."
+                default:
+                    liveSearchError = "We couldn't find that location. Try a city, state, or ZIP code."
+                }
+            } catch {
+                liveSearchError = "We couldn't find that location. Try a city, state, or ZIP code."
+            }
+        }
+    }
+
     private var findNearbyButton: some View {
         Button {
             searchNearbyStations()
@@ -483,47 +980,6 @@ struct StationsView: View {
         }
         .buttonStyle(.plain)
         .disabled(isSearchingLive)
-    }
-
-    @ViewBuilder
-    private var nearbyStationsSection: some View {
-        if let liveSearchError {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-
-                Text(liveSearchError)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
-            .padding(.horizontal, 2)
-        }
-
-        if isSearchingLive {
-            liveSearchLoadingCard
-        } else if liveStations.isEmpty == false {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Nearby E85 Stations", subtitle: "\(liveStations.count) live results within \(selectedRadius).")
-
-                if let communityPriceSyncMessage {
-                    communitySyncMessageRow(communityPriceSyncMessage)
-                }
-
-                ForEach(liveStations) { station in
-                    LiveStationRowCard(
-                        station: station,
-                        isSaved: isLiveStationSaved(station),
-                        communitySummary: communitySummary(for: station),
-                        directionsAction: { directionsMessage(for: station) },
-                        reportPriceAction: { beginPriceUpdate(for: station) },
-                        saveAction: { saveLiveStation(station) }
-                    )
-                }
-            }
-        } else if liveSearchError == nil, liveStations.isEmpty {
-            EmptyView()
-        }
     }
 
     private var liveSearchLoadingCard: some View {
@@ -553,86 +1009,6 @@ struct StationsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private var stationsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Saved Stations", subtitle: "Favorites are pinned first, then recently updated stops.")
-
-            if let communityPriceSyncMessage {
-                communitySyncMessageRow(communityPriceSyncMessage)
-            }
-
-            if filteredStations.isEmpty {
-                if savedStationsFilter == .favorites {
-                    favoritesEmptyStateCard
-                } else {
-                    emptyStateCard
-                }
-            } else {
-                ForEach(filteredStations) { station in
-                    StationRowCard(
-                        station: station,
-                        communitySummary: communitySummary(for: station),
-                        directionsAction: { directionsMessage(for: station) },
-                        updatePriceAction: { beginPriceUpdate(for: station) },
-                        favoriteAction: { toggleFavorite(station) },
-                        editAction: { sheetStation = station },
-                        deleteAction: { stationPendingDeletion = station }
-                    )
-                }
-            }
-        }
-    }
-
-    private var savedStationsFilterButton: some View {
-        Button {
-            savedStationsFilter = savedStationsFilter == .allStations ? .favorites : .allStations
-            AppHaptics.selection()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: savedStationsFilter == .allStations ? "star.fill" : "tray.full.fill")
-                Text(savedStationsFilter == .allStations ? "Favorites" : "All Saved")
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.Colors.charcoal)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
-            .background(AppTheme.Colors.stationYellow)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var favoritesEmptyStateCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "star.slash")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .frame(width: 38, height: 38)
-                    .background(AppTheme.Colors.stationYellow.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No favorite stations yet.")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text("Star a saved station to keep it in this quick filter.")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.elevatedCardBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
     private func communitySyncMessageRow(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "person.3.fill")
@@ -644,37 +1020,6 @@ struct StationsView: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
         .padding(.horizontal, 2)
-    }
-
-    private var emptyStateCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.title2)
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.Colors.stationYellow.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No Saved Stations")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text("Tap Find Nearby E85 above to discover stations, or add one manually.")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.elevatedCardBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var deleteAlertBinding: Binding<Bool> {
@@ -769,35 +1114,6 @@ struct StationsView: View {
         "Your E85 price report is live and helps other drivers in your area find the best price."
     }
 
-    private func createStation(from draft: StationDraft) {
-        let station = FuelStation(
-            name: draft.name,
-            address: draft.address,
-            city: draft.city,
-            state: draft.state,
-            zipCode: draft.zipCode,
-            latitude: draft.latitude,
-            longitude: draft.longitude,
-            lastKnownE85Price: draft.lastKnownE85Price,
-            lastUpdated: .now,
-            notes: draft.notes,
-            isFavorite: draft.isFavorite,
-            createdAt: .now,
-            updatedAt: .now
-        )
-        modelContext.insert(station)
-        do {
-            try modelContext.save()
-            AppHaptics.success()
-        } catch {
-            #if DEBUG
-            print("[85Blends] StationsView: station create save failed:", error)
-            #endif
-            infoMessage = "Couldn't save changes. Please try again."
-        }
-        refreshCommunityPricePreviews()
-    }
-
     private func updateStation(_ station: FuelStation, from draft: StationDraft) {
         station.name = draft.name
         station.address = draft.address
@@ -855,48 +1171,48 @@ struct StationsView: View {
     }
 
     private func recenterMap() {
-        guard mappableStations.isEmpty == false else {
+        // Union of saved station pins + live nearby pins.
+        let allCoordinates: [CLLocationCoordinate2D] =
+            mappableStations.map(\.coordinate) +
+            liveMapStations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+
+        guard allCoordinates.isEmpty == false else {
             selectedMapStationID = nil
-            // Fallback priority: user location → live stations → neutral US overview.
+            // Fallback: user location → neutral US overview.
             if let userCoord = locationManager.latestCoordinate?.clCoordinate,
                locationManager.isAuthorizedForUserLocation {
                 centerMap(on: userCoord)
-            } else if liveMapStations.isEmpty == false {
-                fitMapToLiveStations()
             } else {
                 mapPosition = .region(StationsView.neutralUSRegion)
             }
             return
         }
-        selectedMapStationID = selectedMapStation.flatMap(\.id)
 
-        if mappableStations.count == 1, let station = mappableStations.first {
-            let region = MKCoordinateRegion(
-                center: station.coordinate,
+        if allCoordinates.count == 1 {
+            mapPosition = .region(MKCoordinateRegion(
+                center: allCoordinates[0],
                 span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
-            )
-            mapPosition = .region(region)
-            selectedMapStationID = station.id
+            ))
+            if mappableStations.count == 1 {
+                selectedMapStationID = mappableStations.first?.id
+            }
             return
         }
 
-        let coordinates = mappableStations.map(\.coordinate)
-        let latitudes = coordinates.map(\.latitude)
-        let longitudes = coordinates.map(\.longitude)
+        let latitudes = allCoordinates.map(\.latitude)
+        let longitudes = allCoordinates.map(\.longitude)
 
         guard
             let minLatitude = latitudes.min(),
             let maxLatitude = latitudes.max(),
             let minLongitude = longitudes.min(),
             let maxLongitude = longitudes.max()
-        else {
-            return
-        }
+        else { return }
 
         let latitudePadding = max((maxLatitude - minLatitude) * 0.35, 0.05)
         let longitudePadding = max((maxLongitude - minLongitude) * 0.35, 0.05)
 
-        let region = MKCoordinateRegion(
+        mapPosition = .region(MKCoordinateRegion(
             center: CLLocationCoordinate2D(
                 latitude: (minLatitude + maxLatitude) / 2,
                 longitude: (minLongitude + maxLongitude) / 2
@@ -905,14 +1221,13 @@ struct StationsView: View {
                 latitudeDelta: (maxLatitude - minLatitude) + latitudePadding,
                 longitudeDelta: (maxLongitude - minLongitude) + longitudePadding
             )
-        )
-
-        mapPosition = .region(region)
+        ))
     }
 
     private func searchNearbyStations() {
         guard isSearchingLive == false else { return }
         liveSearchError = nil
+        stationSearchSource = .currentLocation
 
         if let coordinate = locationManager.latestCoordinate {
             let userCoordinate = coordinate.clCoordinate
@@ -943,40 +1258,6 @@ struct StationsView: View {
         }
     }
 
-    private func fitMapToLiveStations() {
-        let coords = liveMapStations.map {
-            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
-        }
-        guard coords.isEmpty == false else { return }
-
-        if coords.count == 1 {
-            mapPosition = .region(MKCoordinateRegion(
-                center: coords[0],
-                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
-            ))
-            return
-        }
-
-        let latitudes = coords.map(\.latitude)
-        let longitudes = coords.map(\.longitude)
-        guard let minLat = latitudes.min(), let maxLat = latitudes.max(),
-              let minLon = longitudes.min(), let maxLon = longitudes.max() else { return }
-
-        let latPad = max((maxLat - minLat) * 0.35, 0.05)
-        let lonPad = max((maxLon - minLon) * 0.35, 0.05)
-
-        mapPosition = .region(MKCoordinateRegion(
-            center: CLLocationCoordinate2D(
-                latitude: (minLat + maxLat) / 2,
-                longitude: (minLon + maxLon) / 2
-            ),
-            span: MKCoordinateSpan(
-                latitudeDelta: (maxLat - minLat) + latPad,
-                longitudeDelta: (maxLon - minLon) + lonPad
-            )
-        ))
-    }
-
     private func handleAuthorizationStatusChange(_ status: CLAuthorizationStatus) {
         guard status == .denied || status == .restricted else { return }
 
@@ -988,7 +1269,7 @@ struct StationsView: View {
         }
     }
 
-    private func fetchLiveStations(at coordinate: CLLocationCoordinate2D) {
+    private func fetchLiveStations(at coordinate: CLLocationCoordinate2D, limit: Int = 20) {
         liveSearchTask?.cancel()
 
         guard isValidCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
@@ -1012,18 +1293,18 @@ struct StationsView: View {
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude,
                     radius: radiusValue,
-                    limit: 20
+                    limit: limit
                 )
                 guard Task.isCancelled == false else { return }
                 liveStations = results
                 if results.isEmpty {
-                    liveSearchError = "No E85 stations found within \(selectedRadius). Try a larger search radius."
+                    liveSearchError = "No E85 stations found within \(selectedRadius) of \(stationSearchSource.displayName). Try selecting a larger radius above."
                 }
                 refreshCommunityPricePreviews()
             } catch {
                 guard Task.isCancelled == false else { return }
                 if case NRELServiceError.missingAPIKey = error {
-                    liveSearchError = "Live station search is not available right now. You can still add stations manually."
+                    liveSearchError = "Live station search is not available right now. Saved stations still work offline."
                 } else if let urlError = error as? URLError,
                           urlError.code == .timedOut || urlError.code == .notConnectedToInternet {
                     liveSearchError = "Live station search is temporarily unavailable. Saved stations still work offline."
@@ -1166,7 +1447,7 @@ struct StationsView: View {
         communityPriceTask?.cancel()
 
         let keys = Set(
-            filteredStations.compactMap(normalizedStationKey(for:)) +
+            stations.compactMap(normalizedStationKey(for:)) +
             liveStations.compactMap(normalizedStationKey(for:))
         )
 
@@ -1309,7 +1590,10 @@ struct StationsView: View {
         }
         refreshCommunityPricePreviews()
 
-        guard reportToCommunity else {
+        guard reportToCommunity, context.isLiveDiscovered else {
+            if reportToCommunity {
+                infoMessage = "Price saved locally. Community reporting is only available for stations found through nearby search."
+            }
             dismissPriceUpdateSheet()
             return
         }
@@ -1443,20 +1727,87 @@ struct StationsView: View {
 #Preview {
     StationsView()
         .modelContainer(for: FuelStation.self, inMemory: true)
+        .environment(StationLocationManager())
 }
 
-private enum SavedStationsFilter: CaseIterable {
-    case allStations
-    case favorites
+private enum StationSearchSource: Equatable {
+    case currentLocation
+    case typedLocation(name: String)
 
-    var title: String {
+    var displayName: String {
         switch self {
-        case .allStations:
-            return "All Stations"
-        case .favorites:
-            return "Favorites"
+        case .currentLocation: return "your location"
+        case .typedLocation(let name): return name
         }
     }
+}
+
+private enum StationListFilter: String, CaseIterable {
+    case all = "All"
+    case saved = "Saved"
+    case nearby = "Nearby"
+
+    var title: String { rawValue }
+}
+
+private struct StationDisplayItem: Identifiable {
+    enum Content {
+        case savedOnly(FuelStation)
+        case nearbyOnly(LiveFuelStation)
+        case merged(saved: FuelStation, nearby: LiveFuelStation)
+    }
+
+    let content: Content
+
+    init(saved: FuelStation, nearby: LiveFuelStation? = nil) {
+        if let nearby {
+            content = .merged(saved: saved, nearby: nearby)
+        } else {
+            content = .savedOnly(saved)
+        }
+    }
+
+    init(nearby: LiveFuelStation) {
+        content = .nearbyOnly(nearby)
+    }
+
+    var id: String {
+        switch content {
+        case .savedOnly(let s): return "s_\(s.persistentModelID.hashValue)"
+        case .nearbyOnly(let n): return "n_\(n.id.uuidString)"
+        case .merged(let s, _): return "s_\(s.persistentModelID.hashValue)"
+        }
+    }
+
+    var savedStation: FuelStation? {
+        switch content {
+        case .savedOnly(let s): return s
+        case .merged(let s, _): return s
+        case .nearbyOnly: return nil
+        }
+    }
+
+    var nearbyStation: LiveFuelStation? {
+        switch content {
+        case .nearbyOnly(let n): return n
+        case .merged(_, let n): return n
+        case .savedOnly: return nil
+        }
+    }
+
+    var isSaved: Bool { savedStation != nil }
+    var isFavorite: Bool { savedStation?.isFavorite ?? false }
+    var isNearby: Bool { nearbyStation != nil }
+
+    var distanceMiles: Double? {
+        guard let n = nearbyStation, n.distanceMiles > 0 else { return nil }
+        return n.distanceMiles
+    }
+
+    var displayName: String { savedStation?.name ?? nearbyStation?.name ?? "" }
+    var displayAddress: String { savedStation?.address ?? nearbyStation?.address ?? "" }
+    var displayCity: String { savedStation?.city ?? nearbyStation?.city ?? "" }
+    var displayState: String { savedStation?.state ?? nearbyStation?.state ?? "" }
 }
 
 private struct StationRowCard: View {
@@ -1474,16 +1825,7 @@ private struct StationRowCard: View {
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    AppTheme.Colors.softGreenBackground.opacity(0.85),
-                                    AppTheme.Colors.primaryGreen.opacity(0.12)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .fill(AppTheme.Colors.softGreenBackground)
 
                     Image(systemName: "fuelpump.fill")
                         .font(.title3.weight(.bold))
@@ -2044,7 +2386,16 @@ private struct StationPriceUpdateContext: Identifiable {
     let zipCode: String
     let latitude: Double?
     let longitude: Double?
+    // true only when this context was built from a live NREL search result.
+    // Local/manual FuelStation records carry false regardless of how they were created,
+    // since the model has no source marker and we cannot reliably distinguish them.
+    let isLiveDiscovered: Bool
 
+    // TODO: FuelStation has no source marker, so NREL-saved and legacy manual stations are
+    // indistinguishable here. isLiveDiscovered is conservatively false for all saved records.
+    // Future migration: add a StationSource enum field (e.g. .nrelSearch / .manual) to
+    // FuelStation. Once available, set isLiveDiscovered = (station.source == .nrelSearch) so
+    // NREL-backed saved stations regain community price reporting while manual ones stay local.
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
         StationPriceUpdateContext(
             station: station,
@@ -2054,7 +2405,8 @@ private struct StationPriceUpdateContext: Identifiable {
             state: station.state,
             zipCode: station.zipCode,
             latitude: station.latitude,
-            longitude: station.longitude
+            longitude: station.longitude,
+            isLiveDiscovered: false
         )
     }
 
@@ -2067,7 +2419,8 @@ private struct StationPriceUpdateContext: Identifiable {
             state: station.state,
             zipCode: station.zip,
             latitude: station.latitude == 0 ? nil : station.latitude,
-            longitude: station.longitude == 0 ? nil : station.longitude
+            longitude: station.longitude == 0 ? nil : station.longitude,
+            isLiveDiscovered: true
         )
     }
 
@@ -2127,7 +2480,7 @@ private struct StationPriceUpdateSheet: View {
                                 .background(AppTheme.Colors.surface)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : AppTheme.Colors.warningRed, lineWidth: 1)
                                 )
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
@@ -2173,23 +2526,32 @@ private struct StationPriceUpdateSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isSubmittingCommunityPrice)
 
-                            Button(action: saveAndReportAction) {
-                                HStack(spacing: 8) {
-                                    if isSubmittingCommunityPrice {
-                                        ProgressView()
-                                            .tint(AppTheme.Colors.textPrimary)
+                            if context.isLiveDiscovered {
+                                Button(action: saveAndReportAction) {
+                                    HStack(spacing: 8) {
+                                        if isSubmittingCommunityPrice {
+                                            ProgressView()
+                                                .tint(AppTheme.Colors.textPrimary)
+                                        }
+                                        Text(isSubmittingCommunityPrice ? "Reporting…" : "Save & Report")
                                     }
-                                    Text(isSubmittingCommunityPrice ? "Reporting…" : "Save & Report")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(AppTheme.Colors.primaryGreen)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.Colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(AppTheme.Colors.primaryGreen)
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .buttonStyle(.plain)
+                                .disabled(isSubmittingCommunityPrice)
+                            } else {
+                                Text("Community price reporting is available for stations found through nearby search.")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 8)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(isSubmittingCommunityPrice)
                         }
                     }
                     .padding(18)

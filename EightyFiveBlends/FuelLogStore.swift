@@ -171,30 +171,41 @@ enum FuelLogStore {
 
     private static func updateStationIfNeeded(from draft: FuelLogDraft, modelContext: ModelContext) -> FuelStation? {
         let trimmedName = draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedName.isEmpty == false, draft.e85PricePerGallon > 0 else {
-            return nil
-        }
+        guard !trimmedName.isEmpty, draft.e85PricePerGallon > 0 else { return nil }
 
-        let lowercasedName = trimmedName.lowercased()
-        let descriptor = FetchDescriptor<FuelStation>()
-        let stations = (try? modelContext.fetch(descriptor)) ?? []
+        let price = round(draft.e85PricePerGallon, places: 2)
 
-        if let station = stations.first(where: { $0.name.lowercased() == lowercasedName }) {
-            station.lastKnownE85Price = round(draft.e85PricePerGallon, places: 2)
+        // Fast path: exact case-sensitive predicate match — avoids a full table scan.
+        var exactDescriptor = FetchDescriptor<FuelStation>(
+            predicate: #Predicate { $0.name == trimmedName }
+        )
+        exactDescriptor.fetchLimit = 1
+        if let station = (try? modelContext.fetch(exactDescriptor))?.first {
+            station.lastKnownE85Price = price
             station.lastUpdated = .now
             station.updatedAt = .now
             return station
-        } else {
-            let station = FuelStation(
-                name: trimmedName,
-                lastKnownE85Price: round(draft.e85PricePerGallon, places: 2),
-                lastUpdated: .now,
-                createdAt: .now,
-                updatedAt: .now
-            )
-            modelContext.insert(station)
+        }
+
+        // Slow path: case-insensitive in-memory scan for stations saved with different casing.
+        let lowercasedName = trimmedName.lowercased()
+        let allStations = (try? modelContext.fetch(FetchDescriptor<FuelStation>())) ?? []
+        if let station = allStations.first(where: { $0.name.lowercased() == lowercasedName }) {
+            station.lastKnownE85Price = price
+            station.lastUpdated = .now
+            station.updatedAt = .now
             return station
         }
+
+        let station = FuelStation(
+            name: trimmedName,
+            lastKnownE85Price: price,
+            lastUpdated: .now,
+            createdAt: .now,
+            updatedAt: .now
+        )
+        modelContext.insert(station)
+        return station
     }
 }
 

@@ -2,17 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleVersion</key>
-	<string>66</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>comgooglemaps</string>
 		<string>waze</string>
 	</array>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>85Blends uses your location to show nearby E85 stations and help detect when you are at a saved station.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>85Blends lets you choose a vehicle photo for your Garage profile.</string>
 	<key>NLR_API_KEY</key>
 	<string>oZqG4yF2uqSegQ8BIJtrUFq6DbtPQjB1XG6OPrck</string>
 	<key>SUPABASE_ANON_KEY</key>

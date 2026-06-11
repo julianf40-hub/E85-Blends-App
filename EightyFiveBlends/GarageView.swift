@@ -120,9 +120,13 @@ struct GarageView: View {
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
+                .frame(minHeight: 44)
                 .background(AppTheme.Colors.accentGreen)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add Vehicle")
         }
     }
 
@@ -132,6 +136,10 @@ struct GarageView: View {
                 title: "Saved Vehicles",
                 subtitle: "Profiles used by the calculator, reminders, and fill-up history."
             )
+
+            if vehicles.count >= SubscriptionManager.freeVehicleLimit, !SubscriptionManager.shared.isPro {
+                ProLimitBannerView(message: "Pro supports larger garages.")
+            }
 
             if vehicles.isEmpty {
                 EmptySavedVehiclesCard()
@@ -167,6 +175,7 @@ struct GarageView: View {
         }
 
         if let vehicle {
+            let oldNickname = vehicle.nickname
             vehicle.nickname = draft.nickname
             vehicle.year = draft.year
             vehicle.make = draft.make
@@ -183,6 +192,9 @@ struct GarageView: View {
             vehicle.isActive = shouldBeActive
             vehicle.vehiclePhotoData = draft.vehiclePhotoData
             vehicle.updatedAt = .now
+            if oldNickname != draft.nickname, !oldNickname.isEmpty {
+                propagateVehicleRename(from: oldNickname, to: draft.nickname)
+            }
         } else {
             let newVehicle = VehicleProfile(
                 nickname: draft.nickname,
@@ -236,6 +248,29 @@ struct GarageView: View {
         for otherVehicle in vehicles where otherVehicle.persistentModelID != vehicle?.persistentModelID {
             otherVehicle.isActive = false
             otherVehicle.updatedAt = .now
+        }
+    }
+
+    private func propagateVehicleRename(from oldName: String, to newName: String) {
+        let fuelDescriptor = FetchDescriptor<FuelLogEntry>(
+            predicate: #Predicate { $0.vehicleName == oldName }
+        )
+        if let logs = try? modelContext.fetch(fuelDescriptor) {
+            for log in logs { log.vehicleName = newName }
+        }
+
+        let reminderDescriptor = FetchDescriptor<MaintenanceReminder>(
+            predicate: #Predicate { $0.vehicleName == oldName }
+        )
+        if let reminders = try? modelContext.fetch(reminderDescriptor) {
+            for reminder in reminders { reminder.vehicleName = newName }
+        }
+
+        let completionDescriptor = FetchDescriptor<ReminderCompletionRecord>(
+            predicate: #Predicate { $0.vehicleName == oldName }
+        )
+        if let records = try? modelContext.fetch(completionDescriptor) {
+            for record in records { record.vehicleName = newName }
         }
     }
 
@@ -661,7 +696,7 @@ private struct ActiveOdometerUpdateSheet: View {
                                 .background(AppTheme.Colors.surface)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                        .stroke(validationMessage == nil ? AppTheme.Colors.border : AppTheme.Colors.warningRed, lineWidth: 1)
                                 )
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }

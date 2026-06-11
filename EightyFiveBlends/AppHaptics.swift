@@ -12,27 +12,37 @@ import UIKit
 #endif
 
 enum AppHaptics {
+    #if os(iOS)
+    private static let notificationGenerator = UINotificationFeedbackGenerator()
+    private static let selectionGenerator = UISelectionFeedbackGenerator()
+    private static let impactGenerator = UIImpactFeedbackGenerator(style: .light)
+    #endif
+
     static func success() {
         #if os(iOS)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        notificationGenerator.prepare()
+        notificationGenerator.notificationOccurred(.success)
         #endif
     }
 
     static func warning() {
         #if os(iOS)
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        notificationGenerator.prepare()
+        notificationGenerator.notificationOccurred(.warning)
         #endif
     }
 
     static func selection() {
         #if os(iOS)
-        UISelectionFeedbackGenerator().selectionChanged()
+        selectionGenerator.prepare()
+        selectionGenerator.selectionChanged()
         #endif
     }
 
     static func impact() {
         #if os(iOS)
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        impactGenerator.prepare()
+        impactGenerator.impactOccurred()
         #endif
     }
 }

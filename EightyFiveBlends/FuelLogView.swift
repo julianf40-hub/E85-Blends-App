@@ -39,9 +39,8 @@ struct FuelLogView: View {
     }
 
     private var averageMPG: Double {
-        let validEntries = entries.filter { $0.mpg > 0 }
-        guard validEntries.isEmpty == false else { return 0 }
-        return validEntries.reduce(0) { $0 + $1.mpg } / Double(validEntries.count)
+        guard totalGallons > 0, totalMilesDriven > 0 else { return 0 }
+        return Double(totalMilesDriven) / totalGallons
     }
 
     private var averageBlend: Double {
@@ -146,6 +145,9 @@ struct FuelLogView: View {
             VStack(alignment: .leading, spacing: 16) {
                 headerSection
                 summaryCard
+                if entries.count >= SubscriptionManager.freeFuelLogLimit, !SubscriptionManager.shared.isPro {
+                    ProLimitBannerView(message: "Pro supports longer fuel history.")
+                }
                 if entries.isEmpty == false {
                     insightsCard
                     trendsCard

@@ -33,7 +33,7 @@ struct CalculatorView: View {
     @State private var gasOctane = "91"
     @State private var loadedDefaultsKey = ""
     @State private var calculatorFuelLogDraft: FuelLogDraft?
-    @State private var locationManager = StationLocationManager()
+    @Environment(StationLocationManager.self) private var locationManager
     @State private var pumpModeStation: FuelStation?
     @State private var isShowingPumpMode = false
     @State private var didAutoPromptPumpMode = false
@@ -177,7 +177,7 @@ struct CalculatorView: View {
             }
             .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .keyboardDoneToolbar()
@@ -479,6 +479,7 @@ struct CalculatorView: View {
 #Preview {
     CalculatorView()
         .modelContainer(for: [VehicleProfile.self, FuelLogEntry.self, FuelStation.self], inMemory: true)
+        .environment(StationLocationManager())
 }
 
 private struct CalculatorDefaults {
@@ -811,9 +812,19 @@ private struct BlendGuideSection: View {
 }
 
 private struct BlendGuideRow: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let tier: BlendGuideTier
     let isActive: Bool
     let applyAction: () -> Void
+
+    private var activeCardBackground: Color {
+        // Light: white card so the accent border and Active badge carry the emphasis.
+        // Dark/OLED: keep the existing dark accent fill for clear contrast on dark surfaces.
+        colorScheme == .light
+            ? AppTheme.Colors.cardBackground
+            : AppTheme.Colors.softGreenBackground.opacity(0.78)
+    }
 
     var body: some View {
         Button(action: applyAction) {
@@ -841,7 +852,7 @@ private struct BlendGuideRow: View {
                             .foregroundStyle(AppTheme.Colors.textPrimary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(AppTheme.Colors.softGreenBackground)
+                            .background(AppTheme.Colors.primaryGreen)
                             .clipShape(Capsule())
                     }
                 }
@@ -859,7 +870,7 @@ private struct BlendGuideRow: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isActive ? AppTheme.Colors.softGreenBackground.opacity(0.78) : AppTheme.Colors.cardBackground)
+            .background(isActive ? activeCardBackground : AppTheme.Colors.cardBackground)
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(isActive ? AppTheme.Colors.primaryGreen.opacity(0.75) : AppTheme.Colors.borderColor, lineWidth: isActive ? 1.2 : 1)

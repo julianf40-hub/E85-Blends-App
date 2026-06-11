@@ -13,6 +13,7 @@ enum AppPreferenceKey {
     static let preferredMapsApp = "preferredMapsApp"
     static let defaultTargetBlend = "defaultTargetBlend"
     static let themePreference = "themePreference"
+    static let accentTheme = "appAccentTheme"
     static let showGarageTab = "showGarageTab"
     static let showRemindersTab = "showRemindersTab"
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
@@ -34,6 +35,32 @@ enum BlendPreferenceOption: String, CaseIterable {
     case e60 = "E60"
     case e70 = "E70"
     case e85 = "E85"
+}
+
+enum AppAccentTheme: String, CaseIterable {
+    case originalGreen = "originalGreen"
+    case performanceBlue = "performanceBlue"
+
+    var displayName: String {
+        switch self {
+        case .originalGreen: return "Original Green"
+        case .performanceBlue: return "Performance Blue"
+        }
+    }
+
+    var primaryColor: Color {
+        switch self {
+        case .originalGreen: return Color(red: 0.19, green: 0.92, blue: 0.48)
+        case .performanceBlue: return Color(red: 0.078, green: 0.361, blue: 1.0)
+        }
+    }
+
+    var softFillColor: Color {
+        switch self {
+        case .originalGreen: return Color(red: 0.13, green: 0.28, blue: 0.20)
+        case .performanceBlue: return Color(red: 0.063, green: 0.157, blue: 0.373)
+        }
+    }
 }
 
 enum ThemePreferenceOption: String, CaseIterable {

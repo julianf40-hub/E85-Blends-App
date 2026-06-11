@@ -18,6 +18,13 @@ struct RecommendedGearView: View {
                 headerSection
                 sponsorCard
                 gearPreviewCard
+
+                Text("Sponsored links and partner recommendations may help support 85Blends.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 4)
             }
             .padding(16)
         }

@@ -20,7 +20,7 @@ struct AddEditFuelLogView: View {
 
     @State private var draft: FuelLogDraft
     @State private var saveErrorMessage: String?
-    @State private var locationManager = StationLocationManager()
+    @Environment(StationLocationManager.self) private var locationManager
     @State private var isDetectingStation = false
     @State private var detectStationMessage: String?
     @State private var detectedStationName: String?

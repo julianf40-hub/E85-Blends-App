@@ -11,7 +11,9 @@ import SwiftData
 @main
 struct EightyFiveBlendsApp: App {
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
+    @AppStorage(AppPreferenceKey.accentTheme) private var accentThemeRaw = AppAccentTheme.originalGreen.rawValue
 
+    @State private var locationManager = StationLocationManager()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
     private let isUsingInMemoryFallback: Bool
@@ -56,18 +58,11 @@ struct EightyFiveBlendsApp: App {
             return (container, false)
         }
 
-        // Attempt 3: Store appears corrupt — delete it and retry with CloudKit.
-        let storeURL = ModelConfiguration(storeName, schema: schema).url
-        try? FileManager.default.removeItem(at: storeURL)
-        let freshConfig = ModelConfiguration(
-            storeName,
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .automatic
-        )
-        if let container = try? ModelContainer(for: schema, configurations: [freshConfig]) {
-            return (container, false)
-        }
+        // Both persistent store attempts failed. This can happen transiently — CloudKit
+        // auth delay, a pending migration, or a first-launch race. Do NOT delete the
+        // store file; it may be recoverable after a restart and deleting it would cause
+        // permanent, unrecoverable data loss. Fall through to in-memory so the app
+        // can still launch. The degradedStorageBanner will surface this to the user.
 
         // Last resort: in-memory only — data will not persist beyond this session.
         #if DEBUG
@@ -102,13 +97,20 @@ struct EightyFiveBlendsApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(locationManager)
                 .preferredColorScheme(
                     ThemePreferenceOption(rawValue: themePreference)?.colorScheme
                 )
                 .onAppear {
                     AppTheme.applyTabBarAppearance()
                 }
+                .task {
+                    await SubscriptionManager.shared.refreshEntitlements()
+                }
                 .onChange(of: themePreference) { _, _ in
+                    AppTheme.applyTabBarAppearance()
+                }
+                .onChange(of: accentThemeRaw) { _, _ in
                     AppTheme.applyTabBarAppearance()
                 }
                 .safeAreaInset(edge: .bottom) {

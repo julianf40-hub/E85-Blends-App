@@ -26,7 +26,7 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     var isAuthorizedForUserLocation: Bool {
-        authorizationStatus == .authorizedWhenInUse
+        authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways
     }
 
     override init() {

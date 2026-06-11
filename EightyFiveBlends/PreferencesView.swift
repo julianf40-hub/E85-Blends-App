@@ -31,6 +31,9 @@ struct PreferencesView: View {
                 }
 
                 settingsCard
+                #if DEBUG || INTERNAL_BUILD
+                proStatusCard
+                #endif
             }
             .padding(16)
         }
@@ -60,6 +63,8 @@ struct PreferencesView: View {
                 selection: $themePreference,
                 options: ThemePreferenceOption.allCases.map(\.rawValue)
             )
+
+            AccentThemeSelectorRow()
 
             PreferenceToggleRow(title: "Show Garage Tab", isOn: $showGarageTab)
             PreferenceToggleRow(title: "Show Reminders Tab", isOn: $showRemindersTab)
@@ -96,6 +101,101 @@ struct PreferencesView: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
+
+    private var proStatusCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "85Blends Pro", subtitle: "Your current subscription status.")
+
+            proStatusRow
+
+            #if DEBUG || INTERNAL_BUILD
+            debugOverrideRow
+            #endif
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private var proStatusRow: some View {
+        let manager = SubscriptionManager.shared
+        let (label, icon, color): (String, String, Color) = {
+            if manager.isLoadingProducts {
+                return ("Loading…", "arrow.triangle.2.circlepath", AppTheme.Colors.textMuted)
+            } else if manager.isPro {
+                return ("Pro", "crown.fill", AppTheme.Colors.stationYellow)
+            } else if !manager.isProStoreKit && manager.availableProducts.isEmpty && !manager.isLoadingProducts {
+                return ("Free · plans unavailable", "person.circle", AppTheme.Colors.textMuted)
+            } else {
+                return ("Free", "person.circle", AppTheme.Colors.textSecondary)
+            }
+        }()
+
+        return HStack {
+            Text("Status")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                Text(label)
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(color)
+        }
+        .padding(14)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    #if DEBUG || INTERNAL_BUILD
+    private var debugOverrideRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Developer Pro Override")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.warningRed)
+
+                Text("Developer/Internal builds — compiled out in App Store release.")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+
+            Picker(
+                "Developer Pro Override",
+                selection: Binding(
+                    get: { SubscriptionManager.shared.debugProOverride },
+                    set: { SubscriptionManager.shared.debugProOverride = $0 }
+                )
+            ) {
+                ForEach(SubscriptionManager.DebugProOverride.allCases, id: \.rawValue) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(AppTheme.Colors.warningRed)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.cardBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.Colors.warningRed.opacity(0.5), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+    #endif
 }
 
 private struct PreferenceMenuRow: View {
@@ -147,5 +247,78 @@ private struct PreferenceToggleRow: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct AccentThemeSelectorRow: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Accent Theme")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Text("Color style for buttons, tabs, and highlights.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+
+            VStack(spacing: 8) {
+                ForEach(AppAccentTheme.allCases, id: \.rawValue) { theme in
+                    themeOptionRow(theme)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func themeOptionRow(_ theme: AppAccentTheme) -> some View {
+        let isSelected = AccentThemeStore.shared.current == theme
+
+        Button {
+            AccentThemeStore.shared.select(theme)
+            AppHaptics.selection()
+        } label: {
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(theme.primaryColor)
+                        .frame(width: 13, height: 13)
+                    Circle()
+                        .fill(AppTheme.Colors.stationYellow)
+                        .frame(width: 13, height: 13)
+                }
+
+                Text(theme.displayName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                isSelected
+                    ? AppTheme.Colors.softGreenBackground
+                    : AppTheme.Colors.cardBackground
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? AppTheme.Colors.primaryGreen.opacity(0.6)
+                            : AppTheme.Colors.borderColor,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }

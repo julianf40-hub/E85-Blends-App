@@ -24,6 +24,7 @@ final class VehicleProfile {
     var requiredOctane: Double
     var isFlexFuel: Bool
     var isActive: Bool
+    @Attribute(.externalStorage)
     var vehiclePhotoData: Data?
     var createdAt: Date
     var updatedAt: Date
@@ -36,7 +37,7 @@ final class VehicleProfile {
         trim: String = "",
         tankSizeGallons: Double = 0,
         currentOdometer: Int = 0,
-        defaultTargetEthanolPercent: Double = 85,
+        defaultTargetEthanolPercent: Double = 30,
         defaultCurrentEthanolPercent: Double = 10,
         defaultPumpEthanolPercent: Double = 85,
         gasEthanolPercent: Double = 10,

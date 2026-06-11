@@ -23,7 +23,6 @@ struct OnboardingView: View {
     @State private var draft = VehicleDraft(vehicle: nil, existingVehiclesCount: 0)
     @State private var disclaimerState = DisclaimerAcknowledgementState()
     @State private var isShowingFullDisclaimer = false
-    @State private var highlightedMissingAcknowledgementID: DisclaimerAcknowledgementID?
     @State private var disclaimerGuidanceMessage: String?
 
     private let steps: [OnboardingStep] = [
@@ -379,93 +378,93 @@ struct OnboardingView: View {
     }
 
     private var disclaimerAcknowledgementCard: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("STEP \(currentStep + 1)")
-                        .font(.caption.weight(.bold))
-                        .tracking(1.2)
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("STEP \(currentStep + 1)")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
 
-                    Text(steps[currentStep].emoji)
-                        .font(.system(size: 36))
+                Text(steps[currentStep].emoji)
+                    .font(.system(size: 36))
 
-                    Text(steps[currentStep].title)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text(steps[currentStep].title)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text(steps[currentStep].subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                Text(steps[currentStep].subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
 
-                    Text("Review and accept the safety notes below to get started.")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.textMuted)
-                        .padding(.top, 4)
-
-                    disclaimerAcknowledgementRow(
-                        id: .estimates,
-                        title: "I understand blend and octane calculations are estimates only.",
-                        isOn: $disclaimerState.estimatesAcknowledged
-                    )
-                    disclaimerAcknowledgementRow(
-                        id: .fuelQuality,
-                        title: "I understand I am responsible for verifying actual ethanol content and fuel quality.",
-                        isOn: $disclaimerState.fuelQualityAcknowledged
-                    )
-                    disclaimerAcknowledgementRow(
-                        id: .vehicleResponsibility,
-                        title: "I understand vehicle compatibility, tuning, warranty, emissions, and legal compliance are my responsibility.",
-                        isOn: $disclaimerState.vehicleResponsibilityAcknowledged
-                    )
-                    disclaimerAcknowledgementRow(
-                        id: .advice,
-                        title: "I understand 85Blends is not professional mechanical, legal, financial, or regulatory advice.",
-                        isOn: $disclaimerState.adviceAcknowledged
-                    )
-
-                    Button {
-                        isShowingFullDisclaimer = true
-                    } label: {
-                        HStack {
-                            Text("View full disclaimer")
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .padding(14)
-                        .background(AppTheme.Colors.surface)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(AppTheme.Colors.border, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    Text("Built for the ethanol community.")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.textMuted)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
+                VStack(alignment: .leading, spacing: 10) {
+                    safetyPoint("Blend and octane calculations are estimates — always verify actual ethanol content and fuel quality.")
+                    safetyPoint("Vehicle compatibility, tuning, warranty, emissions, and legal compliance are your responsibility.")
+                    safetyPoint("85Blends is not professional mechanical, legal, financial, or regulatory advice.")
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(AppTheme.Colors.surfaceElevated)
+                .padding(.top, 4)
+
+                Toggle(isOn: $disclaimerState.acknowledged) {
+                    Text("I understand these calculations are estimates and I am responsible for verifying fuel compatibility.")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                }
+                .tint(AppTheme.Colors.accentGreen)
+                .padding(14)
+                .background(AppTheme.Colors.surface)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(
+                            disclaimerNeedsHighlight ? AppTheme.Colors.stationYellow : AppTheme.Colors.border,
+                            lineWidth: disclaimerNeedsHighlight ? 1.6 : 1
+                        )
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-            }
-            .onChange(of: highlightedMissingAcknowledgementID) { _, newValue in
-                guard let newValue else { return }
-                withAnimation(.easeInOut(duration: 0.28)) {
-                    proxy.scrollTo(newValue, anchor: .center)
+                .shadow(
+                    color: disclaimerNeedsHighlight ? AppTheme.Colors.stationYellow.opacity(0.22) : .clear,
+                    radius: disclaimerNeedsHighlight ? 12 : 0
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .animation(.easeInOut(duration: 0.22), value: disclaimerNeedsHighlight)
+                .onChange(of: disclaimerState.acknowledged) { _, newValue in
+                    if newValue {
+                        disclaimerGuidanceMessage = nil
+                    }
                 }
+
+                Button {
+                    isShowingFullDisclaimer = true
+                } label: {
+                    HStack {
+                        Text("View full disclaimer")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .padding(14)
+                    .background(AppTheme.Colors.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Text("Built for the ethanol community.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
     }
 
@@ -517,43 +516,19 @@ struct OnboardingView: View {
         }
     }
 
-    private func disclaimerAcknowledgementRow(
-        id: DisclaimerAcknowledgementID,
-        title: String,
-        isOn: Binding<Bool>
-    ) -> some View {
-        Toggle(isOn: isOn) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-        }
-        .tint(AppTheme.Colors.accentGreen)
-        .padding(14)
-        .background(AppTheme.Colors.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    highlightedMissingAcknowledgementID == id ? AppTheme.Colors.stationYellow : AppTheme.Colors.border,
-                    lineWidth: highlightedMissingAcknowledgementID == id ? 1.6 : 1
-                )
-        )
-        .shadow(
-            color: highlightedMissingAcknowledgementID == id ? AppTheme.Colors.stationYellow.opacity(0.22) : .clear,
-            radius: highlightedMissingAcknowledgementID == id ? 12 : 0
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .scaleEffect(highlightedMissingAcknowledgementID == id ? 1.015 : 1)
-        .animation(.easeInOut(duration: 0.22), value: highlightedMissingAcknowledgementID == id)
-        .id(id)
-        .onChange(of: isOn.wrappedValue) { _, newValue in
-            if newValue, highlightedMissingAcknowledgementID == id {
-                highlightedMissingAcknowledgementID = nil
-            }
+    private var disclaimerNeedsHighlight: Bool {
+        disclaimerGuidanceMessage != nil && disclaimerState.acknowledged == false
+    }
 
-            if disclaimerState.allAcknowledged {
-                disclaimerGuidanceMessage = nil
-                highlightedMissingAcknowledgementID = nil
-            }
+    private func safetyPoint(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.accentYellow)
+                .padding(.top, 1)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
         }
     }
 
@@ -595,16 +570,7 @@ struct OnboardingView: View {
     }
 
     private func guideToFirstMissingAcknowledgement() {
-        disclaimerGuidanceMessage = "Please review the remaining required safety note."
-        highlightedMissingAcknowledgementID = firstMissingAcknowledgementID
-    }
-
-    private var firstMissingAcknowledgementID: DisclaimerAcknowledgementID? {
-        if disclaimerState.estimatesAcknowledged == false { return .estimates }
-        if disclaimerState.fuelQualityAcknowledged == false { return .fuelQuality }
-        if disclaimerState.vehicleResponsibilityAcknowledged == false { return .vehicleResponsibility }
-        if disclaimerState.adviceAcknowledged == false { return .advice }
-        return nil
+        disclaimerGuidanceMessage = "Please acknowledge the safety note to continue."
     }
 
     private var shouldCreateVehicle: Bool {
@@ -648,24 +614,8 @@ private struct OnboardingStep {
 }
 
 private struct DisclaimerAcknowledgementState {
-    var estimatesAcknowledged = false
-    var fuelQualityAcknowledged = false
-    var vehicleResponsibilityAcknowledged = false
-    var adviceAcknowledged = false
-
-    var allAcknowledged: Bool {
-        estimatesAcknowledged &&
-            fuelQualityAcknowledged &&
-            vehicleResponsibilityAcknowledged &&
-            adviceAcknowledged
-    }
-}
-
-private enum DisclaimerAcknowledgementID: Hashable {
-    case estimates
-    case fuelQuality
-    case vehicleResponsibility
-    case advice
+    var acknowledged = false
+    var allAcknowledged: Bool { acknowledged }
 }
 
 private struct OnboardingStringField: View {

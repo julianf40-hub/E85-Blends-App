@@ -713,8 +713,8 @@ private struct PumpBlendGuideRow: View {
 
                 if let alternateBlend = tier.alternateBlend {
                     HStack(spacing: 8) {
-                        miniBlendButton("E60", value: 60)
-                        miniBlendButton("E70", value: alternateBlend)
+                        miniBlendButton("E\(alternateBlend)", value: alternateBlend)
+                        miniBlendButton("E\(tier.preferredBlend)", value: tier.preferredBlend)
                     }
                 }
             }

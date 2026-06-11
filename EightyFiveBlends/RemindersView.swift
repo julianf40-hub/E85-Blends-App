@@ -30,6 +30,7 @@ struct RemindersView: View {
     @State private var completionMileageError: String?
     @State private var reminderFeedbackMessage: String?
     @State private var saveErrorMessage: String?
+    @State private var vehicleFilter: ReminderVehicleFilter = .activeVehicle
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
@@ -60,27 +61,52 @@ struct RemindersView: View {
         }
     }
 
+    private var availableVehicleFilters: [ReminderVehicleFilter] {
+        var options: [ReminderVehicleFilter] = [.activeVehicle, .allVehicles]
+        for name in vehicles.map(\.nickname).filter({ $0.isEmpty == false }) {
+            options.append(.vehicle(name))
+        }
+        return options
+    }
+
+    private var filteredReminderInfos: [ReminderStatusInfo] {
+        reminderInfos.filter { matchesVehicleFilter($0.reminder.vehicleName) }
+    }
+
+    private func matchesVehicleFilter(_ reminderVehicleName: String) -> Bool {
+        switch vehicleFilter {
+        case .activeVehicle:
+            let activeName = activeVehicle?.nickname ?? ""
+            return reminderVehicleName == activeName
+        case .allVehicles:
+            return true
+        case .vehicle(let name):
+            return reminderVehicleName == name
+        }
+    }
+
     private var overdueReminders: [ReminderStatusInfo] {
-        reminderInfos
+        filteredReminderInfos
             .filter { $0.group == .overdue }
             .sorted(by: ReminderStatusInfo.sortOrder)
     }
 
     private var upcomingReminders: [ReminderStatusInfo] {
-        reminderInfos
+        filteredReminderInfos
             .filter { $0.group == .upcoming }
             .sorted(by: ReminderStatusInfo.sortOrder)
     }
 
     private var completedReminders: [ReminderStatusInfo] {
-        reminderInfos
+        filteredReminderInfos
             .filter { $0.group == .completed }
             .sorted(by: ReminderStatusInfo.sortOrder)
     }
 
     private var recurringCompletionRecords: [ReminderCompletionRecord] {
         completionRecords.filter { record in
-            completedReminders.contains(where: { matchesCompletionRecord(record, to: $0.reminder) }) == false
+            guard matchesVehicleFilter(record.vehicleName) else { return false }
+            return completedReminders.contains(where: { matchesCompletionRecord(record, to: $0.reminder) }) == false
         }
     }
 
@@ -97,6 +123,9 @@ struct RemindersView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     headerSection
+                    if vehicles.count > 1 {
+                        vehicleFilterRow
+                    }
                     if reminders.isEmpty {
                         ReminderTemplateCard(templates: reminderTemplates) { template in
                             createReminder(from: template)
@@ -117,7 +146,7 @@ struct RemindersView: View {
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .overlay(alignment: .top) {
@@ -185,6 +214,43 @@ struct RemindersView: View {
         } message: {
             Text(saveErrorMessage ?? "")
         }
+        .onChange(of: vehicles.map(\.nickname)) { _, names in
+            if case .vehicle(let selectedName) = vehicleFilter, names.contains(selectedName) == false {
+                vehicleFilter = .activeVehicle
+            }
+        }
+    }
+
+    private var vehicleFilterRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(availableVehicleFilters) { option in
+                    vehicleFilterChip(option)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func vehicleFilterChip(_ option: ReminderVehicleFilter) -> some View {
+        let isSelected = vehicleFilter == option
+        return Button {
+            vehicleFilter = option
+            AppHaptics.selection()
+        } label: {
+            Text(option.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(isSelected ? AppTheme.Colors.textPrimary : AppTheme.Colors.textSecondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(isSelected ? AppTheme.Colors.accentGreen.opacity(0.22) : AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(isSelected ? AppTheme.Colors.accentGreen : AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private var headerSection: some View {
@@ -328,6 +394,7 @@ struct RemindersView: View {
             dueDate: draft.dueDate,
             repeatDateIntervalDays: draft.repeatDateIntervalDays,
             notes: draft.notes,
+            // Both fields set explicitly in init for new records; use purchaseLinks setter on existing ones.
             purchaseURLString: draft.purchaseLinks.first?.urlString,
             purchaseLinksJSON: MaintenanceReminder.encodePurchaseLinks(draft.purchaseLinks),
             isCompleted: draft.isCompleted,
@@ -392,8 +459,8 @@ struct RemindersView: View {
         reminder.dueDate = draft.dueDate
         reminder.repeatDateIntervalDays = draft.repeatDateIntervalDays
         reminder.notes = draft.notes
-        reminder.purchaseURLString = draft.purchaseLinks.first?.urlString
-        reminder.purchaseLinksJSON = MaintenanceReminder.encodePurchaseLinks(draft.purchaseLinks)
+        // Setter keeps both purchaseLinksJSON (primary) and purchaseURLString (legacy) in sync.
+        reminder.purchaseLinks = draft.purchaseLinks
         reminder.isCompleted = draft.isCompleted
         reminder.completedAt = draft.isCompleted ? (reminder.completedAt ?? .now) : nil
         reminder.completedMileage = draft.isCompleted ? reminder.completedMileage : nil
@@ -753,7 +820,7 @@ private struct ReminderRowCard: View {
                         .font(.headline)
                         .foregroundStyle(AppTheme.Colors.textPrimary.opacity(info.group == .completed ? 0.7 : 1))
 
-                    Text(info.reminder.vehicleName)
+                    Text(info.reminder.vehicleName.isEmpty ? "Unassigned" : info.reminder.vehicleName)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
@@ -1159,7 +1226,7 @@ private struct ReminderCompletionRecordCard: View {
                         .font(.headline)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text(record.vehicleName.isEmpty ? "No Vehicle Selected" : record.vehicleName)
+                    Text(record.vehicleName.isEmpty ? "Unassigned" : record.vehicleName)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
@@ -1292,7 +1359,7 @@ private struct ReminderCompletionSheet: View {
                                     .background(AppTheme.Colors.surface)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .stroke(validationMessage == nil ? AppTheme.Colors.border : Color(red: 0.91, green: 0.35, blue: 0.36), lineWidth: 1)
+                                            .stroke(validationMessage == nil ? AppTheme.Colors.border : AppTheme.Colors.warningRed, lineWidth: 1)
                                     )
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
@@ -1357,6 +1424,28 @@ private struct ReminderCompletionSheet: View {
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+}
+
+private enum ReminderVehicleFilter: Hashable, Identifiable {
+    case activeVehicle
+    case allVehicles
+    case vehicle(String)
+
+    var id: String {
+        switch self {
+        case .activeVehicle: return "__active__"
+        case .allVehicles: return "__all__"
+        case .vehicle(let name): return "vehicle:\(name)"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .activeVehicle: return "Active Vehicle"
+        case .allVehicles: return "All Vehicles"
+        case .vehicle(let name): return name
         }
     }
 }

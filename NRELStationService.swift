@@ -96,6 +96,16 @@ enum NLRServiceError: LocalizedError, Equatable {
     }
 }
 
+// MARK: - Key Safety Notes
+//
+// NLR_API_KEY is a public developer API key for the AFDC (Alternative Fuels Data Center)
+// nearest-stations endpoint. These keys are issued free at developer.nlr.gov and are
+// explicitly designed for client-side distribution — rate-limited per key, not per user.
+// Embedding it in the app binary is the standard and expected usage pattern.
+//
+// The key is sent as a URL query parameter (?api_key=…), which is how the AFDC API
+// requires it. This is visible in network logs but is not a secret.
+
 struct NLRStationService {
     private static let baseURL = "https://developer.nlr.gov/api/alt-fuel-stations/v1/nearest.json"
     private static let defaultTimeoutInterval: TimeInterval = 18

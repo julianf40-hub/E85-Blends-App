@@ -552,7 +552,7 @@ struct CostCalculatorView: View {
                         badgeView("Cheapest", color: AppTheme.Colors.primaryGreen)
                     }
                     if isBestRange {
-                        badgeView("Best Range", color: AppTheme.Colors.rangeBlue)
+                        badgeView("Best Range", color: AppTheme.Colors.rangeColor)
                     }
                 }
             }
