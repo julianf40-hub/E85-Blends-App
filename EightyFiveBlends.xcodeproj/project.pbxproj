@@ -9,6 +9,10 @@
 /* Begin PBXBuildFile section */
 		444863ED2FB5B5B4001A39EE /* ProLimitBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444863EC2FB5B5B4001A39EE /* ProLimitBannerView.swift */; };
 		444863EF2FB5B5CB001A39EE /* ProUpgradeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444863EE2FB5B5CB001A39EE /* ProUpgradeView.swift */; };
+		4469CCAA2FE1397A0069F1D7 /* ProFeatureLockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4469CCA92FE1397A0069F1D7 /* ProFeatureLockView.swift */; };
+		4469CCAC2FE13E730069F1D7 /* TripPlannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4469CCAB2FE13E730069F1D7 /* TripPlannerView.swift */; };
+		4469CCAE2FE13E820069F1D7 /* AdvancedAnalyticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4469CCAD2FE13E820069F1D7 /* AdvancedAnalyticsView.swift */; };
+		4469CCB02FE13E940069F1D7 /* StationAlertsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4469CCAF2FE13E940069F1D7 /* StationAlertsView.swift */; };
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
@@ -17,6 +21,10 @@
 /* Begin PBXFileReference section */
 		444863EC2FB5B5B4001A39EE /* ProLimitBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProLimitBannerView.swift; sourceTree = "<group>"; };
 		444863EE2FB5B5CB001A39EE /* ProUpgradeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProUpgradeView.swift; sourceTree = "<group>"; };
+		4469CCA92FE1397A0069F1D7 /* ProFeatureLockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProFeatureLockView.swift; sourceTree = "<group>"; };
+		4469CCAB2FE13E730069F1D7 /* TripPlannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripPlannerView.swift; sourceTree = "<group>"; };
+		4469CCAD2FE13E820069F1D7 /* AdvancedAnalyticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedAnalyticsView.swift; sourceTree = "<group>"; };
+		4469CCAF2FE13E940069F1D7 /* StationAlertsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationAlertsView.swift; sourceTree = "<group>"; };
 		44A838512FA1EAAB00D200DA /* StationLocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationLocationManager.swift; sourceTree = "<group>"; };
 		44A838532FA1EB1100D200DA /* NRELStationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NRELStationService.swift; sourceTree = "<group>"; };
 		44A9BC202FA0865900A9920E /* EightyFiveBlends.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EightyFiveBlends.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -65,6 +73,10 @@
 				44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */,
 				444863EC2FB5B5B4001A39EE /* ProLimitBannerView.swift */,
 				444863EE2FB5B5CB001A39EE /* ProUpgradeView.swift */,
+				4469CCA92FE1397A0069F1D7 /* ProFeatureLockView.swift */,
+				4469CCAB2FE13E730069F1D7 /* TripPlannerView.swift */,
+				4469CCAD2FE13E820069F1D7 /* AdvancedAnalyticsView.swift */,
+				4469CCAF2FE13E940069F1D7 /* StationAlertsView.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -150,7 +162,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4469CCAE2FE13E820069F1D7 /* AdvancedAnalyticsView.swift in Sources */,
+				4469CCAA2FE1397A0069F1D7 /* ProFeatureLockView.swift in Sources */,
+				4469CCAC2FE13E730069F1D7 /* TripPlannerView.swift in Sources */,
 				444863ED2FB5B5B4001A39EE /* ProLimitBannerView.swift in Sources */,
+				4469CCB02FE13E940069F1D7 /* StationAlertsView.swift in Sources */,
 				444863EF2FB5B5CB001A39EE /* ProUpgradeView.swift in Sources */,
 				44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */,
 				44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */,
@@ -226,7 +242,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 92;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -245,7 +261,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.1;
+				MARKETING_VERSION = 2.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -392,7 +408,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 92;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -411,7 +427,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.1;
+				MARKETING_VERSION = 2.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -434,7 +450,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 92;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -453,7 +469,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.1;
+				MARKETING_VERSION = 2.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

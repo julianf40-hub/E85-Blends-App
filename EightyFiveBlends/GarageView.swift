@@ -137,8 +137,14 @@ struct GarageView: View {
                 subtitle: "Profiles used by the calculator, reminders, and fill-up history."
             )
 
-            if vehicles.count >= SubscriptionManager.freeVehicleLimit, !SubscriptionManager.shared.isPro {
-                ProLimitBannerView(message: "Pro supports larger garages.")
+            // Persistent Pro entry point for the Garage — visible to every free user, not just
+            // once they hit the soft limit, so the upgrade path is always discoverable here.
+            if !SubscriptionManager.shared.isProUser {
+                ProFeatureLockView(
+                    icon: "car.2.fill",
+                    title: "Unlimited Vehicles",
+                    description: "Manage your entire garage with 85Blends Pro."
+                )
             }
 
             if vehicles.isEmpty {

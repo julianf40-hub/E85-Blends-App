@@ -13,5 +13,9 @@
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplZmtidHNjaWVva2tkZW52bmtnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MjkzMDIsImV4cCI6MjA5MzIwNTMwMn0.LodTN0rF5HIkYr_TrxzsqaBrWrbF-0sFoIqD26Xgpwo</string>
 	<key>SUPABASE_URL</key>
 	<string>https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

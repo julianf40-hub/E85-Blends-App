@@ -35,16 +35,14 @@ struct MoreView: View {
                     sponsorCard
 
                     VStack(spacing: 12) {
-                        #if DEBUG || INTERNAL_BUILD
                         MoreNavigationRow(
                             title: "85Blends Pro",
-                            subtitle: "Support the app and unlock expanded limits.",
+                            subtitle: "Drive farther. Plan smarter. Fuel with confidence.",
                             systemImage: "crown.fill",
                             tint: AppTheme.Colors.stationYellow
                         ) {
                             ProUpgradeView()
                         }
-                        #endif
 
                         MoreNavigationRow(
                             title: "Fuel Log",
@@ -127,6 +125,8 @@ struct MoreView: View {
                             DisclaimerView()
                         }
                     }
+
+                    proPreviewSection
                 }
                 .padding(16)
             }
@@ -134,6 +134,41 @@ struct MoreView: View {
             .navigationBarHidden(true)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+    }
+
+    // 85Blends Pro feature entry points. Free users see locked preview cards (tapping opens
+    // the paywall); Pro users get a live entry that opens the feature shell.
+    private var proPreviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "85Blends Pro Features",
+                subtitle: "Included with 85Blends Pro."
+            )
+
+            ProFeatureGate(
+                icon: "map.fill",
+                title: "Trip Planner",
+                description: "Intelligent E85 trip planning with route-based fuel stops."
+            ) {
+                TripPlannerView()
+            }
+
+            ProFeatureGate(
+                icon: "chart.bar.fill",
+                title: "Advanced Fuel Analytics",
+                description: "Deeper insights into blend history, MPG, and spending trends."
+            ) {
+                AdvancedAnalyticsView()
+            }
+
+            ProFeatureGate(
+                icon: "bell.badge.fill",
+                title: "Station Price Alerts",
+                description: "Get notified when E85 prices drop at your saved stations."
+            ) {
+                StationAlertsView()
+            }
+        }
     }
 
     private var sponsorCard: some View {

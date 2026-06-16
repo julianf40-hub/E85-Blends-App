@@ -2,10 +2,12 @@
 //  ProLimitBannerView.swift
 //  EightyFiveBlends
 //
+//  Informational soft-limit nudge shown in Garage, Fuel Log, and Stations. It never blocks
+//  any free functionality — tapping it simply presents the single 85Blends Pro paywall.
+//
 
 import SwiftUI
 
-#if DEBUG || INTERNAL_BUILD
 struct ProLimitBannerView: View {
     let message: String
 
@@ -55,11 +57,3 @@ struct ProLimitBannerView: View {
         }
     }
 }
-#else
-// Pro subscription is not active in this release build.
-// Banner renders as EmptyView so call sites require no changes.
-struct ProLimitBannerView: View {
-    let message: String
-    var body: some View { EmptyView() }
-}
-#endif

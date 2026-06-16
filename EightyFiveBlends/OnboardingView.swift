@@ -30,7 +30,7 @@ struct OnboardingView: View {
         .init(
             emoji: "🚗",
             title: "Welcome to 85Blends",
-            subtitle: "Your all-in-one E85 blend calculator, station finder, fuel tracker, and garage companion.",
+            subtitle: "Calculate blends, find E85 stations, and keep your ethanol fueling organized.",
             bulletPoints: [
                 "Blend Calculator & At the Pump mode",
                 "Nearby E85 Stations & community pricing",
@@ -47,8 +47,8 @@ struct OnboardingView: View {
         // 2: Feature overview
         .init(
             emoji: "⛽",
-            title: "Blend, Find & Track",
-            subtitle: "Everything you need at the pump and beyond.",
+            title: "Fuel with Confidence",
+            subtitle: "Calculate blends, estimate costs, and quickly find nearby E85 stations.",
             bulletPoints: [
                 "Blend Calculator — E30, E50, E60, or E85 in seconds.",
                 "At the Pump mode for one-handed fueling guidance.",
@@ -57,17 +57,30 @@ struct OnboardingView: View {
                 "Cost Calculator to compare blends vs gasoline."
             ]
         ),
-        // 3: Tab selection (steps.count - 2 = 3)
+        // 3: Tab selection (tabSelectionStepIndex)
         .init(
             emoji: "🎨",
-            title: "Make It Yours",
-            subtitle: "Pick which tabs to show. OLED dark mode, blend defaults, and map app can be customized in More \u{2192} Preferences."
+            title: "Built for E85 Enthusiasts",
+            subtitle: "Save vehicles, track fuel history, and stay on top of maintenance reminders."
         ),
-        // 4: Disclaimer / finish (steps.count - 1 = 4)
+        // 4: Disclaimer (disclaimerStepIndex)
         .init(
             emoji: "🔥",
             title: "Ready to Blend?",
             subtitle: "Track fuel, find stations, manage your build, and make every fill-up smarter."
+        ),
+        // 5: 85Blends Pro intro (proStepIndex) — informational only, no paywall or purchase flow
+        .init(
+            emoji: "👑",
+            title: "Unlock 85Blends Pro",
+            subtitle: "Take your E85 experience even further.",
+            bulletPoints: [
+                "Intelligent Trip Planning",
+                "Advanced Fuel Analytics",
+                "Station Price Alerts",
+                "Unlimited Vehicles",
+                "Cloud Sync Ready"
+            ]
         )
     ]
 
@@ -99,6 +112,8 @@ struct OnboardingView: View {
                     tabSelectionCard
                 } else if isDisclaimerStep {
                     disclaimerAcknowledgementCard
+                } else if isProStep {
+                    proIntroCard
                 } else {
                     messageCard(step: steps[currentStep])
                 }
@@ -268,6 +283,52 @@ struct OnboardingView: View {
     }
 
     private var footerActions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if isProStep {
+                proFooterActions
+            } else {
+                standardFooterActions
+            }
+        }
+    }
+
+    // Final onboarding step. Both actions finish onboarding — neither opens a paywall or
+    // purchase flow. Pro can always be explored later from the More tab.
+    private var proFooterActions: some View {
+        VStack(spacing: 12) {
+            Button {
+                completeOnboarding()
+            } label: {
+                Text("Continue")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(AppTheme.Colors.accentGreen)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                completeOnboarding()
+            } label: {
+                Text("Explore Pro Later")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(AppTheme.Colors.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var standardFooterActions: some View {
         VStack(alignment: .leading, spacing: 10) {
             if isDisclaimerStep, let disclaimerGuidanceMessage {
                 Text(disclaimerGuidanceMessage)
@@ -516,6 +577,72 @@ struct OnboardingView: View {
         }
     }
 
+    // Final onboarding screen — a natural, no-pressure introduction to 85Blends Pro.
+    // Purely informational: there is no purchase flow or paywall here.
+    private var proIntroCard: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("STEP \(currentStep + 1)")
+                    .font(.caption.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(AppTheme.Colors.stationYellow.opacity(0.16))
+
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+                .frame(width: 72, height: 72)
+                .accessibilityHidden(true)
+
+                Text(steps[currentStep].title)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text(steps[currentStep].subtitle)
+                    .font(.title3)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(steps[currentStep].bulletPoints, id: \.self) { benefit in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(AppTheme.Colors.stationYellow)
+                                .padding(.top, 1)
+                                .accessibilityHidden(true)
+
+                            Text(benefit)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .padding(.top, 2)
+
+                Text("No purchase required to continue — you can explore Pro anytime from the More tab.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .stroke(AppTheme.Colors.stationYellow.opacity(0.30), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        }
+    }
+
     private var disclaimerNeedsHighlight: Bool {
         disclaimerGuidanceMessage != nil && disclaimerState.acknowledged == false
     }
@@ -533,7 +660,15 @@ struct OnboardingView: View {
     }
 
     private var disclaimerStepIndex: Int {
+        steps.count - 2
+    }
+
+    private var proStepIndex: Int {
         steps.count - 1
+    }
+
+    private var isProStep: Bool {
+        currentStep == proStepIndex
     }
 
     private var isDisclaimerStep: Bool {
@@ -553,15 +688,13 @@ struct OnboardingView: View {
     }
 
     private func handlePrimaryAction() {
-        if currentStep == steps.count - 1 {
-            guard canFinishOnboarding else {
-                guideToFirstMissingAcknowledgement()
-                return
-            }
-            completeOnboarding()
-        } else {
-            currentStep += 1
+        // The disclaimer is no longer the last step — it gates advancing to the Pro intro,
+        // which is where onboarding actually completes (via proFooterActions).
+        if isDisclaimerStep, canFinishOnboarding == false {
+            guideToFirstMissingAcknowledgement()
+            return
         }
+        currentStep += 1
     }
 
     private func resetOptionalTabsToDefault() {
@@ -590,7 +723,7 @@ struct OnboardingView: View {
     }
 
     private var tabSelectionStepIndex: Int {
-        steps.count - 2
+        steps.count - 3
     }
 }
 

@@ -13,6 +13,10 @@ struct EightyFiveBlendsApp: App {
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
     @AppStorage(AppPreferenceKey.accentTheme) private var accentThemeRaw = AppAccentTheme.originalGreen.rawValue
 
+    // Drives a Pro entitlement refresh whenever the app returns to the foreground, so a
+    // subscription bought, cancelled, or expired outside the app is reflected without a relaunch.
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var locationManager = StationLocationManager()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
@@ -44,6 +48,9 @@ struct EightyFiveBlendsApp: App {
             cloudKitDatabase: .automatic
         )
         if let container = try? ModelContainer(for: schema, configurations: [cloudConfig]) {
+            #if DEBUG
+            print("[85Blends] CloudKit-backed SwiftData container initialized successfully.")
+            #endif
             return (container, false)
         }
 
@@ -55,6 +62,9 @@ struct EightyFiveBlendsApp: App {
             cloudKitDatabase: .none
         )
         if let container = try? ModelContainer(for: schema, configurations: [localConfig]) {
+            #if DEBUG
+            print("[85Blends] Fell back to LOCAL-ONLY SwiftData container (CloudKit unavailable).")
+            #endif
             return (container, false)
         }
 
@@ -106,6 +116,14 @@ struct EightyFiveBlendsApp: App {
                 }
                 .task {
                     await SubscriptionManager.shared.refreshEntitlements()
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    // Re-verify entitlement on every return to active (App Store changes,
+                    // expiration, Family Sharing, etc.). refreshEntitlements() guards against
+                    // overlapping runs, so this is safe alongside the launch .task above.
+                    if newPhase == .active {
+                        Task { await SubscriptionManager.shared.refreshEntitlements() }
+                    }
                 }
                 .onChange(of: themePreference) { _, _ in
                     AppTheme.applyTabBarAppearance()

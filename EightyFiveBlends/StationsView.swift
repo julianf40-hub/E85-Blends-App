@@ -170,6 +170,7 @@ struct StationsView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 16) {
                         headerSection
+                        proFeaturesSection
                         mapSection
                         findNearbyButton
                         radiusSelector
@@ -262,6 +263,31 @@ struct StationsView: View {
             }
         } message: {
             Text(infoMessage ?? "")
+        }
+    }
+
+    // 85Blends Pro entry points. Free users see locked preview cards (tapping opens the
+    // paywall); Pro users get the live feature shells. Basic station search, favorites, and
+    // saved stations below remain fully free.
+    private var proFeaturesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "85Blends Pro", subtitle: "Smarter planning and price tracking.")
+
+            ProFeatureGate(
+                icon: "map.fill",
+                title: "Trip Planner",
+                description: "Plan E85 routes with intelligent fuel stops and range estimates."
+            ) {
+                TripPlannerView()
+            }
+
+            ProFeatureGate(
+                icon: "bell.badge.fill",
+                title: "Station Price Alerts",
+                description: "Get notified when E85 prices drop at your saved stations."
+            ) {
+                StationAlertsView()
+            }
         }
     }
 

@@ -10,24 +10,29 @@ import SwiftData
 
 @Model
 final class VehicleProfile {
-    var nickname: String
-    var year: String
-    var make: String
-    var model: String
-    var trim: String
-    var tankSizeGallons: Double
-    var currentOdometer: Int
-    var defaultTargetEthanolPercent: Double
-    var defaultCurrentEthanolPercent: Double
-    var defaultPumpEthanolPercent: Double
-    var gasEthanolPercent: Double
-    var requiredOctane: Double
-    var isFlexFuel: Bool
-    var isActive: Bool
+    // Every non-optional attribute carries an inline default value. SwiftData's CloudKit
+    // schema generation requires each attribute to be optional OR have a default at the
+    // property declaration (init defaults are not enough), so these defaults are what let
+    // the CloudKit-backed container initialize. The values mirror the init defaults exactly,
+    // so the stored shape is unchanged and existing data migrates cleanly.
+    var nickname: String = ""
+    var year: String = ""
+    var make: String = ""
+    var model: String = ""
+    var trim: String = ""
+    var tankSizeGallons: Double = 0
+    var currentOdometer: Int = 0
+    var defaultTargetEthanolPercent: Double = 30
+    var defaultCurrentEthanolPercent: Double = 10
+    var defaultPumpEthanolPercent: Double = 85
+    var gasEthanolPercent: Double = 10
+    var requiredOctane: Double = 91
+    var isFlexFuel: Bool = false
+    var isActive: Bool = false
     @Attribute(.externalStorage)
     var vehiclePhotoData: Data?
-    var createdAt: Date
-    var updatedAt: Date
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
 
     init(
         nickname: String = "",

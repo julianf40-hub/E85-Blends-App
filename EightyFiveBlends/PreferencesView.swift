@@ -31,9 +31,7 @@ struct PreferencesView: View {
                 }
 
                 settingsCard
-                #if DEBUG || INTERNAL_BUILD
                 proStatusCard
-                #endif
             }
             .padding(16)
         }

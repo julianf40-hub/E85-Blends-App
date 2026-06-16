@@ -10,16 +10,19 @@ import SwiftData
 
 @Model
 final class MaintenanceReminder {
-    var vehicleName: String
-    var title: String
-    var category: String
-    var mileageEnabled: Bool
-    var dueMileage: Int
-    var repeatMileageInterval: Int
-    var dateEnabled: Bool
-    var dueDate: Date
-    var repeatDateIntervalDays: Int
-    var notes: String
+    // Inline defaults on every non-optional attribute are required for the CloudKit-backed
+    // SwiftData container to validate its schema. Values match the init defaults, so existing
+    // reminder data migrates without loss. Already-optional fields are left optional.
+    var vehicleName: String = ""
+    var title: String = ""
+    var category: String = ""
+    var mileageEnabled: Bool = false
+    var dueMileage: Int = 0
+    var repeatMileageInterval: Int = 0
+    var dateEnabled: Bool = false
+    var dueDate: Date = Date.now
+    var repeatDateIntervalDays: Int = 0
+    var notes: String = ""
     // Legacy field: a single URL string saved before multi-link support was introduced.
     // Retained for CloudKit schema compatibility — removing or renaming this property
     // would require a CloudKit migration and would break existing user data.
@@ -29,11 +32,11 @@ final class MaintenanceReminder {
     // Primary storage: JSON-encoded array of ReminderPurchaseLink values.
     // Supersedes purchaseURLString when non-empty. Set via the `purchaseLinks` computed property.
     var purchaseLinksJSON: String?
-    var isCompleted: Bool
+    var isCompleted: Bool = false
     var completedAt: Date?
     var completedMileage: Int?
-    var createdAt: Date
-    var updatedAt: Date
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
 
     init(
         vehicleName: String = "",

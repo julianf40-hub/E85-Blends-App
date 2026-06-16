@@ -10,20 +10,23 @@ import SwiftData
 
 @Model
 final class FuelLogEntry {
-    var vehicleName: String
-    var date: Date
-    var stationName: String
-    var odometer: Int
-    var targetBlendPercent: Double
-    var finalBlendPercent: Double
-    var gallonsAdded: Double
-    var e85Gallons: Double
-    var gasGallons: Double
-    var e85PricePerGallon: Double
-    var gasPricePerGallon: Double
-    var totalCost: Double
-    var mpg: Double
-    var notes: String
+    // Inline defaults on every (non-optional) attribute are required for the CloudKit-backed
+    // SwiftData container to validate its schema. Values match the init defaults, so the
+    // stored shape is unchanged and existing fuel-log data migrates without loss.
+    var vehicleName: String = ""
+    var date: Date = Date.now
+    var stationName: String = ""
+    var odometer: Int = 0
+    var targetBlendPercent: Double = 30
+    var finalBlendPercent: Double = 0
+    var gallonsAdded: Double = 0
+    var e85Gallons: Double = 0
+    var gasGallons: Double = 0
+    var e85PricePerGallon: Double = 0
+    var gasPricePerGallon: Double = 0
+    var totalCost: Double = 0
+    var mpg: Double = 0
+    var notes: String = ""
 
     init(
         vehicleName: String = "",

@@ -145,6 +145,13 @@ struct FuelLogView: View {
             VStack(alignment: .leading, spacing: 16) {
                 headerSection
                 summaryCard
+                ProFeatureGate(
+                    icon: "chart.bar.fill",
+                    title: "Advanced Fuel Analytics",
+                    description: "Monthly spend, cost per mile, ethanol trends, and more."
+                ) {
+                    AdvancedAnalyticsView()
+                }
                 if entries.count >= SubscriptionManager.freeFuelLogLimit, !SubscriptionManager.shared.isPro {
                     ProLimitBannerView(message: "Pro supports longer fuel history.")
                 }

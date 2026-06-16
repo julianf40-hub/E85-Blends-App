@@ -48,6 +48,11 @@ struct AboutView: View {
                         subtitle: "Recent product-facing updates."
                     )
 
+                    changelogItem("Introduces 85Blends Pro.")
+                    changelogItem("Adds Pro feature previews for Trip Planner, Advanced Fuel Analytics, and Station Price Alerts.")
+                    changelogItem("Adds refreshed onboarding with a Pro introduction.")
+                    changelogItem("Enables CloudKit-backed Cloud Sync support.")
+                    changelogItem("Improves subscription restore and entitlement refresh handling.")
                     changelogItem("Removed public Add Station submission for launch reliability. Station discovery now prioritizes live search and local saved stations.")
                     changelogItem("Trip Planner active destination banner — shows resolved city name, auto-switches to Nearby filter, and raises destination search limit to 50 results.")
                     changelogItem("Trip Planner Clear Trip — resets destination context, cancels in-flight search, and returns to normal browse mode.")

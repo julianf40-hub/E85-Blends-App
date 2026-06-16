@@ -6,22 +6,33 @@
 import StoreKit
 import Observation
 
+/// Single source of truth for 85Blends Pro entitlement state.
+///
+/// 85Blends Pro is one auto-renewing subscription:
+///   • 85Blends Pro — $3.99 / month (no free trial)
+///
+/// Every Pro gate in the app reads the `isProUser` / `canAccess…` properties below,
+/// all of which route through `isPro` — so there is exactly one place that decides
+/// whether a user has Pro.
 @Observable
 final class SubscriptionManager {
     static let shared = SubscriptionManager()
 
-    // MARK: - Product identifiers
-    static let monthlyID   = "com.85blends.pro.monthly"
-    static let yearlyID    = "com.85blends.pro.yearly"
-    static let lifetimeID  = "com.85blends.pro.lifetime"
-    static let allProductIDs: Set<String> = [monthlyID, yearlyID, lifetimeID]
+    // MARK: - Product identifier
+    /// The one and only 85Blends Pro offering.
+    static let monthlyID = "com.85blends.pro.monthly"
+    static let allProductIDs: Set<String> = [monthlyID]
 
-    // MARK: - Free-tier soft limits (non-blocking)
+    /// Marketing price shown before StoreKit products load (or in builds without a
+    /// StoreKit configuration). Once the product loads we always prefer its localized price.
+    static let fallbackDisplayPrice = "$3.99"
+
+    // MARK: - Free-tier soft limits (non-blocking nudges only — they never block free features)
     static let freeVehicleLimit      = 2
     static let freeFuelLogLimit      = 25
     static let freeSavedStationLimit = 10
 
-    // MARK: - Debug override (DEBUG and INTERNAL_BUILD only — compiled out in App Store release)
+    // MARK: - Debug override (DEBUG / INTERNAL_BUILD only — compiled out of App Store release)
     #if DEBUG || INTERNAL_BUILD
     enum DebugProOverride: String, CaseIterable {
         case off       = "Off"
@@ -33,13 +44,17 @@ final class SubscriptionManager {
 
     // MARK: - Observable state
 
-    // Raw StoreKit-verified Pro status. Use `isPro` for UI logic.
+    /// Raw StoreKit-verified Pro status. Use `isPro` / `isProUser` / the `canAccess…` flags for UI logic.
     private(set) var isProStoreKit: Bool = false
     private(set) var availableProducts: [Product] = []
     private(set) var isLoadingProducts: Bool = false
 
-    // isPro is computed so the DEBUG/INTERNAL_BUILD override routes through without touching StoreKit state.
-    // In App Store release builds the compiler eliminates the conditional entirely.
+    // MARK: - Entitlement (single source of truth)
+
+    /// Whether the user currently has 85Blends Pro.
+    /// Defaults to `false` in production and only becomes `true` via a verified StoreKit
+    /// entitlement. The debug override is the only other path, and it is compiled out of
+    /// App Store release builds entirely.
     var isPro: Bool {
         #if DEBUG || INTERNAL_BUILD
         switch debugProOverride {
@@ -52,9 +67,41 @@ final class SubscriptionManager {
         #endif
     }
 
+    /// Public-facing alias used by feature code and views.
+    var isProUser: Bool { isPro }
+
+    // MARK: - Feature access (all derived from `isPro`)
+    var canAccessTripPlanner: Bool       { isPro }
+    var canAccessAdvancedAnalytics: Bool { isPro }
+    var canAccessStationAlerts: Bool     { isPro }
+    var canAccessUnlimitedVehicles: Bool { isPro }
+    var canAccessCloudSync: Bool         { isPro }
+
+    /// The 85Blends Pro monthly product once loaded from StoreKit, if available.
+    var monthlyProduct: Product? {
+        availableProducts.first { $0.id == Self.monthlyID }
+    }
+
+    /// Localized price for display, falling back to the marketing price before products load.
+    var displayPrice: String {
+        monthlyProduct?.displayPrice ?? Self.fallbackDisplayPrice
+    }
+
+    /// Whether a real StoreKit product is loaded and can actually be purchased.
+    /// The paywall's primary CTA stays disabled while this is `false`, so there is no
+    /// dead button when products haven't loaded (no internet / StoreKit unavailable /
+    /// product not yet configured in App Store Connect).
+    var canPurchase: Bool {
+        monthlyProduct != nil
+    }
+
     enum PurchaseState: Equatable {
         case idle, purchasing, restoring, succeeded
+        /// Entitlement re-established via Restore Purchases.
+        case restored
         case failed(String)
+        /// Neutral, non-error message (e.g. a restore that found nothing to restore).
+        case info(String)
     }
     private(set) var purchaseState: PurchaseState = .idle
 
@@ -101,17 +148,29 @@ final class SubscriptionManager {
         isLoadingProducts = true
         defer { isLoadingProducts = false }
         do {
-            let products = try await Product.products(for: Self.allProductIDs)
-            let order: [String: Int] = [Self.monthlyID: 0, Self.yearlyID: 1, Self.lifetimeID: 2]
-            availableProducts = products.sorted { (order[$0.id] ?? 99) < (order[$1.id] ?? 99) }
+            availableProducts = try await Product.products(for: Self.allProductIDs)
         } catch {
             // Expected in Simulator without a StoreKit configuration file — safe no-op.
             availableProducts = []
         }
     }
 
+    /// Convenience entry point for the paywall's primary CTA.
+    ///
+    /// TODO: This is the StoreKit purchasing hook. It charges the live
+    /// `com.85blends.pro.monthly` subscription once it is configured in App Store Connect.
+    /// Until the product exists, `monthlyProduct` is nil and this no-ops safely; the paywall
+    /// surfaces the unavailable state instead.
+    @MainActor
+    func purchasePro() async {
+        guard let product = monthlyProduct else { return }
+        await purchase(product)
+    }
+
     @MainActor
     func purchase(_ product: Product) async {
+        // Ignore repeat taps while a purchase or restore is already in flight.
+        guard purchaseState != .purchasing, purchaseState != .restoring else { return }
         purchaseState = .purchasing
         do {
             switch try await product.purchase() {
@@ -130,13 +189,22 @@ final class SubscriptionManager {
 
     @MainActor
     func restorePurchases() async {
+        // Guard against rapid repeat taps kicking off overlapping restores.
+        guard purchaseState != .restoring, purchaseState != .purchasing else { return }
+        let wasProBefore = isProStoreKit
         purchaseState = .restoring
         do {
             try await AppStore.sync()
             await refreshEntitlements()
-            purchaseState = .succeeded
+            // AppStore.sync() succeeding doesn't mean the user owns Pro — distinguish a fresh
+            // restore from "already active" and from "nothing to restore" so the UI is honest.
+            if isProStoreKit {
+                purchaseState = wasProBefore ? .info("85Blends Pro is active.") : .restored
+            } else {
+                purchaseState = .info("No active subscription found.")
+            }
         } catch {
-            purchaseState = .failed(error.localizedDescription)
+            purchaseState = .failed("We couldn't restore your purchases. Please try again.")
         }
     }
 

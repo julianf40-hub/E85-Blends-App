@@ -10,13 +10,16 @@ import SwiftData
 
 @Model
 final class ReminderCompletionRecord {
-    var reminderTitle: String
-    var vehicleName: String
-    var category: String
-    var completedAt: Date
+    // Inline defaults on every non-optional attribute let the CloudKit-backed SwiftData
+    // container validate. completedMileage/notes stay optional. Values match the init
+    // defaults, so existing completion-history data migrates without loss.
+    var reminderTitle: String = ""
+    var vehicleName: String = ""
+    var category: String = ""
+    var completedAt: Date = Date.now
     var completedMileage: Int?
     var notes: String?
-    var createdAt: Date
+    var createdAt: Date = Date.now
 
     init(
         reminderTitle: String = "",

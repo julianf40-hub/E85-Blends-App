@@ -10,19 +10,22 @@ import SwiftData
 
 @Model
 final class FuelStation {
-    var name: String
-    var address: String
-    var city: String
-    var state: String
-    var zipCode: String
+    // Inline defaults on every non-optional attribute let the CloudKit-backed SwiftData
+    // container validate. latitude/longitude stay optional (a station may have no coordinate).
+    // Values match the init defaults, so stored data and shape are unchanged.
+    var name: String = ""
+    var address: String = ""
+    var city: String = ""
+    var state: String = ""
+    var zipCode: String = ""
     var latitude: Double?
     var longitude: Double?
-    var lastKnownE85Price: Double
-    var lastUpdated: Date
-    var notes: String
-    var isFavorite: Bool
-    var createdAt: Date
-    var updatedAt: Date
+    var lastKnownE85Price: Double = 0
+    var lastUpdated: Date = Date.now
+    var notes: String = ""
+    var isFavorite: Bool = false
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
 
     init(
         name: String = "",
