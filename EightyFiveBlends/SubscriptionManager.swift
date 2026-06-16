@@ -39,7 +39,29 @@ final class SubscriptionManager {
         case forceFree = "Force Free"
         case forcePro  = "Force Pro"
     }
-    var debugProOverride: DebugProOverride = .off
+
+    /// UserDefaults key for the persisted internal/dev Pro override. This lives in the
+    /// internal app's own defaults domain (the Internal build has a distinct bundle ID),
+    /// so it can never reach production — production doesn't compile this code at all.
+    private static let debugProOverrideKey = "internal.debugProOverride"
+
+    /// Manual Pro override for Developer/Internal builds. Persisted across launches so a
+    /// forced state survives force-quit / relaunch; loaded in `init` and written on change.
+    var debugProOverride: DebugProOverride = .off {
+        didSet {
+            UserDefaults.standard.set(debugProOverride.rawValue, forKey: Self.debugProOverrideKey)
+            logEntitlementState("override changed")
+        }
+    }
+
+    /// Human-readable entitlement breakdown for internal diagnostics.
+    var debugEntitlementStatus: String {
+        "StoreKit=\(isProStoreKit) | override=\(debugProOverride.rawValue) | effectivePro=\(isPro)"
+    }
+
+    private func logEntitlementState(_ context: String) {
+        print("[85Blends][entitlement] \(context): \(debugEntitlementStatus)")
+    }
     #endif
 
     // MARK: - Observable state
@@ -110,6 +132,15 @@ final class SubscriptionManager {
     private var isRefreshing = false
 
     private init() {
+        #if DEBUG || INTERNAL_BUILD
+        // Restore any persisted internal/dev override before entitlement refresh runs, so a
+        // forced state survives force-quit / relaunch. (Setting a property in init does not
+        // fire its didSet, so this does not redundantly write back to UserDefaults.)
+        if let raw = UserDefaults.standard.string(forKey: Self.debugProOverrideKey),
+           let saved = DebugProOverride(rawValue: raw) {
+            debugProOverride = saved
+        }
+        #endif
         transactionListenerTask = Task.detached(priority: .background) { [weak self] in
             for await result in Transaction.updates {
                 await self?.handle(result)
