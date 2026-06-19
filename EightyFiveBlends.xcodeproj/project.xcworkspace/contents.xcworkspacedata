@@ -4,4 +4,11 @@
    <FileRef
       location = "self:">
    </FileRef>
+   <Group
+      location = "group:EightyFiveBlendsTests"
+      name = "EightyFiveBlendsTests">
+      <FileRef
+         location = "group:BlendCalculatorTests.swift">
+      </FileRef>
+   </Group>
 </Workspace>

@@ -17,6 +17,9 @@ struct BlendCalculator {
         let gasEthanolPercent: Double
         let e85Octane: Double
         let gasOctane: Double
+        /// Partial fill: fill only to this level rather than 100%. Nil = fill to full.
+        /// Must be >= currentFuelLevelPercent when set.
+        var targetFuelLevelPercent: Double? = nil
     }
 
     struct Result {
@@ -71,7 +74,17 @@ struct BlendCalculator {
         }
 
         let currentFuelGallons = input.tankSizeGallons * input.currentFuelLevelPercent / 100
-        let spaceToFill = input.tankSizeGallons - currentFuelGallons
+
+        // Partial fill: resolve the target volume. Nil means fill to the full tank.
+        if let tPercent = input.targetFuelLevelPercent,
+           tPercent < input.currentFuelLevelPercent - epsilon {
+            return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+        }
+
+        let targetFillPercent = input.targetFuelLevelPercent ?? 100.0
+        let targetGallons = input.tankSizeGallons * targetFillPercent / 100.0
+        // gallons available to add (equals spaceToFill when targetFillPercent = 100)
+        let spaceToFill = targetGallons - currentFuelGallons
 
         guard spaceToFill >= -epsilon else {
             return warningResult(input: input, message: "Current fuel level cannot exceed the tank size.")
@@ -106,7 +119,8 @@ struct BlendCalculator {
         }
 
         let denominator = e85Ethanol - gasEthanol
-        let numerator = (input.tankSizeGallons * targetEthanol) - (currentFuelGallons * currentFuelEthanol) - (spaceToFill * gasEthanol)
+        // Solve for E85 over the partial (or full) target volume
+        let numerator = (targetGallons * targetEthanol) - (currentFuelGallons * currentFuelEthanol) - (spaceToFill * gasEthanol)
 
         guard abs(denominator) > epsilon else {
             return warningResult(
@@ -134,12 +148,13 @@ struct BlendCalculator {
         }
 
         let totalGallonsToAdd = e85Gallons + gasGallons
+        // finalEthanolPercent is over targetGallons so it reflects the partial-fill volume
         let finalEthanolPercent = rounded(
             (
                 (currentFuelGallons * currentFuelEthanol) +
                 (e85Gallons * e85Ethanol) +
                 (gasGallons * gasEthanol)
-            ) / input.tankSizeGallons * 100,
+            ) / targetGallons * 100,
             places: 1
         )
 

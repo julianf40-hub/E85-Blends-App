@@ -25,6 +25,13 @@ struct AtThePumpView: View {
     @State private var currentEthanolInput: String
     @State private var isBlendGuideExpanded = true
 
+    // Partial Fill state
+    @State private var isPartialFillEnabled = false
+    @State private var targetFuelLevelPercent: Double = 100
+    @State private var e85PriceInput: String = ""
+    @State private var gasPriceInput: String = ""
+    @State private var budgetInput: String = ""
+
     init(
         initialTankSizeGallons: Double,
         initialCurrentFuelLevelPercent: Double,
@@ -62,7 +69,14 @@ struct AtThePumpView: View {
         _e85Octane = State(initialValue: initialE85Octane)
         _gasOctane = State(initialValue: resolvedGasOctane)
         _currentEthanolInput = State(initialValue: AtThePumpView.formatInput(resolvedCurrentEthanol))
+
+        // Pre-fill E85 price from station if available
+        if let price = nearestStation?.lastKnownE85Price, price > 0 {
+            _e85PriceInput = State(initialValue: String(format: "%.2f", price))
+        }
     }
+
+    // MARK: - Derived values
 
     private var activeVehicleDisplayName: String {
         guard let activeVehicle else {
@@ -73,20 +87,63 @@ struct AtThePumpView: View {
         return vehicleName.isEmpty ? "Unnamed Active Vehicle" : vehicleName
     }
 
-    private var calculation: BlendCalculator.Result {
-        BlendCalculator.calculate(
-            input: .init(
-                tankSizeGallons: tankSizeGallons,
-                currentFuelLevelPercent: currentFuelLevelPercent,
-                currentFuelEthanolPercent: currentFuelEthanolPercent,
-                targetEthanolPercent: targetEthanolPercent,
-                e85EthanolPercent: e85EthanolPercent,
-                gasEthanolPercent: gasEthanolPercent,
-                e85Octane: e85Octane,
-                gasOctane: gasOctane
-            )
+    private var calculationInput: BlendCalculator.Input {
+        .init(
+            tankSizeGallons: tankSizeGallons,
+            currentFuelLevelPercent: currentFuelLevelPercent,
+            currentFuelEthanolPercent: currentFuelEthanolPercent,
+            targetEthanolPercent: targetEthanolPercent,
+            e85EthanolPercent: e85EthanolPercent,
+            gasEthanolPercent: gasEthanolPercent,
+            e85Octane: e85Octane,
+            gasOctane: gasOctane,
+            targetFuelLevelPercent: isPartialFillEnabled ? targetFuelLevelPercent : nil
         )
     }
+
+    private var calculation: BlendCalculator.Result {
+        BlendCalculator.calculate(input: calculationInput)
+    }
+
+    private var partialFillGallonsToAdd: Double {
+        let currentGal = tankSizeGallons * currentFuelLevelPercent / 100
+        let targetGal  = tankSizeGallons * targetFuelLevelPercent / 100
+        return max(0, targetGal - currentGal)
+    }
+
+    private var currentFuelGallonsDisplay: Double {
+        tankSizeGallons * currentFuelLevelPercent / 100
+    }
+
+    private var targetFuelGallonsDisplay: Double {
+        tankSizeGallons * targetFuelLevelPercent / 100
+    }
+
+    private var estimatedFuelCost: Double? {
+        guard isPartialFillEnabled,
+              let e85Price = Double(e85PriceInput), e85Price > 0,
+              let gasPrice = Double(gasPriceInput), gasPrice > 0,
+              calculation.warningMessage == nil else { return nil }
+        return calculation.e85Gallons * e85Price + calculation.gasGallons * gasPrice
+    }
+
+    private var budgetExceeded: Bool {
+        guard let cost = estimatedFuelCost,
+              let budget = Double(budgetInput), budget > 0 else { return false }
+        return cost > budget
+    }
+
+    private var isPartialFillSameLevel: Bool {
+        isPartialFillEnabled &&
+        Int(currentFuelLevelPercent.rounded()) == Int(targetFuelLevelPercent.rounded())
+    }
+
+    // True whenever current level is at 100% — target slider must not render to avoid a stride crash.
+    private var currentLevelIsFull: Bool {
+        Int(currentFuelLevelPercent.rounded()) >= 100
+    }
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
@@ -96,8 +153,10 @@ struct AtThePumpView: View {
                     vehicleCard
                     targetBlendCard
                     fuelLevelCard
+                    partialFillCard
                     currentEthanolCard
                     blendResultCard
+                    budgetWarningCard
                     pumpStepsCard
                     stationContextCard
                     safetyDisclaimer
@@ -112,6 +171,8 @@ struct AtThePumpView: View {
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .keyboardDoneToolbar()
     }
+
+    // MARK: - Header / vehicle
 
     private var headerCard: some View {
         AppCard {
@@ -147,6 +208,8 @@ struct AtThePumpView: View {
             }
         }
     }
+
+    // MARK: - Target blend
 
     private var targetBlendCard: some View {
         AppCard {
@@ -204,6 +267,8 @@ struct AtThePumpView: View {
         }
     }
 
+    // MARK: - Fuel level (existing)
+
     private var fuelLevelCard: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 14) {
@@ -219,10 +284,222 @@ struct AtThePumpView: View {
                     selectedValue: Int(currentFuelLevelPercent.rounded())
                 ) { value in
                     currentFuelLevelPercent = Double(value)
+                    if isPartialFillEnabled, targetFuelLevelPercent < currentFuelLevelPercent {
+                        targetFuelLevelPercent = currentFuelLevelPercent
+                    }
                 }
             }
         }
     }
+
+    // MARK: - Partial Fill
+
+    private var partialFillCard: some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: "Partial Fill", subtitle: nil)
+
+                Toggle(isOn: $isPartialFillEnabled) {
+                    Text("I'm not filling to full")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                }
+                .tint(AppTheme.Colors.primaryGreen)
+                .onChange(of: isPartialFillEnabled) { _, enabled in
+                    if !enabled {
+                        targetFuelLevelPercent = 100
+                    }
+                }
+
+                if isPartialFillEnabled {
+                    Text("Calculate blends for partial refills and top-offs instead of assuming a full tank.")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // Current Level
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Current Level")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                            Spacer()
+                            Text("\(Int(currentFuelLevelPercent.rounded()))% · \(String(format: "%.1f", currentFuelGallonsDisplay)) gal")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                                .contentTransition(.numericText())
+                                .animation(.easeInOut(duration: 0.15), value: currentFuelLevelPercent)
+                        }
+
+                        Slider(value: $currentFuelLevelPercent, in: 0...100, step: 1)
+                            .tint(AppTheme.Colors.primaryGreen)
+                            .onChange(of: currentFuelLevelPercent) { _, newVal in
+                                if newVal >= 100 {
+                                    targetFuelLevelPercent = 100
+                                } else if targetFuelLevelPercent < newVal {
+                                    targetFuelLevelPercent = newVal
+                                }
+                            }
+
+                        fuelLevelTickLabels
+
+                        fuelLevelChipRow(
+                            values: [
+                                .init(label: "Empty", value: 0),
+                                .init(label: "1/4", value: 25),
+                                .init(label: "1/2", value: 50),
+                                .init(label: "3/4", value: 75),
+                                .init(label: "Full", value: 100),
+                            ],
+                            selectedValue: Int(currentFuelLevelPercent.rounded()),
+                            disabledBelow: nil,
+                            accentColor: AppTheme.Colors.primaryGreen
+                        ) { value in
+                            currentFuelLevelPercent = Double(value)
+                            if Double(value) >= 100 {
+                                targetFuelLevelPercent = 100
+                            } else if targetFuelLevelPercent < currentFuelLevelPercent {
+                                targetFuelLevelPercent = currentFuelLevelPercent
+                            }
+                        }
+                    }
+
+                    // Target Level
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Target Level")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                            Spacer()
+                            Text("\(Int(targetFuelLevelPercent.rounded()))% · \(String(format: "%.1f", targetFuelGallonsDisplay)) gal")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(currentLevelIsFull ? AppTheme.Colors.textMuted : AppTheme.Colors.accentYellow)
+                                .contentTransition(.numericText())
+                                .animation(.easeInOut(duration: 0.15), value: targetFuelLevelPercent)
+                        }
+
+                        if currentLevelIsFull {
+                            // Static full-tank bar — slider omitted to avoid zero-stride crash
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(AppTheme.Colors.border)
+                                    .frame(height: 4)
+                                Capsule()
+                                    .fill(AppTheme.Colors.textMuted.opacity(0.45))
+                                    .frame(maxWidth: .infinity, maxHeight: 4)
+                            }
+                            .padding(.vertical, 10)
+
+                            Text("Tank is already full. Lower the current level to calculate a partial fill.")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Slider(
+                                value: $targetFuelLevelPercent,
+                                in: currentFuelLevelPercent...100,
+                                step: 1
+                            )
+                            .tint(AppTheme.Colors.accentYellow)
+
+                            HStack {
+                                Text(fuelLevelLabel(for: currentFuelLevelPercent))
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.Colors.textMuted)
+                                Spacer()
+                                Text("Full")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.Colors.textMuted)
+                            }
+
+                            fuelLevelChipRow(
+                                values: [
+                                    .init(label: "1/4", value: 25),
+                                    .init(label: "1/2", value: 50),
+                                    .init(label: "3/4", value: 75),
+                                    .init(label: "Full", value: 100),
+                                ],
+                                selectedValue: Int(targetFuelLevelPercent.rounded()),
+                                disabledBelow: Int(currentFuelLevelPercent.rounded()),
+                                accentColor: AppTheme.Colors.accentYellow
+                            ) { value in
+                                targetFuelLevelPercent = Double(value)
+                            }
+                        }
+                    }
+
+                    if isPartialFillSameLevel {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.circle")
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                            Text("Increase your target fuel level to calculate a refill.")
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    // Fill summary chips
+                    HStack(spacing: 10) {
+                        partialInfoChip(
+                            label: "Current",
+                            value: "\(Int(currentFuelLevelPercent.rounded()))%"
+                        )
+                        partialInfoChip(
+                            label: "Target",
+                            value: "\(Int(targetFuelLevelPercent.rounded()))%"
+                        )
+                        partialInfoChip(
+                            label: "To Add",
+                            value: String(format: "%.2f gal", partialFillGallonsToAdd)
+                        )
+                    }
+
+                    // Budget section
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("OPTIONAL BUDGET LIMIT")
+                            .font(.caption.weight(.bold))
+                            .tracking(1.2)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
+
+                        HStack(spacing: 8) {
+                            priceInputField(label: "E85 $/gal", text: $e85PriceInput, hint: "3.49")
+                            priceInputField(label: "Gas $/gal", text: $gasPriceInput, hint: "3.99")
+                            priceInputField(label: "Budget $", text: $budgetInput, hint: "20")
+                        }
+
+                        if let cost = estimatedFuelCost {
+                            Text(String(format: "Estimated cost: $%.2f", cost))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(budgetExceeded ? AppTheme.Colors.gasOrange : AppTheme.Colors.primaryGreen)
+                                .contentTransition(.numericText())
+                                .animation(.easeInOut(duration: 0.15), value: cost)
+                        }
+                    }
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isPartialFillEnabled)
+    }
+
+    @ViewBuilder
+    private var budgetWarningCard: some View {
+        if budgetExceeded, let cost = estimatedFuelCost, let budget = Double(budgetInput) {
+            WarningCard(
+                title: "Budget Exceeded",
+                message: String(
+                    format: "Estimated cost $%.2f exceeds your $%.2f budget. Lower your target fill level or reduce ethanol content.",
+                    cost,
+                    budget
+                )
+            )
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    // MARK: - Current ethanol
 
     private var currentEthanolCard: some View {
         AppCard {
@@ -277,6 +554,8 @@ struct AtThePumpView: View {
         }
     }
 
+    // MARK: - Blend result
+
     private var blendResultCard: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 18) {
@@ -289,11 +568,46 @@ struct AtThePumpView: View {
 
                 HStack(spacing: 12) {
                     compactMetricCard(title: "Final ethanol", value: String(format: "%.1f%%", calculation.finalEthanolPercent))
-                    compactMetricCard(title: "Total to add", value: String(format: "%.2f gal", calculation.totalGallonsToAdd))
+                    compactMetricCard(
+                        title: isPartialFillEnabled ? "Gallons To Add" : "Total to add",
+                        value: String(format: "%.2f gal", calculation.totalGallonsToAdd)
+                    )
+                }
+
+                if isPartialFillEnabled {
+                    VStack(alignment: .leading, spacing: 0) {
+                        partialSummaryRow(
+                            label: "Current",
+                            value: "\(Int(currentFuelLevelPercent.rounded()))% · \(String(format: "%.1f", currentFuelGallonsDisplay)) gal",
+                            a11yLabel: "Current Level, \(Int(currentFuelLevelPercent.rounded())) percent, \(String(format: "%.1f", currentFuelGallonsDisplay)) gallons"
+                        )
+                        Divider().padding(.vertical, 6)
+                        partialSummaryRow(
+                            label: "Target",
+                            value: "\(Int(targetFuelLevelPercent.rounded()))% · \(String(format: "%.1f", targetFuelGallonsDisplay)) gal",
+                            a11yLabel: "Target Level, \(Int(targetFuelLevelPercent.rounded())) percent, \(String(format: "%.1f", targetFuelGallonsDisplay)) gallons"
+                        )
+                        Divider().padding(.vertical, 6)
+                        partialSummaryRow(
+                            label: "Add",
+                            value: String(format: "%.2f gal", partialFillGallonsToAdd),
+                            isAccent: true,
+                            a11yLabel: "Fuel To Add, \(String(format: "%.1f", partialFillGallonsToAdd)) gallons"
+                        )
+                    }
+                    .padding(14)
+                    .background(AppTheme.Colors.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
             }
         }
     }
+
+    // MARK: - Pump steps
 
     private var pumpStepsCard: some View {
         AppCard {
@@ -306,6 +620,8 @@ struct AtThePumpView: View {
             }
         }
     }
+
+    // MARK: - Station context
 
     private var stationContextCard: some View {
         AppCard {
@@ -345,6 +661,8 @@ struct AtThePumpView: View {
         }
     }
 
+    // MARK: - Safety / actions
+
     private var safetyDisclaimer: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -371,12 +689,17 @@ struct AtThePumpView: View {
                 AppHaptics.selection()
                 logFillUpAction(calculation)
             }
+            .disabled(isPartialFillSameLevel)
+            .opacity(isPartialFillSameLevel ? 0.4 : 1)
+            .animation(.easeInOut(duration: 0.15), value: isPartialFillSameLevel)
 
             SecondaryButton(title: "Close") {
                 closeAction()
             }
         }
     }
+
+    // MARK: - Blend guide data
 
     private var pumpBlendTiers: [PumpBlendTier] {
         [
@@ -466,47 +789,79 @@ struct AtThePumpView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func applyBlendSelection(_ selectedValue: Int) {
-        AppHaptics.impact()
-        targetEthanolPercent = Double(selectedValue)
-        withAnimation(.easeInOut(duration: 0.22)) {
-            isBlendGuideExpanded = false
+    // MARK: - Helper views
+
+    private var fuelLevelTickLabels: some View {
+        HStack {
+            Text("Empty")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Spacer()
+            Text("1/4")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Spacer()
+            Text("1/2")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Spacer()
+            Text("3/4")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Spacer()
+            Text("Full")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
         }
     }
 
-    private func setCurrentEthanol(_ value: Double) {
-        currentFuelEthanolPercent = value
-        currentEthanolInput = Self.formatInput(value)
+    private func partialInfoChip(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .contentTransition(.numericText())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func updateCurrentEthanol(from value: String) {
-        let cleanedValue = value.filter { "0123456789.".contains($0) }
+    private func priceInputField(label: String, text: Binding<String>, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
-        if cleanedValue != value {
-            currentEthanolInput = cleanedValue
-            return
+            HStack(spacing: 3) {
+                Text("$")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                TextField(hint, text: text)
+                    .keyboardType(.decimalPad)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .minimumScaleFactor(0.8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .background(AppTheme.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-
-        guard cleanedValue.isEmpty == false, let parsedValue = Double(cleanedValue) else {
-            return
-        }
-
-        currentFuelEthanolPercent = parsedValue
-    }
-
-    private func fuelLevelTitle(for value: Int) -> String {
-        switch value {
-        case 0:
-            return "Empty"
-        case 25:
-            return "1/4"
-        case 50:
-            return "1/2"
-        case 75:
-            return "3/4"
-        default:
-            return "\(value)%"
-        }
+        .frame(maxWidth: .infinity)
     }
 
     private func pumpMetricCard(title: String, value: String, accent: Color) -> some View {
@@ -580,6 +935,112 @@ struct AtThePumpView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
+    // MARK: - Helpers
+
+    private func fuelLevelLabel(for percent: Double) -> String {
+        let val = Int(percent.rounded())
+        switch val {
+        case 0:   return "Empty"
+        case 25:  return "1/4 Tank"
+        case 50:  return "1/2 Tank"
+        case 75:  return "3/4 Tank"
+        case 100: return "Full"
+        default:  return "\(val)%"
+        }
+    }
+
+    private func fuelLevelChipRow(
+        values: [PumpPresetItem],
+        selectedValue: Int,
+        disabledBelow: Int?,
+        accentColor: Color,
+        action: @escaping (Int) -> Void
+    ) -> some View {
+        let chipColumns = [GridItem(.adaptive(minimum: 58), spacing: 8)]
+        return LazyVGrid(columns: chipColumns, spacing: 8) {
+            ForEach(values) { chip in
+                let isSelected = chip.value == selectedValue
+                let isDisabled = disabledBelow.map { chip.value < $0 } ?? false
+                Button {
+                    guard chip.value != selectedValue else { return }
+                    AppHaptics.impact()
+                    action(chip.value)
+                } label: {
+                    Text(chip.label)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(
+                            isSelected ? AppTheme.Colors.charcoal :
+                            isDisabled ? AppTheme.Colors.textMuted :
+                                         AppTheme.Colors.textPrimary
+                        )
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(isSelected ? accentColor : AppTheme.Colors.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(isSelected ? accentColor : AppTheme.Colors.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .opacity(isDisabled ? 0.35 : 1)
+                }
+                .buttonStyle(.plain)
+                .disabled(isDisabled)
+                .accessibilityLabel("Set level to \(chip.label)")
+                .accessibilityAddTraits(isDisabled ? .isStaticText : [])
+            }
+        }
+    }
+
+    private func partialSummaryRow(
+        label: String,
+        value: String,
+        isAccent: Bool = false,
+        a11yLabel: String? = nil
+    ) -> some View {
+        HStack {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer()
+            Text(value)
+                .font(isAccent ? .subheadline.weight(.semibold) : .subheadline.weight(.bold))
+                .foregroundStyle(isAccent ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textPrimary)
+                .contentTransition(.numericText())
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(a11yLabel ?? "\(label), \(value)")
+    }
+
+    private func applyBlendSelection(_ selectedValue: Int) {
+        AppHaptics.impact()
+        targetEthanolPercent = Double(selectedValue)
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isBlendGuideExpanded = false
+        }
+    }
+
+    private func setCurrentEthanol(_ value: Double) {
+        currentFuelEthanolPercent = value
+        currentEthanolInput = Self.formatInput(value)
+    }
+
+    private func updateCurrentEthanol(from value: String) {
+        let cleanedValue = value.filter { "0123456789.".contains($0) }
+
+        if cleanedValue != value {
+            currentEthanolInput = cleanedValue
+            return
+        }
+
+        guard cleanedValue.isEmpty == false, let parsedValue = Double(cleanedValue) else {
+            return
+        }
+
+        currentFuelEthanolPercent = parsedValue
+    }
+
     private func formattedDate(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .omitted)
     }
@@ -592,6 +1053,9 @@ struct AtThePumpView: View {
         return String(format: "%.1f", value)
     }
 }
+
+// MARK: - Private sub-views
+
 private struct PumpPresetItem: Identifiable {
     let label: String
     let value: Int
