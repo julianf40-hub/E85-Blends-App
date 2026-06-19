@@ -143,6 +143,22 @@ struct AtThePumpView: View {
         Int(currentFuelLevelPercent.rounded()) >= 100
     }
 
+    // True when the calculator could not produce a valid blend. When set, the numeric
+    // result/summary must be neutralized so we never show 0.00 (or a stale "To Add")
+    // as if it were a valid recommendation.
+    //
+    // The same-level case (target == current, including a 100% full tank) is excluded:
+    // it already has dedicated, clearer UI (the `isPartialFillSameLevel` hint and the
+    // full-tank static bar), and the calculator's "tank is already full" message reads
+    // as misleading at partial levels. This guard keeps the new warning card focused on
+    // genuinely unreachable/invalid blends (e.g. E10 → E85).
+    private var hasBlendWarning: Bool {
+        calculation.warningMessage != nil && !isPartialFillSameLevel
+    }
+
+    // Placeholder shown in place of numeric values when a blend warning is active.
+    private let neutralizedValue = "—"
+
     // MARK: - Body
 
     var body: some View {
@@ -155,6 +171,7 @@ struct AtThePumpView: View {
                     fuelLevelCard
                     partialFillCard
                     currentEthanolCard
+                    blendWarningCard
                     blendResultCard
                     budgetWarningCard
                     pumpStepsCard
@@ -453,7 +470,7 @@ struct AtThePumpView: View {
                         )
                         partialInfoChip(
                             label: "To Add",
-                            value: String(format: "%.2f gal", partialFillGallonsToAdd)
+                            value: hasBlendWarning ? neutralizedValue : String(format: "%.2f gal", partialFillGallonsToAdd)
                         )
                     }
 
@@ -482,6 +499,14 @@ struct AtThePumpView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isPartialFillEnabled)
+    }
+
+    @ViewBuilder
+    private var blendWarningCard: some View {
+        if hasBlendWarning, let warningMessage = calculation.warningMessage {
+            WarningCard(title: "Blend Warning", message: warningMessage)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
     }
 
     @ViewBuilder
@@ -562,15 +587,15 @@ struct AtThePumpView: View {
                 SectionHeader(title: "Blend Result", subtitle: "Large numbers for quick pump-side reference.")
 
                 HStack(spacing: 12) {
-                    pumpMetricCard(title: "E85 gallons", value: String(format: "%.2f", calculation.e85Gallons), accent: AppTheme.Colors.primaryGreen)
-                    pumpMetricCard(title: "Gas gallons", value: String(format: "%.2f", calculation.gasGallons), accent: AppTheme.Colors.gasOrange)
+                    pumpMetricCard(title: "E85 gallons", value: hasBlendWarning ? neutralizedValue : String(format: "%.2f", calculation.e85Gallons), accent: AppTheme.Colors.primaryGreen)
+                    pumpMetricCard(title: "Gas gallons", value: hasBlendWarning ? neutralizedValue : String(format: "%.2f", calculation.gasGallons), accent: AppTheme.Colors.gasOrange)
                 }
 
                 HStack(spacing: 12) {
-                    compactMetricCard(title: "Final ethanol", value: String(format: "%.1f%%", calculation.finalEthanolPercent))
+                    compactMetricCard(title: "Final ethanol", value: hasBlendWarning ? neutralizedValue : String(format: "%.1f%%", calculation.finalEthanolPercent))
                     compactMetricCard(
                         title: isPartialFillEnabled ? "Gallons To Add" : "Total to add",
-                        value: String(format: "%.2f gal", calculation.totalGallonsToAdd)
+                        value: hasBlendWarning ? neutralizedValue : String(format: "%.2f gal", calculation.totalGallonsToAdd)
                     )
                 }
 
@@ -590,9 +615,9 @@ struct AtThePumpView: View {
                         Divider().padding(.vertical, 6)
                         partialSummaryRow(
                             label: "Add",
-                            value: String(format: "%.2f gal", partialFillGallonsToAdd),
+                            value: hasBlendWarning ? neutralizedValue : String(format: "%.2f gal", partialFillGallonsToAdd),
                             isAccent: true,
-                            a11yLabel: "Fuel To Add, \(String(format: "%.1f", partialFillGallonsToAdd)) gallons"
+                            a11yLabel: hasBlendWarning ? "Fuel to add unavailable until the blend warning is resolved" : "Fuel To Add, \(String(format: "%.1f", partialFillGallonsToAdd)) gallons"
                         )
                     }
                     .padding(14)
@@ -689,9 +714,10 @@ struct AtThePumpView: View {
                 AppHaptics.selection()
                 logFillUpAction(calculation)
             }
-            .disabled(isPartialFillSameLevel)
-            .opacity(isPartialFillSameLevel ? 0.4 : 1)
+            .disabled(isPartialFillSameLevel || hasBlendWarning)
+            .opacity(isPartialFillSameLevel || hasBlendWarning ? 0.4 : 1)
             .animation(.easeInOut(duration: 0.15), value: isPartialFillSameLevel)
+            .animation(.easeInOut(duration: 0.15), value: hasBlendWarning)
 
             SecondaryButton(title: "Close") {
                 closeAction()
