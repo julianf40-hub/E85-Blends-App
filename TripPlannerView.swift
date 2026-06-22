@@ -23,6 +23,9 @@ struct TripPlannerView: View {
 
     // Common E85-blend targets offered as quick chips.
     private static let blendOptions: [Double] = [30, 50, 70, 85]
+    /// Sentinel blend value meaning "plan on pump gasoline only". Only selectable for
+    /// flex-fuel vehicles. 0.0 is safe because no real ethanol blend uses 0%.
+    private static let gasolineOnlyBlend: Double = 0.0
 
     // MARK: - Inputs
     @State private var origin = ""
@@ -62,6 +65,17 @@ struct TripPlannerView: View {
     /// Whether the backup gas section is expanded; auto-set when the E85 plan can't satisfy the trip.
     @State private var showBackupGasStations = false
 
+    // MARK: - Gas Only station discovery (active when Target Fuel = Gas Only)
+    @State private var gasOnlyStations: [BackupGasStation] = []
+    @State private var gasOnlyRecommendedStops: [GasOnlyStop] = []
+    @State private var isDiscoveringGasOnlyStations = false
+    @State private var gasOnlyStationError: String?
+    @State private var gasOnlyDiscoveryTask: Task<Void, Never>?
+    @State private var gasOnlyOutcome: RouteOutcome?
+    @State private var gasOnlyRisk: TripPlan.RouteRisk?
+    /// Estimated arrival reserve at the destination after the Gas Only plan (nil while planning).
+    @State private var gasOnlyDestinationReserveFraction: Double?
+
     // MARK: - Feature 2: Saved trips
     @State private var showSavedTrips = false
 
@@ -72,10 +86,96 @@ struct TripPlannerView: View {
     @State private var reportToastMessage = ""
     @State private var reportToastVisible = false
 
-    /// Risk shown on the map badge: refined route-aware risk once stations load, else the
-    /// preliminary range-based risk.
+    /// Risk shown on the map badge: route-aware risk once stations load, else the
+    /// preliminary range-based risk. Gas Only risk is computed by the gas-only planner.
     private var displayRisk: TripPlan.RouteRisk? {
-        analysis?.risk ?? plan?.risk
+        if isGasolineOnly { return gasOnlyRisk ?? (plan != nil ? .low : nil) }
+        return analysis?.risk ?? plan?.risk
+    }
+
+    /// True when the currently selected vehicle is marked flex-fuel.
+    private var selectedVehicleIsFlexFuel: Bool {
+        guard let id = selectedVehicleID else { return false }
+        return vehicles.first(where: { $0.persistentModelID == id })?.isFlexFuel ?? false
+    }
+
+    /// True when the user has chosen to plan on pump gasoline only (no E85).
+    private var isGasolineOnly: Bool { abs(targetBlend) < 0.1 }
+
+    /// Chip options for the "Target Fuel" row. Gas Only is prepended for flex-fuel vehicles.
+    private var targetFuelOptions: [Double] {
+        selectedVehicleIsFlexFuel
+            ? [Self.gasolineOnlyBlend, 30, 50, 70, 85]
+            : [30, 50, 70, 85]
+    }
+
+    /// Ordered intermediate waypoint coordinates for the navigation handoff.
+    ///
+    /// Priority:
+    /// 1. Recommended E85 stops (in route order)
+    /// 2. First backup gas station when the outcome calls for a gas fallback
+    /// 3. Empty — direct origin→destination routing
+    ///
+    /// Gas Only mode always returns empty (no intermediate stops needed).
+    private var navigationWaypoints: [CLLocationCoordinate2D] {
+        // Gas Only: use discovered gas stops as waypoints
+        if isGasolineOnly {
+            return gasOnlyRecommendedStops.map { $0.station.coordinate }
+        }
+
+        if let stops = analysis?.recommendedStops, stops.isEmpty == false {
+            return stops.map { $0.station.coordinate }
+        }
+
+        if fuelBackupMode == .gasBackupAllowed,
+           let outcome = analysis?.outcome,
+           (outcome == .gasolineBackupAvailable || outcome == .e85DetourAvoided),
+           let first = displayedBackupGasStations.first {
+            return [first.coordinate]
+        }
+
+        return []
+    }
+
+    /// Display string for the first recommended fuel stop, used by the Copy Fuel Stop action.
+    /// Composes name + address + city/state for E85 stops (full address available), and
+    /// name + city/state for backup gas stops (MapKit doesn't provide street address).
+    /// Falls back to decimal coordinates if all name/address fields are empty.
+    private var fuelStopCopyString: String? {
+        guard navigationWaypoints.isEmpty == false else { return nil }
+
+        // Gas Only: first gas stop (BackupGasStation has no street address)
+        if isGasolineOnly, let first = gasOnlyRecommendedStops.first {
+            let s = first.station
+            let result = [s.name, s.city, s.state]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.isEmpty == false }
+                .joined(separator: ", ")
+            if result.isEmpty == false { return result }
+        }
+
+        if let stop = analysis?.recommendedStops.first {
+            let s = stop.station.station
+            let result = [s.name, s.address, s.city, s.state]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.isEmpty == false }
+                .joined(separator: ", ")
+            if result.isEmpty == false { return result }
+        }
+
+        if let first = displayedBackupGasStations.first {
+            let result = [first.name, first.city, first.state]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.isEmpty == false }
+                .joined(separator: ", ")
+            if result.isEmpty == false { return result }
+        }
+
+        if let coord = navigationWaypoints.first {
+            return String(format: "%.5f, %.5f", coord.latitude, coord.longitude)
+        }
+
+        return nil
     }
 
     /// Cap the number of station pins drawn on the map. Dense routes can surface 90+ stations;
@@ -138,57 +238,78 @@ struct TripPlannerView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 16) {
-                ProShellHeader(
-                    icon: "map.fill",
-                    title: "Trip Planner",
-                    subtitle: "Plan an E85 route before you drive. Enter your trip and vehicle to estimate fuel, range, and stops."
-                )
+        // GeometryReader captures the exact viewport width once so the scroll content
+        // can be pinned to that exact width. Using .frame(maxWidth: .infinity) only
+        // sets the *reported* width; a child that escapes its layout proposal (e.g.
+        // the inline Map's GeometryReader on first layout pass on physical devices)
+        // can still widen the scroll content and enable horizontal dragging even in a
+        // vertical-only ScrollView. An exact .frame(width:) prevents any overflow.
+        GeometryReader { proxy in
+            let contentWidth = proxy.size.width
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 16) {
+                    ProShellHeader(
+                        icon: "map.fill",
+                        title: "Trip Planner",
+                        subtitle: "Plan an E85 route before you drive. Enter your trip and vehicle to estimate fuel, range, and stops."
+                    )
 
-                tripInputCard
+                    tripInputCard
 
-                if let errorMessage {
-                    errorCard(errorMessage)
-                }
+                    if let errorMessage {
+                        errorCard(errorMessage)
+                    }
 
-                if let plan {
-                    routeMapCard(plan)
-                    tripSummaryCard(plan)
-                    stopsAlongRouteSection
-                    backupGasSection
-                    navigationHandoffCard(plan)
-                    if isDiscoveringStations == false, analysis != nil {
-                        saveRouteSection(plan)
+                    if let plan {
+                        routeMapCard(plan)
+                        tripSummaryCard(plan)
+                        fuelPlanCardIfNeeded(plan)
+                        if !isGasolineOnly {
+                            stopsAlongRouteSection
+                            backupGasSection
+                        } else {
+                            gasOnlyStopsSection
+                        }
+                        if !navigationWaypoints.isEmpty {
+                            navigationRecommendationCard
+                        }
+                        navigationHandoffCard(plan)
+                        if isDiscoveringStations == false,
+                           isDiscoveringGasOnlyStations == false,
+                           analysis != nil || isGasolineOnly {
+                            saveRouteSection(plan)
+                        }
                     }
                 }
+                .padding(16)
+                // Exact width — not maxWidth — so no child can report a frame wider
+                // than the viewport and trigger horizontal pan in the vertical ScrollView.
+                .frame(width: contentWidth, alignment: .leading)
             }
-            // padding BEFORE frame so the frame constrains the padded content to the
-            // scroll view width. Reversing this (frame then padding) can report a width
-            // wider than the scroll view when any child exceeds the layout proposal,
-            // causing the page to shift horizontally.
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Note: .scrollDismissesKeyboard is intentionally absent — on physical iPhone
+            // it interprets rapid key-repeat layout re-measurements as scroll events,
+            // triggering keyboard dismissal mid-delete, which flips focusedField and
+            // causes a UIKit safeAreaInset height-oscillation crash.
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .safeAreaInset(edge: .bottom) {
+                planBottomBar
+            }
+            .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+            .keyboardDoneToolbar()
+            .dismissKeyboardOnTap()
+            .overlay(alignment: .bottom) {
+                toastOverlay
+                    .padding(.bottom, 90)
+            }
         }
-        // Vertical-only bounce prevents the page from shifting left/right.
-        // Note: .scrollDismissesKeyboard is intentionally absent — on physical iPhone
-        // it interprets rapid key-repeat layout re-measurements as scroll events,
-        // triggering keyboard dismissal mid-delete, which flips focusedField and
-        // causes a UIKit safeAreaInset height-oscillation crash.
-        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-        .safeAreaInset(edge: .bottom) {
-            planBottomBar
-        }
-        .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .navigationTitle("Trip Planner")
         .navigationBarTitleDisplayMode(.inline)
-        .keyboardDoneToolbar()
-        .dismissKeyboardOnTap()
         .onAppear(perform: prefillFromActiveVehicleIfNeeded)
         .onDisappear {
             planTask?.cancel()
             discoveryTask?.cancel()
             gasDiscoveryTask?.cancel()
+            gasOnlyDiscoveryTask?.cancel()
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -209,13 +330,10 @@ struct TripPlannerView: View {
                     plan: currentPlan,
                     mapStations: mapStations,
                     mapGasStations: mapGasStations,
+                    gasOnlyStops: gasOnlyRecommendedStops,
                     displayRisk: displayRisk
                 )
             }
-        }
-        .overlay(alignment: .bottom) {
-            toastOverlay
-                .padding(.bottom, 90)
         }
     }
 
@@ -316,11 +434,11 @@ struct TripPlannerView: View {
                 )
             }
 
-            // Target ethanol blend
+            // Target fuel (Gas Only appears first for flex-fuel vehicles)
             VStack(alignment: .leading, spacing: 8) {
-                fieldLabel("Target Ethanol Blend", icon: "leaf.fill")
-                HStack(spacing: 10) {
-                    ForEach(Self.blendOptions, id: \.self) { blend in
+                fieldLabel("Target Fuel", icon: "fuelpump.fill")
+                HStack(spacing: 8) {
+                    ForEach(targetFuelOptions, id: \.self) { blend in
                         blendChip(blend)
                     }
                 }
@@ -328,7 +446,9 @@ struct TripPlannerView: View {
 
             arrivalReserveSection
 
-            fuelBackupSection
+            if !isGasolineOnly {
+                fuelBackupSection
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -385,13 +505,41 @@ struct TripPlannerView: View {
     }
 
     private func blendChip(_ blend: Double) -> some View {
+        let isGasOnly = abs(blend) < 0.1
         let isSelected = abs(targetBlend - blend) < 0.5
+        let chipLabel = isGasOnly ? "Gas Only" : "E\(Int(blend))"
         return Button {
-            targetBlend = blend
+            if isGasOnly {
+                // Cancel any in-flight E85 discovery and clear prior results so the
+                // summary card immediately reflects Gas Only mode.
+                discoveryTask?.cancel()
+                gasDiscoveryTask?.cancel()
+                analysis = nil
+                stationError = nil
+                isDiscoveringStations = false
+                backupGasStations = []
+                gasStationError = nil
+                isDiscoveringGasStations = false
+                showBackupGasStations = false
+                targetBlend = Self.gasolineOnlyBlend
+            } else {
+                // Switching away from Gas Only: clear stale gas only results.
+                gasOnlyDiscoveryTask?.cancel()
+                gasOnlyStations = []
+                gasOnlyRecommendedStops = []
+                gasOnlyStationError = nil
+                isDiscoveringGasOnlyStations = false
+                gasOnlyOutcome = nil
+                gasOnlyRisk = nil
+                gasOnlyDestinationReserveFraction = nil
+                targetBlend = blend
+            }
             AppHaptics.selection()
         } label: {
-            Text("E\(Int(blend))")
+            Text(chipLabel)
                 .font(.subheadline.weight(.semibold))
+                .minimumScaleFactor(0.75)
+                .lineLimit(1)
                 .foregroundStyle(isSelected ? .black : AppTheme.Colors.textSecondary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
@@ -403,6 +551,7 @@ struct TripPlannerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(isGasOnly ? "Plan trip using gasoline only." : "Target E\(Int(blend)) blend")
     }
 
     // MARK: - Arrival reserve target
@@ -415,9 +564,9 @@ struct TripPlannerView: View {
 
     private var arrivalReserveSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            fieldLabel("Arrival Reserve", icon: "gauge.with.dots.needle.bottom.50percent")
+            fieldLabel("Arrival Range Buffer", icon: "gauge.with.dots.needle.bottom.50percent")
 
-            Text("Choose how much fuel you want left when you arrive.")
+            Text("Choose how much fuel range you want to keep as a buffer when you arrive.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.Colors.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -719,6 +868,16 @@ struct TripPlannerView: View {
                                         .accessibilityLabel("E85 station \(routeStation.station.name)")
                                 }
                             }
+                            // Gas Only recommended fuel stops — always shown; small fixed set (1–2 stops).
+                            ForEach(gasOnlyRecommendedStops) { stop in
+                                Annotation(stop.station.name, coordinate: stop.station.coordinate) {
+                                    Image(systemName: "fuelpump.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(AppTheme.Colors.gasOrange)
+                                        .background(Circle().fill(.black.opacity(0.25)))
+                                        .accessibilityLabel("Fuel stop: \(stop.station.name)")
+                                }
+                            }
                             // Backup gas pins are intentionally omitted from the inline preview.
                             // Adding them after the map has rendered triggers a MapKit Metal
                             // MSAA redraw crash on iOS 27 beta. They remain visible in the
@@ -815,7 +974,13 @@ struct TripPlannerView: View {
                 )
             }
 
-            if let analysis, isDiscoveringStations == false {
+            if isGasolineOnly {
+                outcomeBanner(
+                    gasOnlyOutcome ?? .gasolineOnly,
+                    labelOverride: gasOnlyOutcomeLabel,
+                    messageOverride: gasOnlyOutcomeMessage
+                )
+            } else if let analysis, isDiscoveringStations == false {
                 outcomeBanner(analysis.outcome)
             } else {
                 reachabilityRow(plan)
@@ -828,32 +993,38 @@ struct TripPlannerView: View {
                 summaryDivider
                 summaryRow(
                     icon: "target",
-                    label: "Arrival reserve target",
+                    label: "Target arrival buffer",
                     value: "\(Int(targetReservePercent.rounded()))%"
                 )
-                summaryDivider
-                summaryRow(
-                    icon: "fuelpump.and.filter",
-                    label: "Fuel backup",
-                    value: fuelBackupMode == .gasBackupAllowed ? "Gas allowed" : "E85 required"
-                )
+                if !isGasolineOnly {
+                    summaryDivider
+                    summaryRow(
+                        icon: "fuelpump.and.filter",
+                        label: "Fuel backup",
+                        value: fuelBackupMode == .gasBackupAllowed ? "Gas allowed" : "E85 required"
+                    )
+                }
                 summaryDivider
                 summaryRow(
                     icon: "drop.fill",
-                    label: "Estimated arrival reserve",
+                    label: "Estimated arrival buffer",
                     value: arrivalReserveText
                 )
                 summaryDivider
                 summaryRow(
                     icon: "fuelpump.circle.fill",
-                    label: "Estimated E85 stops",
-                    value: isDiscoveringStations ? "…" : "\(estimatedStops)"
+                    label: isGasolineOnly ? "Estimated gas stops" : "Estimated E85 stops",
+                    value: isGasolineOnly
+                        ? (isDiscoveringGasOnlyStations ? "…" : "\(gasOnlyRecommendedStops.count)")
+                        : (isDiscoveringStations ? "…" : "\(estimatedStops)")
                 )
                 summaryDivider
                 summaryRow(
                     icon: "drop.triangle.fill",
-                    label: "Lowest arrival reserve",
-                    value: lowestReserve.map { "\(Int(($0 * 100).rounded()))%" } ?? (isDiscoveringStations ? "…" : "—")
+                    label: "Lowest trip buffer",
+                    value: isGasolineOnly
+                        ? gasOnlyLowestReserveText
+                        : (lowestReserve.map { "\(Int(($0 * 100).rounded()))%" } ?? (isDiscoveringStations ? "…" : "—"))
                 )
                 summaryDivider
                 HStack(spacing: 10) {
@@ -865,7 +1036,13 @@ struct TripPlannerView: View {
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                     Spacer()
-                    if let analysis, isDiscoveringStations == false {
+                    if isGasolineOnly {
+                        let outcome = gasOnlyOutcome ?? .gasolineOnly
+                        Text(outcome.label)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(outcome.foreground)
+                            .multilineTextAlignment(.trailing)
+                    } else if let analysis, isDiscoveringStations == false {
                         Text(analysis.outcome.label)
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(analysis.outcome.foreground)
@@ -901,7 +1078,7 @@ struct TripPlannerView: View {
                     .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
             )
 
-            Text("Estimates assume \(Int(currentFuelPercent.rounded()))% of a \(tankSizeText.isEmpty ? "—" : tankSizeText)-gal tank at \(mpgText.isEmpty ? "—" : mpgText) MPG. Real-world range varies with driving and conditions.")
+            Text("Estimates assume \(Int(currentFuelPercent.rounded()))% of a \(tankSizeText.isEmpty ? "—" : tankSizeText)-gal tank at \(mpgText.isEmpty ? "—" : mpgText) MPG. Arrival buffer is an estimate and may vary with speed, weather, traffic, and driving style.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.Colors.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -941,6 +1118,13 @@ struct TripPlannerView: View {
     // The arrival reserve the driver would have WITHOUT stopping — this is the figure the
     // reserve target is compared against (it's what motivates a recommended stop).
     private var arrivalReserveText: String {
+        if isGasolineOnly {
+            guard let fraction = gasOnlyDestinationReserveFraction else {
+                return isDiscoveringGasOnlyStations ? "…" : "—"
+            }
+            if fraction < 0 { return "Unreachable" }
+            return "\(Int((fraction * 100).rounded()))%"
+        }
         guard let fraction = analysis?.noStopReserveFraction else {
             return isDiscoveringStations ? "…" : "—"
         }
@@ -948,18 +1132,51 @@ struct TripPlannerView: View {
         return "\(Int((fraction * 100).rounded()))%"
     }
 
-    /// Outcome-aware banner shown once station discovery completes — replaces the preliminary
-    /// reachability row with a message tied to the driver's reserve target.
-    private func outcomeBanner(_ outcome: RouteOutcome) -> some View {
+    /// Traffic-light colour for a reserve fraction. Use the raw fraction (not a rounded %)
+    /// to avoid rounding artefacts at the boundaries.
+    private func fuelReserveColor(for fraction: Double) -> Color {
+        if fraction >= 0.20 { return AppTheme.Colors.primaryGreen }
+        if fraction >= 0.10 { return AppTheme.Colors.stationYellow }
+        return AppTheme.Colors.warningRed
+    }
+
+    private var gasOnlyLowestReserveText: String {
+        if isDiscoveringGasOnlyStations { return "…" }
+        let all = gasOnlyRecommendedStops.map { $0.arrivalReserveFraction }
+            + [gasOnlyDestinationReserveFraction].compactMap { $0 }
+        guard let lowest = all.min() else { return "—" }
+        return "\(Int((lowest * 100).rounded()))%"
+    }
+
+    /// Count-aware label for the Gas Only outcome banner.
+    private var gasOnlyOutcomeLabel: String? {
+        guard gasOnlyOutcome == .gasStopRecommended else { return nil }
+        let n = gasOnlyRecommendedStops.count
+        return n == 1 ? "1 Fuel Stop Recommended" : "\(n) Fuel Stops Recommended"
+    }
+
+    /// Refined message for the Gas Only outcome banner when stops are recommended.
+    private var gasOnlyOutcomeMessage: String? {
+        guard gasOnlyOutcome == .gasStopRecommended else { return nil }
+        return "This route exceeds your available range while maintaining your selected arrival buffer. Gasoline fuel stops are recommended."
+    }
+
+    /// Outcome-aware banner shown once station discovery completes. Pass `labelOverride`
+    /// and `messageOverride` to substitute count-aware copy (e.g. "2 Fuel Stops Recommended").
+    private func outcomeBanner(
+        _ outcome: RouteOutcome,
+        labelOverride: String? = nil,
+        messageOverride: String? = nil
+    ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: outcome.icon)
                 .font(.title3)
                 .foregroundStyle(outcome.foreground)
             VStack(alignment: .leading, spacing: 2) {
-                Text(outcome.label)
+                Text(labelOverride ?? outcome.label)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                Text(outcome.message)
+                Text(messageOverride ?? outcome.message)
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1060,14 +1277,14 @@ struct TripPlannerView: View {
                     icon: "checkmark.seal.fill",
                     tint: AppTheme.Colors.primaryGreen,
                     title: "No E85 Stop Needed",
-                    message: "You can reach your destination with your target reserve intact. \(stationsFound) if you'd like to top off."
+                    message: "You can reach your destination with your target buffer intact. \(stationsFound) if you'd like to top off."
                 )
             case .reserveStopRecommended:
                 stationsMessageCard(
                     icon: "exclamationmark.circle.fill",
                     tint: AppTheme.Colors.gasOrange,
-                    title: "Below Your Reserve Target",
-                    message: "Reachable, but below your reserve target. No E85 station along this route can raise your arrival reserve to \(Int(targetReservePercent.rounded()))%. \(stationsFound)."
+                    title: "Below Your Buffer Target",
+                    message: "Reachable, but below your buffer target. No E85 station along this route can raise your arrival buffer to \(Int(targetReservePercent.rounded()))%. \(stationsFound)."
                 )
             case .gasolineBackupAvailable:
                 stationsMessageCard(
@@ -1081,7 +1298,7 @@ struct TripPlannerView: View {
                     icon: "exclamationmark.triangle.fill",
                     tint: AppTheme.Colors.warningRed,
                     title: "Fallback May Be Needed",
-                    message: "No safe E85 plan found for this route and reserve target. \(stationsFound)."
+                    message: "No safe E85 plan found for this route and buffer target. \(stationsFound)."
                 )
             case .e85StopRequired:
                 stationsMessageCard(
@@ -1097,6 +1314,8 @@ struct TripPlannerView: View {
                     title: "E85 Detour Avoided",
                     message: "An E85 stop was available but required a significant detour. Since gas backup is allowed, use an on-route gas station if needed. \(stationsFound)."
                 )
+            case .gasolineOnly, .gasStopRecommended, .gasFuelStopNeeded:
+                EmptyView()
             }
         } else {
             ForEach(Array(analysis.recommendedStops.enumerated()), id: \.element.id) { index, stop in
@@ -1199,7 +1418,7 @@ struct TripPlannerView: View {
                     .foregroundStyle(AppTheme.Colors.stationYellow)
                 Text(detourAvoided
                      ? "E85 was skipped because the nearest stop required a significant detour. Use one of these gas stations instead."
-                     : "Use backup gas stations only if E85 is unavailable or your reserve target cannot be met on E85.")
+                     : "Use backup gas stations only if E85 is unavailable or your buffer target cannot be met on E85.")
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1427,13 +1646,13 @@ struct TripPlannerView: View {
         let target = Int(targetReservePercent.rounded())
         switch analysis.outcome {
         case .gasolineBackupAvailable:
-            return "\(found) These are the best E85 stops we found, but they don't fully meet your \(target)% reserve target — continue with gasoline backup if needed."
+            return "\(found) These are the best E85 stops we found, but they don't fully meet your \(target)% buffer target — continue with gasoline backup if needed."
         case .fallbackMayBeNeeded:
-            return "\(found) These E85 stops don't fully meet your \(target)% reserve target. This route may require gasoline, a different route, or a different stop."
+            return "\(found) These E85 stops don't fully meet your \(target)% buffer target. This route may require gasoline, a different route, or a different stop."
         case .e85DetourAvoided:
             return "\(found) These low-detour E85 stops are recommended for the segments they cover. Use an on-route gas station for any remaining segments — detour stops were skipped."
         default:
-            return "\(found) Recommended stops maximize progress while keeping your arrival reserve at or above \(target)%."
+            return "\(found) Recommended stops maximize progress while keeping your arrival buffer at or above \(target)%."
         }
     }
 
@@ -1479,7 +1698,7 @@ struct TripPlannerView: View {
                     Image(systemName: "target")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(AppTheme.Colors.stationYellow)
-                    Text("Recommended to meet your arrival reserve.")
+                    Text("Recommended to meet your arrival buffer.")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1496,7 +1715,7 @@ struct TripPlannerView: View {
                 stopMetric(
                     icon: "gauge.with.dots.needle.33percent",
                     value: "\(Int((stop.arrivalReserveFraction * 100).rounded()))%",
-                    label: "Arrive reserve"
+                    label: "Arrival buffer"
                 )
                 stopMetric(
                     icon: "fuelpump.fill",
@@ -1643,21 +1862,410 @@ struct TripPlannerView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
+    // MARK: - Gas Only stops section
+
+    @ViewBuilder
+    private var gasOnlyStopsSection: some View {
+        let shouldShow = isDiscoveringGasOnlyStations
+            || gasOnlyRecommendedStops.isEmpty == false
+            || gasOnlyStationError != nil
+            || gasOnlyOutcome == .gasFuelStopNeeded
+        if shouldShow {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionHeader(
+                    title: "Recommended Fuel Stops",
+                    subtitle: "These gasoline stops help keep your trip within range and meet your selected arrival buffer."
+                )
+
+                if isDiscoveringGasOnlyStations {
+                    discoveringGasOnlyCard
+                } else if gasOnlyOutcome == .gasFuelStopNeeded {
+                    stationsMessageCard(
+                        icon: "exclamationmark.triangle.fill",
+                        tint: AppTheme.Colors.warningRed,
+                        title: "No Gas Station Found",
+                        message: "No suitable gas station was found along this route. You may need to plan fuel stops manually."
+                    )
+                } else if gasOnlyRecommendedStops.isEmpty == false {
+                    ForEach(Array(gasOnlyRecommendedStops.enumerated()), id: \.element.id) { index, stop in
+                        gasOnlyStopCard(stop, number: index + 1)
+                    }
+                    Text("Fill amounts are estimates based on your tank size and MPG settings.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 2)
+                }
+            }
+        }
+    }
+
+    private var discoveringGasOnlyCard: some View {
+        HStack(spacing: 12) {
+            ProgressView().tint(AppTheme.Colors.stationYellow)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Finding gas stations along your route")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("Searching for gas stations in the route corridor.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func gasOnlyStopCard(_ stop: GasOnlyStop, number: Int) -> some View {
+        let station = stop.station
+        let cityState = [station.city, station.state]
+            .filter { $0.isEmpty == false }.joined(separator: ", ")
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                ZStack {
+                    Circle().fill(AppTheme.Colors.stationYellow.opacity(0.16))
+                    Text("\(number)")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+                .frame(width: 38, height: 38)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(station.name.isEmpty ? "Gas Station" : station.name)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if cityState.isEmpty == false {
+                        Text(cityState)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                ReserveBadge(reserveClass: stop.arrivalClass)
+                reportMenuGas(stationKey: station.id, stationName: station.name)
+            }
+
+            HStack(spacing: 10) {
+                stopMetric(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath.fill",
+                    value: formattedMiles(station.distanceAlongRouteMiles),
+                    label: "Along route"
+                )
+                stopMetric(
+                    icon: "gauge.with.dots.needle.33percent",
+                    value: "\(Int((stop.arrivalReserveFraction * 100).rounded()))%",
+                    label: "Arrival buffer"
+                )
+                stopMetric(
+                    icon: "fuelpump.fill",
+                    value: String(format: "%.1f gal", stop.suggestedFillGallons),
+                    label: "Suggested fill"
+                )
+            }
+
+            HStack(spacing: 8) {
+                stopMetric(
+                    icon: "arrow.up.right",
+                    value: formattedMiles(station.offRouteMiles),
+                    label: "Off route"
+                )
+                detourBadge(station.detourSeverity)
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                stationHandoffButton(title: "Apple Maps", icon: "applelogo") {
+                    openGasStationInAppleMaps(station)
+                }
+                stationHandoffButton(title: "Google", icon: "globe") {
+                    openExternal(googleMapsURL(to: station.coordinate))
+                }
+                stationHandoffButton(title: "Waze", icon: "car.fill") {
+                    openExternal(wazeURL(to: station.coordinate))
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    // MARK: - Fuel Plan itinerary card
+
+    private struct FuelPlanItem: Identifiable {
+        let id: Int
+        let icon: String
+        let label: String
+        let accent: Color
+        let isHeadline: Bool
+        /// True for the final "Arrive with X%" row: renders at subheadline weight
+        /// but uses `accent` for its text colour instead of textPrimary.
+        var isArrival: Bool = false
+    }
+
+    /// Returns the Fuel Plan card when there are recommended stops (Gas Only or E85).
+    /// Returns an empty view otherwise so the body stays clean.
+    @ViewBuilder
+    private func fuelPlanCardIfNeeded(_ plan: TripPlan) -> some View {
+        let showGas = isGasolineOnly && gasOnlyRecommendedStops.isEmpty == false
+        let showE85 = !isGasolineOnly
+            && isDiscoveringStations == false
+            && (analysis?.recommendedStops.isEmpty == false) == true
+        if showGas || showE85 {
+            fuelPlanCard(plan)
+        }
+    }
+
+    private func fuelPlanCard(_ plan: TripPlan) -> some View {
+        let items = buildFuelPlanItems(plan)
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Fuel Plan")
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(items) { item in
+                    fuelPlanItemRow(item)
+                    if item.id < items.count - 1 {
+                        Divider().overlay(AppTheme.Colors.borderColor)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+            )
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func buildFuelPlanItems(_ plan: TripPlan) -> [FuelPlanItem] {
+        var items: [FuelPlanItem] = []
+        var nextId = 0
+        // Tank size is used to convert reserve fractions to approximate gallons.
+        // If the user hasn't entered tank size yet we skip the gallons display.
+        let tank = tankSizeValue ?? 0.0
+
+        func add(_ icon: String, _ label: String, _ accent: Color, headline: Bool = false, arrival: Bool = false) {
+            items.append(FuelPlanItem(id: nextId, icon: icon, label: label, accent: accent, isHeadline: headline, isArrival: arrival))
+            nextId += 1
+        }
+
+        // Adds a "Drive X mi to <destination>" row; clamped so negative roundoff never shows.
+        func addLeg(_ raw: Double, destination: String) {
+            let miles = max(0.0, raw)
+            if miles > 0.1 {
+                add("arrow.down", "Drive \(formattedMiles(miles)) to \(destination)", AppTheme.Colors.textMuted)
+            }
+        }
+
+        // "Arrive with about 21% buffer · approx. 3.9 gal" or "Arrival buffer unavailable".
+        func arrivalLine(fraction: Double) -> String {
+            if fraction < 0 { return "Arrival buffer unavailable" }
+            let pct = Int((fraction * 100).rounded())
+            if tank > 0 {
+                return "Arrive with about \(pct)% buffer · approx. \(String(format: "%.1f gal", fraction * tank))"
+            }
+            return "Arrive with about \(pct)% buffer"
+        }
+
+        // "About 14% buffer · approx. 2.6 gal on arrival" shown as a sub-line under each stop name.
+        func stopArrivalLine(fraction: Double) -> String {
+            if fraction < 0 { return "Arrives below empty" }
+            let pct = Int((fraction * 100).rounded())
+            if tank > 0 {
+                return "About \(pct)% buffer · approx. \(String(format: "%.1f gal", fraction * tank)) on arrival"
+            }
+            return "About \(pct)% buffer on arrival"
+        }
+
+        let startPct = Int(currentFuelPercent.rounded())
+        add("fuelpump.circle.fill", "Start: \(startPct)% tank", AppTheme.Colors.primaryGreen, headline: true)
+
+        var prevMiles = 0.0
+
+        if isGasolineOnly {
+            let totalStops = gasOnlyRecommendedStops.count
+            for (i, stop) in gasOnlyRecommendedStops.enumerated() {
+                let stopLabel = "Stop \(i + 1)"
+                addLeg(stop.station.distanceAlongRouteMiles - prevMiles, destination: stopLabel)
+                let loc = [stop.station.city, stop.station.state].filter { !$0.isEmpty }.joined(separator: ", ")
+                let name = stop.station.name.isEmpty ? "Gas Station" : stop.station.name
+                let fullName = loc.isEmpty ? name : "\(name), \(loc)"
+                add("fuelpump.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.stationYellow, headline: true)
+                add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
+                    fuelReserveColor(for: stop.arrivalReserveFraction))
+                add("plus.circle.fill", "Add \(String(format: "%.1f gal", stop.suggestedFillGallons))", AppTheme.Colors.stationYellow)
+                prevMiles = stop.station.distanceAlongRouteMiles
+                _ = totalStops // suppress unused-variable warning
+            }
+            addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
+            if let f = gasOnlyDestinationReserveFraction {
+                add("mappin.circle.fill", arrivalLine(fraction: f),
+                    fuelReserveColor(for: f), arrival: true)
+            }
+        } else if let analysis, analysis.recommendedStops.isEmpty == false {
+            let totalStops = analysis.recommendedStops.count
+            for (i, stop) in analysis.recommendedStops.enumerated() {
+                let stopLabel = "Stop \(i + 1)"
+                addLeg(stop.station.distanceAlongRouteMiles - prevMiles, destination: stopLabel)
+                let s = stop.station.station
+                let loc = [s.city, s.state].filter { !$0.isEmpty }.joined(separator: ", ")
+                let name = s.name.isEmpty ? "E85 Station" : s.name
+                let fullName = loc.isEmpty ? name : "\(name), \(loc)"
+                add("fuelpump.circle.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.primaryGreen, headline: true)
+                add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
+                    fuelReserveColor(for: stop.arrivalReserveFraction))
+                add("plus.circle.fill", "Add \(String(format: "%.1f gal", stop.suggestedFillGallons))", AppTheme.Colors.primaryGreen)
+                prevMiles = stop.station.distanceAlongRouteMiles
+                _ = totalStops // suppress unused-variable warning
+            }
+            addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
+            if let f = analysis.destinationReserveFraction {
+                add("mappin.circle.fill", arrivalLine(fraction: f),
+                    fuelReserveColor(for: f), arrival: true)
+            } else {
+                add("mappin.circle.fill", "Arrival buffer unavailable", AppTheme.Colors.textMuted)
+            }
+        }
+
+        return items
+    }
+
+    private func fuelPlanItemRow(_ item: FuelPlanItem) -> some View {
+        let useSemibold = item.isHeadline || item.isArrival
+        let textColor: Color = item.isHeadline ? AppTheme.Colors.textPrimary : item.accent
+        return HStack(spacing: 10) {
+            Image(systemName: item.icon)
+                .font(useSemibold ? .subheadline.weight(.semibold) : .caption.weight(.semibold))
+                .foregroundStyle(item.accent)
+                .frame(width: 20)
+            Text(item.label)
+                .font(useSemibold ? .subheadline.weight(.semibold) : .caption)
+                // Headline rows: textPrimary (station names, start row).
+                // Arrival rows (isArrival): accent colour = reserve traffic-light colour.
+                // All other non-headline rows: accent colour (drive muted / add accented).
+                .foregroundStyle(textColor)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(.vertical, 10)
+    }
+
     // MARK: - Navigation handoff
 
+    /// Informational card shown above the navigation buttons when fuel stops exist.
+    /// Sets per-app expectations so the user knows Google Maps and Apple Maps give
+    /// the best multi-stop experience while Waze requires a manual in-app step.
+    private var navigationRecommendationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "star.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                Text("Best Experience")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+            }
+
+            Text("Google Maps and Apple Maps can include recommended fuel stops automatically. Waze may require adding fuel stops manually after navigation begins.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                navAppBadgeRow(appName: "Google Maps", icon: "globe",     status: "Recommended",        recommended: true)
+                Divider().overlay(AppTheme.Colors.borderColor)
+                navAppBadgeRow(appName: "Apple Maps",  icon: "applelogo", status: "Recommended",        recommended: true)
+                Divider().overlay(AppTheme.Colors.borderColor)
+                navAppBadgeRow(appName: "Waze",        icon: "car.fill",  status: "Extra steps required", recommended: false)
+            }
+            .padding(.horizontal, 14)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+            )
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func navAppBadgeRow(appName: String, icon: String, status: String, recommended: Bool) -> some View {
+        let accent: Color = recommended ? AppTheme.Colors.primaryGreen : AppTheme.Colors.gasOrange
+        return HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                .frame(width: 22)
+            Text(appName)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            Spacer()
+            Text(status)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(accent.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(accent.opacity(0.4), lineWidth: 0.5))
+        }
+        .padding(.vertical, 10)
+    }
+
     private func navigationHandoffCard(_ plan: TripPlan) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Open Directions In")
+        let hasStops = !navigationWaypoints.isEmpty
+        return VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: hasStops ? "Open Route With Fuel Stop" : "Open Directions In",
+                subtitle: hasStops
+                    ? "Google Maps will include supported fuel stops. Apple Maps may include stops. For Waze, add the fuel stop manually after opening the route."
+                    : nil
+            )
             HStack(spacing: 10) {
                 handoffButton(title: "Apple Maps", icon: "applelogo") {
                     openInAppleMaps(plan)
                 }
                 handoffButton(title: "Google Maps", icon: "globe") {
-                    openExternal(plan.googleMapsURL)
+                    openExternal(navigationGoogleMapsURL(plan))
                 }
                 handoffButton(title: "Waze", icon: "car.fill") {
-                    openExternal(plan.wazeURL)
+                    openExternal(navigationWazeURL(plan))
                 }
+            }
+            if hasStops {
+                wazeHandoffHelperRow
             }
         }
         .padding(18)
@@ -1668,6 +2276,37 @@ struct TripPlannerView: View {
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private var wazeHandoffHelperRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("Waze opens your destination first. Add the recommended fuel stop manually if needed.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if let copyText = fuelStopCopyString {
+                Button {
+                    UIPasteboard.general.string = copyText
+                    AppHaptics.selection()
+                    showToast("Fuel stop copied.")
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption2.weight(.semibold))
+                        Text("Copy Stop")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(AppTheme.Colors.borderColor, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private func handoffButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
@@ -1796,6 +2435,14 @@ struct TripPlannerView: View {
         gasStationError = nil
         isDiscoveringGasStations = false
         showBackupGasStations = false
+        gasOnlyDiscoveryTask?.cancel()
+        gasOnlyStations = []
+        gasOnlyRecommendedStops = []
+        gasOnlyStationError = nil
+        isDiscoveringGasOnlyStations = false
+        gasOnlyOutcome = nil
+        gasOnlyRisk = nil
+        gasOnlyDestinationReserveFraction = nil
     }
 
     // MARK: - Swap origin / destination
@@ -1817,7 +2464,9 @@ struct TripPlannerView: View {
         destination = trip.destinationText
         tankSizeText = formattedInput(trip.tankSizeGallons)
         mpgText = formattedInput(trip.estimatedMPG)
-        targetBlend = nearestBlendOption(to: trip.targetBlendPercent)
+        targetBlend = trip.targetBlendPercent == Self.gasolineOnlyBlend
+            ? Self.gasolineOnlyBlend
+            : nearestBlendOption(to: trip.targetBlendPercent)
         currentFuelPercent = trip.currentFuelLevelPercent
         targetReservePercent = trip.targetArrivalReservePercent
         fuelBackupMode = trip.fuelBackupMode
@@ -1828,8 +2477,8 @@ struct TripPlannerView: View {
 
     private func saveCurrentRoute(_ plan: TripPlan) {
         guard let tankSize = tankSizeValue, let mpg = mpgValue else { return }
-        let risk = analysis?.risk ?? plan.risk
-        let outcome = analysis?.outcome
+        let risk = isGasolineOnly ? (gasOnlyRisk ?? .low) : (analysis?.risk ?? plan.risk)
+        let outcome: RouteOutcome? = isGasolineOnly ? (gasOnlyOutcome ?? .gasolineOnly) : analysis?.outcome
         let riskRaw: String
         switch risk {
         case .low:    riskRaw = "low"
@@ -1844,6 +2493,9 @@ struct TripPlannerView: View {
         case .gasolineBackupAvailable: outcomeRaw = "gasolineBackupAvailable"
         case .fallbackMayBeNeeded:     outcomeRaw = "fallbackMayBeNeeded"
         case .e85DetourAvoided:        outcomeRaw = "e85DetourAvoided"
+        case .gasolineOnly:            outcomeRaw = "gasolineOnly"
+        case .gasStopRecommended:      outcomeRaw = "gasStopRecommended"
+        case .gasFuelStopNeeded:       outcomeRaw = "gasFuelStopNeeded"
         case nil:                      outcomeRaw = ""
         }
         let trip = SavedTrip(
@@ -1860,7 +2512,9 @@ struct TripPlannerView: View {
             totalDistanceMiles: plan.distanceMiles,
             estimatedDriveTimeSeconds: plan.travelTime,
             estimatedFuelNeededGallons: plan.fuelNeededGallons,
-            estimatedStopsCount: analysis?.estimatedStops ?? plan.estimatedStops,
+            estimatedStopsCount: isGasolineOnly
+            ? gasOnlyRecommendedStops.count
+            : (analysis?.estimatedStops ?? plan.estimatedStops),
             routeRiskRaw: riskRaw,
             routeOutcomeRaw: outcomeRaw,
             savedDate: Date(),
@@ -1965,6 +2619,17 @@ struct TripPlannerView: View {
                 // Replan: map already live, cameraPosition stays .automatic.
                 // MapKit re-fits to new route content automatically — no camera
                 // transition needed and no MSAA crash risk.
+
+                // Gas Only mode: find gas stations along the route and compute stops.
+                if isGasolineOnly {
+                    discoverGasOnlyStations(
+                        route: route,
+                        tankSize: tankSize,
+                        mpg: mpg,
+                        currentFuelPercent: fuelPercent
+                    )
+                    return
+                }
 
                 // Kick off route-aware E85 station discovery (Phase 2).
                 discoverStationsAlongRoute(
@@ -2103,6 +2768,181 @@ struct TripPlannerView: View {
         }
     }
 
+    // MARK: - Gas Only station discovery
+
+    private func discoverGasOnlyStations(
+        route: MKRoute,
+        tankSize: Double,
+        mpg: Double,
+        currentFuelPercent: Double
+    ) {
+        gasOnlyDiscoveryTask?.cancel()
+        gasOnlyStations = []
+        gasOnlyRecommendedStops = []
+        gasOnlyStationError = nil
+        gasOnlyOutcome = nil
+        gasOnlyRisk = nil
+        gasOnlyDestinationReserveFraction = nil
+        isDiscoveringGasOnlyStations = true
+
+        let coordinates = route.polyline.routeCoordinates
+        let distanceMeters = route.distance
+        let fuelPct = currentFuelPercent
+
+        gasOnlyDiscoveryTask = Task { @MainActor in
+            defer { isDiscoveringGasOnlyStations = false }
+            guard Task.isCancelled == false else { return }
+
+            let stations = await BackupGasStationFinder().find(
+                routeCoordinates: coordinates,
+                routeDistanceMeters: distanceMeters
+            )
+
+            guard Task.isCancelled == false else { return }
+
+            gasOnlyStations = stations
+            computeGasOnlyPlan(
+                stations: stations,
+                distanceMiles: distanceMeters / 1609.344,
+                tankSize: tankSize,
+                mpg: mpg,
+                fuelPercent: fuelPct
+            )
+        }
+    }
+
+    /// Greedy gas-stop planner for Gas Only mode. Mirrors the E85 planner's approach:
+    /// walk the route, fill to full at each chosen stop, prefer low-detour stations.
+    private func computeGasOnlyPlan(
+        stations: [BackupGasStation],
+        distanceMiles: Double,
+        tankSize: Double,
+        mpg: Double,
+        fuelPercent: Double
+    ) {
+        let targetFraction = targetReservePercent / 100.0
+        let startGallons = tankSize * (fuelPercent / 100.0)
+        let minSafeArrivalFraction = 0.12
+
+        guard mpg > 0, tankSize > 0 else {
+            gasOnlyOutcome = .gasolineOnly
+            gasOnlyRisk = .low
+            gasOnlyDestinationReserveFraction = 1.0
+            return
+        }
+
+        // Reserve at destination without any stop.
+        let noStopReserveFraction = (startGallons - distanceMiles / mpg) / tankSize
+
+        // No stop needed if the reserve target is already met.
+        if noStopReserveFraction >= targetFraction {
+            gasOnlyOutcome = .gasolineOnly
+            gasOnlyRisk = (noStopReserveFraction - targetFraction) < 0.05 ? .medium : .low
+            gasOnlyDestinationReserveFraction = noStopReserveFraction
+            return
+        }
+
+        // Stop needed but no stations available.
+        if stations.isEmpty {
+            gasOnlyOutcome = .gasFuelStopNeeded
+            gasOnlyRisk = noStopReserveFraction < 0 ? .high : .medium
+            gasOnlyDestinationReserveFraction = noStopReserveFraction
+            return
+        }
+
+        let sorted = stations.sorted { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
+        var position = 0.0
+        var fuelGallons = startGallons
+        var stops: [GasOnlyStop] = []
+        var lowestReserve = noStopReserveFraction
+        var hadRiskyLeg = false
+        var planFailed = false
+        var safety = 0
+
+        while safety < 32 {
+            safety += 1
+            let distToDestination = distanceMiles - position
+            let reserveAtDestFraction = (fuelGallons - distToDestination / mpg) / tankSize
+            if reserveAtDestFraction >= targetFraction { break }
+
+            let ahead = sorted.filter { $0.distanceAlongRouteMiles > position + 0.5 }
+            let safeOptions = ahead.filter { s in
+                let legMiles = s.distanceAlongRouteMiles - position
+                return (fuelGallons - legMiles / mpg) / tankSize >= minSafeArrivalFraction
+            }
+
+            let chosen: BackupGasStation?
+            if safeOptions.isEmpty {
+                let reachable = ahead.filter { s in
+                    let legMiles = s.distanceAlongRouteMiles - position
+                    return (fuelGallons - legMiles / mpg) >= 0
+                }
+                if reachable.isEmpty { planFailed = true; break }
+                hadRiskyLeg = true
+                chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
+            } else {
+                let lowDetour = safeOptions.filter {
+                    $0.detourSeverity == .onRoute || $0.detourSeverity == .smallDetour
+                }
+                let pool = lowDetour.isEmpty ? safeOptions : lowDetour
+                chosen = pool.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
+            }
+
+            guard let stop = chosen, stop.distanceAlongRouteMiles > position + 0.5 else {
+                planFailed = true
+                break
+            }
+
+            let legMiles = stop.distanceAlongRouteMiles - position
+            let arrivalGallons = fuelGallons - legMiles / mpg
+            let arrivalFraction = arrivalGallons / tankSize
+            lowestReserve = min(lowestReserve, arrivalFraction)
+
+            stops.append(GasOnlyStop(
+                id: stop.id + "_\(stops.count)",
+                station: stop,
+                arrivalReserveFraction: arrivalFraction,
+                suggestedFillGallons: max(0, tankSize - arrivalGallons),
+                recommendedForReserveTarget: true
+            ))
+
+            position = stop.distanceAlongRouteMiles
+            fuelGallons = tankSize
+        }
+
+        let finalReserveFraction: Double
+        if planFailed || stops.isEmpty {
+            finalReserveFraction = noStopReserveFraction
+        } else {
+            let remaining = distanceMiles - position
+            finalReserveFraction = (fuelGallons - remaining / mpg) / tankSize
+            lowestReserve = min(lowestReserve, finalReserveFraction)
+        }
+
+        gasOnlyDestinationReserveFraction = finalReserveFraction
+        gasOnlyRecommendedStops = stops
+
+        if planFailed || (stops.isEmpty && finalReserveFraction < targetFraction) {
+            gasOnlyOutcome = .gasFuelStopNeeded
+            gasOnlyRisk = .high
+        } else if stops.isEmpty == false {
+            gasOnlyOutcome = .gasStopRecommended
+            if hadRiskyLeg || lowestReserve < 0.10 {
+                gasOnlyRisk = .high
+            } else if stops.count == 1, let s = stops.first,
+                      s.station.detourSeverity == .moderateDetour {
+                gasOnlyRisk = .medium
+            } else if (finalReserveFraction - targetFraction) < 0.05 {
+                gasOnlyRisk = .medium
+            } else {
+                gasOnlyRisk = .low
+            }
+        } else {
+            gasOnlyOutcome = .gasolineOnly
+            gasOnlyRisk = .low
+        }
+    }
+
     // MARK: - Navigation handoff actions
 
     private func openStationInAppleMaps(_ routeStation: RouteStation) {
@@ -2124,10 +2964,45 @@ struct TripPlannerView: View {
         source.name = "Start"
         let destination = MKMapItem(placemark: MKPlacemark(coordinate: plan.destinationCoordinate))
         destination.name = "Destination"
+
+        let waypoints = navigationWaypoints
+        var items: [MKMapItem] = [source]
+        for (index, coord) in waypoints.enumerated() {
+            let stop = MKMapItem(placemark: MKPlacemark(coordinate: coord))
+            stop.name = waypoints.count == 1 ? "Fuel Stop" : "Fuel Stop \(index + 1)"
+            items.append(stop)
+        }
+        items.append(destination)
+
         MKMapItem.openMaps(
-            with: [source, destination],
+            with: items,
             launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving]
         )
+    }
+
+    /// Google Maps URL for the main navigation handoff. Includes waypoints when
+    /// recommended stops exist. Per-station buttons use the separate `googleMapsURL(to:)`.
+    private func navigationGoogleMapsURL(_ plan: TripPlan) -> URL? {
+        let waypoints = navigationWaypoints
+        let origin = "\(plan.sourceCoordinate.latitude),\(plan.sourceCoordinate.longitude)"
+        let dest   = "\(plan.destinationCoordinate.latitude),\(plan.destinationCoordinate.longitude)"
+        var urlStr = "https://www.google.com/maps/dir/?api=1&origin=\(origin)&destination=\(dest)&travelmode=driving"
+        if waypoints.isEmpty == false {
+            let waypointStr = waypoints
+                .map { "\($0.latitude),\($0.longitude)" }
+                .joined(separator: "|")
+            urlStr += "&waypoints=\(waypointStr)"
+        }
+        return URL(string: urlStr)
+    }
+
+    /// Waze URL for the main navigation handoff. Always opens the final destination
+    /// because Waze does not reliably support waypoints from URL handoff. When fuel
+    /// stops are recommended the user is prompted to add them manually inside Waze.
+    /// Per-station buttons use the separate `wazeURL(to:)`.
+    private func navigationWazeURL(_ plan: TripPlan) -> URL? {
+        let coord = plan.destinationCoordinate
+        return URL(string: "https://waze.com/ul?ll=\(coord.latitude),\(coord.longitude)&navigate=yes")
     }
 
     private func openExternal(_ url: URL?) {
@@ -2341,28 +3216,37 @@ extension RouteOutcome {
     var label: String {
         switch self {
         case .noStopNeeded:            return "No Stop Needed"
-        case .reserveStopRecommended:  return "Reserve Stop Recommended"
+        case .reserveStopRecommended:  return "Buffer Stop Recommended"
         case .e85StopRequired:         return "E85 Stop Required"
         case .gasolineBackupAvailable: return "Gasoline Backup Available"
         case .fallbackMayBeNeeded:     return "Fallback May Be Needed"
         case .e85DetourAvoided:        return "E85 Detour Avoided"
+        case .gasolineOnly:            return "Gasoline Route"
+        case .gasStopRecommended:      return "Gas Stop Recommended"
+        case .gasFuelStopNeeded:       return "Fuel Stop Needed"
         }
     }
 
     var message: String {
         switch self {
         case .noStopNeeded:
-            return "Destination is reachable with your arrival reserve target intact."
+            return "Destination is reachable with your arrival buffer target intact."
         case .reserveStopRecommended:
-            return "Reachable, but below your reserve target. An E85 stop is recommended to meet it."
+            return "Reachable, but below your buffer target. An E85 stop is recommended to meet it."
         case .e85StopRequired:
             return "Destination isn't reachable without refueling. Plan an E85 stop along the way."
         case .gasolineBackupAvailable:
-            return "No reachable E85 plan meets your arrival reserve target, but this vehicle can continue using gasoline if needed."
+            return "No reachable E85 plan meets your arrival buffer target, but this vehicle can continue using gasoline if needed."
         case .fallbackMayBeNeeded:
             return "No reachable E85 plan meets your target. This route may require gasoline, a different route, or a different stop."
         case .e85DetourAvoided:
             return "An E85 stop was available, but it required a significant detour. Since gas backup is allowed, use an on-route gas station if needed."
+        case .gasolineOnly:
+            return "This trip is being planned using pump gasoline only. No fuel stop is required."
+        case .gasStopRecommended:
+            return "This trip is being planned using pump gasoline. Fuel stops are recommended to meet your range or arrival buffer target."
+        case .gasFuelStopNeeded:
+            return "This trip may require a fuel stop, but no suitable gas station was found along the route."
         }
     }
 
@@ -2374,6 +3258,9 @@ extension RouteOutcome {
         case .gasolineBackupAvailable: return "fuelpump.and.filter"
         case .fallbackMayBeNeeded:     return "exclamationmark.triangle.fill"
         case .e85DetourAvoided:        return "arrow.triangle.turn.up.right.diamond.fill"
+        case .gasolineOnly:            return "car.fill"
+        case .gasStopRecommended:      return "fuelpump.fill"
+        case .gasFuelStopNeeded:       return "exclamationmark.triangle.fill"
         }
     }
 
@@ -2385,6 +3272,9 @@ extension RouteOutcome {
         case .gasolineBackupAvailable: return AppTheme.Colors.stationYellow
         case .fallbackMayBeNeeded:     return AppTheme.Colors.warningRed
         case .e85DetourAvoided:        return AppTheme.Colors.stationYellow
+        case .gasolineOnly:            return AppTheme.Colors.primaryGreen
+        case .gasStopRecommended:      return AppTheme.Colors.stationYellow
+        case .gasFuelStopNeeded:       return AppTheme.Colors.warningRed
         }
     }
 
@@ -2396,6 +3286,9 @@ extension RouteOutcome {
         case .gasolineBackupAvailable: return AppTheme.Colors.gasOrange
         case .fallbackMayBeNeeded:     return AppTheme.Colors.warningRed
         case .e85DetourAvoided:        return AppTheme.Colors.gasOrange
+        case .gasolineOnly:            return AppTheme.Colors.primaryGreen
+        case .gasStopRecommended:      return AppTheme.Colors.gasOrange
+        case .gasFuelStopNeeded:       return AppTheme.Colors.warningRed
         }
     }
 }
@@ -2705,7 +3598,7 @@ private struct SavedTripsListView: View {
                 Spacer(minLength: 0)
             }
             HStack(spacing: 6) {
-                tripPill(icon: "target", text: "\(Int(trip.targetArrivalReservePercent.rounded()))% reserve")
+                tripPill(icon: "target", text: "\(Int(trip.targetArrivalReservePercent.rounded()))% buffer")
                 tripPill(
                     icon: "fuelpump.and.filter",
                     text: trip.fuelBackupMode == .gasBackupAllowed ? "Gas backup" : "E85 required"
@@ -2816,6 +3709,7 @@ private struct FullRouteMapView: View {
     let plan: TripPlan
     let mapStations: [RouteStation]
     let mapGasStations: [BackupGasStation]
+    let gasOnlyStops: [GasOnlyStop]
     let displayRisk: TripPlan.RouteRisk?
 
     @Environment(\.dismiss) private var dismiss
@@ -2850,6 +3744,17 @@ private struct FullRouteMapView: View {
                             .background(Circle().fill(AppTheme.Colors.cardBackground.opacity(0.9)))
                             .overlay(Circle().stroke(AppTheme.Colors.borderColor, lineWidth: 0.5))
                             .accessibilityLabel("Gas station: \(gasStation.name)")
+                    }
+                }
+
+                // Gas Only recommended fuel stops.
+                ForEach(gasOnlyStops) { stop in
+                    Annotation(stop.station.name, coordinate: stop.station.coordinate) {
+                        Image(systemName: "fuelpump.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.Colors.gasOrange)
+                            .background(Circle().fill(.black.opacity(0.25)))
+                            .accessibilityLabel("Fuel stop: \(stop.station.name)")
                     }
                 }
             }

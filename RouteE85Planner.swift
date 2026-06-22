@@ -69,6 +69,14 @@ enum RouteOutcome {
     /// E85 stop(s) were available but skipped because they required too much detour;
     /// gas backup is recommended for those segments instead.
     case e85DetourAvoided
+    /// Trip is being planned on pump gasoline only (flex-fuel vehicle); no E85 stops
+    /// are required or sought.
+    case gasolineOnly
+    /// Gas Only mode: the current fuel + discovered gas stops can satisfy the route,
+    /// but one or more stops are recommended to meet range or arrival reserve.
+    case gasStopRecommended
+    /// Gas Only mode: a fuel stop is needed but no suitable gas station was found.
+    case gasFuelStopNeeded
 }
 
 // MARK: - Reserve classification
@@ -746,6 +754,12 @@ struct RouteE85Planner {
             }
             if hasMajorDetourRequired { return .medium }
             return .low
+
+        case .gasolineOnly, .gasStopRecommended, .gasFuelStopNeeded:
+            // These cases are never produced by the E85 planner — they are set by the UI in
+            // Gas Only mode where the E85 analysis is skipped entirely. Treat as Low here;
+            // actual risk is computed by computeGasOnlyPlan in TripPlannerView.
+            return .low
         }
     }
 
@@ -787,6 +801,22 @@ extension MKPolyline {
     }
 }
 
+// MARK: - Gas Only stop
+
+/// A recommended regular-gas stop computed for Gas Only planning mode.
+/// Analogous to RecommendedStop for E85 but rooted in BackupGasStation data.
+struct GasOnlyStop: Identifiable {
+    let id: String
+    let station: BackupGasStation
+    let arrivalReserveFraction: Double   // tank fraction on arrival at this stop
+    let suggestedFillGallons: Double
+    let recommendedForReserveTarget: Bool
+
+    var arrivalClass: ReserveClass {
+        ReserveClass(reserveFraction: arrivalReserveFraction)
+    }
+}
+
 // MARK: - Backup gas station
 
 /// A regular gasoline station discovered along the route corridor. Surfaced as a fallback
@@ -809,7 +839,8 @@ struct BackupGasStation: Identifiable {
 /// Completely independent of E85 planning — results are never mixed into the E85 analysis.
 struct BackupGasStationFinder {
 
-    private let maxSearchCenters = 8
+    private let baseSearchCenters = 12      // default; raised from 8 for better corridor coverage
+    private let longRouteSearchCenters = 16 // used when route > 300 miles
     // 25 km is plenty for gas stations, which are common.
     private let searchRadiusMeters = 25_000.0
     private let maxOffRouteMiles = 12.0
@@ -834,7 +865,8 @@ struct BackupGasStationFinder {
         let totalMiles = routeDistanceMeters / 1609.344
         guard totalMiles > 0 else { return [] }
 
-        let spacingMiles = max(30.0, totalMiles / Double(maxSearchCenters))
+        let maxCenters = totalMiles > 300 ? longRouteSearchCenters : baseSearchCenters
+        let spacingMiles = max(30.0, totalMiles / Double(maxCenters))
         let centers = sampledCenters(from: routeCoordinates, totalMiles: totalMiles, spacingMiles: spacingMiles)
 
         guard Task.isCancelled == false else { return [] }
