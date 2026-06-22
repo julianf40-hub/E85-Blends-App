@@ -1838,18 +1838,22 @@ struct TripPlannerView: View {
                     currentFuelPercent: fuelPercent
                 )
                 plan = newPlan
-                cameraPosition = .rect(route.polyline.boundingMapRect)
                 AppHaptics.success()
 
-                // First plan: insert the map after the results layout settles (see
-                // showRouteMap). On a replan the map is already alive, so we just let its
-                // content update — no teardown/re-instantiation.
                 if showRouteMap == false {
+                    // First plan: insert the map after layout settles. cameraPosition
+                    // stays at .automatic — MapKit auto-fits to the route polyline and
+                    // markers. Never call .rect() after map insertion: that transition
+                    // triggers the iOS 27 beta MapKit MSAA crash (resolve texture lost
+                    // during MTLStoreActionMultisampleResolve on camera resize).
                     Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 60_000_000)
+                        try? await Task.sleep(nanoseconds: 80_000_000)
                         showRouteMap = true
                     }
                 }
+                // Replan: map already live, cameraPosition stays .automatic.
+                // MapKit re-fits to new route content automatically — no camera
+                // transition needed and no MSAA crash risk.
 
                 // Kick off route-aware E85 station discovery (Phase 2).
                 discoverStationsAlongRoute(
