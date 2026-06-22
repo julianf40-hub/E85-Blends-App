@@ -65,6 +65,9 @@ struct TripPlannerView: View {
     // MARK: - Feature 2: Saved trips
     @State private var showSavedTrips = false
 
+    // MARK: - Full-screen route map
+    @State private var showFullMap = false
+
     // MARK: - Feature 3: Report toast
     @State private var reportToastMessage = ""
     @State private var reportToastVisible = false
@@ -80,6 +83,11 @@ struct TripPlannerView: View {
     /// so we draw the recommended-stop stations plus an evenly-spaced subset of the rest. The
     /// full count is always reported in the list below — only the map pins are limited.
     private static let maxMapPins = 20
+
+    /// Maximum number of backup gas station cards shown in the UI. Discovery may return more, but
+    /// showing all of them overwhelms the Trip Planner list. We keep the best 10 by proximity to
+    /// the route first, then progress along the route, then name as a tie-breaker.
+    private static let maxBackupGasCards = 10
 
     private var mapStations: [RouteStation] {
         guard let analysis else { return [] }
@@ -109,6 +117,18 @@ struct TripPlannerView: View {
         return Array(stride(from: 0, to: backupGasStations.count, by: step)
             .prefix(remaining)
             .map { backupGasStations[$0] })
+    }
+
+    /// The backup gas stations shown in the UI list — sorted by proximity to the route, then
+    /// progress along the route, then name, and capped at maxBackupGasCards. Full discovery
+    /// results are preserved in `backupGasStations` for map-pin sampling.
+    private var displayedBackupGasStations: [BackupGasStation] {
+        let sorted = backupGasStations.sorted {
+            if $0.offRouteMiles != $1.offRouteMiles { return $0.offRouteMiles < $1.offRouteMiles }
+            if $0.distanceAlongRouteMiles != $1.distanceAlongRouteMiles { return $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
+            return $0.name < $1.name
+        }
+        return Array(sorted.prefix(Self.maxBackupGasCards))
     }
 
     @FocusState private var focusedField: Field?
@@ -143,13 +163,23 @@ struct TripPlannerView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity)
+            // padding BEFORE frame so the frame constrains the padded content to the
+            // scroll view width. Reversing this (frame then padding) can report a width
+            // wider than the scroll view when any child exceeds the layout proposal,
+            // causing the page to shift horizontally.
             .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // Pin the primary CTA above the tab bar so it stays tappable and never collides
-        // with the tab bar's hit area; this also auto-insets the ScrollView content.
+        // Vertical-only bounce prevents the page from shifting left/right.
+        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        // Dismiss keyboard when the user scrolls, keeping layout clean.
+        .scrollDismissesKeyboard(.immediately)
+        // CTA is hidden while the keyboard is up — prevents it from floating above
+        // the keyboard accessory area. It reappears as soon as focus clears.
         .safeAreaInset(edge: .bottom) {
-            planBottomBar
+            if focusedField == nil {
+                planBottomBar
+            }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .navigationTitle("Trip Planner")
@@ -173,6 +203,16 @@ struct TripPlannerView: View {
                     applyFromSavedTrip(savedTrip)
                     showSavedTrips = false
                 }
+            }
+        }
+        .sheet(isPresented: $showFullMap) {
+            if let currentPlan = plan {
+                FullRouteMapView(
+                    plan: currentPlan,
+                    mapStations: mapStations,
+                    mapGasStations: mapGasStations,
+                    displayRisk: displayRisk
+                )
             }
         }
         .overlay(alignment: .bottom) {
@@ -624,14 +664,10 @@ struct TripPlannerView: View {
                 }
             }
 
-            // Non-interactive inline preview: it sits inside a vertical ScrollView, so leaving
-            // the map's own pan/zoom on would hijack scroll gestures over it (and the extra
-            // gesture-driven redraws can wedge MapKit's Metal layer). Full pan/zoom is available
-            // via the Apple Maps / Google / Waze handoff below. The map is also inserted one
-            // tick after layout settles (showRouteMap) to avoid a 0×0-drawable race.
-            // GeometryReader gates the Map so it is only instantiated once layout reports a
-            // concrete non-zero size — combined with showRouteMap, this keeps MapKit from
-            // allocating a 0×0 Metal drawable on first render of dense routes.
+            // Non-interactive inline preview — interactionModes: [] prevents the map's pan/zoom
+            // gesture from intercepting the parent ScrollView's vertical drag. Full pinch/pan is
+            // available via Open Full Map. The map is inserted one tick after layout settles
+            // (showRouteMap) to avoid a 0×0 Metal drawable race on first render.
             GeometryReader { geo in
                 ZStack {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -646,8 +682,7 @@ struct TripPlannerView: View {
                             MapPolyline(plan.route.polyline)
                                 .stroke(AppTheme.Colors.primaryGreen, lineWidth: 5)
 
-                            // Real E85 stations discovered along the corridor (pin count capped
-                            // for map-render stability; the full list appears in the stops section).
+                            // E85 stations (pin count capped; full list in stops section).
                             ForEach(mapStations) { routeStation in
                                 Annotation(routeStation.station.name, coordinate: routeStation.coordinate) {
                                     Image(systemName: "fuelpump.circle.fill")
@@ -657,27 +692,38 @@ struct TripPlannerView: View {
                                         .accessibilityLabel("E85 station \(routeStation.station.name)")
                                 }
                             }
-                            // Backup gas pins — secondary visual treatment, only when section expanded.
-                            ForEach(mapGasStations) { gasStation in
-                                Annotation(gasStation.name, coordinate: gasStation.coordinate) {
-                                    Image(systemName: "car.fill")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                                        .padding(4)
-                                        .background(Circle().fill(AppTheme.Colors.cardBackground.opacity(0.9)))
-                                        .overlay(Circle().stroke(AppTheme.Colors.borderColor, lineWidth: 0.5))
-                                        .accessibilityLabel("Gas station \(gasStation.name)")
-                                }
-                            }
+                            // Backup gas pins are intentionally omitted from the inline preview.
+                            // Adding them after the map has rendered triggers a MapKit Metal
+                            // MSAA redraw crash on iOS 27 beta. They remain visible in the
+                            // full-screen interactive map opened via "Open Full Map".
                         }
                         .mapStyle(.standard)
+                        .overlay(alignment: .bottomTrailing) {
+                            Button {
+                                AppHaptics.selection()
+                                showFullMap = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                        .font(.caption2.weight(.bold))
+                                    Text("Open Full Map")
+                                        .font(.caption2.weight(.semibold))
+                                }
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(10)
+                        }
                     } else {
                         ProgressView().tint(AppTheme.Colors.primaryGreen)
                     }
                 }
                 .frame(width: max(0, geo.size.width), height: max(0, geo.size.height))
             }
-            .frame(height: 220)
+            .frame(height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1131,6 +1177,7 @@ struct TripPlannerView: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(AppTheme.Colors.stationYellow.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1165,11 +1212,25 @@ struct TripPlannerView: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(AppTheme.Colors.cardBackground)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         } else {
-            ForEach(backupGasStations) { station in
+            if backupGasStations.count > Self.maxBackupGasCards {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    Text("Showing the \(Self.maxBackupGasCards) best backup gas options along this route.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 2)
+            }
+            ForEach(displayedBackupGasStations) { station in
                 gasBackupStationCard(station)
             }
         }
@@ -1212,11 +1273,13 @@ struct TripPlannerView: View {
                     Text(station.name)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     if cityState.isEmpty == false {
                         Text(cityState)
                             .font(.caption)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .lineLimit(1)
                     }
                 }
 
@@ -1279,11 +1342,17 @@ struct TripPlannerView: View {
                 Text(value)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Text(label)
                     .font(.caption2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
+                    .lineLimit(1)
             }
         }
+        // frame(maxWidth: .infinity) ensures multiple gasMetrics in an HStack share
+        // available width equally instead of sizing to their intrinsic content.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(AppTheme.Colors.cardBackground)
@@ -2694,6 +2763,85 @@ private struct SavedTripsListView: View {
         f.dateStyle = .medium
         f.timeStyle = .none
         return f.string(from: date)
+    }
+}
+
+// MARK: - Full-screen interactive route map
+
+/// Full-screen map sheet with free pan/zoom, Fit Route, and Done controls.
+/// Pin count uses the same 20-pin cap as the inline map to avoid MapKit Metal issues.
+private struct FullRouteMapView: View {
+    let plan: TripPlan
+    let mapStations: [RouteStation]
+    let mapGasStations: [BackupGasStation]
+    let displayRisk: TripPlan.RouteRisk?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var cameraPosition: MapCameraPosition = .automatic
+
+    var body: some View {
+        NavigationStack {
+            Map(position: $cameraPosition) {
+                Marker("Start", systemImage: "flag.fill", coordinate: plan.sourceCoordinate)
+                    .tint(AppTheme.Colors.primaryGreen)
+                Marker("End", systemImage: "flag.checkered", coordinate: plan.destinationCoordinate)
+                    .tint(AppTheme.Colors.stationYellow)
+                MapPolyline(plan.route.polyline)
+                    .stroke(AppTheme.Colors.primaryGreen, lineWidth: 4)
+
+                ForEach(mapStations) { routeStation in
+                    Annotation(routeStation.station.name, coordinate: routeStation.coordinate) {
+                        Image(systemName: "fuelpump.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                            .background(Circle().fill(.black.opacity(0.25)))
+                            .accessibilityLabel("E85 station: \(routeStation.station.name)")
+                    }
+                }
+
+                ForEach(mapGasStations) { gasStation in
+                    Annotation(gasStation.name, coordinate: gasStation.coordinate) {
+                        Image(systemName: "car.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .padding(4)
+                            .background(Circle().fill(AppTheme.Colors.cardBackground.opacity(0.9)))
+                            .overlay(Circle().stroke(AppTheme.Colors.borderColor, lineWidth: 0.5))
+                            .accessibilityLabel("Gas station: \(gasStation.name)")
+                    }
+                }
+            }
+            .mapStyle(.standard)
+            .ignoresSafeArea(edges: .bottom)
+            .overlay(alignment: .topTrailing) {
+                if let risk = displayRisk {
+                    RouteRiskBadge(risk: risk)
+                        .padding(.top, 56)
+                        .padding(.trailing, 16)
+                }
+            }
+            .navigationTitle("Route Map")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        cameraPosition = .automatic
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "viewfinder")
+                                .font(.caption.weight(.bold))
+                            Text("Fit Route")
+                                .font(.subheadline)
+                        }
+                    }
+                    .accessibilityLabel("Fit route to screen")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
     }
 }
 
