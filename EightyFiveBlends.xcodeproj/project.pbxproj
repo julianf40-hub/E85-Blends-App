@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */; };
+		44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */; };
+		44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0E2FE8E4C900304289 /* StationReportStore.swift */; };
 		444863ED2FB5B5B4001A39EE /* ProLimitBannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444863EC2FB5B5B4001A39EE /* ProLimitBannerView.swift */; };
 		444863EF2FB5B5CB001A39EE /* ProUpgradeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 444863EE2FB5B5CB001A39EE /* ProUpgradeView.swift */; };
 		4469CCAA2FE1397A0069F1D7 /* ProFeatureLockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4469CCA92FE1397A0069F1D7 /* ProFeatureLockView.swift */; };
@@ -19,6 +22,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteE85Planner.swift; sourceTree = "<group>"; };
+		44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedTripStore.swift; sourceTree = "<group>"; };
+		44309B0E2FE8E4C900304289 /* StationReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationReportStore.swift; sourceTree = "<group>"; };
 		444863EC2FB5B5B4001A39EE /* ProLimitBannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProLimitBannerView.swift; sourceTree = "<group>"; };
 		444863EE2FB5B5CB001A39EE /* ProUpgradeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProUpgradeView.swift; sourceTree = "<group>"; };
 		4469CCA92FE1397A0069F1D7 /* ProFeatureLockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProFeatureLockView.swift; sourceTree = "<group>"; };
@@ -77,6 +83,9 @@
 				4469CCAB2FE13E730069F1D7 /* TripPlannerView.swift */,
 				4469CCAD2FE13E820069F1D7 /* AdvancedAnalyticsView.swift */,
 				4469CCAF2FE13E940069F1D7 /* StationAlertsView.swift */,
+				44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */,
+				44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */,
+				44309B0E2FE8E4C900304289 /* StationReportStore.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -164,6 +173,9 @@
 			files = (
 				4469CCAE2FE13E820069F1D7 /* AdvancedAnalyticsView.swift in Sources */,
 				4469CCAA2FE1397A0069F1D7 /* ProFeatureLockView.swift in Sources */,
+				44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */,
+				44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */,
+				44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */,
 				4469CCAC2FE13E730069F1D7 /* TripPlannerView.swift in Sources */,
 				444863ED2FB5B5B4001A39EE /* ProLimitBannerView.swift in Sources */,
 				4469CCB02FE13E940069F1D7 /* StationAlertsView.swift in Sources */,
@@ -242,7 +254,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlendsInternal.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 93;
+				CURRENT_PROJECT_VERSION = 94;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -262,7 +274,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.3;
+				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.internal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -409,7 +421,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 93;
+				CURRENT_PROJECT_VERSION = 94;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -429,7 +441,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.3;
+				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -452,7 +464,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 93;
+				CURRENT_PROJECT_VERSION = 94;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -472,7 +484,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.1.3;
+				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
