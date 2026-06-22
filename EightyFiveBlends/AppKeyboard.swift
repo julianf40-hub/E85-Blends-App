@@ -12,6 +12,10 @@ import UIKit
 #endif
 
 enum AppKeyboard {
+    // UIApplication.shared is @MainActor-isolated in iOS 17+. Annotating this method
+    // guarantees it is always called on the main thread, preventing a concurrency
+    // violation crash when invoked from gesture handlers or async contexts.
+    @MainActor
     static func dismiss() {
         #if os(iOS)
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)

@@ -171,15 +171,13 @@ struct TripPlannerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         // Vertical-only bounce prevents the page from shifting left/right.
+        // Note: .scrollDismissesKeyboard is intentionally absent — on physical iPhone
+        // it interprets rapid key-repeat layout re-measurements as scroll events,
+        // triggering keyboard dismissal mid-delete, which flips focusedField and
+        // causes a UIKit safeAreaInset height-oscillation crash.
         .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-        // Dismiss keyboard when the user scrolls, keeping layout clean.
-        .scrollDismissesKeyboard(.immediately)
-        // CTA is hidden while the keyboard is up — prevents it from floating above
-        // the keyboard accessory area. It reappears as soon as focus clears.
         .safeAreaInset(edge: .bottom) {
-            if focusedField == nil {
-                planBottomBar
-            }
+            planBottomBar
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .navigationTitle("Trip Planner")
@@ -237,6 +235,35 @@ struct TripPlannerView: View {
                 showError: showOriginError,
                 errorText: "Enter a starting location."
             )
+
+            // Swap origin ↔ destination
+            HStack {
+                Spacer()
+                Button {
+                    swapOriginDestination()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.caption.weight(.bold))
+                        Text("Swap")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(canSwap ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule().stroke(
+                            canSwap ? AppTheme.Colors.primaryGreen.opacity(0.5) : AppTheme.Colors.borderColor,
+                            lineWidth: 1
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSwap)
+                .accessibilityLabel("Swap origin and destination")
+            }
 
             // Destination
             labeledField(
@@ -1694,6 +1721,9 @@ struct TripPlannerView: View {
     private var showTankError: Bool { tankSizeText.isEmpty == false && tankSizeValue == nil }
     private var showMPGError: Bool { mpgText.isEmpty == false && mpgValue == nil }
 
+    // Swap is available when at least one field has content to move.
+    private var canSwap: Bool { !trimmedOrigin.isEmpty || !trimmedDestination.isEmpty }
+
     private var isCurrentRouteSaved: Bool {
         guard let tankSize = tankSizeValue, let mpg = mpgValue else { return false }
         return SavedTripStore.shared.canSave(
@@ -1766,6 +1796,18 @@ struct TripPlannerView: View {
         gasStationError = nil
         isDiscoveringGasStations = false
         showBackupGasStations = false
+    }
+
+    // MARK: - Swap origin / destination
+
+    private func swapOriginDestination() {
+        focusedField = nil
+        let temp = origin
+        origin = destination
+        destination = temp
+        clearRouteResults()
+        errorMessage = nil
+        AppHaptics.selection()
     }
 
     // MARK: - Saved trip helpers
