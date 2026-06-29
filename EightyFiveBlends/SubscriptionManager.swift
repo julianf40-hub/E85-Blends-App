@@ -20,7 +20,7 @@ final class SubscriptionManager {
 
     // MARK: - Product identifier
     /// The one and only 85Blends Pro offering.
-    static let monthlyID = "com.85blends.pro.monthly"
+    static let monthlyID = "com.85blends.subscription.monthly"
     static let allProductIDs: Set<String> = [monthlyID]
 
     /// Marketing price shown before StoreKit products load (or in builds without a
@@ -70,6 +70,10 @@ final class SubscriptionManager {
     private(set) var isProStoreKit: Bool = false
     private(set) var availableProducts: [Product] = []
     private(set) var isLoadingProducts: Bool = false
+    /// Set to `true` after the first `loadProducts()` call completes (success or failure).
+    /// The paywall uses this to distinguish "still loading" from "load failed" so it never
+    /// shows the error message before any fetch has actually been attempted.
+    private(set) var hasAttemptedProductLoad: Bool = false
 
     // MARK: - Entitlement (single source of truth)
 
@@ -177,21 +181,30 @@ final class SubscriptionManager {
     func loadProducts() async {
         guard !isLoadingProducts else { return }
         isLoadingProducts = true
-        defer { isLoadingProducts = false }
+        defer {
+            isLoadingProducts = false
+            hasAttemptedProductLoad = true
+        }
         do {
-            availableProducts = try await Product.products(for: Self.allProductIDs)
+            let products = try await Product.products(for: Self.allProductIDs)
+            availableProducts = products
+            if products.isEmpty {
+                // Empty result with no error means the product IDs returned nothing from
+                // App Store Connect. Most common causes: the product ID in code doesn't
+                // exactly match what's configured in App Store Connect, or the product
+                // is not yet in "Ready to Submit" / approved status.
+                print("[85Blends][StoreKit] loadProducts: 0 products returned for IDs: \(Self.allProductIDs). Verify the product IDs exactly match App Store Connect and the product status is Ready to Submit or approved.")
+            }
         } catch {
-            // Expected in Simulator without a StoreKit configuration file — safe no-op.
             availableProducts = []
+            // Log the real error in all builds — this is a critical commerce path and
+            // silent failures are what caused the App Review rejection on iPad.
+            print("[85Blends][StoreKit] loadProducts failed: \(error.localizedDescription) (code: \(error)). Possible causes: network issue, StoreKit sandbox misconfiguration, missing In-App Purchase entitlement, or product not yet approved in App Store Connect.")
         }
     }
 
     /// Convenience entry point for the paywall's primary CTA.
-    ///
-    /// TODO: This is the StoreKit purchasing hook. It charges the live
-    /// `com.85blends.pro.monthly` subscription once it is configured in App Store Connect.
-    /// Until the product exists, `monthlyProduct` is nil and this no-ops safely; the paywall
-    /// surfaces the unavailable state instead.
+    /// Purchases the live `com.85blends.subscription.monthly` product via StoreKit.
     @MainActor
     func purchasePro() async {
         guard let product = monthlyProduct else { return }
