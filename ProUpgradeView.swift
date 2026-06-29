@@ -46,6 +46,10 @@ struct ProUpgradeView: View {
                 footerNote
             }
             .padding(16)
+            // Cap content width on iPad so it doesn't stretch awkwardly on wide displays.
+            // The outer frame centers the capped block within the scroll view's full width.
+            .frame(maxWidth: 600)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(AppTheme.Colors.charcoal)
         .navigationTitle("85Blends Pro")
@@ -59,6 +63,15 @@ struct ProUpgradeView: View {
             }
         }
         .task {
+            // Wait for any in-progress startup product fetch to settle before we try.
+            // Without this yield + loop, our call hits the isLoadingProducts guard and
+            // silently no-ops when SubscriptionManager.init()'s Task is still in flight —
+            // leaving the paywall permanently on the error state if that startup load fails.
+            await Task.yield()
+            while manager.isLoadingProducts {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            // Load (or re-fetch for freshness) on every paywall presentation.
             await manager.loadProducts()
         }
     }
@@ -186,11 +199,12 @@ struct ProUpgradeView: View {
         }
     }
 
-    /// Shown when no purchasable product is available: a loading state while products load,
-    /// otherwise an unavailable message with a retry.
+    /// Shown when no purchasable product is available.
+    /// Shows a loading indicator until the first fetch has completed; only then surfaces
+    /// the error + retry so the user never sees "unavailable" before any attempt is made.
     @ViewBuilder
     private var availabilityNote: some View {
-        if manager.isLoadingProducts {
+        if manager.isLoadingProducts || !manager.hasAttemptedProductLoad {
             statusRow(icon: "arrow.triangle.2.circlepath", text: "Loading subscription…", color: AppTheme.Colors.textSecondary, spinning: true)
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -217,22 +231,39 @@ struct ProUpgradeView: View {
 
     private func unlockButton(disabled: Bool) -> some View {
         Button {
-            // TODO: StoreKit purchasing hook. Routes through SubscriptionManager.purchasePro(),
-            // which buys the live `com.85blends.pro.monthly` product once it is configured in
-            // App Store Connect. Safe no-op until the product exists.
             Task { await manager.purchasePro() }
         } label: {
-            Text("Unlock 85Blends Pro")
-                .font(.headline)
-                .foregroundStyle(.black)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(AppTheme.Colors.stationYellow)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .opacity(disabled ? 0.5 : 1)
+            VStack(spacing: 3) {
+                Text("Unlock 85Blends Pro")
+                    .font(.headline)
+                    .foregroundStyle(.black)
+                // Show subscription title, duration, and price once the product is loaded
+                // so the user knows exactly what they're buying before tapping.
+                if let product = manager.monthlyProduct {
+                    Text("\(product.displayName) · \(subscriptionPeriodLabel(for: product)) · \(product.displayPrice)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.black.opacity(0.7))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(AppTheme.Colors.stationYellow)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .opacity(disabled ? 0.5 : 1)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+    }
+
+    private func subscriptionPeriodLabel(for product: Product) -> String {
+        guard let period = product.subscription?.subscriptionPeriod else { return "Monthly" }
+        switch period.unit {
+        case .month: return period.value == 1 ? "Monthly" : "\(period.value)-Month"
+        case .year:  return period.value == 1 ? "Yearly"  : "\(period.value)-Year"
+        case .week:  return period.value == 1 ? "Weekly"  : "\(period.value)-Week"
+        case .day:   return period.value == 1 ? "Daily"   : "\(period.value)-Day"
+        @unknown default: return "Monthly"
+        }
     }
 
     private func continueFreeButton(disabled: Bool) -> some View {
