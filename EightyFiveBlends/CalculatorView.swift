@@ -339,9 +339,14 @@ struct CalculatorView: View {
         autoPromptStation = nearbyStation
     }
 
+    /// Tight proximity radius (in meters) for the "at the pump" auto-prompt, so it only
+    /// fires when the user is actually at the station/pump area rather than just nearby.
+    /// 50 feet ≈ 15.24 meters.
+    private static let pumpPromptRadiusMeters: CLLocationDistance = 15.24
+
     private func nearestSavedStation(to coordinate: StationCoordinate) -> FuelStation? {
         let currentLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let maxDistanceMeters = 804.67
+        let maxDistanceMeters = Self.pumpPromptRadiusMeters
 
         return savedStations
             .compactMap { station -> (station: FuelStation, distance: CLLocationDistance)? in
