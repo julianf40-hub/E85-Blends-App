@@ -506,6 +506,9 @@ struct AtThePumpView: View {
         if hasBlendWarning, let warningMessage = calculation.warningMessage {
             WarningCard(title: "Blend Warning", message: warningMessage)
                 .transition(.opacity.combined(with: .move(edge: .top)))
+        } else if let guidanceMessage = calculation.guidanceMessage {
+            InfoCard(title: "Pump E85 Only", message: guidanceMessage)
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 

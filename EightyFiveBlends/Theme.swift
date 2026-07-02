@@ -280,6 +280,38 @@ struct WarningCard: View {
     }
 }
 
+struct InfoCard: View {
+    let title: String
+    let message: String
+    var systemImage: String = "checkmark.circle.fill"
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.primaryGreen.opacity(0.5), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
 struct PrimaryButton: View {
     let title: String
     var action: () -> Void

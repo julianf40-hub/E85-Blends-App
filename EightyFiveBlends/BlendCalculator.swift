@@ -30,9 +30,21 @@ struct BlendCalculator {
         let estimatedOctane: Double
         let blendLabel: String
         let warningMessage: String?
+        /// Non-error guidance for valid special-case results (e.g. "pump E85 only" when
+        /// the user targets the highest available blend). Nil for ordinary results.
+        var guidanceMessage: String? = nil
     }
 
     private static let epsilon = 0.0001
+
+    /// Float-safety tolerance for comparing ethanol percentages (in percentage points).
+    private static let ethanolPercentTolerance = 0.001
+
+    /// How far above the pump's E85 ethanol content a target may sit and still be treated
+    /// as a valid "pump E85 only" fill instead of an unreachable blend. Covers the everyday
+    /// case of targeting E85 while the pump's E85 actually tests at ~E80–E83. A target far
+    /// above the pump fuel (e.g. E85 target on E70 pump fuel) still warns as unreachable.
+    private static let e85OnlyGraceEthanolPoints = 5.0
 
     static func calculate(input: Input) -> Result {
         let numericInputs = [
@@ -116,6 +128,52 @@ struct BlendCalculator {
                 finalEthanolPercent: currentBlend,
                 message: "The tank is already full, so the target blend cannot be adjusted without removing fuel."
             )
+        }
+
+        // Highest-blend special case: the most ethanol we can possibly end up with is
+        // filling all remaining space with the pump's E85. If the target is at that
+        // ceiling or above it, the general solver would demand more E85 than fits and
+        // report an unreachable blend — but "pump E85 only" is a perfectly valid,
+        // real-world answer as long as the target isn't far above the pump fuel itself.
+        if e85Ethanol > gasEthanol + epsilon {
+            let maxAchievableEthanol = ((currentFuelGallons * currentFuelEthanol) + (spaceToFill * e85Ethanol)) / targetGallons
+            let targetVsPumpFuelPoints = input.targetEthanolPercent - input.e85EthanolPercent
+
+            // Only special-case targets at or above the pump fuel's own ethanol content
+            // ("give me the highest blend"). Unreachable targets *below* the pump fuel
+            // (e.g. E60 target on a nearly full E10 tank) keep the generic warning below.
+            if targetEthanol - maxAchievableEthanol > epsilon,
+               targetVsPumpFuelPoints >= -ethanolPercentTolerance {
+                let maxAchievablePercent = rounded(maxAchievableEthanol * 100, places: 1)
+                let maxAchievableLabel = label(for: maxAchievablePercent)
+
+                guard targetVsPumpFuelPoints <= e85OnlyGraceEthanolPoints + ethanolPercentTolerance else {
+                    // Target far above the pump fuel (e.g. E85 target on E70 pump fuel):
+                    // keep this an honest unreachable warning, but say what IS possible.
+                    return warningResult(
+                        input: input,
+                        finalEthanolPercent: maxAchievablePercent,
+                        message: "A target of \(label(for: input.targetEthanolPercent)) is above this pump's \(label(for: input.e85EthanolPercent)) fuel. Filling the rest of the tank with E85 only reaches about \(maxAchievableLabel). Lower the target, or pump E85 only for the highest possible blend."
+                    )
+                }
+
+                let e85OnlyGallons = rounded(spaceToFill, places: 2)
+
+                return Result(
+                    e85Gallons: e85OnlyGallons,
+                    gasGallons: 0,
+                    totalGallonsToAdd: e85OnlyGallons,
+                    finalEthanolPercent: maxAchievablePercent,
+                    estimatedOctane: rounded(input.e85Octane, places: 1),
+                    blendLabel: maxAchievableLabel,
+                    warningMessage: nil,
+                    guidanceMessage: String(
+                        format: "Pump E85 only — add %.2f gallons of E85 and no gas. This gives you the highest blend available from this pump (about %@).",
+                        e85OnlyGallons,
+                        maxAchievableLabel
+                    )
+                )
+            }
         }
 
         let denominator = e85Ethanol - gasEthanol
