@@ -33,6 +33,10 @@ struct BlendCalculator {
         /// Non-error guidance for valid special-case results (e.g. "pump E85 only" when
         /// the user targets the highest available blend). Nil for ordinary results.
         var guidanceMessage: String? = nil
+        /// The blend the user asked for when it differs from `blendLabel` (which shows
+        /// the achieved blend on E85-only guidance results). Lets the fuel log record
+        /// the requested target rather than the outcome. Nil when they match.
+        var requestedTargetEthanolPercent: Double? = nil
     }
 
     private static let epsilon = 0.0001
@@ -175,7 +179,8 @@ struct BlendCalculator {
                         format: "Pump E85 only — add %.2f gallons of E85 and no gas. This gives you the highest blend available from this pump (about %@).",
                         e85OnlyGallons,
                         maxAchievableLabel
-                    )
+                    ),
+                    requestedTargetEthanolPercent: input.targetEthanolPercent
                 )
             }
         }

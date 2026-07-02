@@ -90,10 +90,14 @@ struct AtThePumpView: View {
             ?? activeVehicle?.defaultCurrentEthanolPercent
             ?? initialCurrentFuelEthanolPercent
         // Pump content: last visit beats generic defaults — the same pump usually
-        // dispenses the same fuel next week.
-        let resolvedPumpEthanol = saved.pumpE85Content
+        // dispenses the same fuel next week. When restoring into Custom mode, clamp to
+        // the Custom slider's range so the slider position and the math can't disagree.
+        var resolvedPumpEthanol = saved.pumpE85Content
             ?? activeVehicle?.defaultPumpEthanolPercent
             ?? initialE85EthanolPercent
+        if saved.fuelType == .custom {
+            resolvedPumpEthanol = min(max(resolvedPumpEthanol, 50), 95)
+        }
         // Target: "Max E85" intent is restored against today's pump content; otherwise
         // last visit's number, then the vehicle preference, then the calculator value.
         let resolvedTargetEthanol = saved.targetIsMaxE85
@@ -219,8 +223,10 @@ struct AtThePumpView: View {
             return -1
         }
 
+        // A non-preset value with the custom slider hidden selects nothing — matching
+        // the Custom chip here would highlight a control whose input isn't on screen.
         let level = Int(currentFuelLevelPercent.rounded())
-        return [0, 25, 50, 75, 100].contains(level) ? level : -1
+        return [0, 25, 50, 75, 100].contains(level) ? level : Int.min
     }
 
     private var targetBlendChipSelection: Int {
@@ -255,11 +261,20 @@ struct AtThePumpView: View {
     }
 
     private var estimatedFuelCost: Double? {
-        guard isPartialFillEnabled,
-              let e85Price = Double(e85PriceInput), e85Price > 0,
-              let gasPrice = Double(gasPriceInput), gasPrice > 0,
-              calculation.warningMessage == nil else { return nil }
-        return calculation.e85Gallons * e85Price + calculation.gasGallons * gasPrice
+        guard isPartialFillEnabled, calculation.warningMessage == nil else { return nil }
+
+        let result = calculation
+        guard result.totalGallonsToAdd > 0.005 else { return nil }
+
+        // Only require a price for fuel that is actually being added, so E85-only and
+        // 91-only fills can estimate cost without an irrelevant second price.
+        let e85Price = Double(e85PriceInput) ?? 0
+        let gasPrice = Double(gasPriceInput) ?? 0
+
+        if result.e85Gallons > 0.005, e85Price <= 0 { return nil }
+        if result.gasGallons > 0.005, gasPrice <= 0 { return nil }
+
+        return result.e85Gallons * e85Price + result.gasGallons * gasPrice
     }
 
     private var budgetExceeded: Bool {
@@ -357,7 +372,9 @@ struct AtThePumpView: View {
             return "You're already close to E\(Int(targetEthanolPercent.rounded())) — this fill keeps you there."
         }
 
-        return String(format: "Lands you at about E%.0f, roughly %.0f octane.", calculation.finalEthanolPercent, calculation.estimatedOctane)
+        // Note: estimatedOctane describes the ADDED fuel only, not the whole tank —
+        // don't present it as the resulting tank octane here.
+        return String(format: "Lands you at about E%.0f.", calculation.finalEthanolPercent)
     }
 
     // Compact echo of the instruction for the sticky bottom bar.

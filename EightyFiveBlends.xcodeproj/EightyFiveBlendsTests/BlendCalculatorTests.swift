@@ -231,6 +231,16 @@ struct BlendCalculatorTests {
         #expect(result.gasGallons > 0)
     }
 
+    @Test("E85-only guidance result preserves the requested target for the fuel log")
+    func e85Only_preservesRequestedTarget() {
+        // Target E85, achieved ~E66: blendLabel shows the outcome, but the requested
+        // target must survive for fuel-log prefill.
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25, targetEthanol: 85))
+        #expect(result.guidanceMessage != nil)
+        #expect(result.requestedTargetEthanolPercent == 85)
+        #expect(result.blendLabel != "E85")
+    }
+
     // MARK: - Gas-only fill projection (Pump Fuel = 91)
 
     @Test("Gas-only fill projects the final blend instead of solving for a target")

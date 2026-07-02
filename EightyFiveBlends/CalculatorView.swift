@@ -343,14 +343,26 @@ struct CalculatorView: View {
         }
 
         // Hysteresis + accuracy gate live in PumpProximity: enter at the tight radius,
-        // exit at the larger one, and never change state on a coarse location fix.
+        // exit at the larger one, and don't change state on an ambiguous coarse fix.
+        let accuracy = locationManager.latestHorizontalAccuracyMeters
         let isAtPump = PumpProximity.isAtPump(
             distanceMeters: candidate.distance,
-            horizontalAccuracyMeters: locationManager.latestHorizontalAccuracyMeters,
+            horizontalAccuracyMeters: accuracy,
             wasAtPump: pumpModeStation != nil
         )
 
-        pumpModeStation = isAtPump ? candidate.station : nil
+        guard isAtPump else {
+            pumpModeStation = nil
+            return
+        }
+
+        // Only (re)derive WHICH station from a reliable fix — a coarse fix that merely
+        // kept the previous state must not swap the attached station (the name and E85
+        // price flow into the fill-up log).
+        let fixIsReliable = accuracy.map { $0 >= 0 && $0 <= PumpProximity.maximumPumpModeLocationAccuracyMeters } ?? false
+        if fixIsReliable || pumpModeStation == nil {
+            pumpModeStation = candidate.station
+        }
     }
 
     private func evaluateAutoPromptPumpMode() {

@@ -30,8 +30,12 @@ enum PumpProximity {
     /// Hysteresis decision: given the distance to the nearest saved station and the fix
     /// accuracy, should the pump-mode suggestion be active?
     ///
-    /// - Poor/unknown accuracy keeps the previous state rather than guessing either way.
     /// - Entering requires the tight entry radius; leaving requires the larger exit radius.
+    /// - A poor/unknown-accuracy fix keeps the previous state rather than guessing —
+    ///   EXCEPT when even its worst-case error still puts the user clearly beyond the
+    ///   exit radius, in which case the state clears. Without that escape hatch, one
+    ///   good fix at the pump followed by only coarse fixes would pin "at the pump"
+    ///   forever (e.g. reopening the app at home on an indoor Wi-Fi fix).
     static func isAtPump(
         distanceMeters: CLLocationDistance,
         horizontalAccuracyMeters: CLLocationAccuracy?,
@@ -40,6 +44,11 @@ enum PumpProximity {
         guard let accuracy = horizontalAccuracyMeters,
               accuracy >= 0,
               accuracy <= maximumPumpModeLocationAccuracyMeters else {
+            if let accuracy = horizontalAccuracyMeters,
+               accuracy >= 0,
+               distanceMeters - accuracy > atPumpExitRadiusMeters {
+                return false
+            }
             return wasAtPump
         }
 
