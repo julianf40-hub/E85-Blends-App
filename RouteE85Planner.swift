@@ -217,6 +217,11 @@ struct RouteE85Planner {
     private let maxSearchQueries = 12               // hard cap on concurrent station searches
     private let maxCorridorOffsetMiles = 18.0       // ignore stations farther than this off-route
     private let minArrivalReserveFraction = 0.12    // don't recommend arriving below ~12%
+    // A stop must add at least this fraction of a full tank's worth of extra range to be
+    // worth recommending — filters out "drive 14 mi, add 1.2 gal" style top-offs picked
+    // simply for being the farthest low-detour station nearby, when the tank is still
+    // mostly full. See recommendStops() for the full rationale.
+    private let minMaterialGainFraction = 0.15
 
     init(service: NLRStationService = NLRStationService()) {
         self.service = service
@@ -477,7 +482,9 @@ struct RouteE85Planner {
 
     // MARK: - Greedy stop recommendations
 
-    private struct Recommendation {
+    /// Internal (not private) so `RouteE85PlannerTests` can exercise the greedy planner
+    /// directly with synthetic stations, without needing a live station search.
+    struct Recommendation {
         let stops: [RecommendedStop]
         let planComplete: Bool                 // plan reaches the destination (reserve ≥ 0)
         let planSatisfiesTarget: Bool          // destination arrival reserve ≥ target
@@ -497,7 +504,8 @@ struct RouteE85Planner {
         let fillGallons: Double
     }
 
-    private func recommendStops(
+    /// Internal (not private) for direct testability — see `Recommendation` above.
+    func recommendStops(
         stations: [RouteStation],
         totalMiles: Double,
         context: RouteFuelContext,
@@ -548,29 +556,29 @@ struct RouteE85Planner {
                 return arrival / tank >= minArrivalReserveFraction
             }
 
+            // Usefulness gate: a stop only counts if refueling there adds a material amount
+            // of extra range (see minMaterialGainFraction). Without this, a station reached
+            // very early — while the tank is still mostly full — can win purely on being the
+            // farthest low-detour option nearby, producing a "drive 14 mi, add 1.2 gal"
+            // recommendation that does nothing to help the trip actually complete.
+            let minMaterialGainMiles = minMaterialGainFraction * tank * mpg
+            let materialSafeOptions = safeOptions.filter {
+                let arrival = fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg
+                let fillGallons = max(0, tank - arrival)
+                return fillGallons * mpg >= minMaterialGainMiles
+            }
+
             let chosen: RouteStation?
-            if safeOptions.isEmpty {
-                // Relax: any station we can physically reach (arrive with ≥ 0).
-                let reachable = ahead.filter {
-                    fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg >= 0
-                }
-                if reachable.isEmpty {
-                    chosen = nil
-                } else {
-                    minViableOptions = 0
-                    hadRiskyLeg = true
-                    chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-                }
-            } else {
-                minViableOptions = min(minViableOptions, safeOptions.count)
+            if materialSafeOptions.isEmpty == false {
+                minViableOptions = min(minViableOptions, materialSafeOptions.count)
 
                 // Remove recently-reported unavailable stations when clean alternatives exist.
                 let cleanPool: [RouteStation]
                 if reportedUnavailableKeys.isEmpty {
-                    cleanPool = safeOptions
+                    cleanPool = materialSafeOptions
                 } else {
-                    let filtered = safeOptions.filter { reportedUnavailableKeys.contains($0.id) == false }
-                    cleanPool = filtered.isEmpty ? safeOptions : filtered
+                    let filtered = materialSafeOptions.filter { reportedUnavailableKeys.contains($0.id) == false }
+                    cleanPool = filtered.isEmpty ? materialSafeOptions : filtered
                 }
 
                 if context.fuelBackupMode == .gasBackupAllowed {
@@ -613,6 +621,27 @@ struct RouteE85Planner {
                     } else {
                         chosen = cleanPool.max(by: { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles })
                     }
+                }
+            } else if safeOptions.isEmpty == false {
+                // Only trivial top-offs are safely reachable from here — none of them
+                // materially improve reachability or the arrival buffer. Don't recommend
+                // one; the loop will either find the destination coastable as-is (and exit
+                // on the next check above) or fall through to the emergency relax step
+                // below once genuinely nothing safe remains.
+                chosen = nil
+            } else {
+                // Relax: any station we can physically reach (arrive with ≥ 0). This is a
+                // genuine last resort, so it is NOT subject to the material-gain filter —
+                // when nothing safe is reachable at all, any reachable fuel matters.
+                let reachable = ahead.filter {
+                    fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg >= 0
+                }
+                if reachable.isEmpty {
+                    chosen = nil
+                } else {
+                    minViableOptions = 0
+                    hadRiskyLeg = true
+                    chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
                 }
             }
 
@@ -844,6 +873,10 @@ struct BackupGasStationFinder {
     // 25 km is plenty for gas stations, which are common.
     private let searchRadiusMeters = 25_000.0
     private let maxOffRouteMiles = 12.0
+    // Two hits within this distance sharing a normalized name are treated as the same
+    // real-world station (see mergeNearDuplicates) — wider than the exact-key dedup's
+    // ~111 m rounding so overlapping search circles don't surface the same station twice.
+    private let nearDuplicateRadiusMiles = 0.1
 
     // Extracted data from a single MKMapItem — avoids passing non-Sendable MKMapItem across
     // actor/task boundaries in the concurrent search group.
@@ -939,7 +972,35 @@ struct BackupGasStationFinder {
             ))
         }
 
-        return result
+        return mergeNearDuplicates(result)
+    }
+
+    /// The exact-key dedup above only catches identical rounded coordinates. Overlapping
+    /// search circles can still surface the same real-world station twice with slightly
+    /// different geocoded coordinates (e.g. two "Circle K" hits in Kingman ~120 m apart).
+    /// Merge entries that share a normalized name AND sit within `nearDuplicateRadiusMiles`
+    /// of each other, keeping whichever sits closer to the route corridor. Stations that
+    /// merely share a name from opposite ends of the route, or sit near each other under
+    /// different names, are left as genuinely separate results.
+    ///
+    /// Internal (not private) so `RouteE85PlannerTests` can exercise it directly with
+    /// synthetic stations, without a live MapKit search.
+    func mergeNearDuplicates(_ stations: [BackupGasStation]) -> [BackupGasStation] {
+        var kept: [BackupGasStation] = []
+        for station in stations {
+            let normalizedName = station.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let existingIndex = kept.firstIndex(where: {
+                $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalizedName &&
+                Self.mi($0.coordinate, station.coordinate) <= nearDuplicateRadiusMiles
+            }) {
+                if station.offRouteMiles < kept[existingIndex].offRouteMiles {
+                    kept[existingIndex] = station
+                }
+                continue
+            }
+            kept.append(station)
+        }
+        return kept
     }
 
     // MARK: - Geometry helpers (self-contained; intentionally not shared with RouteE85Planner's
