@@ -159,6 +159,10 @@ struct CalculatorView: View {
                         WarningCard(title: "Blend Warning", message: warningMessage)
                     }
 
+                    if let guidanceMessage = calculation.guidanceMessage {
+                        InfoCard(title: "Pump E85 Only", message: guidanceMessage)
+                    }
+
                     BlendResultCard(result: calculation)
 
                     ExpandableSection(
@@ -319,7 +323,20 @@ struct CalculatorView: View {
             return
         }
 
-        pumpModeStation = nearestSavedStation(to: coordinate)
+        guard let candidate = nearestSavedStation(to: coordinate) else {
+            pumpModeStation = nil
+            return
+        }
+
+        // Hysteresis + accuracy gate live in PumpProximity: enter at the tight radius,
+        // exit at the larger one, and never change state on a coarse location fix.
+        let isAtPump = PumpProximity.isAtPump(
+            distanceMeters: candidate.distance,
+            horizontalAccuracyMeters: locationManager.latestHorizontalAccuracyMeters,
+            wasAtPump: pumpModeStation != nil
+        )
+
+        pumpModeStation = isAtPump ? candidate.station : nil
     }
 
     private func evaluateAutoPromptPumpMode() {
@@ -339,14 +356,11 @@ struct CalculatorView: View {
         autoPromptStation = nearbyStation
     }
 
-    /// Tight proximity radius (in meters) for the "at the pump" auto-prompt, so it only
-    /// fires when the user is actually at the station/pump area rather than just nearby.
-    /// 50 feet ≈ 15.24 meters.
-    private static let pumpPromptRadiusMeters: CLLocationDistance = 15.24
-
-    private func nearestSavedStation(to coordinate: StationCoordinate) -> FuelStation? {
+    /// Nearest saved station with coordinates, unfiltered by distance. Whether that
+    /// station counts as "at the pump" is decided by PumpProximity (tiny entry/exit
+    /// radii + accuracy gate), not by a broad search radius here.
+    private func nearestSavedStation(to coordinate: StationCoordinate) -> (station: FuelStation, distance: CLLocationDistance)? {
         let currentLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let maxDistanceMeters = Self.pumpPromptRadiusMeters
 
         return savedStations
             .compactMap { station -> (station: FuelStation, distance: CLLocationDistance)? in
@@ -355,15 +369,9 @@ struct CalculatorView: View {
                 }
 
                 let stationLocation = CLLocation(latitude: latitude, longitude: longitude)
-                let distance = currentLocation.distance(from: stationLocation)
-                guard distance <= maxDistanceMeters else {
-                    return nil
-                }
-
-                return (station, distance)
+                return (station, currentLocation.distance(from: stationLocation))
             }
-            .min { $0.distance < $1.distance }?
-            .station
+            .min { $0.distance < $1.distance }
     }
 
     private func openPumpMode() {

@@ -47,6 +47,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "44A9BC1F2FA0865900A9920E"
             BuildableName = "EightyFiveBlends.app"
+            BlueprintName = "EightyFiveBlends"
             ReferencedContainer = "container:EightyFiveBlends.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

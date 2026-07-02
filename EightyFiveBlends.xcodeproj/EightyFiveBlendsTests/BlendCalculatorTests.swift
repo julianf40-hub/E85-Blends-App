@@ -145,4 +145,99 @@ struct BlendCalculatorTests {
         #expect(result.warningMessage == nil)
         #expect(abs(result.finalEthanolPercent - 30.0) < 0.2)
     }
+
+    // MARK: - Pure E85 / highest blend special case
+
+    @Test("Empty tank, target equals pump E85 content → clean E85-only result")
+    func e85Only_emptyTank_targetEqualsPumpContent() {
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 0, targetEthanol: 85))
+        #expect(result.warningMessage == nil)
+        #expect(abs(result.e85Gallons - 18.0) < 0.01)
+        #expect(result.gasGallons == 0)
+        #expect(abs(result.finalEthanolPercent - 85.0) < 0.2)
+    }
+
+    @Test("Partial tank of lower blend, target set to pump E85 content → pump E85 only guidance")
+    func e85Only_partialTankLowerBlend_targetHighest() {
+        // 18 gal, 25% of E10 in the tank, target E85 from an E85 pump. Mathematically
+        // unreachable as a blend, but the correct real-world answer is "pump E85 only".
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25, targetEthanol: 85))
+        #expect(result.warningMessage == nil)
+        #expect(result.guidanceMessage != nil)
+        #expect(abs(result.e85Gallons - 13.5) < 0.01)
+        #expect(result.gasGallons == 0)
+        // (4.5 * 10 + 13.5 * 85) / 18 = 66.25
+        #expect(abs(result.finalEthanolPercent - 66.3) < 0.2)
+        #expect(result.finalEthanolPercent <= 85.0)
+    }
+
+    @Test("Target slightly above pump E85 content is handled gracefully")
+    func e85Only_targetSlightlyAbovePumpContent() {
+        // Target E85 chip while pump fuel tests at E82 — everyday case, must not error.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 85,
+            e85EthanolPercent: 82,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(result.guidanceMessage != nil)
+        #expect(result.gasGallons == 0)
+        #expect(result.e85Gallons > 0)
+    }
+
+    @Test("Target far above pump fuel content still warns as unreachable")
+    func e85Only_targetFarAbovePumpContent_warns() {
+        // Pump fuel is E70 but target is E85 — must not pretend E85 is reachable.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 85,
+            e85EthanolPercent: 70,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage != nil)
+        #expect(result.guidanceMessage == nil)
+        #expect(result.e85Gallons == 0)
+        #expect(result.totalGallonsToAdd == 0)
+        // Warning should state what IS achievable rather than a bare error.
+        #expect(result.warningMessage?.contains("E85 only") == true)
+    }
+
+    @Test("Unreachable target below pump fuel keeps the generic warning")
+    func e85Only_unreachableTargetBelowPumpContent_keepsWarning() {
+        // Nearly full tank of E10, target E60: not a "highest blend" ask, still impossible.
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 95, targetEthanol: 60))
+        #expect(result.warningMessage != nil)
+        #expect(result.guidanceMessage == nil)
+    }
+
+    @Test("E85-only special case does not regress normal blend math")
+    func e85Only_normalBlendUnaffected() {
+        // Standard reachable E30 target must still produce a mixed fill with no guidance.
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25))
+        #expect(result.warningMessage == nil)
+        #expect(result.guidanceMessage == nil)
+        #expect(result.e85Gallons > 0)
+        #expect(result.gasGallons > 0)
+    }
+
+    @Test("E85-only result values are finite and non-negative")
+    func e85Only_noNaNOrNegatives() {
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 2, targetEthanol: 85))
+        #expect(result.e85Gallons.isFinite && result.e85Gallons >= 0)
+        #expect(result.gasGallons.isFinite && result.gasGallons >= 0)
+        #expect(result.totalGallonsToAdd.isFinite && result.totalGallonsToAdd >= 0)
+        #expect(result.finalEthanolPercent.isFinite)
+        #expect(result.estimatedOctane.isFinite && result.estimatedOctane >= 0)
+    }
 }

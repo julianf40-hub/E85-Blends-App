@@ -20,6 +20,10 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
 
     var authorizationStatus: CLAuthorizationStatus
     var latestCoordinate: StationCoordinate?
+    /// Horizontal accuracy (meters) of the fix behind `latestCoordinate`. Negative or nil
+    /// means the fix is unreliable. Pump-mode auto-triggering gates on this so a coarse
+    /// indoor/cell fix can never place the user "at the pump" from half a mile away.
+    var latestHorizontalAccuracyMeters: CLLocationAccuracy?
 
     var authorizationDenied: Bool {
         authorizationStatus == .denied || authorizationStatus == .restricted
@@ -33,7 +37,9 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         authorizationStatus = manager.authorizationStatus
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // Pump-mode auto-triggering needs a fix roughly as tight as its ~9 m entry radius
+        // (see PumpProximity). Hundred-meter fixes made the old prompt fire from far away.
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
     }
 
     func requestUserLocation() {
@@ -52,10 +58,11 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if let coordinate = locations.last?.coordinate {
+        if let location = locations.last {
+            latestHorizontalAccuracyMeters = location.horizontalAccuracy
             latestCoordinate = StationCoordinate(
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude
             )
         }
     }

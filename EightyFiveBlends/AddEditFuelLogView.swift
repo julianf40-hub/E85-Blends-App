@@ -283,6 +283,9 @@ struct AddEditFuelLogView: View {
 
             let stationLocation = CLLocation(latitude: latitude, longitude: longitude)
             let distance = userLocation.distance(from: stationLocation)
+            // Broad half-mile *search* radius for the manual "detect station" button in the
+            // fuel log. Intentionally separate from PumpProximity's tiny pump-mode trigger
+            // radii — never reuse this for auto-suggesting At the Pump mode.
             guard distance <= 804.67 else { return nil }
 
             return DetectedFuelStationCandidate(station: station, distance: distance)
