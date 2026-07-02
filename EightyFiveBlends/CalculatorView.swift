@@ -59,6 +59,19 @@ struct CalculatorView: View {
         activeVehicles.first(where: { $0.isActive }) ?? activeVehicles.first
     }
 
+    /// Final blend from the newest fuel log for the active vehicle — read-only smart
+    /// default for the pump sheet's "current blend". Entries are already sorted
+    /// newest-first by the query.
+    private var lastLoggedBlendForActiveVehicle: Double? {
+        guard let vehicle = pumpModeActiveVehicle else {
+            return nil
+        }
+
+        return fuelLogEntries
+            .first(where: { $0.vehicleName == vehicle.nickname && $0.finalBlendPercent > 0 })?
+            .finalBlendPercent
+    }
+
     private var activeVehicleKey: String {
         guard let activeVehicle else {
             return "no-vehicle"
@@ -232,6 +245,7 @@ struct CalculatorView: View {
                 activeVehicle: pumpModeActiveVehicle,
                 nearestStation: pumpModeStation,
                 locationAccessDenied: locationManager.authorizationDenied,
+                lastLoggedBlendPercent: lastLoggedBlendForActiveVehicle,
                 logFillUpAction: { updatedCalculation in
                     openPumpModeFuelLog(with: updatedCalculation)
                 },

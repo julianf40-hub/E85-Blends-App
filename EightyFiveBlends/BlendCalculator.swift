@@ -246,6 +246,78 @@ struct BlendCalculator {
         )
     }
 
+    /// Projects a fill using regular pump gas only (no E85) — used when the user says
+    /// they're pumping premium/regular At the Pump. Unlike `calculate(input:)`, this
+    /// does not solve for the target blend; it reports where a gas-only fill lands.
+    static func gasOnlyFill(input: Input) -> Result {
+        let numericInputs = [
+            input.tankSizeGallons,
+            input.currentFuelLevelPercent,
+            input.currentFuelEthanolPercent,
+            input.gasEthanolPercent,
+            input.gasOctane,
+        ]
+
+        guard numericInputs.allSatisfy(\.isFinite) else {
+            return warningResult(input: input, message: "Enter valid numeric values before calculating a blend.")
+        }
+
+        guard input.tankSizeGallons > 0 else {
+            return warningResult(input: input, message: "Enter a tank size greater than 0 gallons.")
+        }
+
+        guard (0...100).contains(input.currentFuelLevelPercent),
+              (0...100).contains(input.currentFuelEthanolPercent),
+              (0...100).contains(input.gasEthanolPercent) else {
+            return warningResult(input: input, message: "Fuel levels and ethanol percentages must stay between 0% and 100%.")
+        }
+
+        if let tPercent = input.targetFuelLevelPercent,
+           tPercent < input.currentFuelLevelPercent - epsilon {
+            return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+        }
+
+        let currentFuelGallons = input.tankSizeGallons * input.currentFuelLevelPercent / 100
+        let targetFillPercent = input.targetFuelLevelPercent ?? 100.0
+        let targetGallons = input.tankSizeGallons * targetFillPercent / 100.0
+        let spaceToFill = targetGallons - currentFuelGallons
+        let currentBlend = rounded(input.currentFuelEthanolPercent, places: 1)
+
+        guard spaceToFill > epsilon, targetGallons > epsilon else {
+            // Nothing to add — the view's "tank is full / raise your target" states own
+            // the messaging here, so return a quiet zero result at the current blend.
+            return Result(
+                e85Gallons: 0,
+                gasGallons: 0,
+                totalGallonsToAdd: 0,
+                finalEthanolPercent: currentBlend,
+                estimatedOctane: 0,
+                blendLabel: label(for: currentBlend),
+                warningMessage: nil
+            )
+        }
+
+        let finalEthanolPercent = rounded(
+            ((currentFuelGallons * input.currentFuelEthanolPercent / 100)
+                + (spaceToFill * input.gasEthanolPercent / 100)) / targetGallons * 100,
+            places: 1
+        )
+
+        guard finalEthanolPercent.isFinite else {
+            return warningResult(input: input, message: "The current inputs produced an invalid estimate. Review the values and try again.")
+        }
+
+        return Result(
+            e85Gallons: 0,
+            gasGallons: rounded(spaceToFill, places: 2),
+            totalGallonsToAdd: rounded(spaceToFill, places: 2),
+            finalEthanolPercent: finalEthanolPercent,
+            estimatedOctane: rounded(input.gasOctane, places: 1),
+            blendLabel: label(for: finalEthanolPercent),
+            warningMessage: nil
+        )
+    }
+
     private static func warningResult(
         input: Input,
         finalEthanolPercent: Double? = nil,

@@ -231,6 +231,59 @@ struct BlendCalculatorTests {
         #expect(result.gasGallons > 0)
     }
 
+    // MARK: - Gas-only fill projection (Pump Fuel = 91)
+
+    @Test("Gas-only fill projects the final blend instead of solving for a target")
+    func gasOnly_projectsFinalBlend() {
+        // 18 gal tank, half full of E50, topped off with E10 gas:
+        // (9 * 0.50 + 9 * 0.10) / 18 = 30% final.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 50,
+            currentFuelEthanolPercent: 50,
+            targetEthanolPercent: 50, // ignored by gasOnlyFill
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.gasOnlyFill(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(result.e85Gallons == 0)
+        #expect(abs(result.gasGallons - 9.0) < 0.01)
+        #expect(abs(result.finalEthanolPercent - 30.0) < 0.1)
+        #expect(abs(result.estimatedOctane - 91.0) < 0.1)
+    }
+
+    @Test("Gas-only fill with a full tank returns a quiet zero result")
+    func gasOnly_fullTank_zeroResult() {
+        let result = BlendCalculator.gasOnlyFill(input: baseInput(currentLevel: 100))
+        #expect(result.warningMessage == nil)
+        #expect(result.totalGallonsToAdd == 0)
+        #expect(result.gasGallons == 0)
+    }
+
+    @Test("Gas-only partial fill respects the target level")
+    func gasOnly_partialFill() {
+        // 18 gal, 25% of E85 in tank, gas E10, fill to 50%:
+        // (4.5 * 0.85 + 4.5 * 0.10) / 9 = 47.5% final over the partial volume.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 85,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91,
+            targetFuelLevelPercent: 50
+        )
+        let result = BlendCalculator.gasOnlyFill(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(abs(result.gasGallons - 4.5) < 0.01)
+        #expect(abs(result.finalEthanolPercent - 47.5) < 0.1)
+    }
+
     @Test("E85-only result values are finite and non-negative")
     func e85Only_noNaNOrNegatives() {
         let result = BlendCalculator.calculate(input: baseInput(currentLevel: 2, targetEthanol: 85))
