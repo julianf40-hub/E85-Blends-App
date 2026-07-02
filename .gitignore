@@ -1,0 +1,16 @@
+# Simulator screenshots / temporary images
+sim*.png
+
+# Local website mockup/export folders
+Website Heroes/
+
+# macOS
+.DS_Store
+Website Heroes/**
+
+Website Heroes/
+Website Heroes/**
+Website\ Heroes/
+
+/Website Heroes/
+/Website Heroes/**
