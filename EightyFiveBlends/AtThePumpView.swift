@@ -23,7 +23,10 @@ struct AtThePumpView: View {
     @State private var e85Octane: Double
     @State private var gasOctane: Double
     @State private var currentEthanolInput: String
-    @State private var isBlendGuideExpanded = true
+    // Collapsed by default so the education content doesn't push the fuel inputs
+    // below the fold — pump-side users need inputs and the answer first.
+    @State private var isBlendGuideExpanded = false
+    @State private var isBudgetExpanded = false
 
     // Partial Fill state
     @State private var isPartialFillEnabled = false
@@ -159,6 +162,78 @@ struct AtThePumpView: View {
     // Placeholder shown in place of numeric values when a blend warning is active.
     private let neutralizedValue = "—"
 
+    // MARK: - Hero instruction state
+
+    // Short label for the gas side of the mix, e.g. "91" — beginners recognize the
+    // octane button on the pump more readily than the word "gasoline".
+    private var gasPumpLabel: String {
+        "\(Int(gasOctane.rounded()))"
+    }
+
+    // Tank (or partial-fill target) can't take more fuel, so there is nothing to pump.
+    private var isNothingToPumpState: Bool {
+        currentLevelIsFull || isPartialFillSameLevel
+    }
+
+    // The user's tank blend already sits within a couple points of the target, so the
+    // fill is maintenance rather than a correction worth explaining.
+    private var isAlreadyCloseToTarget: Bool {
+        abs(currentFuelEthanolPercent - targetEthanolPercent) <= 2
+    }
+
+    private var canLogFillUp: Bool {
+        !isNothingToPumpState && !hasBlendWarning
+    }
+
+    // The one dominant instruction the screen exists to answer. Nil while a blend
+    // warning is showing — the warning card is the headline in that state.
+    private var heroHeadline: String? {
+        if isNothingToPumpState {
+            return currentLevelIsFull ? "Your tank is full — nothing to pump" : "Nothing to add yet — raise your target level"
+        }
+
+        guard hasBlendWarning == false else {
+            return nil
+        }
+
+        let e85 = calculation.e85Gallons
+        let gas = calculation.gasGallons
+
+        if calculation.guidanceMessage != nil || (e85 > 0.005 && gas <= 0.005) {
+            return String(format: "Pump E85 only — %.1f gallons", e85)
+        }
+
+        if gas > 0.005 && e85 <= 0.005 {
+            return String(format: "Add %.1f gallons of %@", gas, gasPumpLabel)
+        }
+
+        return String(format: "Add %.1f gal E85 + %.1f gal %@", e85, gas, gasPumpLabel)
+    }
+
+    private var heroSubtitle: String? {
+        if isNothingToPumpState {
+            return nil
+        }
+
+        if calculation.guidanceMessage != nil {
+            return String(format: "This gives you the highest blend available from this pump — about E%.0f.", calculation.finalEthanolPercent)
+        }
+
+        if isAlreadyCloseToTarget {
+            return "You're already close to E\(Int(targetEthanolPercent.rounded())) — this fill keeps you there."
+        }
+
+        return String(format: "Lands you at about E%.0f, roughly %.0f octane.", calculation.finalEthanolPercent, calculation.estimatedOctane)
+    }
+
+    // Compact echo of the instruction for the sticky bottom bar.
+    private var stickyBarText: String {
+        if hasBlendWarning {
+            return "Fix the blend warning to continue"
+        }
+        return heroHeadline ?? "Adjust your fuel details above"
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -172,9 +247,12 @@ struct AtThePumpView: View {
                     partialFillCard
                     currentEthanolCard
                     blendWarningCard
+                    heroResultCard
                     blendResultCard
                     budgetWarningCard
-                    pumpStepsCard
+                    if canLogFillUp {
+                        pumpStepsCard
+                    }
                     stationContextCard
                     safetyDisclaimer
                     actionButtons
@@ -184,9 +262,78 @@ struct AtThePumpView: View {
             .dismissKeyboardOnTap()
             .background(AppTheme.Colors.charcoal)
             .navigationBarHidden(true)
+            .safeAreaInset(edge: .bottom) {
+                stickyActionBar
+            }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .keyboardDoneToolbar()
+    }
+
+    // MARK: - Hero result / sticky bar
+
+    @ViewBuilder
+    private var heroResultCard: some View {
+        if let headline = heroHeadline {
+            AppCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("WHAT TO PUMP")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.3)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+
+                    Text(headline)
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(canLogFillUp ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textPrimary)
+                        .minimumScaleFactor(0.6)
+                        .lineLimit(3)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut(duration: 0.15), value: headline)
+
+                    if let subtitle = heroSubtitle {
+                        Text(subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private var stickyActionBar: some View {
+        VStack(spacing: 10) {
+            Text(stickyBarText)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(canLogFillUp ? AppTheme.Colors.textPrimary : AppTheme.Colors.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.15), value: stickyBarText)
+
+            PrimaryButton(title: canLogFillUp ? "Log This Fill-Up" : "Review Inputs") {
+                guard canLogFillUp else { return }
+                AppHaptics.selection()
+                logFillUpAction(calculation)
+            }
+            .disabled(!canLogFillUp)
+            .opacity(canLogFillUp ? 1 : 0.4)
+            .animation(.easeInOut(duration: 0.15), value: canLogFillUp)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            AppTheme.Colors.charcoal
+                .opacity(0.97)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(AppTheme.Colors.border)
+                        .frame(height: 1)
+                }
+                .ignoresSafeArea(edges: .bottom)
+        )
     }
 
     // MARK: - Header / vehicle
@@ -298,7 +445,8 @@ struct AtThePumpView: View {
                         .init(label: "1/2", value: 50),
                         .init(label: "3/4", value: 75),
                     ],
-                    selectedValue: Int(currentFuelLevelPercent.rounded())
+                    selectedValue: Int(currentFuelLevelPercent.rounded()),
+                    accessibilitySubject: "fuel level"
                 ) { value in
                     currentFuelLevelPercent = Double(value)
                     if isPartialFillEnabled, targetFuelLevelPercent < currentFuelLevelPercent {
@@ -474,17 +622,36 @@ struct AtThePumpView: View {
                         )
                     }
 
-                    // Budget section
+                    // Budget section — collapsed behind a disclosure so three price fields
+                    // don't dominate the screen for users who never set a budget.
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("OPTIONAL BUDGET LIMIT")
-                            .font(.caption.weight(.bold))
-                            .tracking(1.2)
-                            .foregroundStyle(AppTheme.Colors.textMuted)
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isBudgetExpanded.toggle()
+                            }
+                        } label: {
+                            HStack {
+                                Text("OPTIONAL BUDGET LIMIT")
+                                    .font(.caption.weight(.bold))
+                                    .tracking(1.2)
+                                    .foregroundStyle(AppTheme.Colors.textMuted)
 
-                        HStack(spacing: 8) {
-                            priceInputField(label: "E85 $/gal", text: $e85PriceInput, hint: "3.49")
-                            priceInputField(label: "Gas $/gal", text: $gasPriceInput, hint: "3.99")
-                            priceInputField(label: "Budget $", text: $budgetInput, hint: "20")
+                                Spacer()
+
+                                Image(systemName: isBudgetExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isBudgetExpanded ? "Collapse budget limit" : "Expand budget limit")
+
+                        if isBudgetExpanded {
+                            HStack(spacing: 8) {
+                                priceInputField(label: "E85 $/gal", text: $e85PriceInput, hint: "3.49")
+                                priceInputField(label: "Gas $/gal", text: $gasPriceInput, hint: "3.99")
+                                priceInputField(label: "Budget $", text: $budgetInput, hint: "20")
+                            }
                         }
 
                         if let cost = estimatedFuelCost {
@@ -506,10 +673,9 @@ struct AtThePumpView: View {
         if hasBlendWarning, let warningMessage = calculation.warningMessage {
             WarningCard(title: "Blend Warning", message: warningMessage)
                 .transition(.opacity.combined(with: .move(edge: .top)))
-        } else if let guidanceMessage = calculation.guidanceMessage {
-            InfoCard(title: "Pump E85 Only", message: guidanceMessage)
-                .transition(.opacity.combined(with: .move(edge: .top)))
         }
+        // The E85-only guidance state is rendered by heroResultCard, which owns the
+        // dominant "what to pump" instruction for all valid results.
     }
 
     @ViewBuilder
@@ -543,7 +709,8 @@ struct AtThePumpView: View {
                         .init(label: "E70", value: 70),
                         .init(label: "E85", value: 85),
                     ],
-                    selectedValue: Int(currentFuelEthanolPercent.rounded())
+                    selectedValue: Int(currentFuelEthanolPercent.rounded()),
+                    accessibilitySubject: "current blend"
                 ) { value in
                     setCurrentEthanol(Double(value))
                 }
@@ -642,9 +809,18 @@ struct AtThePumpView: View {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(title: "Pump Steps", subtitle: "Follow these in order.")
 
-                pumpStep(number: 1, title: "Add E85 first", detail: "\(String(format: "%.2f", calculation.e85Gallons)) gallons")
-                pumpStep(number: 2, title: "Top off with gas", detail: "\(String(format: "%.2f", calculation.gasGallons)) gallons")
-                pumpStep(number: 3, title: "Log this fill-up", detail: "Save station, blend, and mileage")
+                // Single-fuel fills get one clean step — never "Top off with gas 0.00 gallons".
+                if calculation.gasGallons <= 0.005 {
+                    pumpStep(number: 1, title: "Pump E85 only", detail: "\(String(format: "%.2f", calculation.e85Gallons)) gallons")
+                    pumpStep(number: 2, title: "Log this fill-up", detail: "Save station, blend, and mileage")
+                } else if calculation.e85Gallons <= 0.005 {
+                    pumpStep(number: 1, title: "Pump \(gasPumpLabel) only", detail: "\(String(format: "%.2f", calculation.gasGallons)) gallons")
+                    pumpStep(number: 2, title: "Log this fill-up", detail: "Save station, blend, and mileage")
+                } else {
+                    pumpStep(number: 1, title: "Pump this much E85 first", detail: "\(String(format: "%.2f", calculation.e85Gallons)) gallons")
+                    pumpStep(number: 2, title: "Then this much \(gasPumpLabel)", detail: "\(String(format: "%.2f", calculation.gasGallons)) gallons")
+                    pumpStep(number: 3, title: "Log this fill-up", detail: "Save station, blend, and mileage")
+                }
             }
         }
     }
@@ -712,19 +888,10 @@ struct AtThePumpView: View {
     }
 
     private var actionButtons: some View {
-        VStack(spacing: 12) {
-            PrimaryButton(title: "Log This Fill-Up") {
-                AppHaptics.selection()
-                logFillUpAction(calculation)
-            }
-            .disabled(isPartialFillSameLevel || hasBlendWarning)
-            .opacity(isPartialFillSameLevel || hasBlendWarning ? 0.4 : 1)
-            .animation(.easeInOut(duration: 0.15), value: isPartialFillSameLevel)
-            .animation(.easeInOut(duration: 0.15), value: hasBlendWarning)
-
-            SecondaryButton(title: "Close") {
-                closeAction()
-            }
+        // "Log This Fill-Up" lives in the sticky bottom bar so it is always reachable;
+        // only the close action remains inline at the end of the scroll.
+        SecondaryButton(title: "Close") {
+            closeAction()
         }
     }
 
@@ -1095,6 +1262,8 @@ private struct PumpPresetItem: Identifiable {
 private struct PumpPresetGrid: View {
     let items: [PumpPresetItem]
     let selectedValue: Int
+    /// What the chips set, for VoiceOver — e.g. "fuel level" → "Set fuel level to 1/2".
+    let accessibilitySubject: String
     let action: (Int) -> Void
 
     private let columns = [GridItem(.adaptive(minimum: 84), spacing: 10)]
@@ -1121,7 +1290,7 @@ private struct PumpPresetGrid: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Set target blend to \(item.label)")
+                .accessibilityLabel("Set \(accessibilitySubject) to \(item.label)")
             }
         }
     }

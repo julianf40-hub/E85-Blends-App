@@ -126,7 +126,7 @@ struct BlendCalculator {
             return warningResult(
                 input: input,
                 finalEthanolPercent: currentBlend,
-                message: "The tank is already full, so the target blend cannot be adjusted without removing fuel."
+                message: "Your tank is already full, so the blend can't change until you burn some fuel. You're at about \(blendLabel) now."
             )
         }
 
@@ -150,10 +150,14 @@ struct BlendCalculator {
                 guard targetVsPumpFuelPoints <= e85OnlyGraceEthanolPoints + ethanolPercentTolerance else {
                     // Target far above the pump fuel (e.g. E85 target on E70 pump fuel):
                     // keep this an honest unreachable warning, but say what IS possible.
+                    // The achievable number is shown as a small range so it doesn't
+                    // imply more precision than pump fuel and gauges really have.
+                    let rangeLow = label(for: max(0, maxAchievablePercent - 2))
+                    let rangeHigh = label(for: min(100, maxAchievablePercent + 2))
                     return warningResult(
                         input: input,
                         finalEthanolPercent: maxAchievablePercent,
-                        message: "A target of \(label(for: input.targetEthanolPercent)) is above this pump's \(label(for: input.e85EthanolPercent)) fuel. Filling the rest of the tank with E85 only reaches about \(maxAchievableLabel). Lower the target, or pump E85 only for the highest possible blend."
+                        message: "\(label(for: input.targetEthanolPercent)) is not possible with this pump's \(label(for: input.e85EthanolPercent)) fuel. The highest blend you can reach today is about \(rangeLow)–\(rangeHigh). Pump E85 only to get as close as possible."
                     )
                 }
 
@@ -201,7 +205,7 @@ struct BlendCalculator {
         if e85Gallons - spaceToFill > epsilon || gasGallons - spaceToFill > epsilon || e85Gallons < 0 || gasGallons < 0 {
             return warningResult(
                 input: input,
-                message: "That target blend cannot be reached with the current fuel in the tank and the selected fuel properties."
+                message: "This blend is not possible with the fuel already in your tank and this pump's fuel. Try a different target blend."
             )
         }
 
