@@ -34,12 +34,12 @@ struct AboutView: View {
 
                 InfoCard(
                     title: "85Blends",
-                    bodyText: "A local-first ethanol blend toolkit for tracking vehicles, planning mixes, saving stations, and keeping fuel history organized."
+                    message: "A local-first ethanol blend toolkit for tracking vehicles, planning mixes, saving stations, and keeping fuel history organized."
                 )
 
                 InfoCard(
                     title: "Build",
-                    bodyText: versionText
+                    message: versionText
                 )
 
                 VStack(alignment: .leading, spacing: 12) {

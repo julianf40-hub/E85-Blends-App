@@ -47,31 +47,6 @@ struct DisclaimerView: View {
     }
 }
 
-struct InfoCard: View {
-    let title: String
-    let bodyText: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-
-            Text(bodyText)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-}
-
 struct WarningInfoCard: View {
     let title: String
     let bodyText: String

@@ -51,11 +51,11 @@ struct HelpFAQView: View {
 
                 InfoCard(
                     title: "Before You Blend",
-                    bodyText: "Use the calculator as a practical estimate, not a guarantee. Pump ethanol content, residual fuel, and vehicle setup can all move the final result."
+                    message: "Use the calculator as a practical estimate, not a guarantee. Pump ethanol content, residual fuel, and vehicle setup can all move the final result."
                 )
 
                 ForEach(faqs, id: \.question) { item in
-                    InfoCard(title: item.question, bodyText: item.answer)
+                    InfoCard(title: item.question, message: item.answer)
                 }
             }
             .padding(16)

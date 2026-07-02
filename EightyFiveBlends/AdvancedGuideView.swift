@@ -28,20 +28,20 @@ struct AdvancedGuideView: View {
 
                 InfoCard(
                     title: "Use Estimates Carefully",
-                    bodyText: "These recommendations are meant to help you make cleaner fueling decisions, but final ethanol content and drivability still depend on your actual fuel, tune, and hardware."
+                    message: "These recommendations are meant to help you make cleaner fueling decisions, but final ethanol content and drivability still depend on your actual fuel, tune, and hardware."
                 )
 
                 InfoCard(
                     title: "Daily Blend Guidance",
-                    bodyText: "Lower and mid-level ethanol blends can be easier to source consistently and often provide a better balance of range, drivability, and cost for everyday use."
+                    message: "Lower and mid-level ethanol blends can be easier to source consistently and often provide a better balance of range, drivability, and cost for everyday use."
                 )
                 InfoCard(
                     title: "Performance Blend Guidance",
-                    bodyText: "Higher blends can improve knock resistance and charge cooling, but they usually require the right tune, proper fueling support, and tighter consistency from pump to pump."
+                    message: "Higher blends can improve knock resistance and charge cooling, but they usually require the right tune, proper fueling support, and tighter consistency from pump to pump."
                 )
                 InfoCard(
                     title: "Pump Order Guidance",
-                    bodyText: "When targeting a custom blend, add the calculated ethanol-heavy fuel first and then top off with gasoline so the final mix lands closer to the expected target."
+                    message: "When targeting a custom blend, add the calculated ethanol-heavy fuel first and then top off with gasoline so the final mix lands closer to the expected target."
                 )
                 WarningInfoCard(
                     title: "Safety / Warranty Warning",
