@@ -7,8 +7,37 @@ Project quick facts:
 - **Internal target:** shares the same `EightyFiveBlends` PBX native target with the `EightyFiveBlends Internal` scheme (Bundle ID `com.e85blends.app.ios.internal`)
 - **Schemes (shared):** `EightyFiveBlends`, `EightyFiveBlends Internal`
 - **iOS deployment target:** 17.6 (App Store), 26.4 (Internal)
-- **Xcode Cloud config:** present at `EightyFiveBlends.xcodeproj/xcshareddata/xcodecloud/manifest.json` (workflow ID `7dd08a73-3551-4068-8509-7fe8d370bf4d`, workflow target label `85Blends`). Xcode Cloud triggers off pushes to the branch(es) configured in App Store Connect — this repo does **not** hold the trigger rules.
+- **Xcode Cloud config:** present at `EightyFiveBlends.xcodeproj/xcshareddata/xcodecloud/manifest.json` (workflow ID `7dd08a73-3551-4068-8509-7fe8d370bf4d`, workflow target label `85Blends`). Xcode Cloud triggers off pushes to the branch(es) configured in App Store Connect — this repo does **not** hold the trigger rules. See **Xcode Cloud Workflows** below for the Internal vs Production split.
 - **Tests:** `EightyFiveBlends.xcodeproj/EightyFiveBlendsTests/BlendCalculatorTests.swift` exists on disk but there is **no** test target in the pbxproj and no testable reference in either scheme. `xcodebuild test` will not run these until a test target is added. Do not assume tests exist — treat this repo as build-only until the test target is wired up.
+
+## Default Rule: Internal Builds Only
+
+- **Claude's default workflow is Internal only.** Every beta update, fix, hotfix, or TestFlight validation build goes to the **85Blends Internal** App Store Connect app (`com.e85blends.app.ios.internal`) via the `EightyFiveBlends Internal` scheme and `Internal` configuration.
+- **Never archive or upload production** — the `EightyFiveBlends` scheme, `Release` configuration, or `com.e85blends.app.ios` — unless Julian explicitly says **"prepare production release."** A merged fix, a green build, or an urgent-sounding bug is not permission; the exact phrase is.
+- Simulator smoke builds of either scheme are always fine — the rule is about archiving and uploading.
+
+## Xcode Cloud Workflows
+
+Two separate workflows in App Store Connect keep Internal and Production builds from crossing over. The trigger/branch rules live in ASC, not this repo — this table is the source of truth for what each workflow must be set to.
+
+| Setting | 85Blends Internal | 85Blends Production |
+|---|---|---|
+| Workflow name | `85Blends Internal` | `85Blends Production` |
+| Scheme (Archive action) | `EightyFiveBlends Internal` | `EightyFiveBlends` |
+| Archive configuration | `Internal` (pinned by the scheme) | `Release` (pinned by the scheme) |
+| Bundle ID produced | `com.e85blends.app.ios.internal` | `com.e85blends.app.ios` |
+| Uploads to (ASC app) | 85Blends Internal | 85Blends (production) |
+| TestFlight destination | Internal Testing | External / App Store release candidates |
+| Start condition | Branch changes: `internal/beta`, `claude/*`, `fix/*`, `feature/*` | `main` only — prefer **manual start** |
+| Purpose | Beta updates, fixes, hotfixes, TestFlight validation | Public App Store / release candidates only |
+
+Why the bundle IDs can't cross over: both configs live on the single `EightyFiveBlends` target, and `PRODUCT_BUNDLE_IDENTIFIER` is set **per configuration** (`Internal` → `.internal`, `Debug`/`Release` → production). Each shared scheme pins its Archive action to one configuration, so archiving the Internal scheme can only ever produce the internal bundle ID, and archiving the main scheme can only produce the production one.
+
+Guardrails:
+
+- The `85Blends Internal` workflow must never reference the `EightyFiveBlends` scheme, and `85Blends Production` must never reference `EightyFiveBlends Internal`. If a workflow shows the wrong scheme, stop and tell Julian — don't "fix" it by editing the workflow yourself.
+- Never pass `-configuration` to `xcodebuild archive` to override a scheme's pinned archive configuration — that is the one local path that could mismatch scheme and bundle ID.
+- Internal build numbers (`CURRENT_PROJECT_VERSION` in the `Internal` configuration) are bumped independently of Debug/Release; bumping Internal must not touch the other two.
 
 ## Mobile Bug Fix Workflow
 
