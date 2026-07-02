@@ -189,6 +189,12 @@ struct TripPlannerView: View {
     /// the route first, then progress along the route, then name as a tie-breaker.
     private static let maxBackupGasCards = 10
 
+    /// IDs of stations in the recommended fuel-stop plan — used only to give their map
+    /// pins a distinct treatment. Tiny set (0–3 entries).
+    private var recommendedStationIDs: Set<String> {
+        Set(analysis?.recommendedStops.map { $0.station.id } ?? [])
+    }
+
     private var mapStations: [RouteStation] {
         guard let analysis else { return [] }
         let all = analysis.stations
@@ -331,6 +337,7 @@ struct TripPlannerView: View {
                     mapStations: mapStations,
                     mapGasStations: mapGasStations,
                     gasOnlyStops: gasOnlyRecommendedStops,
+                    recommendedStationIDs: recommendedStationIDs,
                     displayRisk: displayRisk
                 )
             }
@@ -859,13 +866,24 @@ struct TripPlannerView: View {
                                 .stroke(AppTheme.Colors.primaryGreen, lineWidth: 5)
 
                             // E85 stations (pin count capped; full list in stops section).
+                            // The recommended plan stops get a distinct green star pin so
+                            // they stand out from ordinary yellow station pins. Annotation
+                            // content only — insertion/capping is untouched.
                             ForEach(mapStations) { routeStation in
                                 Annotation(routeStation.station.name, coordinate: routeStation.coordinate) {
-                                    Image(systemName: "fuelpump.circle.fill")
-                                        .font(.title3)
-                                        .foregroundStyle(AppTheme.Colors.stationYellow)
-                                        .background(Circle().fill(.black.opacity(0.25)))
-                                        .accessibilityLabel("E85 station \(routeStation.station.name)")
+                                    if recommendedStationIDs.contains(routeStation.id) {
+                                        Image(systemName: "star.circle.fill")
+                                            .font(.title2)
+                                            .foregroundStyle(AppTheme.Colors.primaryGreen)
+                                            .background(Circle().fill(.black.opacity(0.35)))
+                                            .accessibilityLabel("Recommended stop: \(routeStation.station.name)")
+                                    } else {
+                                        Image(systemName: "fuelpump.circle.fill")
+                                            .font(.title3)
+                                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                                            .background(Circle().fill(.black.opacity(0.25)))
+                                            .accessibilityLabel("E85 station \(routeStation.station.name)")
+                                    }
                                 }
                             }
                             // Gas Only recommended fuel stops — always shown; small fixed set (1–2 stops).
@@ -1656,9 +1674,39 @@ struct TripPlannerView: View {
         }
     }
 
+    /// "Stop 1 of 2 · Next stop in 86 mi" / "Stop 2 of 2 · Then 142 mi to destination".
+    /// Uses the same along-route deltas as the Fuel Plan card's legs — no new routing math.
+    private func stopSequenceLine(number: Int, total: Int, currentAlongMiles: Double, nextAlongMiles: Double?) -> String {
+        var parts = ["Stop \(number) of \(total)"]
+
+        if let nextAlongMiles {
+            let toNext = max(0, nextAlongMiles - currentAlongMiles)
+            parts.append("Next stop in \(Int(toNext.rounded())) mi")
+        } else if let plan {
+            let toDestination = max(0, plan.route.distance / 1609.344 - currentAlongMiles)
+            parts.append("Then \(Int(toDestination.rounded())) mi to destination")
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    private func stopSequenceRow(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.right.circle.fill")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.primaryGreen)
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func recommendedStopCard(_ stop: RecommendedStop, number: Int) -> some View {
         let station = stop.station.station
         let cityState = [station.city, station.state].filter { $0.isEmpty == false }.joined(separator: ", ")
+        let allStops = analysis?.recommendedStops ?? []
+        let nextAlongMiles = number < allStops.count ? allStops[number].station.distanceAlongRouteMiles : nil
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -1703,6 +1751,15 @@ struct TripPlannerView: View {
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+
+            if allStops.isEmpty == false {
+                stopSequenceRow(stopSequenceLine(
+                    number: number,
+                    total: allStops.count,
+                    currentAlongMiles: stop.station.distanceAlongRouteMiles,
+                    nextAlongMiles: nextAlongMiles
+                ))
             }
 
             // Stop metrics
@@ -1927,6 +1984,8 @@ struct TripPlannerView: View {
         let station = stop.station
         let cityState = [station.city, station.state]
             .filter { $0.isEmpty == false }.joined(separator: ", ")
+        let allStops = gasOnlyRecommendedStops
+        let nextAlongMiles = number < allStops.count ? allStops[number].station.distanceAlongRouteMiles : nil
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
@@ -1954,6 +2013,15 @@ struct TripPlannerView: View {
 
                 ReserveBadge(reserveClass: stop.arrivalClass)
                 reportMenuGas(stationKey: station.id, stationName: station.name)
+            }
+
+            if allStops.isEmpty == false {
+                stopSequenceRow(stopSequenceLine(
+                    number: number,
+                    total: allStops.count,
+                    currentAlongMiles: station.distanceAlongRouteMiles,
+                    nextAlongMiles: nextAlongMiles
+                ))
             }
 
             HStack(spacing: 10) {
@@ -3710,6 +3778,7 @@ private struct FullRouteMapView: View {
     let mapStations: [RouteStation]
     let mapGasStations: [BackupGasStation]
     let gasOnlyStops: [GasOnlyStop]
+    let recommendedStationIDs: Set<String>
     let displayRisk: TripPlan.RouteRisk?
 
     @Environment(\.dismiss) private var dismiss
@@ -3727,11 +3796,19 @@ private struct FullRouteMapView: View {
 
                 ForEach(mapStations) { routeStation in
                     Annotation(routeStation.station.name, coordinate: routeStation.coordinate) {
-                        Image(systemName: "fuelpump.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(AppTheme.Colors.stationYellow)
-                            .background(Circle().fill(.black.opacity(0.25)))
-                            .accessibilityLabel("E85 station: \(routeStation.station.name)")
+                        if recommendedStationIDs.contains(routeStation.id) {
+                            Image(systemName: "star.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                                .background(Circle().fill(.black.opacity(0.35)))
+                                .accessibilityLabel("Recommended stop: \(routeStation.station.name)")
+                        } else {
+                            Image(systemName: "fuelpump.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(AppTheme.Colors.stationYellow)
+                                .background(Circle().fill(.black.opacity(0.25)))
+                                .accessibilityLabel("E85 station: \(routeStation.station.name)")
+                        }
                     }
                 }
 

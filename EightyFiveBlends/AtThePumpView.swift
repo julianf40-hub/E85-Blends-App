@@ -21,6 +21,9 @@ struct AtThePumpView: View {
     /// Final blend from the newest fuel log for the active vehicle, if any — the
     /// smartest available default for "what's in the tank right now".
     let lastLoggedBlendPercent: Double?
+    /// Fuel level restored from the last visit, if any — drives the "last used level"
+    /// hint so we never imply the app knows the real gauge reading.
+    private let restoredFuelLevelPercent: Double?
     let logFillUpAction: (BlendCalculator.Result) -> Void
     let closeAction: () -> Void
 
@@ -75,19 +78,35 @@ struct AtThePumpView: View {
         self.logFillUpAction = logFillUpAction
         self.closeAction = closeAction
 
+        // Saved last-visit setup (UI memory). Values are range-validated so a stale or
+        // corrupt preference can never produce an out-of-range calculation.
+        let saved = AtThePumpView.savedSetup()
+
         let resolvedTankSize = activeVehicle?.tankSizeGallons ?? initialTankSizeGallons
         // Precedence for "what's in the tank": last logged blend beats the vehicle's
         // static default, which beats whatever the calculator screen had typed in.
+        // Saved setup deliberately never feeds this value.
         let resolvedCurrentEthanol = lastLoggedBlendPercent
             ?? activeVehicle?.defaultCurrentEthanolPercent
             ?? initialCurrentFuelEthanolPercent
-        let resolvedTargetEthanol = activeVehicle?.defaultTargetEthanolPercent ?? initialTargetEthanolPercent
-        let resolvedPumpEthanol = activeVehicle?.defaultPumpEthanolPercent ?? initialE85EthanolPercent
+        // Pump content: last visit beats generic defaults — the same pump usually
+        // dispenses the same fuel next week.
+        let resolvedPumpEthanol = saved.pumpE85Content
+            ?? activeVehicle?.defaultPumpEthanolPercent
+            ?? initialE85EthanolPercent
+        // Target: "Max E85" intent is restored against today's pump content; otherwise
+        // last visit's number, then the vehicle preference, then the calculator value.
+        let resolvedTargetEthanol = saved.targetIsMaxE85
+            ? resolvedPumpEthanol
+            : (saved.targetBlend ?? activeVehicle?.defaultTargetEthanolPercent ?? initialTargetEthanolPercent)
+        let resolvedFuelLevel = saved.fuelLevel ?? initialCurrentFuelLevelPercent
         let resolvedGasEthanol = activeVehicle?.gasEthanolPercent ?? initialGasEthanolPercent
         let resolvedGasOctane = activeVehicle?.requiredOctane ?? initialGasOctane
 
+        restoredFuelLevelPercent = saved.fuelLevel
+
         _tankSizeGallons = State(initialValue: resolvedTankSize)
-        _currentFuelLevelPercent = State(initialValue: initialCurrentFuelLevelPercent)
+        _currentFuelLevelPercent = State(initialValue: resolvedFuelLevel)
         _currentFuelEthanolPercent = State(initialValue: resolvedCurrentEthanol)
         _targetEthanolPercent = State(initialValue: resolvedTargetEthanol)
         _e85EthanolPercent = State(initialValue: resolvedPumpEthanol)
@@ -95,11 +114,67 @@ struct AtThePumpView: View {
         _e85Octane = State(initialValue: initialE85Octane)
         _gasOctane = State(initialValue: resolvedGasOctane)
         _currentEthanolInput = State(initialValue: AtThePumpView.formatInput(resolvedCurrentEthanol))
+        _pumpFuelSelection = State(initialValue: saved.fuelType)
+        _isMaxE85Selected = State(initialValue: saved.targetIsMaxE85)
 
         // Pre-fill E85 price from station if available
         if let price = nearestStation?.lastKnownE85Price, price > 0 {
             _e85PriceInput = State(initialValue: String(format: "%.2f", price))
         }
+    }
+
+    // MARK: - Last setup memory
+
+    private struct SavedPumpSetup {
+        var targetBlend: Double?
+        var targetIsMaxE85: Bool
+        var pumpE85Content: Double?
+        var fuelLevel: Double?
+        var fuelType: PumpFuelOption
+    }
+
+    /// Reads and range-validates the last At the Pump setup from UserDefaults.
+    private static func savedSetup() -> SavedPumpSetup {
+        let defaults = UserDefaults.standard
+
+        func validated(_ key: String, _ range: ClosedRange<Double>) -> Double? {
+            guard let value = defaults.object(forKey: key) as? Double,
+                  value.isFinite,
+                  range.contains(value) else {
+                return nil
+            }
+            return value
+        }
+
+        let fuelType = (defaults.object(forKey: AppPreferenceKey.lastPumpFuelType) as? Int)
+            .flatMap(PumpFuelOption.init(rawValue:)) ?? .e85
+        let pumpContent = validated(AppPreferenceKey.lastPumpE85Content, 40...98)
+
+        return SavedPumpSetup(
+            targetBlend: validated(AppPreferenceKey.lastPumpTargetBlend, 5...98),
+            // Max E85 intent only makes sense alongside a valid saved pump content.
+            targetIsMaxE85: (defaults.object(forKey: AppPreferenceKey.lastPumpTargetIsMaxE85) as? Bool ?? false) && pumpContent != nil,
+            pumpE85Content: pumpContent,
+            fuelLevel: validated(AppPreferenceKey.lastPumpFuelLevel, 0...100),
+            fuelType: fuelType
+        )
+    }
+
+    private func persistLastPumpSetup() {
+        let defaults = UserDefaults.standard
+        defaults.set(targetEthanolPercent, forKey: AppPreferenceKey.lastPumpTargetBlend)
+        defaults.set(isMaxE85Selected, forKey: AppPreferenceKey.lastPumpTargetIsMaxE85)
+        defaults.set(e85EthanolPercent, forKey: AppPreferenceKey.lastPumpE85Content)
+        defaults.set(currentFuelLevelPercent, forKey: AppPreferenceKey.lastPumpFuelLevel)
+        defaults.set(pumpFuelSelection.rawValue, forKey: AppPreferenceKey.lastPumpFuelType)
+    }
+
+    private var isUsingRestoredFuelLevel: Bool {
+        guard let restoredFuelLevelPercent else {
+            return false
+        }
+
+        return abs(currentFuelLevelPercent - restoredFuelLevelPercent) < 0.05
     }
 
     // MARK: - Derived values
@@ -331,7 +406,12 @@ struct AtThePumpView: View {
                 if isMaxE85Selected {
                     targetEthanolPercent = newValue
                 }
+                persistLastPumpSetup()
             }
+            .onChange(of: targetEthanolPercent) { _, _ in persistLastPumpSetup() }
+            .onChange(of: currentFuelLevelPercent) { _, _ in persistLastPumpSetup() }
+            .onChange(of: pumpFuelSelection) { _, _ in persistLastPumpSetup() }
+            .onChange(of: isMaxE85Selected) { _, _ in persistLastPumpSetup() }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .keyboardDoneToolbar()
@@ -477,6 +557,15 @@ struct AtThePumpView: View {
                 }
                 .buttonStyle(.plain)
 
+                // 91/gas-only is a projection mode: the target doesn't drive the math,
+                // so make that explicit instead of leaving live-looking dead chips.
+                if pumpFuelSelection == .gas {
+                    Text("Target blend is ignored while pumping \(gasPumpLabel) only — this mode estimates where a gas top-off lands. Switch Pump Fuel back to E85 or Custom to blend toward a target.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 // Always-visible quick chips — the guided tiers below are education,
                 // these are the one-tap picks. "Max E85" targets whatever this pump's
                 // E85 actually contains rather than a hard 85.
@@ -500,24 +589,33 @@ struct AtThePumpView: View {
                         targetEthanolPercent = Double(value)
                     }
                 }
+                // Dim but don't clear: the selection resumes untouched when the user
+                // switches back to E85/Custom pump fuel.
+                .opacity(pumpFuelSelection == .gas ? 0.35 : 1)
+                .allowsHitTesting(pumpFuelSelection != .gas)
+                .animation(.easeInOut(duration: 0.2), value: pumpFuelSelection)
 
-                if isBlendGuideExpanded {
-                    Text("Tap a tier to apply")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+                Group {
+                    if isBlendGuideExpanded {
+                        Text("Tap a tier to apply")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(AppTheme.Colors.textMuted)
 
-                    ForEach(pumpBlendTiers) { tier in
-                        PumpBlendGuideRow(
-                            tier: tier,
-                            isActive: activeBlendTier?.id == tier.id,
-                            selectedBlendValue: Int(targetEthanolPercent.rounded())
-                        ) { selectedValue in
-                            applyBlendSelection(selectedValue)
+                        ForEach(pumpBlendTiers) { tier in
+                            PumpBlendGuideRow(
+                                tier: tier,
+                                isActive: activeBlendTier?.id == tier.id,
+                                selectedBlendValue: Int(targetEthanolPercent.rounded())
+                            ) { selectedValue in
+                                applyBlendSelection(selectedValue)
+                            }
                         }
+                    } else {
+                        collapsedBlendSummary
                     }
-                } else {
-                    collapsedBlendSummary
                 }
+                .opacity(pumpFuelSelection == .gas ? 0.35 : 1)
+                .allowsHitTesting(pumpFuelSelection != .gas)
             }
         }
     }
@@ -528,6 +626,13 @@ struct AtThePumpView: View {
         AppCard {
             VStack(alignment: .leading, spacing: 14) {
                 SectionHeader(title: "Current Fuel Level", subtitle: "Current level: \(Int(currentFuelLevelPercent.rounded()))%")
+
+                if isUsingRestoredFuelLevel {
+                    Text("Starting from your last used level — set it to match today's gauge.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 PumpPresetGrid(
                     items: [

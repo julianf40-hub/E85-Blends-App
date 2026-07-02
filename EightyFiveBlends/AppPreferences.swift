@@ -19,6 +19,13 @@ enum AppPreferenceKey {
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
     static let hasAcknowledgedDisclaimer = "hasAcknowledgedDisclaimer"
     static let disclaimerAcknowledgedAt = "disclaimerAcknowledgedAt"
+    // Last At the Pump setup — lightweight UI memory only. Current blend deliberately
+    // has no key here: it always comes from the fuel log / vehicle, never from memory.
+    static let lastPumpTargetBlend = "lastPumpTargetBlend"
+    static let lastPumpTargetIsMaxE85 = "lastPumpTargetIsMaxE85"
+    static let lastPumpE85Content = "lastPumpE85Content"
+    static let lastPumpFuelLevel = "lastPumpFuelLevel"
+    static let lastPumpFuelType = "lastPumpFuelType"
 }
 
 enum MapsAppOption: String, CaseIterable {
