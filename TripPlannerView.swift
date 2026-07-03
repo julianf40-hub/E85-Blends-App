@@ -1584,7 +1584,9 @@ struct TripPlannerView: View {
 
             Text(isDiscoveringGasStations
                  ? "Searching for backup gas stations…"
-                 : "Backup gas stations available along this route.")
+                 : backupGasStations.isEmpty
+                    ? "Backup gas stations available along this route."
+                    : "\(backupGasStations.count) backup gas stations available along this route.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3092,16 +3094,8 @@ struct TripPlannerView: View {
                 )
                 guard Task.isCancelled == false else { return }
                 analysis = result
-                // Auto-expand the backup gas section when E85 can't satisfy the trip
-                // or when a high-detour E85 stop was intentionally skipped.
-                if fuelBackupMode == .gasBackupAllowed {
-                    switch result.outcome {
-                    case .gasolineBackupAvailable, .fallbackMayBeNeeded, .e85DetourAvoided:
-                        showBackupGasStations = true
-                    default:
-                        break
-                    }
-                }
+                // Backup Gas Stations always starts collapsed after a (re)plan — the user
+                // expands it manually via the "Show" row. See showBackupGasStations.
             } catch is CancellationError {
                 return
             } catch let plannerError as RouteE85PlannerError {
