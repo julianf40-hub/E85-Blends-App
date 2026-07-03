@@ -35,6 +35,22 @@ struct RouteE85PlannerTests {
         )
     }
 
+    private func gasStation(
+        name: String,
+        distanceAlongRouteMiles: Double,
+        offRouteMiles: Double = 0.5
+    ) -> BackupGasStation {
+        BackupGasStation(
+            id: "gas|\(name)|\(distanceAlongRouteMiles)",
+            name: name,
+            city: "",
+            state: "",
+            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            distanceAlongRouteMiles: distanceAlongRouteMiles,
+            offRouteMiles: offRouteMiles
+        )
+    }
+
     // MARK: - Regression: Phoenix, AZ → Las Vegas, NV
 
     // 18.5 gal tank, 12 MPG (full-tank range 222 mi), 100% starting fuel, 20% arrival
@@ -132,6 +148,79 @@ struct RouteE85PlannerTests {
 
         let destReserve = try? #require(result.destinationReserveFraction)
         #expect(abs((destReserve ?? 0) - 0.577) < 0.01)
+    }
+
+    // MARK: - Gasoline fallback: true switch-over when E85 alone can't complete the trip
+
+    // Requirement 10 regression: Phoenix, AZ → Las Vegas, NV, 18.5 gal tank, 12 MPG, 100%
+    // starting fuel, E30 selected, 20% arrival buffer, gas backup allowed. E85 stations
+    // exist only in the sparse Phoenix cluster (as above) — the planner must not recommend
+    // an early 14 mi top-off as the main solution. It should either find a useful E85 stop
+    // later on the route, or (as here, since none exists) switch to a required gasoline
+    // backup route, with a stop around Kingman.
+    @Test("E85 finds nothing useful, but a full gasoline-fallback re-plan succeeds around Kingman")
+    func phoenixToLasVegas_e30_gasFallbackSucceeds() {
+        let context = RouteFuelContext(
+            tankSizeGallons: 18.5,
+            mpg: 12,
+            currentFuelPercent: 100,
+            targetArrivalReservePercent: 20,
+            fuelBackupMode: .gasBackupAllowed
+        )
+
+        // 1. Attempt the selected ethanol route first: only the sparse Phoenix E85 cluster
+        //    exists, and none of it is materially useful — no useless early top-off.
+        let e85Stations = [
+            station(name: "Phoenix Metro E85 A", distanceAlongRouteMiles: 8),
+            station(name: "Phoenix Metro E85 B", distanceAlongRouteMiles: 14),
+            station(name: "Phoenix Metro E85 C", distanceAlongRouteMiles: 19),
+        ]
+        let ethanolResult = planner.recommendStops(stations: e85Stations, totalMiles: 284, context: context)
+        #expect(ethanolResult.stops.isEmpty)
+        #expect(ethanolResult.planComplete == false)
+        #expect(ethanolResult.outcome == .gasolineBackupAvailable)
+
+        // 2. Since the ethanol route failed and gas backup is allowed, re-plan on regular
+        //    gasoline stations (realistic ~30 mi search spacing, all on-route) as required
+        //    stops — this must be a fresh re-plan, verified end-to-end, not a guess.
+        let gasStations = [
+            gasStation(name: "Gas Stop 30mi", distanceAlongRouteMiles: 30),
+            gasStation(name: "Gas Stop 60mi", distanceAlongRouteMiles: 60),
+            gasStation(name: "Gas Stop 90mi", distanceAlongRouteMiles: 90),
+            gasStation(name: "Gas Stop 120mi", distanceAlongRouteMiles: 120),
+            gasStation(name: "Kingman Gas Stop", distanceAlongRouteMiles: 150),
+        ]
+        let fallback = planner.evaluateGasFallback(gasStations: gasStations, totalMiles: 284, context: context)
+
+        #expect(fallback.succeeds)
+        #expect(fallback.stops.count == 1)
+        #expect(fallback.stops.first?.station.name == "Kingman Gas Stop")
+
+        let destReserve = try? #require(fallback.destinationReserveFraction)
+        #expect(abs((destReserve ?? 0) - 0.396) < 0.01)
+    }
+
+    @Test("Gasoline fallback is never attempted when gas backup is not allowed")
+    func e85Required_neverFallsBackToGasoline() {
+        // Requirement 9: if gasBackupAllowed is false, the route stays unreachable — the
+        // caller (TripPlannerView.gasFallbackPlan) must not even attempt a gas re-plan.
+        // At the planner layer, this means recommendStops keeps reporting the honest
+        // fallbackMayBeNeeded outcome instead of anything gasoline-flavored.
+        let e85Stations = [
+            station(name: "Phoenix Metro E85 A", distanceAlongRouteMiles: 8),
+            station(name: "Phoenix Metro E85 B", distanceAlongRouteMiles: 14),
+            station(name: "Phoenix Metro E85 C", distanceAlongRouteMiles: 19),
+        ]
+        let context = RouteFuelContext(
+            tankSizeGallons: 18.5,
+            mpg: 12,
+            currentFuelPercent: 100,
+            targetArrivalReservePercent: 20,
+            fuelBackupMode: .e85Required
+        )
+        let result = planner.recommendStops(stations: e85Stations, totalMiles: 284, context: context)
+        #expect(result.outcome == .fallbackMayBeNeeded)
+        #expect(result.outcome != .gasolineFallbackRoute)
     }
 
     // MARK: - Backup gas station de-duplication
