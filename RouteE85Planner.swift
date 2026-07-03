@@ -69,6 +69,12 @@ enum RouteOutcome {
     /// E85 stop(s) were available but skipped because they required too much detour;
     /// gas backup is recommended for those segments instead.
     case e85DetourAvoided
+    /// The selected ethanol/E85 plan could not complete the trip or meet the arrival
+    /// buffer, gas backup was allowed, and re-planning the route on regular gasoline
+    /// stations was verified to reach the destination and meet the buffer. Unlike
+    /// `gasolineBackupAvailable` (a suggestion that gas backup exists somewhere), this
+    /// means a concrete gasoline route was actually found and is what's being shown.
+    case gasolineFallbackRoute
     /// Trip is being planned on pump gasoline only (flex-fuel vehicle); no E85 stops
     /// are required or sought.
     case gasolineOnly
@@ -125,11 +131,22 @@ enum DetourSeverity {
     }
 }
 
+// MARK: - Greedy stop candidate
+
+/// Anything the shared greedy stop-selection walk can consider as a candidate fuel stop.
+/// Both `RouteStation` (real E85 stations) and `BackupGasStation` (regular gas stations,
+/// used when re-planning a gasoline fallback route) conform, so one algorithm can plan
+/// either kind of route — see `RouteE85Planner.walkGreedyStops`.
+protocol RouteStopCandidate: Identifiable where ID == String {
+    var distanceAlongRouteMiles: Double { get }
+    var detourSeverity: DetourSeverity { get }
+}
+
 // MARK: - Discovered station along the route
 
 /// A real E85 station discovered along the route, annotated with where it falls on the trip
 /// and whether it is reachable on the starting tank (no intermediate refuels).
-struct RouteStation: Identifiable {
+struct RouteStation: Identifiable, RouteStopCandidate {
     let id: String                       // stable dedup key (not the volatile LiveFuelStation UUID)
     let station: LiveFuelStation
     let coordinate: CLLocationCoordinate2D
@@ -165,6 +182,36 @@ struct RecommendedStop: Identifiable {
     var arrivalClass: ReserveClass {
         ReserveClass(reserveFraction: arrivalReserveFraction)
     }
+}
+
+// MARK: - Gasoline fallback route
+
+/// A single stop within a verified gasoline-fallback route — mirrors `RecommendedStop`'s
+/// shape but for `BackupGasStation` data.
+struct GasFallbackStop: Identifiable {
+    let id: String
+    let station: BackupGasStation
+    let arrivalReserveFraction: Double
+    let suggestedFillGallons: Double
+
+    var arrivalClass: ReserveClass {
+        ReserveClass(reserveFraction: arrivalReserveFraction)
+    }
+}
+
+/// Result of re-planning a route on regular gasoline stations only, attempted when the
+/// selected ethanol/E85 plan cannot complete the trip or meet the arrival buffer and gas
+/// backup is allowed. This is a full re-plan from the original starting conditions — not a
+/// continuation of whatever partial E85 progress was found — since the point is to answer
+/// "can gasoline alone complete this trip" as an alternative to the ethanol plan, not to
+/// mix fuel types within a single itinerary.
+struct GasFallbackPlan {
+    let stops: [GasFallbackStop]
+    /// True only when this fallback route both reaches the destination and meets the
+    /// driver's chosen arrival-buffer target — the bar for actually switching to it.
+    let succeeds: Bool
+    let destinationReserveFraction: Double?
+    let lowestArrivalReserveFraction: Double?
 }
 
 // MARK: - Analysis result
@@ -217,6 +264,11 @@ struct RouteE85Planner {
     private let maxSearchQueries = 12               // hard cap on concurrent station searches
     private let maxCorridorOffsetMiles = 18.0       // ignore stations farther than this off-route
     private let minArrivalReserveFraction = 0.12    // don't recommend arriving below ~12%
+    // A stop must add at least this fraction of a full tank's worth of extra range to be
+    // worth recommending — filters out "drive 14 mi, add 1.2 gal" style top-offs picked
+    // simply for being the farthest low-detour station nearby, when the tank is still
+    // mostly full. See recommendStops() for the full rationale.
+    private let minMaterialGainFraction = 0.15
 
     init(service: NLRStationService = NLRStationService()) {
         self.service = service
@@ -477,7 +529,9 @@ struct RouteE85Planner {
 
     // MARK: - Greedy stop recommendations
 
-    private struct Recommendation {
+    /// Internal (not private) so `RouteE85PlannerTests` can exercise the greedy planner
+    /// directly with synthetic stations, without needing a live station search.
+    struct Recommendation {
         let stops: [RecommendedStop]
         let planComplete: Bool                 // plan reaches the destination (reserve ≥ 0)
         let planSatisfiesTarget: Bool          // destination arrival reserve ≥ target
@@ -491,29 +545,50 @@ struct RouteE85Planner {
     }
 
     /// A stop chosen during the greedy walk, before we know the final plan-wide outcome.
-    private struct RawStop {
-        let station: RouteStation
+    /// Generic so the same walk can plan either E85 stations or gasoline-fallback stations.
+    private struct RawStop<Candidate: RouteStopCandidate> {
+        let station: Candidate
         let arrivalFraction: Double
         let fillGallons: Double
     }
 
-    private func recommendStops(
-        stations: [RouteStation],
+    /// Outcome-agnostic result of the greedy walk — shared by E85 planning
+    /// (`recommendStops`) and gasoline-fallback planning (`evaluateGasFallback`). Each
+    /// caller derives its own `RouteOutcome`/success semantics from these fields, since
+    /// "did E85 succeed" and "did the gas fallback succeed" mean slightly different things.
+    private struct GreedyWalkResult<Candidate: RouteStopCandidate> {
+        let stops: [RawStop<Candidate>]
+        let planReachesDestination: Bool
+        let planSatisfiesTarget: Bool
+        let destinationReserveFraction: Double
+        let noStopDestinationReserveFraction: Double
+        let lowestArrivalReserveFraction: Double?
+        let minViableOptions: Int
+        let hadRiskyLeg: Bool
+        let skippedForDetour: Bool // gasBackupAllowed: a high-detour stop was intentionally skipped
+    }
+
+    /// The greedy "keep adding the farthest materially useful, reachable stop until the
+    /// reserve target is met" walk, generic over any `RouteStopCandidate`. This is the
+    /// single algorithm behind both E85 planning and gasoline-fallback planning — see
+    /// `recommendStops` and `evaluateGasFallback`, which just derive different
+    /// outcome/success semantics from the same walk.
+    private func walkGreedyStops<Candidate: RouteStopCandidate>(
+        candidates: [Candidate],
         totalMiles: Double,
         context: RouteFuelContext,
-        reportedUnavailableKeys: Set<String> = []
-    ) -> Recommendation {
+        reportedUnavailableKeys: Set<String>
+    ) -> GreedyWalkResult<Candidate> {
         let mpg = context.mpg
         let tank = context.tankSizeGallons
         let targetGallons = context.targetReserveFraction * tank
 
         guard mpg > 0, tank > 0 else {
-            return Recommendation(
-                stops: [], planComplete: true, planSatisfiesTarget: true,
-                outcome: .noStopNeeded, destinationReserveFraction: nil,
-                noStopDestinationReserveFraction: 1,
+            return GreedyWalkResult(
+                stops: [], planReachesDestination: true, planSatisfiesTarget: true,
+                destinationReserveFraction: 1, noStopDestinationReserveFraction: 1,
                 lowestArrivalReserveFraction: nil, minViableOptions: 0, hadRiskyLeg: false,
-                skippedE85ForDetour: false
+                skippedForDetour: false
             )
         }
 
@@ -522,11 +597,11 @@ struct RouteE85Planner {
 
         var position = 0.0
         var fuelGallons = context.startFuelGallons
-        var rawStops: [RawStop] = []
+        var rawStops: [RawStop<Candidate>] = []
         var lowestReserve = Double.greatestFiniteMagnitude
         var minViableOptions = Int.max
         var hadRiskyLeg = false
-        var skippedE85ForDetour = false  // gasBackupAllowed: a high-detour E85 stop was intentionally skipped
+        var skippedForDetour = false  // gasBackupAllowed: a high-detour stop was intentionally skipped
 
         // Keep adding stops until the destination arrival reserve meets the target, or we run
         // out of reachable stations to add.
@@ -542,45 +617,45 @@ struct RouteE85Planner {
             }
 
             // Stations ahead of the current position, with their arrival reserve on this leg.
-            let ahead = stations.filter { $0.distanceAlongRouteMiles > position + 0.5 }
+            let ahead = candidates.filter { $0.distanceAlongRouteMiles > position + 0.5 }
             let safeOptions = ahead.filter {
                 let arrival = fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg
                 return arrival / tank >= minArrivalReserveFraction
             }
 
-            let chosen: RouteStation?
-            if safeOptions.isEmpty {
-                // Relax: any station we can physically reach (arrive with ≥ 0).
-                let reachable = ahead.filter {
-                    fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg >= 0
-                }
-                if reachable.isEmpty {
-                    chosen = nil
-                } else {
-                    minViableOptions = 0
-                    hadRiskyLeg = true
-                    chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-                }
-            } else {
-                minViableOptions = min(minViableOptions, safeOptions.count)
+            // Usefulness gate: a stop only counts if refueling there adds a material amount
+            // of extra range (see minMaterialGainFraction). Without this, a station reached
+            // very early — while the tank is still mostly full — can win purely on being the
+            // farthest low-detour option nearby, producing a "drive 14 mi, add 1.2 gal"
+            // recommendation that does nothing to help the trip actually complete.
+            let minMaterialGainMiles = minMaterialGainFraction * tank * mpg
+            let materialSafeOptions = safeOptions.filter {
+                let arrival = fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg
+                let fillGallons = max(0, tank - arrival)
+                return fillGallons * mpg >= minMaterialGainMiles
+            }
+
+            let chosen: Candidate?
+            if materialSafeOptions.isEmpty == false {
+                minViableOptions = min(minViableOptions, materialSafeOptions.count)
 
                 // Remove recently-reported unavailable stations when clean alternatives exist.
-                let cleanPool: [RouteStation]
+                let cleanPool: [Candidate]
                 if reportedUnavailableKeys.isEmpty {
-                    cleanPool = safeOptions
+                    cleanPool = materialSafeOptions
                 } else {
-                    let filtered = safeOptions.filter { reportedUnavailableKeys.contains($0.id) == false }
-                    cleanPool = filtered.isEmpty ? safeOptions : filtered
+                    let filtered = materialSafeOptions.filter { reportedUnavailableKeys.contains($0.id) == false }
+                    cleanPool = filtered.isEmpty ? materialSafeOptions : filtered
                 }
 
                 if context.fuelBackupMode == .gasBackupAllowed {
-                    // Flex-fuel / gas-backup mode: strongly prefer low-detour E85 stops.
+                    // Flex-fuel / gas-backup mode: strongly prefer low-detour stops.
                     // Moderate/major detour stops are avoided when gas backup can cover the gap.
                     let lowDetourPool = cleanPool.filter {
                         $0.detourSeverity == .onRoute || $0.detourSeverity == .smallDetour
                     }
                     if lowDetourPool.isEmpty == false {
-                        // Good low-detour E85 options available — pick the farthest.
+                        // Good low-detour options available — pick the farthest.
                         chosen = lowDetourPool.max(by: { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles })
                     } else {
                         // All safeOptions are moderate or major detour.
@@ -589,14 +664,14 @@ struct RouteE85Planner {
                         if canCoastToDestination {
                             // Destination reachable — any detour stop is optional for reserve only.
                             // Skip it and let gas backup handle the reserve shortfall.
-                            skippedE85ForDetour = true
+                            skippedForDetour = true
                             chosen = nil
                         } else if moderatePool.isEmpty == false {
                             // Must stop; accept a moderate-detour station as a necessary last resort.
                             chosen = moderatePool.max(by: { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles })
                         } else {
-                            // Must stop; only major-detour E85 available. Skip — gas backup recommended.
-                            skippedE85ForDetour = true
+                            // Must stop; only major-detour options available. Skip — gas backup recommended.
+                            skippedForDetour = true
                             chosen = nil
                         }
                     }
@@ -613,6 +688,27 @@ struct RouteE85Planner {
                     } else {
                         chosen = cleanPool.max(by: { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles })
                     }
+                }
+            } else if safeOptions.isEmpty == false {
+                // Only trivial top-offs are safely reachable from here — none of them
+                // materially improve reachability or the arrival buffer. Don't recommend
+                // one; the loop will either find the destination coastable as-is (and exit
+                // on the next check above) or fall through to the emergency relax step
+                // below once genuinely nothing safe remains.
+                chosen = nil
+            } else {
+                // Relax: any station we can physically reach (arrive with ≥ 0). This is a
+                // genuine last resort, so it is NOT subject to the material-gain filter —
+                // when nothing safe is reachable at all, any reachable fuel matters.
+                let reachable = ahead.filter {
+                    fuelGallons - ($0.distanceAlongRouteMiles - position) / mpg >= 0
+                }
+                if reachable.isEmpty {
+                    chosen = nil
+                } else {
+                    minViableOptions = 0
+                    hadRiskyLeg = true
+                    chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
                 }
             }
 
@@ -643,18 +739,44 @@ struct RouteE85Planner {
         let destReserveFraction = finalDestReserveGallons / tank
         lowestReserve = min(lowestReserve, destReserveFraction)
 
-        let planReachesDestination = finalDestReserveGallons >= 0
-        let planSatisfiesTarget = finalDestReserveGallons >= targetGallons
+        let lowest = lowestReserve == .greatestFiniteMagnitude ? nil : lowestReserve
+        let viable = minViableOptions == .max ? 0 : minViableOptions
+        return GreedyWalkResult(
+            stops: rawStops,
+            planReachesDestination: finalDestReserveGallons >= 0,
+            planSatisfiesTarget: finalDestReserveGallons >= targetGallons,
+            destinationReserveFraction: destReserveFraction,
+            noStopDestinationReserveFraction: noStopDestReserveFraction,
+            lowestArrivalReserveFraction: lowest,
+            minViableOptions: viable,
+            hadRiskyLeg: hadRiskyLeg,
+            skippedForDetour: skippedForDetour
+        )
+    }
+
+    /// Internal (not private) for direct testability — see `Recommendation` above.
+    func recommendStops(
+        stations: [RouteStation],
+        totalMiles: Double,
+        context: RouteFuelContext,
+        reportedUnavailableKeys: Set<String> = []
+    ) -> Recommendation {
+        let walk = walkGreedyStops(
+            candidates: stations,
+            totalMiles: totalMiles,
+            context: context,
+            reportedUnavailableKeys: reportedUnavailableKeys
+        )
 
         // An E85-only plan "succeeds" only if it both reaches the destination AND meets the
         // chosen reserve target. Otherwise the outcome depends on the fuel-backup mode.
-        let e85PlanSucceeds = planReachesDestination && planSatisfiesTarget
+        let e85PlanSucceeds = walk.planReachesDestination && walk.planSatisfiesTarget
 
         let outcome: RouteOutcome
         if e85PlanSucceeds {
-            if rawStops.isEmpty {
+            if walk.stops.isEmpty {
                 outcome = .noStopNeeded             // reachable + target met, no stop
-            } else if noStopDestReserveFraction >= 0 {
+            } else if walk.noStopDestinationReserveFraction >= 0 {
                 outcome = .reserveStopRecommended   // reachable without stops; stop(s) meet the target
             } else {
                 outcome = .e85StopRequired          // stop(s) required to reach + meet the target
@@ -665,14 +787,14 @@ struct RouteE85Planner {
             case .gasBackupAllowed:
                 // Distinguish "we intentionally skipped a high-detour E85 stop" from
                 // "there simply was no usable E85 station" so the UI can give better copy.
-                outcome = skippedE85ForDetour ? .e85DetourAvoided : .gasolineBackupAvailable
+                outcome = walk.skippedForDetour ? .e85DetourAvoided : .gasolineBackupAvailable
             case .e85Required:
                 outcome = .fallbackMayBeNeeded
             }
         }
 
         let recommendedForReserveTarget = (outcome == .reserveStopRecommended)
-        let stops = rawStops.map { raw in
+        let stops = walk.stops.map { raw in
             RecommendedStop(
                 id: raw.station.id,
                 station: raw.station,
@@ -682,19 +804,54 @@ struct RouteE85Planner {
             )
         }
 
-        let lowest = lowestReserve == .greatestFiniteMagnitude ? nil : lowestReserve
-        let viable = minViableOptions == .max ? 0 : minViableOptions
         return Recommendation(
             stops: stops,
-            planComplete: planReachesDestination,
-            planSatisfiesTarget: planSatisfiesTarget,
+            planComplete: walk.planReachesDestination,
+            planSatisfiesTarget: walk.planSatisfiesTarget,
             outcome: outcome,
-            destinationReserveFraction: destReserveFraction,
-            noStopDestinationReserveFraction: noStopDestReserveFraction,
-            lowestArrivalReserveFraction: lowest,
-            minViableOptions: viable,
-            hadRiskyLeg: hadRiskyLeg,
-            skippedE85ForDetour: skippedE85ForDetour
+            destinationReserveFraction: walk.destinationReserveFraction,
+            noStopDestinationReserveFraction: walk.noStopDestinationReserveFraction,
+            lowestArrivalReserveFraction: walk.lowestArrivalReserveFraction,
+            minViableOptions: walk.minViableOptions,
+            hadRiskyLeg: walk.hadRiskyLeg,
+            skippedE85ForDetour: walk.skippedForDetour
+        )
+    }
+
+    /// Re-plans the route using regular gasoline stations as valid required stops — a true
+    /// fallback, attempted by callers only once the selected ethanol/E85 plan has been
+    /// shown unable to complete the trip or meet the arrival buffer (requirements: try E85
+    /// first, only switch to gas when it demonstrably doesn't work). This always re-plans
+    /// from the original starting conditions, since the point is to evaluate gasoline as a
+    /// complete alternative route, not to splice fuel types within one itinerary.
+    ///
+    /// Internal (not private) for direct testability — see `RouteE85PlannerTests`.
+    func evaluateGasFallback(
+        gasStations: [BackupGasStation],
+        totalMiles: Double,
+        context: RouteFuelContext
+    ) -> GasFallbackPlan {
+        let walk = walkGreedyStops(
+            candidates: gasStations,
+            totalMiles: totalMiles,
+            context: context,
+            reportedUnavailableKeys: []
+        )
+
+        let stops = walk.stops.map { raw in
+            GasFallbackStop(
+                id: raw.station.id,
+                station: raw.station,
+                arrivalReserveFraction: raw.arrivalFraction,
+                suggestedFillGallons: raw.fillGallons
+            )
+        }
+
+        return GasFallbackPlan(
+            stops: stops,
+            succeeds: walk.planReachesDestination && walk.planSatisfiesTarget,
+            destinationReserveFraction: walk.destinationReserveFraction,
+            lowestArrivalReserveFraction: walk.lowestArrivalReserveFraction
         )
     }
 
@@ -755,10 +912,13 @@ struct RouteE85Planner {
             if hasMajorDetourRequired { return .medium }
             return .low
 
-        case .gasolineOnly, .gasStopRecommended, .gasFuelStopNeeded:
-            // These cases are never produced by the E85 planner — they are set by the UI in
-            // Gas Only mode where the E85 analysis is skipped entirely. Treat as Low here;
-            // actual risk is computed by computeGasOnlyPlan in TripPlannerView.
+        case .gasolineOnly, .gasStopRecommended, .gasFuelStopNeeded, .gasolineFallbackRoute:
+            // Never produced by this planner: Gas Only mode is set by the UI (E85 analysis
+            // skipped entirely; risk computed by computeGasOnlyPlan in TripPlannerView), and
+            // gasolineFallbackRoute is a UI-level combination of this analysis with a
+            // separately-verified gas re-plan (see TripPlannerView.gasFallbackPlan). Treat
+            // as Low here — the medium/high risk for a real fallback is judged by the view
+            // from the verified fallback plan, not from this (failed) E85 recommendation.
             return .low
         }
     }
@@ -821,7 +981,10 @@ struct GasOnlyStop: Identifiable {
 
 /// A regular gasoline station discovered along the route corridor. Surfaced as a fallback
 /// option when fuel-backup mode is "Gas Backup Allowed." Never mixed into E85 logic.
-struct BackupGasStation: Identifiable {
+///
+/// Conforms to `RouteStopCandidate` so `RouteE85Planner.evaluateGasFallback` can re-plan a
+/// route on gas stations using the same greedy walk E85 planning uses.
+struct BackupGasStation: Identifiable, RouteStopCandidate {
     let id: String                          // stable dedup key
     let name: String
     let city: String
@@ -844,6 +1007,10 @@ struct BackupGasStationFinder {
     // 25 km is plenty for gas stations, which are common.
     private let searchRadiusMeters = 25_000.0
     private let maxOffRouteMiles = 12.0
+    // Two hits within this distance sharing a normalized name are treated as the same
+    // real-world station (see mergeNearDuplicates) — wider than the exact-key dedup's
+    // ~111 m rounding so overlapping search circles don't surface the same station twice.
+    private let nearDuplicateRadiusMiles = 0.1
 
     // Extracted data from a single MKMapItem — avoids passing non-Sendable MKMapItem across
     // actor/task boundaries in the concurrent search group.
@@ -939,7 +1106,35 @@ struct BackupGasStationFinder {
             ))
         }
 
-        return result
+        return mergeNearDuplicates(result)
+    }
+
+    /// The exact-key dedup above only catches identical rounded coordinates. Overlapping
+    /// search circles can still surface the same real-world station twice with slightly
+    /// different geocoded coordinates (e.g. two "Circle K" hits in Kingman ~120 m apart).
+    /// Merge entries that share a normalized name AND sit within `nearDuplicateRadiusMiles`
+    /// of each other, keeping whichever sits closer to the route corridor. Stations that
+    /// merely share a name from opposite ends of the route, or sit near each other under
+    /// different names, are left as genuinely separate results.
+    ///
+    /// Internal (not private) so `RouteE85PlannerTests` can exercise it directly with
+    /// synthetic stations, without a live MapKit search.
+    func mergeNearDuplicates(_ stations: [BackupGasStation]) -> [BackupGasStation] {
+        var kept: [BackupGasStation] = []
+        for station in stations {
+            let normalizedName = station.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if let existingIndex = kept.firstIndex(where: {
+                $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == normalizedName &&
+                Self.mi($0.coordinate, station.coordinate) <= nearDuplicateRadiusMiles
+            }) {
+                if station.offRouteMiles < kept[existingIndex].offRouteMiles {
+                    kept[existingIndex] = station
+                }
+                continue
+            }
+            kept.append(station)
+        }
+        return kept
     }
 
     // MARK: - Geometry helpers (self-contained; intentionally not shared with RouteE85Planner's

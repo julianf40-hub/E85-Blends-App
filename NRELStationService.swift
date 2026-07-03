@@ -74,6 +74,36 @@ struct LiveFuelStation: Identifiable, Equatable {
         dateLastConfirmed = station.dateLastConfirmed?.nilIfBlank ?? ""
         fuelTypeCode = station.fuelTypeCode?.nilIfBlank ?? ""
     }
+
+    /// Direct field init for constructing synthetic stations — used by RouteE85PlannerTests
+    /// to exercise the greedy stop planner without a live NLR station search.
+    init(
+        name: String,
+        address: String = "",
+        city: String = "",
+        state: String = "",
+        zip: String = "",
+        latitude: Double,
+        longitude: Double,
+        distanceMiles: Double = 0,
+        phone: String = "",
+        accessHours: String = "",
+        dateLastConfirmed: String = "",
+        fuelTypeCode: String = "E85"
+    ) {
+        self.name = name
+        self.address = address
+        self.city = city
+        self.state = state
+        self.zip = zip
+        self.latitude = latitude
+        self.longitude = longitude
+        self.distanceMiles = distanceMiles
+        self.phone = phone
+        self.accessHours = accessHours
+        self.dateLastConfirmed = dateLastConfirmed
+        self.fuelTypeCode = fuelTypeCode
+    }
 }
 
 enum NLRServiceError: LocalizedError, Equatable {

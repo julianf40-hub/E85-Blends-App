@@ -97,7 +97,11 @@ enum FuelLogStore {
     }
 
     static func prefillDraft(from result: BlendCalculator.Result, vehicle: VehicleProfile?) -> FuelLogDraft {
-        let targetBlendPercent = Double(result.blendLabel.dropFirst()) ?? result.finalEthanolPercent
+        // Guidance (E85-only) results carry the achieved blend in blendLabel; prefer
+        // the explicitly requested target when the calculator provides one.
+        let targetBlendPercent = result.requestedTargetEthanolPercent
+            ?? Double(result.blendLabel.dropFirst())
+            ?? result.finalEthanolPercent
 
         return FuelLogDraft(
             date: .now,
