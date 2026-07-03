@@ -88,9 +88,32 @@ struct TripPlannerView: View {
 
     /// Risk shown on the map badge: route-aware risk once stations load, else the
     /// preliminary range-based risk. Gas Only risk is computed by the gas-only planner.
+    ///
+    /// Once a gasoline-backup route is verified, risk reflects THAT route's own buffer
+    /// strength, not the failed ethanol attempt's — a strong gas-backup buffer must never
+    /// still read as "Medium Risk" carried over from the E85 miss.
     private var displayRisk: TripPlan.RouteRisk? {
+        if let fallback = gasFallbackPlan, fallback.succeeds {
+            let lowest = fallback.lowestArrivalReserveFraction ?? fallback.destinationReserveFraction ?? 0
+            if lowest < 0.10 { return .high }
+            if lowest < 0.20 { return .medium }
+            return .low
+        }
         if isGasolineOnly { return gasOnlyRisk ?? (plan != nil ? .low : nil) }
         return analysis?.risk ?? plan?.risk
+    }
+
+    /// Custom risk-badge wording used once a gasoline-backup route is active, so the
+    /// active route reads as "reachable via a verified fallback," not as a generic
+    /// severity level that could be misread as "the plan is unsafe."
+    private var displayRiskLabelOverride: String? {
+        guard gasFallbackPlan?.succeeds == true else { return nil }
+        switch displayRisk {
+        case .low:    return "Reachable with Gas"
+        case .medium: return "Gas Backup — Caution"
+        case .high:   return "Gas Backup — Risky"
+        case nil:     return nil
+        }
     }
 
     /// True when the currently selected vehicle is marked flex-fuel.
@@ -121,6 +144,12 @@ struct TripPlannerView: View {
         // Gas Only: use discovered gas stops as waypoints
         if isGasolineOnly {
             return gasOnlyRecommendedStops.map { $0.station.coordinate }
+        }
+
+        // Verified gasoline-backup route: use its own stop sequence directly, rather than
+        // relying on the backup-gas list's ranking to surface the right station(s) first.
+        if let fallback = gasFallbackPlan, fallback.succeeds {
+            return fallback.stops.map { $0.station.coordinate }
         }
 
         if let stops = analysis?.recommendedStops, stops.isEmpty == false {
@@ -268,6 +297,14 @@ struct TripPlannerView: View {
         return analysis?.outcome
     }
 
+    /// True once a verified gasoline-backup route is active — the active route the driver
+    /// is following, not just a possibility. Drives label/copy overrides throughout the
+    /// Trip Summary, Fuel Plan, and Backup Gas Stations sections so the failed ethanol
+    /// plan's numbers are never confused with the active route's.
+    private var isFallbackActive: Bool {
+        gasFallbackPlan?.succeeds == true
+    }
+
     private var mapStations: [RouteStation] {
         guard let analysis else { return [] }
         let all = analysis.stations
@@ -298,16 +335,43 @@ struct TripPlannerView: View {
             .map { backupGasStations[$0] })
     }
 
-    /// The backup gas stations shown in the UI list — sorted by proximity to the route, then
-    /// progress along the route, then name, and capped at maxBackupGasCards. Full discovery
-    /// results are preserved in `backupGasStations` for map-pin sampling.
+    /// Below this distance from the origin, a backup gas station is treated as too close
+    /// to meaningfully help complete the route (the same intuition as the planner's own
+    /// material-gain filter) — deprioritized in fallback mode unless it's actually part of
+    /// the verified plan.
+    private static let minUsefulBackupGasDistanceMiles = 20.0
+
+    /// The backup gas stations shown in the UI list. Outside fallback mode, sorted by
+    /// proximity to the route, then progress along it, then name (unchanged). In fallback
+    /// mode, ranked by usefulness for completing the route instead: the station(s) the
+    /// verified plan actually uses lead the list, stations too close to the origin (e.g. a
+    /// gas station a mile from the start) sink to the bottom, then proximity as before.
+    /// Full discovery results are preserved in `backupGasStations` for map-pin sampling.
     private var displayedBackupGasStations: [BackupGasStation] {
-        let sorted = backupGasStations.sorted {
-            if $0.offRouteMiles != $1.offRouteMiles { return $0.offRouteMiles < $1.offRouteMiles }
-            if $0.distanceAlongRouteMiles != $1.distanceAlongRouteMiles { return $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-            return $0.name < $1.name
+        guard let fallback = gasFallbackPlan, isFallbackActive else {
+            let sorted = backupGasStations.sorted {
+                if $0.offRouteMiles != $1.offRouteMiles { return $0.offRouteMiles < $1.offRouteMiles }
+                if $0.distanceAlongRouteMiles != $1.distanceAlongRouteMiles { return $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
+                return $0.name < $1.name
+            }
+            return Array(sorted.prefix(Self.maxBackupGasCards))
         }
-        return Array(sorted.prefix(Self.maxBackupGasCards))
+
+        let planStationIDs = Set(fallback.stops.map { $0.station.id })
+        let ranked = backupGasStations.sorted { lhs, rhs in
+            let lhsInPlan = planStationIDs.contains(lhs.id)
+            let rhsInPlan = planStationIDs.contains(rhs.id)
+            if lhsInPlan != rhsInPlan { return lhsInPlan }
+
+            let lhsTooClose = lhs.distanceAlongRouteMiles < Self.minUsefulBackupGasDistanceMiles
+            let rhsTooClose = rhs.distanceAlongRouteMiles < Self.minUsefulBackupGasDistanceMiles
+            if lhsTooClose != rhsTooClose { return rhsTooClose }
+
+            if lhs.offRouteMiles != rhs.offRouteMiles { return lhs.offRouteMiles < rhs.offRouteMiles }
+            if lhs.distanceAlongRouteMiles != rhs.distanceAlongRouteMiles { return lhs.distanceAlongRouteMiles < rhs.distanceAlongRouteMiles }
+            return lhs.name < rhs.name
+        }
+        return Array(ranked.prefix(Self.maxBackupGasCards))
     }
 
     @FocusState private var focusedField: Field?
@@ -358,6 +422,10 @@ struct TripPlannerView: View {
                            analysis != nil || isGasolineOnly {
                             saveRouteSection(plan)
                         }
+                        // Extra breathing room below the last result card — the fixed
+                        // Plan Route bar already reserves its own space via safeAreaInset,
+                        // this just keeps the final buttons from sitting flush against it.
+                        Color.clear.frame(height: 24)
                     }
                 }
                 .padding(16)
@@ -411,7 +479,8 @@ struct TripPlannerView: View {
                     mapGasStations: mapGasStations,
                     gasOnlyStops: gasOnlyRecommendedStops,
                     recommendedStationIDs: recommendedStationIDs,
-                    displayRisk: displayRisk
+                    displayRisk: displayRisk,
+                    displayRiskLabelOverride: displayRiskLabelOverride
                 )
             }
         }
@@ -916,7 +985,7 @@ struct TripPlannerView: View {
                     .foregroundStyle(AppTheme.Colors.textPrimary)
                 Spacer()
                 if let displayRisk {
-                    RouteRiskBadge(risk: displayRisk)
+                    RouteRiskBadge(risk: displayRisk, labelOverride: displayRiskLabelOverride)
                 }
             }
 
@@ -1121,28 +1190,37 @@ struct TripPlannerView: View {
                     summaryDivider
                     summaryRow(
                         icon: "drop.fill",
-                        label: "Arrival buffer (gas backup)",
+                        label: "Gas backup arrival buffer",
                         value: fallback.destinationReserveFraction.map { "\(Int(($0 * 100).rounded()))%" } ?? "—"
                     )
                 }
                 summaryDivider
                 summaryRow(
                     icon: "drop.fill",
-                    label: "Estimated arrival buffer",
+                    // The active route is gasoline backup, not the failed ethanol plan —
+                    // these two rows report the ORIGINAL (failed) E85-only math, so they're
+                    // clearly labeled as such rather than looking like the active route's
+                    // numbers (requirement: don't mix active gas-backup metrics with failed
+                    // E85-only metrics under ambiguous labels).
+                    label: isFallbackActive ? "E85-only arrival buffer" : "Estimated arrival buffer",
                     value: arrivalReserveText
                 )
-                summaryDivider
-                summaryRow(
-                    icon: "fuelpump.circle.fill",
-                    label: isGasolineOnly ? "Estimated gas stops" : "Estimated E85 stops",
-                    value: isGasolineOnly
-                        ? (isDiscoveringGasOnlyStations ? "…" : "\(gasOnlyRecommendedStops.count)")
-                        : (isDiscoveringStations ? "…" : "\(estimatedStops)")
-                )
+                // "Estimated E85/gas stops" duplicates the "E85 stops" row already shown
+                // above in fallback mode — skip it there to avoid showing the same count twice.
+                if isFallbackActive == false {
+                    summaryDivider
+                    summaryRow(
+                        icon: "fuelpump.circle.fill",
+                        label: isGasolineOnly ? "Estimated gas stops" : "Estimated E85 stops",
+                        value: isGasolineOnly
+                            ? (isDiscoveringGasOnlyStations ? "…" : "\(gasOnlyRecommendedStops.count)")
+                            : (isDiscoveringStations ? "…" : "\(estimatedStops)")
+                    )
+                }
                 summaryDivider
                 summaryRow(
                     icon: "drop.triangle.fill",
-                    label: "Lowest trip buffer",
+                    label: isFallbackActive ? "E85-only lowest buffer" : "Lowest trip buffer",
                     value: isGasolineOnly
                         ? gasOnlyLowestReserveText
                         : (lowestReserve.map { "\(Int(($0 * 100).rounded()))%" } ?? (isDiscoveringStations ? "…" : "—"))
@@ -1184,7 +1262,7 @@ struct TripPlannerView: View {
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                     Spacer()
                     if let displayRisk {
-                        RouteRiskBadge(risk: displayRisk)
+                        RouteRiskBadge(risk: displayRisk, labelOverride: displayRiskLabelOverride)
                     } else {
                         Text("—").foregroundStyle(AppTheme.Colors.textMuted)
                     }
@@ -1368,7 +1446,10 @@ struct TripPlannerView: View {
     @ViewBuilder
     private var stopsAlongRouteSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "E85 Stops Along Route")
+            // Once the app has switched to gasoline backup, "E85 Stops Along Route" reads
+            // oddly over a fallback explanation card — the section is now explaining why
+            // gas backup was used, not listing E85 stops.
+            SectionHeader(title: isFallbackActive ? "Why Gas Backup Was Used" : "E85 Stops Along Route")
 
             if isDiscoveringStations {
                 discoveringStationsCard
@@ -1636,6 +1717,9 @@ struct TripPlannerView: View {
 
     private func gasBackupStationCard(_ station: BackupGasStation) -> some View {
         let cityState = [station.city, station.state].filter { $0.isEmpty == false }.joined(separator: ", ")
+        // Requirement: clearly mark the station the verified fallback route actually uses,
+        // so it doesn't get lost among stations that are merely nearby.
+        let isRequiredStop = gasFallbackPlan?.stops.contains(where: { $0.station.id == station.id }) ?? false
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -1666,15 +1750,26 @@ struct TripPlannerView: View {
 
                 Spacer(minLength: 0)
 
-                // Gas Backup badge
-                Text("Gas Backup")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(AppTheme.Colors.cardBackground)
-                    .overlay(Capsule().stroke(AppTheme.Colors.borderColor, lineWidth: 1))
-                    .clipShape(Capsule())
+                if isRequiredStop {
+                    Text("Required Stop")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(AppTheme.Colors.primaryGreen.opacity(0.16))
+                        .overlay(Capsule().stroke(AppTheme.Colors.primaryGreen.opacity(0.5), lineWidth: 1))
+                        .clipShape(Capsule())
+                } else {
+                    // Gas Backup badge
+                    Text("Gas Backup")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(AppTheme.Colors.cardBackground)
+                        .overlay(Capsule().stroke(AppTheme.Colors.borderColor, lineWidth: 1))
+                        .clipShape(Capsule())
+                }
                 reportMenuGas(stationKey: station.id, stationName: station.name)
             }
 
@@ -1709,7 +1804,10 @@ struct TripPlannerView: View {
         .background(AppTheme.Colors.surfaceElevated)
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(AppTheme.Colors.borderColor.opacity(0.7), lineWidth: 1)
+                .stroke(
+                    isRequiredStop ? AppTheme.Colors.primaryGreen.opacity(0.6) : AppTheme.Colors.borderColor.opacity(0.7),
+                    lineWidth: isRequiredStop ? 1.5 : 1
+                )
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -2515,11 +2613,14 @@ struct TripPlannerView: View {
 
     private func navigationHandoffCard(_ plan: TripPlan) -> some View {
         let hasStops = !navigationWaypoints.isEmpty
+        // In fallback mode the waypoint is the required backup gas stop, not a generic
+        // "fuel stop" — name it accordingly so the handoff copy matches the Fuel Plan.
+        let stopNoun = isFallbackActive ? "backup gas stop" : "fuel stop"
         return VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
-                title: hasStops ? "Open Route With Fuel Stop" : "Open Directions In",
+                title: hasStops ? "Open Route With \(stopNoun.capitalized)" : "Open Directions In",
                 subtitle: hasStops
-                    ? "Google Maps will include supported fuel stops. Apple Maps may include stops. For Waze, add the fuel stop manually after opening the route."
+                    ? "Google Maps will include supported \(stopNoun)s. Apple Maps may include stops. For Waze, add the \(stopNoun) manually after opening the route."
                     : nil
             )
             HStack(spacing: 10) {
@@ -3638,12 +3739,16 @@ private struct ReserveBadge: View {
 
 private struct RouteRiskBadge: View {
     let risk: TripPlan.RouteRisk
+    /// Overrides the displayed text (e.g. "Reachable with Gas") while keeping the
+    /// underlying risk's icon/tint — used when a verified gasoline-backup route is active
+    /// and a plain "Medium Risk" label would misleadingly imply the active route is unsafe.
+    var labelOverride: String? = nil
 
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: risk.icon)
                 .font(.caption2.weight(.bold))
-            Text(risk.label)
+            Text(labelOverride ?? risk.label)
                 .font(.caption.weight(.bold))
         }
         .foregroundStyle(risk.foreground)
@@ -3998,6 +4103,7 @@ private struct FullRouteMapView: View {
     let gasOnlyStops: [GasOnlyStop]
     let recommendedStationIDs: Set<String>
     let displayRisk: TripPlan.RouteRisk?
+    var displayRiskLabelOverride: String? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -4057,7 +4163,7 @@ private struct FullRouteMapView: View {
             .ignoresSafeArea(edges: .bottom)
             .overlay(alignment: .topTrailing) {
                 if let risk = displayRisk {
-                    RouteRiskBadge(risk: risk)
+                    RouteRiskBadge(risk: risk, labelOverride: displayRiskLabelOverride)
                         .padding(.top, 56)
                         .padding(.trailing, 16)
                 }
