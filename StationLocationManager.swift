@@ -14,6 +14,7 @@ struct StationCoordinate: Equatable {
     }
 }
 
+@MainActor
 @Observable
 final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()

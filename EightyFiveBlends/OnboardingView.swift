@@ -24,6 +24,7 @@ struct OnboardingView: View {
     @State private var disclaimerState = DisclaimerAcknowledgementState()
     @State private var isShowingFullDisclaimer = false
     @State private var disclaimerGuidanceMessage: String?
+    @State private var vehicleSaveErrorMessage: String?
 
     private let steps: [OnboardingStep] = [
         // 0: Welcome
@@ -130,6 +131,14 @@ struct OnboardingView: View {
             NavigationStack {
                 DisclaimerView()
             }
+        }
+        .alert("Save Error", isPresented: Binding(
+            get: { vehicleSaveErrorMessage != nil },
+            set: { if !$0 { vehicleSaveErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { vehicleSaveErrorMessage = nil }
+        } message: {
+            Text(vehicleSaveErrorMessage ?? "")
         }
     }
 
@@ -429,6 +438,8 @@ struct OnboardingView: View {
                 #if DEBUG
                 print("[85Blends] OnboardingView: vehicle save failed:", error)
                 #endif
+                vehicleSaveErrorMessage = "Couldn't save your vehicle. Please try again."
+                return
             }
         }
 
