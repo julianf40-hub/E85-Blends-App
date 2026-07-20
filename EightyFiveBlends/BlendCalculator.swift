@@ -92,9 +92,14 @@ struct BlendCalculator {
         let currentFuelGallons = input.tankSizeGallons * input.currentFuelLevelPercent / 100
 
         // Partial fill: resolve the target volume. Nil means fill to the full tank.
-        if let tPercent = input.targetFuelLevelPercent,
-           tPercent < input.currentFuelLevelPercent - epsilon {
-            return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+        if let tPercent = input.targetFuelLevelPercent {
+            guard tPercent <= 100 + epsilon else {
+                return warningResult(input: input, message: "Target fill level cannot exceed 100% of the tank.")
+            }
+
+            guard tPercent >= input.currentFuelLevelPercent - epsilon else {
+                return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+            }
         }
 
         let targetFillPercent = input.targetFuelLevelPercent ?? 100.0
@@ -277,9 +282,14 @@ struct BlendCalculator {
             return warningResult(input: input, message: "Fuel levels and ethanol percentages must stay between 0% and 100%.")
         }
 
-        if let tPercent = input.targetFuelLevelPercent,
-           tPercent < input.currentFuelLevelPercent - epsilon {
-            return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+        if let tPercent = input.targetFuelLevelPercent {
+            guard tPercent <= 100 + epsilon else {
+                return warningResult(input: input, message: "Target fill level cannot exceed 100% of the tank.")
+            }
+
+            guard tPercent >= input.currentFuelLevelPercent - epsilon else {
+                return warningResult(input: input, message: "Target fill level cannot be lower than the current fuel level.")
+            }
         }
 
         let currentFuelGallons = input.tankSizeGallons * input.currentFuelLevelPercent / 100
@@ -328,7 +338,12 @@ struct BlendCalculator {
         finalEthanolPercent: Double? = nil,
         message: String
     ) -> Result {
-        let blendPercent = finalEthanolPercent ?? rounded(input.targetEthanolPercent, places: 1)
+        // input.targetEthanolPercent may itself be the invalid (NaN/infinite) value that
+        // triggered this warning, so it isn't safe to round unconditionally here.
+        let fallbackPercent = input.targetEthanolPercent.isFinite
+            ? rounded(input.targetEthanolPercent, places: 1)
+            : 0
+        let blendPercent = finalEthanolPercent ?? fallbackPercent
 
         return Result(
             e85Gallons: 0,
@@ -347,6 +362,11 @@ struct BlendCalculator {
     }
 
     private static func label(for percent: Double) -> String {
-        "E\(Int(percent.rounded()))"
+        // Int(_:) traps on NaN/infinite values and on doubles outside Int's range, both of
+        // which can reach here from invalid or extreme caller input — clamp first so this
+        // never crashes, even when it's only building a label for an already-invalid result.
+        guard percent.isFinite else { return "E--" }
+        let clampedPercent = min(max(percent, -999), 999).rounded()
+        return "E\(Int(clampedPercent))"
     }
 }

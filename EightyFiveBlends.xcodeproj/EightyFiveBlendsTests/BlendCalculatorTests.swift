@@ -303,4 +303,240 @@ struct BlendCalculatorTests {
         #expect(result.finalEthanolPercent.isFinite)
         #expect(result.estimatedOctane.isFinite && result.estimatedOctane >= 0)
     }
+
+    // MARK: - Current ethanol equals target ethanol
+
+    @Test("Current ethanol content equal to target ethanol content tops off with gas only, no warning")
+    func currentEthanol_equalsTargetEthanol_producesGasOnlyTopOff() {
+        // 18 gal tank, 25% of E10 in the tank, target E10 (same as current and same as pump
+        // gas) — the correct answer is "top off with gas, no E85 needed."
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25, targetEthanol: 10))
+        #expect(result.warningMessage == nil)
+        #expect(result.e85Gallons == 0)
+        #expect(abs(result.gasGallons - 13.5) < 0.01)
+        #expect(abs(result.finalEthanolPercent - 10.0) < 0.1)
+    }
+
+    // MARK: - Current fuel level at zero (ordinary target, not the E85-only special case)
+
+    @Test("Empty tank with an ordinary reachable target fills the whole tank at that blend")
+    func emptyTank_ordinaryTarget_fillsFullTankAtBlend() {
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 0, targetEthanol: 30))
+        #expect(result.warningMessage == nil)
+        #expect(result.guidanceMessage == nil)
+        #expect(abs(result.totalGallonsToAdd - 18.0) < 0.01)
+        #expect(abs(result.finalEthanolPercent - 30.0) < 0.2)
+    }
+
+    // MARK: - Nearly full tank
+
+    @Test("Nearly full tank with too little room to reach a lower target warns instead of computing an impossible fill")
+    func nearlyFullTank_insufficientRoom_warns() {
+        // 18 gal tank at 98% (only 0.36 gal of headroom) can't add enough E85 to move a
+        // deeply diluted tank down to a lower target blend.
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 98, targetEthanol: 30))
+        #expect(result.warningMessage != nil)
+        #expect(result.totalGallonsToAdd == 0)
+    }
+
+    @Test("Nearly full tank with a reachable target computes a small precise fill using the remaining space")
+    func nearlyFullTank_reachableTarget_computesSmallFill() {
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 20,
+            currentFuelLevelPercent: 95,
+            currentFuelEthanolPercent: 28,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(abs(result.totalGallonsToAdd - 1.0) < 0.01)
+        #expect(abs(result.finalEthanolPercent - 30.0) < 0.2)
+    }
+
+    // MARK: - Requested target mathematically unreachable (generic, non-E85 special case)
+
+    @Test("Diluting below both the current fuel and pump gas ethanol content is rejected as unreachable")
+    func dilutingBelowBothSources_isRejectedAsUnreachable() {
+        // Nearly full tank of E10, target E5: no amount of this pump's fuel (E10 or E85) can
+        // dilute the tank lower than the lowest-ethanol fuel already available.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 90,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 5,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage != nil)
+        #expect(result.guidanceMessage == nil)
+        #expect(result.e85Gallons == 0)
+        #expect(result.totalGallonsToAdd == 0)
+    }
+
+    // MARK: - Invalid tank capacities and percentages
+
+    @Test("Zero or negative tank size is rejected")
+    func invalidTankSize_zeroOrNegative_isRejected() {
+        for tankSize in [0.0, -10.0] {
+            let result = BlendCalculator.calculate(input: baseInput(tankSize: tankSize, currentLevel: 25))
+            #expect(result.warningMessage != nil)
+            #expect(result.totalGallonsToAdd == 0)
+        }
+    }
+
+    @Test("Current fuel level outside 0 to 100 percent is rejected")
+    func invalidCurrentFuelLevel_outOfRange_isRejected() {
+        for level in [-5.0, 150.0] {
+            let result = BlendCalculator.calculate(input: baseInput(currentLevel: level))
+            #expect(result.warningMessage != nil)
+            #expect(result.totalGallonsToAdd == 0)
+        }
+    }
+
+    @Test("Ethanol percentage outside 0 to 100 is rejected")
+    func invalidEthanolPercent_outOfRange_isRejected() {
+        for target in [-10.0, 150.0] {
+            let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25, targetEthanol: target))
+            #expect(result.warningMessage != nil)
+            #expect(result.totalGallonsToAdd == 0)
+        }
+    }
+
+    @Test("Negative octane values are rejected")
+    func invalidOctane_negative_isRejected() {
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: -5,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage != nil)
+        #expect(result.totalGallonsToAdd == 0)
+    }
+
+    @Test("Target fill level above 100 percent is rejected instead of overfilling past tank capacity")
+    func targetFillLevelAbove100_isRejected() {
+        let result = BlendCalculator.calculate(input: baseInput(currentLevel: 25, targetLevel: 150))
+        #expect(result.warningMessage != nil)
+        #expect(result.totalGallonsToAdd == 0)
+    }
+
+    @Test("Gas-only fill also rejects a target level above 100 percent")
+    func gasOnly_targetFillLevelAbove100_isRejected() {
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91,
+            targetFuelLevelPercent: 120
+        )
+        let result = BlendCalculator.gasOnlyFill(input: input)
+        #expect(result.warningMessage != nil)
+        #expect(result.totalGallonsToAdd == 0)
+    }
+
+    // MARK: - NaN and infinity protection
+
+    @Test("NaN and infinite inputs degrade gracefully instead of propagating invalid numbers")
+    func nanAndInfiniteInputs_degradeGracefully() {
+        let invalidTankSizes: [Double] = [.nan, .infinity, -.infinity]
+        for tankSize in invalidTankSizes {
+            let result = BlendCalculator.calculate(input: baseInput(tankSize: tankSize, currentLevel: 25))
+            #expect(result.warningMessage != nil)
+            #expect(result.e85Gallons.isFinite)
+            #expect(result.gasGallons.isFinite)
+            #expect(result.totalGallonsToAdd == 0)
+        }
+
+        let nanTargetInput = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: .nan,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let nanTargetResult = BlendCalculator.calculate(input: nanTargetInput)
+        #expect(nanTargetResult.warningMessage != nil)
+        #expect(nanTargetResult.finalEthanolPercent.isFinite)
+        // Regression guard: a NaN target used to reach `Int(percent.rounded())` in the
+        // display-label helper and crash the app outright instead of showing a warning.
+        #expect(nanTargetResult.blendLabel == "E--")
+
+        let infiniteOctaneInput = BlendCalculator.Input(
+            tankSizeGallons: 18,
+            currentFuelLevelPercent: 25,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: .infinity,
+            gasOctane: 91
+        )
+        let infiniteOctaneResult = BlendCalculator.calculate(input: infiniteOctaneInput)
+        #expect(infiniteOctaneResult.warningMessage != nil)
+        #expect(infiniteOctaneResult.estimatedOctane.isFinite)
+    }
+
+    // MARK: - Floating point rounding near display boundaries
+
+    @Test("Target ethanol exactly at a half-percent boundary rounds the display label away from zero")
+    func labelRounding_halfPercentBoundary_roundsAwayFromZero() {
+        // 100 gal tank (so percent == gallons), empty, target exactly 84.5% with pump fuel at
+        // E95/E80 — a clean, reachable blend that keeps the target's raw 84.5 as the label.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 100,
+            currentFuelLevelPercent: 0,
+            currentFuelEthanolPercent: 0,
+            targetEthanolPercent: 84.5,
+            e85EthanolPercent: 95,
+            gasEthanolPercent: 80,
+            e85Octane: 105,
+            gasOctane: 91
+        )
+        let result = BlendCalculator.calculate(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(result.blendLabel == "E85")
+        #expect(abs(result.finalEthanolPercent - 84.5) < 0.01)
+    }
+
+    @Test("Gallons rounding at an exact eighth-gallon boundary rounds away from zero to two decimal places")
+    func gallonsRounding_eighthGallonBoundary_roundsAwayFromZero() {
+        // tankSize = 100 makes percent == gallons. 24.125 - 20 = 4.125 gal exactly
+        // (both operands are exactly representable in binary floating point), so rounding
+        // to 2 places must resolve the trailing half-cent (412.5 -> 413) the same way every time.
+        let input = BlendCalculator.Input(
+            tankSizeGallons: 100,
+            currentFuelLevelPercent: 20,
+            currentFuelEthanolPercent: 10,
+            targetEthanolPercent: 30,
+            e85EthanolPercent: 85,
+            gasEthanolPercent: 10,
+            e85Octane: 105,
+            gasOctane: 91,
+            targetFuelLevelPercent: 24.125
+        )
+        let result = BlendCalculator.gasOnlyFill(input: input)
+        #expect(result.warningMessage == nil)
+        #expect(abs(result.gasGallons - 4.13) < 0.001)
+        #expect(abs(result.totalGallonsToAdd - 4.13) < 0.001)
+    }
 }
