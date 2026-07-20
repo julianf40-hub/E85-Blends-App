@@ -548,10 +548,9 @@ struct RemindersView: View {
         }
 
         if repeatsDate {
-            reminder.dueDate = Calendar.current.date(
-                byAdding: .day,
-                value: reminder.repeatDateIntervalDays,
-                to: completionDate
+            reminder.dueDate = ReminderScheduling.nextDueDate(
+                afterCompleting: completionDate,
+                repeatIntervalDays: reminder.repeatDateIntervalDays
             ) ?? reminder.dueDate
         }
 
@@ -720,7 +719,7 @@ private struct ReminderStatusInfo: Identifiable {
     }
 
     var isDateOverdue: Bool {
-        reminder.dateEnabled && Calendar.current.startOfDay(for: reminder.dueDate) < Calendar.current.startOfDay(for: .now)
+        reminder.dateEnabled && ReminderScheduling.isOverdue(dueDate: reminder.dueDate)
     }
 
     var statusText: String {
@@ -736,7 +735,7 @@ private struct ReminderStatusInfo: Identifiable {
                 parts.append("\(max(currentOdometer - reminder.dueMileage, 0)) mi overdue")
             }
             if reminder.dateEnabled {
-                let days = max(Calendar.current.dateComponents([.day], from: reminder.dueDate, to: .now).day ?? 0, 0)
+                let days = max(ReminderScheduling.wholeDays(from: reminder.dueDate, to: .now), 0)
                 parts.append("\(days) day\(days == 1 ? "" : "s") overdue")
             }
             return parts.isEmpty ? "Overdue" : parts.joined(separator: " • ")
@@ -747,7 +746,7 @@ private struct ReminderStatusInfo: Identifiable {
                 parts.append("\(milesRemaining) mi remaining")
             }
             if reminder.dateEnabled {
-                let daysRemaining = max(Calendar.current.dateComponents([.day], from: .now, to: reminder.dueDate).day ?? 0, 0)
+                let daysRemaining = max(ReminderScheduling.wholeDays(from: .now, to: reminder.dueDate), 0)
                 parts.append("\(daysRemaining) day\(daysRemaining == 1 ? "" : "s") remaining")
             }
             return parts.isEmpty ? "Upcoming" : parts.joined(separator: " • ")
@@ -773,11 +772,11 @@ private struct ReminderStatusInfo: Identifiable {
         switch group {
         case .overdue:
             let mileageScore = reminder.mileageEnabled ? -(currentOdometer.map { $0 - reminder.dueMileage } ?? .max) : .max / 2
-            let dateScore = reminder.dateEnabled ? -(Calendar.current.dateComponents([.day], from: reminder.dueDate, to: .now).day ?? 0) : .max / 2
+            let dateScore = reminder.dateEnabled ? -ReminderScheduling.wholeDays(from: reminder.dueDate, to: .now) : .max / 2
             return min(mileageScore, dateScore)
         case .upcoming:
             let mileageScore = reminder.mileageEnabled ? max(reminder.dueMileage - (currentOdometer ?? reminder.dueMileage), 0) : .max / 2
-            let dateScore = reminder.dateEnabled ? max(Calendar.current.dateComponents([.day], from: .now, to: reminder.dueDate).day ?? 0, 0) : .max / 2
+            let dateScore = reminder.dateEnabled ? max(ReminderScheduling.wholeDays(from: .now, to: reminder.dueDate), 0) : .max / 2
             return min(mileageScore, dateScore)
         case .completed:
             let completedAtInterval = reminder.completedAt?.timeIntervalSince1970 ?? reminder.updatedAt.timeIntervalSince1970
