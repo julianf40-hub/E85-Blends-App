@@ -51,6 +51,15 @@ struct TripPlannerView: View {
     /// this avoids MapKit allocating a 0×0 Metal drawable during the same layout pass.
     @State private var showRouteMap = false
 
+    /// Pure request-generation and plan-staleness tracking, extracted from view state so it's
+    /// independently unit-testable (see PlanRequestTracker.swift / PlanRequestTrackerTests).
+    /// Every planning-related Task captures the generation active when it starts and confirms
+    /// via `requestTracker.isCurrent(_:)` that it's still current before writing any shared
+    /// result/loading/error state — Task cancellation is cooperative (a superseded task can
+    /// still be mid-flight when a newer one starts), so this is what actually prevents a stale
+    /// request from overwriting a newer one, not `Task.isCancelled` alone.
+    @State private var requestTracker = PlanRequestTracker()
+
     // MARK: - Route-aware E85 station discovery (Phase 2)
     @State private var analysis: RouteE85Analysis?
     @State private var isDiscoveringStations = false
@@ -404,6 +413,9 @@ struct TripPlannerView: View {
                     }
 
                     if let plan {
+                        if requestTracker.isPlanStale {
+                            planStaleBanner
+                        }
                         routeMapCard(plan)
                         tripSummaryCard(plan)
                         fuelPlanCardIfNeeded(plan)
@@ -453,11 +465,22 @@ struct TripPlannerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: prefillFromActiveVehicleIfNeeded)
         .onDisappear {
-            planTask?.cancel()
-            discoveryTask?.cancel()
-            gasDiscoveryTask?.cancel()
-            gasOnlyDiscoveryTask?.cancel()
+            // Cancellation only — leaving the screen must not clear an already-valid plan
+            // the user may simply be navigating back to (e.g. after a momentary sheet or
+            // backgrounding). The generation bump still guarantees any in-flight work can't
+            // write stale results in after this point.
+            cancelAllPlanningTasks()
+            requestTracker.supersedeInFlightWork()
         }
+        .onChange(of: origin) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: destination) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: selectedVehicleID) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: tankSizeText) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: mpgText) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: targetBlend) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: currentFuelPercent) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: targetReservePercent) { _, _ in invalidatePlanIfNeeded() }
+        .onChange(of: fuelBackupMode) { _, _ in invalidatePlanIfNeeded() }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 savedTripsToolbarButton
@@ -658,31 +681,12 @@ struct TripPlannerView: View {
         let isSelected = abs(targetBlend - blend) < 0.5
         let chipLabel = isGasOnly ? "Gas Only" : "E\(Int(blend))"
         return Button {
-            if isGasOnly {
-                // Cancel any in-flight E85 discovery and clear prior results so the
-                // summary card immediately reflects Gas Only mode.
-                discoveryTask?.cancel()
-                gasDiscoveryTask?.cancel()
-                analysis = nil
-                stationError = nil
-                isDiscoveringStations = false
-                backupGasStations = []
-                gasStationError = nil
-                isDiscoveringGasStations = false
-                showBackupGasStations = false
-                targetBlend = Self.gasolineOnlyBlend
-            } else {
-                // Switching away from Gas Only: clear stale gas only results.
-                gasOnlyDiscoveryTask?.cancel()
-                gasOnlyStations = []
-                gasOnlyRecommendedStops = []
-                gasOnlyStationError = nil
-                isDiscoveringGasOnlyStations = false
-                gasOnlyOutcome = nil
-                gasOnlyRisk = nil
-                gasOnlyDestinationReserveFraction = nil
-                targetBlend = blend
-            }
+            // Cancel any in-flight discovery for the mode being left and clear prior
+            // results (both E85- and Gas-Only-side) via the one authoritative reset path,
+            // without disturbing an already-visible route map. Setting targetBlend after
+            // triggers invalidatePlanIfNeeded() via onChange if a plan is still present.
+            resetForNewPlanningAttempt()
+            targetBlend = isGasOnly ? Self.gasolineOnlyBlend : blend
             AppHaptics.selection()
         } label: {
             Text(chipLabel)
@@ -945,6 +949,31 @@ struct TripPlannerView: View {
         }
         .buttonStyle(.plain)
         .disabled(!canPlan)
+    }
+
+    /// Shown above the results whenever a route-affecting input has changed since `plan` was
+    /// generated (see `invalidatePlanIfNeeded()`). The stale plan/stations stay visible below
+    /// it rather than disappearing — this only flags them as out of date and points at the
+    /// existing Plan Route action (always available via the bottom bar) to refresh them.
+    private var planStaleBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.gasOrange)
+            Text("Your trip settings changed. Plan the route again to update your fuel stops.")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.gasOrange.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.Colors.gasOrange.opacity(0.3), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
     }
 
     private func errorCard(_ message: String) -> some View {
@@ -2797,17 +2826,38 @@ struct TripPlannerView: View {
 
     // MARK: - Route planning
 
-    /// Tears down the route results (used on a failed plan). Removing the map here is fine —
-    /// the next successful plan re-inserts it once, with the deferred/size-gated guard.
-    private func clearRouteResults() {
-        plan = nil
+    /// The single authoritative place that cancels Trip Planner's in-flight work. Every other
+    /// place that needs to stop in-flight planning tasks should go through this (directly, or
+    /// via `resetForNewPlanningAttempt()`/`clearRouteResults()`) rather than cancelling tasks
+    /// individually. Cancellation alone is only a hint for a task to stop early — callers pair
+    /// this with a `requestTracker` generation advance (see below) to make a superseded task's
+    /// writes inert even if it doesn't stop before completing.
+    private func cancelAllPlanningTasks() {
+        planTask?.cancel()
+        discoveryTask?.cancel()
+        gasDiscoveryTask?.cancel()
+        gasOnlyDiscoveryTask?.cancel()
+    }
+
+    /// Cancels in-flight work and clears every per-attempt result/loading/error field EXCEPT
+    /// `plan`, `showRouteMap`, and `isPlanning` — used at the start of a (re)plan and anywhere
+    /// else that should reset discovery state without tearing down an already-visible route
+    /// map. Returns the new generation so the caller can tag the Task(s) it starts next.
+    /// Callers that need a full teardown (including `plan`/`showRouteMap`) should call
+    /// `clearRouteResults()` instead.
+    @discardableResult
+    private func resetForNewPlanningAttempt() -> Int {
+        cancelAllPlanningTasks()
+        let generation = requestTracker.beginNewAttempt()
+        isPlanning = false
+        errorMessage = nil
         analysis = nil
-        showRouteMap = false
+        stationError = nil
+        isDiscoveringStations = false
         backupGasStations = []
         gasStationError = nil
         isDiscoveringGasStations = false
         showBackupGasStations = false
-        gasOnlyDiscoveryTask?.cancel()
         gasOnlyStations = []
         gasOnlyRecommendedStops = []
         gasOnlyStationError = nil
@@ -2815,6 +2865,26 @@ struct TripPlannerView: View {
         gasOnlyOutcome = nil
         gasOnlyRisk = nil
         gasOnlyDestinationReserveFraction = nil
+        return generation
+    }
+
+    /// Full teardown — used on a failed plan, a swap, or applying a different saved trip.
+    /// Removing the map here is fine — the next successful plan re-inserts it once, with the
+    /// deferred/size-gated guard.
+    private func clearRouteResults() {
+        resetForNewPlanningAttempt()
+        plan = nil
+        showRouteMap = false
+    }
+
+    /// Call whenever an input that materially affects a completed plan changes (vehicle, tank
+    /// size, MPG, current fuel level, target blend/fuel mode, arrival reserve, backup-gas mode,
+    /// origin, or destination). Flags the existing plan as stale instead of silently continuing
+    /// to present it as current — it does not clear the plan, touch any other input, or start a
+    /// new network request; the user still has to tap Plan Route to act on it. A no-op before
+    /// any plan has ever been generated, so the stale banner never shows on first input.
+    private func invalidatePlanIfNeeded() {
+        requestTracker.invalidate(hasPlan: plan != nil)
     }
 
     // MARK: - Swap origin / destination
@@ -2927,32 +2997,27 @@ struct TripPlannerView: View {
         let destinationQuery = trimmedDestination
         guard originQuery.isEmpty == false, destinationQuery.isEmpty == false else { return }
 
-        planTask?.cancel()
-        discoveryTask?.cancel()
-        gasDiscoveryTask?.cancel()
-        isPlanning = true
-        errorMessage = nil
-        analysis = nil
-        stationError = nil
-        isDiscoveringStations = false
-        backupGasStations = []
-        gasStationError = nil
-        isDiscoveringGasStations = false
-        showBackupGasStations = false
         // NOTE: we intentionally do NOT clear `plan`/`showRouteMap` here. Keeping the existing
         // route map alive across a replan lets SwiftUI update the live MapKit view's content
         // instead of tearing it down and re-instantiating it — the re-instantiation is what
         // triggered MapKit's 0×0-drawable Metal assertion on dense routes. On a failed plan we
-        // clear them in the catch blocks below.
+        // clear them in the catch blocks below via clearRouteResults().
+        let generation = resetForNewPlanningAttempt()
+        isPlanning = true
         AppHaptics.impact()
 
         let fuelPercent = currentFuelPercent
 
         planTask = Task { @MainActor in
-            defer { isPlanning = false }
+            defer {
+                // A superseded attempt must not clear a newer attempt's loading state.
+                if requestTracker.isCurrent(generation) { isPlanning = false }
+            }
             do {
                 let source = try await geocode(originQuery, label: "starting location")
+                guard requestTracker.isCurrent(generation) else { return }
                 let dest = try await geocode(destinationQuery, label: "destination")
+                guard requestTracker.isCurrent(generation) else { return }
 
                 let request = MKDirections.Request()
                 request.source = MKMapItem(placemark: MKPlacemark(coordinate: source))
@@ -2960,7 +3025,7 @@ struct TripPlannerView: View {
                 request.transportType = .automobile
 
                 let response = try await MKDirections(request: request).calculate()
-                guard Task.isCancelled == false else { return }
+                guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
                 guard let route = response.routes.first else {
                     clearRouteResults()
                     errorMessage = "No driving route was found between these locations. Try nearby cities or check spelling."
@@ -2986,6 +3051,7 @@ struct TripPlannerView: View {
                     // during MTLStoreActionMultisampleResolve on camera resize).
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 80_000_000)
+                        guard requestTracker.isCurrent(generation) else { return }
                         showRouteMap = true
                     }
                 }
@@ -2999,7 +3065,8 @@ struct TripPlannerView: View {
                         route: route,
                         tankSize: tankSize,
                         mpg: mpg,
-                        currentFuelPercent: fuelPercent
+                        currentFuelPercent: fuelPercent,
+                        generation: generation
                     )
                     return
                 }
@@ -3009,25 +3076,31 @@ struct TripPlannerView: View {
                     route: route,
                     tankSize: tankSize,
                     mpg: mpg,
-                    currentFuelPercent: fuelPercent
+                    currentFuelPercent: fuelPercent,
+                    generation: generation
                 )
 
                 // Backup gas discovery runs in parallel, only when gas backup is allowed.
                 if fuelBackupMode == .gasBackupAllowed {
-                    discoverBackupGasStations(route: route)
+                    discoverBackupGasStations(route: route, generation: generation)
                 }
             } catch is CancellationError {
+                // Cancellation is not a failure — never surface it as a planning error.
                 return
             } catch let clError as CLError {
+                guard requestTracker.isCurrent(generation) else { return }
                 clearRouteResults()
                 errorMessage = geocodeErrorMessage(for: clError)
             } catch let geocodeError as GeocodeFailure {
+                guard requestTracker.isCurrent(generation) else { return }
                 clearRouteResults()
                 errorMessage = geocodeError.message
             } catch let urlError as URLError where urlError.code == .notConnectedToInternet {
+                guard requestTracker.isCurrent(generation) else { return }
                 clearRouteResults()
                 errorMessage = "You're offline. Connect to the internet to plan a route."
             } catch {
+                guard requestTracker.isCurrent(generation) else { return }
                 clearRouteResults()
                 errorMessage = "We couldn't plan this route. Please check your locations and try again."
             }
@@ -3063,7 +3136,8 @@ struct TripPlannerView: View {
         route: MKRoute,
         tankSize: Double,
         mpg: Double,
-        currentFuelPercent: Double
+        currentFuelPercent: Double,
+        generation: Int
     ) {
         // Cancel any in-flight discovery so rapid replanning never stacks requests.
         discoveryTask?.cancel()
@@ -3084,7 +3158,10 @@ struct TripPlannerView: View {
 
         let reportedKeys = StationReportStore.shared.recentNegativeKeys
         discoveryTask = Task { @MainActor in
-            defer { isDiscoveringStations = false }
+            defer {
+                // A superseded discovery must not hide a newer request's loading spinner.
+                if requestTracker.isCurrent(generation) { isDiscoveringStations = false }
+            }
             do {
                 let result = try await RouteE85Planner().analyze(
                     routeCoordinates: coordinates,
@@ -3092,15 +3169,17 @@ struct TripPlannerView: View {
                     context: context,
                     reportedUnavailableKeys: reportedKeys
                 )
-                guard Task.isCancelled == false else { return }
+                guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
                 analysis = result
                 // Backup Gas Stations always starts collapsed after a (re)plan — the user
                 // expands it manually via the "Show" row. See showBackupGasStations.
             } catch is CancellationError {
                 return
             } catch let plannerError as RouteE85PlannerError {
+                guard requestTracker.isCurrent(generation) else { return }
                 stationError = plannerError.errorDescription
             } catch {
+                guard requestTracker.isCurrent(generation) else { return }
                 stationError = "We couldn't load E85 stations for this route. Please try again."
             }
         }
@@ -3108,7 +3187,7 @@ struct TripPlannerView: View {
 
     // MARK: - Backup gas station discovery
 
-    private func discoverBackupGasStations(route: MKRoute) {
+    private func discoverBackupGasStations(route: MKRoute, generation: Int) {
         gasDiscoveryTask?.cancel()
         backupGasStations = []
         gasStationError = nil
@@ -3118,13 +3197,15 @@ struct TripPlannerView: View {
         let distanceMeters = route.distance
 
         gasDiscoveryTask = Task { @MainActor in
-            defer { isDiscoveringGasStations = false }
-            guard Task.isCancelled == false else { return }
+            defer {
+                if requestTracker.isCurrent(generation) { isDiscoveringGasStations = false }
+            }
+            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
             let stations = await BackupGasStationFinder().find(
                 routeCoordinates: coordinates,
                 routeDistanceMeters: distanceMeters
             )
-            guard Task.isCancelled == false else { return }
+            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
             if stations.isEmpty {
                 gasStationError = "No backup gas stations found along this route."
             } else {
@@ -3139,7 +3220,8 @@ struct TripPlannerView: View {
         route: MKRoute,
         tankSize: Double,
         mpg: Double,
-        currentFuelPercent: Double
+        currentFuelPercent: Double,
+        generation: Int
     ) {
         gasOnlyDiscoveryTask?.cancel()
         gasOnlyStations = []
@@ -3155,15 +3237,17 @@ struct TripPlannerView: View {
         let fuelPct = currentFuelPercent
 
         gasOnlyDiscoveryTask = Task { @MainActor in
-            defer { isDiscoveringGasOnlyStations = false }
-            guard Task.isCancelled == false else { return }
+            defer {
+                if requestTracker.isCurrent(generation) { isDiscoveringGasOnlyStations = false }
+            }
+            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
 
             let stations = await BackupGasStationFinder().find(
                 routeCoordinates: coordinates,
                 routeDistanceMeters: distanceMeters
             )
 
-            guard Task.isCancelled == false else { return }
+            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
 
             gasOnlyStations = stations
             computeGasOnlyPlan(

@@ -19,7 +19,7 @@ import CoreLocation
 
 /// Whether the planner may treat gasoline as a safe fallback when E85 can't satisfy the route
 /// or the selected arrival-reserve target.
-enum FuelBackupMode {
+enum FuelBackupMode: Equatable {
     /// E85 preferred, but the vehicle can safely continue on gasoline if needed.
     case gasBackupAllowed
     /// The trip is only considered safe when E85 stops can support it.
