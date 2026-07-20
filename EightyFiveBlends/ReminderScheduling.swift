@@ -16,11 +16,17 @@ enum ReminderScheduling {
         calendar.startOfDay(for: dueDate) < calendar.startOfDay(for: asOf)
     }
 
-    /// Whole calendar days between two dates (`to` minus `from`). Can be negative when `to`
-    /// is earlier than `from` — callers that only want a non-negative count should clamp the
-    /// result themselves, matching how each call site already used this before centralizing.
+    /// Whole calendar days between two dates (`to` minus `from`), compared by calendar day
+    /// rather than elapsed clock time. Both dates are normalized to the start of their
+    /// calendar day first, so the result depends only on which calendar dates are involved —
+    /// not on what time of day either falls at, and not on what time of day this is called.
+    /// Can be negative when `to`'s calendar day is earlier than `from`'s — callers that only
+    /// want a non-negative count should clamp the result themselves, matching how each call
+    /// site already used this before centralizing.
     static func wholeDays(from: Date, to: Date, calendar: Calendar = .current) -> Int {
-        calendar.dateComponents([.day], from: from, to: to).day ?? 0
+        let fromDay = calendar.startOfDay(for: from)
+        let toDay = calendar.startOfDay(for: to)
+        return calendar.dateComponents([.day], from: fromDay, to: toDay).day ?? 0
     }
 
     /// The next due date after completing a recurring reminder. A non-positive interval means
