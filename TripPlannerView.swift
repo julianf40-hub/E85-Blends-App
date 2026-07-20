@@ -1819,13 +1819,13 @@ struct TripPlannerView: View {
             }
 
             HStack(spacing: 8) {
-                gasHandoffButton(title: "Apple Maps", icon: "applelogo") {
+                gasHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
                     openGasStationInAppleMaps(station)
                 }
-                gasHandoffButton(title: "Google", icon: "globe") {
+                gasHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
                     openExternal(googleMapsURL(to: station.coordinate))
                 }
-                gasHandoffButton(title: "Waze", icon: "car.fill") {
+                gasHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
                     openExternal(wazeURL(to: station.coordinate))
                 }
             }
@@ -1873,7 +1873,7 @@ struct TripPlannerView: View {
         )
     }
 
-    private func gasHandoffButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func gasHandoffButton(title: String, icon: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button {
             AppHaptics.selection()
             action()
@@ -1897,6 +1897,9 @@ struct TripPlannerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .accessibilityHint(disabled ? "Plan the route again to update this stop before getting directions." : "")
     }
 
     private func openGasStationInAppleMaps(_ station: BackupGasStation) {
@@ -2051,13 +2054,13 @@ struct TripPlannerView: View {
 
             // Per-station navigation handoff
             HStack(spacing: 8) {
-                stationHandoffButton(title: "Apple Maps", icon: "applelogo") {
+                stationHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
                     openStationInAppleMaps(stop.station)
                 }
-                stationHandoffButton(title: "Google", icon: "globe") {
+                stationHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
                     openExternal(googleMapsURL(to: stop.station.coordinate))
                 }
-                stationHandoffButton(title: "Waze", icon: "car.fill") {
+                stationHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
                     openExternal(wazeURL(to: stop.station.coordinate))
                 }
             }
@@ -2098,7 +2101,7 @@ struct TripPlannerView: View {
         )
     }
 
-    private func stationHandoffButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func stationHandoffButton(title: String, icon: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button {
             AppHaptics.selection()
             action()
@@ -2122,6 +2125,9 @@ struct TripPlannerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .accessibilityHint(disabled ? "Plan the route again to update this stop before getting directions." : "")
     }
 
     private var discoveringStationsCard: some View {
@@ -2310,13 +2316,13 @@ struct TripPlannerView: View {
             }
 
             HStack(spacing: 8) {
-                stationHandoffButton(title: "Apple Maps", icon: "applelogo") {
+                stationHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
                     openGasStationInAppleMaps(station)
                 }
-                stationHandoffButton(title: "Google", icon: "globe") {
+                stationHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
                     openExternal(googleMapsURL(to: station.coordinate))
                 }
-                stationHandoffButton(title: "Waze", icon: "car.fill") {
+                stationHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
                     openExternal(wazeURL(to: station.coordinate))
                 }
             }
@@ -2655,13 +2661,13 @@ struct TripPlannerView: View {
                     : nil
             )
             HStack(spacing: 10) {
-                handoffButton(title: "Apple Maps", icon: "applelogo") {
+                handoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
                     openInAppleMaps(plan)
                 }
-                handoffButton(title: "Google Maps", icon: "globe") {
+                handoffButton(title: "Google Maps", icon: "globe", disabled: requestTracker.isPlanStale) {
                     openExternal(navigationGoogleMapsURL(plan))
                 }
-                handoffButton(title: "Waze", icon: "car.fill") {
+                handoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
                     openExternal(navigationWazeURL(plan))
                 }
             }
@@ -2706,11 +2712,14 @@ struct TripPlannerView: View {
                     .overlay(Capsule().stroke(AppTheme.Colors.borderColor, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .disabled(requestTracker.isPlanStale)
+                .opacity(requestTracker.isPlanStale ? 0.45 : 1)
+                .accessibilityHint(requestTracker.isPlanStale ? "Plan the route again to update this stop before copying it." : "")
             }
         }
     }
 
-    private func handoffButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+    private func handoffButton(title: String, icon: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
         Button {
             AppHaptics.selection()
             action()
@@ -2735,6 +2744,9 @@ struct TripPlannerView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1)
+        .accessibilityHint(disabled ? "Plan the route again to update this before getting directions." : "")
     }
 
     // MARK: - Validation
@@ -3595,8 +3607,9 @@ struct TripPlannerView: View {
             SectionHeader(title: "Save Route")
 
             if isPro {
+                let isStale = requestTracker.isPlanStale
                 Button {
-                    guard alreadySaved == false else { return }
+                    guard alreadySaved == false, isStale == false else { return }
                     saveCurrentRoute(plan)
                 } label: {
                     HStack(spacing: 8) {
@@ -3616,9 +3629,15 @@ struct TripPlannerView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(alreadySaved)
+                .disabled(alreadySaved || isStale)
+                .opacity(isStale && alreadySaved == false ? 0.45 : 1)
+                .accessibilityHint(isStale ? "Plan the route again to save your changed trip settings." : "")
 
-                if alreadySaved {
+                if isStale {
+                    Text("Plan the route again to save your changed trip settings.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                } else if alreadySaved {
                     Text("Open Saved Trips to plan again or delete.")
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textMuted)
