@@ -1141,6 +1141,17 @@ struct StationsView: View {
     }
 
     private func updateStation(_ station: FuelStation, from draft: StationDraft) {
+        if draft.lastKnownE85Price != 0, StationDataValidation.isValidPrice(draft.lastKnownE85Price) == false {
+            infoMessage = "Enter a valid E85 price greater than $0 (or leave it at $0 if unknown)."
+            return
+        }
+
+        if let latitude = draft.latitude, let longitude = draft.longitude,
+           StationDataValidation.isValidCoordinate(latitude: latitude, longitude: longitude) == false {
+            infoMessage = "Enter a valid latitude (-90 to 90) and longitude (-180 to 180)."
+            return
+        }
+
         station.name = draft.name
         station.address = draft.address
         station.city = draft.city
@@ -2037,7 +2048,7 @@ private struct StationRowCard: View {
     }
 
     private var daysSincePriceUpdate: Int {
-        Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: station.lastUpdated), to: Calendar.current.startOfDay(for: .now)).day ?? 0
+        StationDataValidation.daysSince(station.lastUpdated)
     }
 
     private var priceFreshnessText: String {
@@ -2637,16 +2648,11 @@ private extension Date {
             return "Reported yesterday"
         }
 
-        let start = Calendar.current.startOfDay(for: self)
-        let now = Calendar.current.startOfDay(for: .now)
-        let days = max(Calendar.current.dateComponents([.day], from: start, to: now).day ?? 0, 0)
+        let days = StationDataValidation.daysSince(self)
         return "Reported \(days) day\(days == 1 ? "" : "s") ago"
     }
 
     var communityPriceIsStale: Bool {
-        let start = Calendar.current.startOfDay(for: self)
-        let now = Calendar.current.startOfDay(for: .now)
-        let days = max(Calendar.current.dateComponents([.day], from: start, to: now).day ?? 0, 0)
-        return days > 14
+        StationDataValidation.isStale(daysSince: StationDataValidation.daysSince(self))
     }
 }

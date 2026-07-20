@@ -175,7 +175,7 @@ enum FuelLogStore {
 
     private static func updateStationIfNeeded(from draft: FuelLogDraft, modelContext: ModelContext) -> FuelStation? {
         let trimmedName = draft.stationName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, draft.e85PricePerGallon > 0 else { return nil }
+        guard !trimmedName.isEmpty, StationDataValidation.isValidPrice(draft.e85PricePerGallon) else { return nil }
 
         let price = round(draft.e85PricePerGallon, places: 2)
 
@@ -191,10 +191,10 @@ enum FuelLogStore {
             return station
         }
 
-        // Slow path: case-insensitive in-memory scan for stations saved with different casing.
-        let lowercasedName = trimmedName.lowercased()
+        // Slow path: case/whitespace-insensitive in-memory scan for stations saved with
+        // different casing or stray whitespace.
         let allStations = (try? modelContext.fetch(FetchDescriptor<FuelStation>())) ?? []
-        if let station = allStations.first(where: { $0.name.lowercased() == lowercasedName }) {
+        if let station = allStations.first(where: { StationDataValidation.isDuplicateName($0.name, trimmedName) }) {
             station.lastKnownE85Price = price
             station.lastUpdated = .now
             station.updatedAt = .now
