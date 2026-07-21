@@ -3266,160 +3266,32 @@ struct TripPlannerView: View {
                 routeDistanceMeters: distanceMeters
             )
 
-            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
-
-            gasOnlyStations = stations
-            computeGasOnlyPlan(
+            // Compute the full result from this request's own station snapshot before
+            // touching any @State — nothing here is written half-finished. The generation
+            // check runs once, immediately before publishing every related field together,
+            // so a superseded request can never publish part of a Gas Only result (stations,
+            // stops, outcome, risk, reserve, error all move as one atomic step).
+            let fuelContext = RouteFuelContext(
+                tankSizeGallons: tankSize,
+                mpg: mpg,
+                currentFuelPercent: fuelPct,
+                targetArrivalReservePercent: targetReservePercent,
+                fuelBackupMode: fuelBackupMode
+            )
+            let result = GasOnlyPlanner.plan(
                 stations: stations,
                 distanceMiles: distanceMeters / 1609.344,
-                tankSize: tankSize,
-                mpg: mpg,
-                fuelPercent: fuelPct
+                context: fuelContext
             )
-        }
-    }
 
-    /// Greedy gas-stop planner for Gas Only mode. Mirrors the E85 planner's approach:
-    /// walk the route, fill to full at each chosen stop, prefer low-detour stations.
-    private func computeGasOnlyPlan(
-        stations: [BackupGasStation],
-        distanceMiles: Double,
-        tankSize: Double,
-        mpg: Double,
-        fuelPercent: Double
-    ) {
-        let targetFraction = targetReservePercent / 100.0
-        let startGallons = tankSize * (fuelPercent / 100.0)
-        let minSafeArrivalFraction = 0.12
+            guard requestTracker.isCurrent(generation), Task.isCancelled == false else { return }
 
-        // Reuse RouteFuelContext.isValid — the same authoritative validity check the E85
-        // planner gates on — rather than re-deriving a local finite/positive check here.
-        // Invalid tank/MPG/fuel/reserve inputs must never be reported as a safe Gas Only
-        // plan; a distance that isn't finite and non-negative is equally untrustworthy.
-        let fuelContext = RouteFuelContext(
-            tankSizeGallons: tankSize,
-            mpg: mpg,
-            currentFuelPercent: fuelPercent,
-            targetArrivalReservePercent: targetReservePercent,
-            fuelBackupMode: fuelBackupMode
-        )
-        guard fuelContext.isValid, distanceMiles.isFinite, distanceMiles >= 0 else {
-            gasOnlyOutcome = nil
-            gasOnlyRisk = .high
-            gasOnlyDestinationReserveFraction = nil
-            gasOnlyStationError = "Trip Planner could not calculate a safe plan because the vehicle fuel settings are invalid."
-            return
-        }
-
-        // Reserve at destination without any stop.
-        let noStopReserveFraction = (startGallons - distanceMiles / mpg) / tankSize
-
-        // No stop needed if the reserve target is already met.
-        if noStopReserveFraction >= targetFraction {
-            gasOnlyOutcome = .gasolineOnly
-            gasOnlyRisk = (noStopReserveFraction - targetFraction) < 0.05 ? .medium : .low
-            gasOnlyDestinationReserveFraction = noStopReserveFraction
-            return
-        }
-
-        // Stop needed but no stations available.
-        if stations.isEmpty {
-            gasOnlyOutcome = .gasFuelStopNeeded
-            gasOnlyRisk = noStopReserveFraction < 0 ? .high : .medium
-            gasOnlyDestinationReserveFraction = noStopReserveFraction
-            return
-        }
-
-        let sorted = stations.sorted { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-        var position = 0.0
-        var fuelGallons = startGallons
-        var stops: [GasOnlyStop] = []
-        var lowestReserve = noStopReserveFraction
-        var hadRiskyLeg = false
-        var planFailed = false
-        var safety = 0
-
-        while safety < 32 {
-            safety += 1
-            let distToDestination = distanceMiles - position
-            let reserveAtDestFraction = (fuelGallons - distToDestination / mpg) / tankSize
-            if reserveAtDestFraction >= targetFraction { break }
-
-            let ahead = sorted.filter { $0.distanceAlongRouteMiles > position + 0.5 }
-            let safeOptions = ahead.filter { s in
-                let legMiles = s.distanceAlongRouteMiles - position
-                return (fuelGallons - legMiles / mpg) / tankSize >= minSafeArrivalFraction
-            }
-
-            let chosen: BackupGasStation?
-            if safeOptions.isEmpty {
-                let reachable = ahead.filter { s in
-                    let legMiles = s.distanceAlongRouteMiles - position
-                    return (fuelGallons - legMiles / mpg) >= 0
-                }
-                if reachable.isEmpty { planFailed = true; break }
-                hadRiskyLeg = true
-                chosen = reachable.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-            } else {
-                let lowDetour = safeOptions.filter {
-                    $0.detourSeverity == .onRoute || $0.detourSeverity == .smallDetour
-                }
-                let pool = lowDetour.isEmpty ? safeOptions : lowDetour
-                chosen = pool.max { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
-            }
-
-            guard let stop = chosen, stop.distanceAlongRouteMiles > position + 0.5 else {
-                planFailed = true
-                break
-            }
-
-            let legMiles = stop.distanceAlongRouteMiles - position
-            let arrivalGallons = fuelGallons - legMiles / mpg
-            let arrivalFraction = arrivalGallons / tankSize
-            lowestReserve = min(lowestReserve, arrivalFraction)
-
-            stops.append(GasOnlyStop(
-                id: stop.id + "_\(stops.count)",
-                station: stop,
-                arrivalReserveFraction: arrivalFraction,
-                suggestedFillGallons: max(0, tankSize - arrivalGallons),
-                recommendedForReserveTarget: true
-            ))
-
-            position = stop.distanceAlongRouteMiles
-            fuelGallons = tankSize
-        }
-
-        let finalReserveFraction: Double
-        if planFailed || stops.isEmpty {
-            finalReserveFraction = noStopReserveFraction
-        } else {
-            let remaining = distanceMiles - position
-            finalReserveFraction = (fuelGallons - remaining / mpg) / tankSize
-            lowestReserve = min(lowestReserve, finalReserveFraction)
-        }
-
-        gasOnlyDestinationReserveFraction = finalReserveFraction
-        gasOnlyRecommendedStops = stops
-
-        if planFailed || (stops.isEmpty && finalReserveFraction < targetFraction) {
-            gasOnlyOutcome = .gasFuelStopNeeded
-            gasOnlyRisk = .high
-        } else if stops.isEmpty == false {
-            gasOnlyOutcome = .gasStopRecommended
-            if hadRiskyLeg || lowestReserve < 0.10 {
-                gasOnlyRisk = .high
-            } else if stops.count == 1, let s = stops.first,
-                      s.station.detourSeverity == .moderateDetour {
-                gasOnlyRisk = .medium
-            } else if (finalReserveFraction - targetFraction) < 0.05 {
-                gasOnlyRisk = .medium
-            } else {
-                gasOnlyRisk = .low
-            }
-        } else {
-            gasOnlyOutcome = .gasolineOnly
-            gasOnlyRisk = .low
+            gasOnlyStations = result.stations
+            gasOnlyRecommendedStops = result.stops
+            gasOnlyOutcome = result.outcome
+            gasOnlyRisk = result.risk
+            gasOnlyDestinationReserveFraction = result.destinationReserveFraction
+            gasOnlyStationError = result.stationError
         }
     }
 
