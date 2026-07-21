@@ -315,4 +315,213 @@ struct RouteE85PlannerTests {
 
         #expect(merged.count == 2)
     }
+
+    // MARK: - Invalid fuel-input contract (fix/2.2.3-trip-planner-input-contract)
+    //
+    // RouteFuelContext.isValid is the single authoritative validity check shared by
+    // walkGreedyStops (and therefore recommendStops/evaluateGasFallback/analyze) and, via a
+    // separately-constructed RouteFuelContext, TripPlannerView.computeGasOnlyPlan (Gas Only
+    // mode). These tests exercise recommendStops/evaluateGasFallback directly — the real
+    // production entry points — plus RouteFuelContext.isValid itself for the Gas Only
+    // scenarios, since computeGasOnlyPlan is a private SwiftUI View method unreachable from
+    // this test target (mirrors PlanRequestTrackerTests' precedent of verifying a
+    // SwiftUI-embedded integration by code inspection rather than a direct test — see this
+    // branch's final report for that inspection).
+
+    private func validContext(
+        tank: Double = 18.5,
+        mpg: Double = 12,
+        fuelPercent: Double = 100,
+        reservePercent: Double = 20,
+        backupMode: FuelBackupMode = .gasBackupAllowed
+    ) -> RouteFuelContext {
+        RouteFuelContext(
+            tankSizeGallons: tank,
+            mpg: mpg,
+            currentFuelPercent: fuelPercent,
+            targetArrivalReservePercent: reservePercent,
+            fuelBackupMode: backupMode
+        )
+    }
+
+    private func expectNeverSafe(_ result: Recommendation, sourceLabel: String) {
+        #expect(result.inputsValid == false, "\(sourceLabel): must report inputsValid == false")
+        #expect(result.planComplete == false, "\(sourceLabel): must not report destination reached")
+        #expect(result.destinationReserveFraction != 1, "\(sourceLabel): must not report a 100% reserve")
+        #expect(result.stops.isEmpty, "\(sourceLabel): must not recommend fuel stops")
+        #expect(result.outcome != .noStopNeeded, "\(sourceLabel): must not report a normal safe outcome")
+    }
+
+    @Test("Tank size = 0 never produces a safe result")
+    func tankSizeZero_isInvalid() {
+        let context = validContext(tank: 0)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "tank = 0")
+    }
+
+    @Test("Tank size < 0 never produces a safe result")
+    func tankSizeNegative_isInvalid() {
+        let context = validContext(tank: -18.5)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "tank < 0")
+    }
+
+    @Test("Tank size = NaN never produces a safe result")
+    func tankSizeNaN_isInvalid() {
+        let context = validContext(tank: .nan)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "tank = NaN")
+    }
+
+    @Test("Tank size = +infinity never produces a safe result")
+    func tankSizePositiveInfinity_isInvalid() {
+        let context = validContext(tank: .infinity)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "tank = +infinity")
+    }
+
+    @Test("MPG = 0 never produces a safe result")
+    func mpgZero_isInvalid() {
+        let context = validContext(mpg: 0)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "mpg = 0")
+    }
+
+    @Test("MPG < 0 never produces a safe result")
+    func mpgNegative_isInvalid() {
+        let context = validContext(mpg: -12)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "mpg < 0")
+    }
+
+    @Test("MPG = NaN never produces a safe result")
+    func mpgNaN_isInvalid() {
+        let context = validContext(mpg: .nan)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "mpg = NaN")
+    }
+
+    @Test("MPG = +infinity never produces a safe result")
+    func mpgPositiveInfinity_isInvalid() {
+        let context = validContext(mpg: .infinity)
+        #expect(context.isValid == false)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "mpg = +infinity")
+    }
+
+    @Test("Both tank and MPG invalid never produces a safe result, in either planner entry point")
+    func bothTankAndMPGInvalid_isInvalid() {
+        let context = validContext(tank: 0, mpg: .nan)
+        #expect(context.isValid == false)
+
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "tank = 0, mpg = NaN")
+
+        let fallback = planner.evaluateGasFallback(gasStations: [], totalMiles: 100, context: context)
+        #expect(fallback.inputsValid == false)
+        #expect(fallback.succeeds == false)
+        #expect(fallback.destinationReserveFraction != 1)
+    }
+
+    @Test("Valid tank/MPG with an unreachable destination stays distinguishable from invalid input")
+    func validButUnreachable_isNotInvalid() {
+        // 18.5 gal / 12 MPG = 222 mi range; a 500 mi trip with no stations is genuinely
+        // unreachable, but the inputs themselves are perfectly valid — this must NOT be
+        // reported the same way as an invalid-input result.
+        let context = validContext()
+        #expect(context.isValid)
+        let result = planner.recommendStops(stations: [], totalMiles: 500, context: context)
+        #expect(result.inputsValid, "a valid context must never be reported as inputsValid == false")
+        #expect(result.planComplete == false, "an unreachable trip is genuinely not complete")
+    }
+
+    @Test("Valid tank/MPG with a reachable destination plans normally")
+    func validAndReachable_isNotInvalid() {
+        let context = validContext()
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        #expect(result.inputsValid)
+        #expect(result.planComplete)
+        #expect(result.outcome == .noStopNeeded)
+    }
+
+    @Test("A valid route with no candidate stations still resolves correctly, not as invalid")
+    func validRouteNoStations_resolvesWithoutStations() {
+        // Within the 222 mi range, so no stop is genuinely needed even with zero stations.
+        let context = validContext()
+        let result = planner.recommendStops(stations: [], totalMiles: 150, context: context)
+        #expect(result.inputsValid)
+        #expect(result.stops.isEmpty)
+        #expect(result.outcome == .noStopNeeded)
+    }
+
+    @Test("Non-finite route distance never produces a safe result")
+    func nonFiniteRouteDistance_isInvalid() {
+        let context = validContext()
+        let nanResult = planner.recommendStops(stations: [], totalMiles: .nan, context: context)
+        expectNeverSafe(nanResult, sourceLabel: "totalMiles = NaN")
+        let infResult = planner.recommendStops(stations: [], totalMiles: .infinity, context: context)
+        expectNeverSafe(infResult, sourceLabel: "totalMiles = +infinity")
+    }
+
+    @Test("Negative route distance never produces a safe result")
+    func negativeRouteDistance_isInvalid() {
+        let context = validContext()
+        let result = planner.recommendStops(stations: [], totalMiles: -50, context: context)
+        expectNeverSafe(result, sourceLabel: "totalMiles = -50")
+    }
+
+    @Test("Invalid current fuel fraction is rejected by RouteFuelContext.isValid")
+    func invalidCurrentFuelFraction_isInvalid() {
+        #expect(validContext(fuelPercent: .nan).isValid == false)
+        #expect(validContext(fuelPercent: .infinity).isValid == false)
+        #expect(validContext(fuelPercent: -5).isValid == false)
+        #expect(validContext(fuelPercent: 150).isValid == false)
+
+        let context = validContext(fuelPercent: .nan)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "currentFuelPercent = NaN")
+    }
+
+    @Test("Current fuel above 100% (gallons exceeding tank capacity) is rejected")
+    func currentFuelAboveTankCapacity_isInvalid() {
+        // RouteFuelContext only stores a percent, so "gallons > capacity" is expressed as a
+        // fuel percent above 100 — clamping currentFuelPercent to 0...100 is what
+        // structurally prevents startFuelGallons from ever exceeding tankSizeGallons.
+        let context = validContext(fuelPercent: 140)
+        #expect(context.isValid == false)
+        #expect(context.startFuelGallons > context.tankSizeGallons, "sanity: this input really would exceed tank capacity if left unvalidated")
+    }
+
+    @Test("Invalid reserve fraction is rejected by RouteFuelContext.isValid")
+    func invalidReserveFraction_isInvalid() {
+        #expect(validContext(reservePercent: .nan).isValid == false)
+        #expect(validContext(reservePercent: -10).isValid == false)
+        #expect(validContext(reservePercent: 150).isValid == false)
+
+        let context = validContext(reservePercent: .nan)
+        let result = planner.recommendStops(stations: [], totalMiles: 100, context: context)
+        expectNeverSafe(result, sourceLabel: "targetArrivalReservePercent = NaN")
+    }
+
+    @Test("Gas Only invalid tank input is rejected by the shared validator")
+    func gasOnlyInvalidTank_isRejectedByValidator() {
+        // computeGasOnlyPlan (TripPlannerView) guards on this exact RouteFuelContext.isValid
+        // check but is a private SwiftUI View method unreachable from this test target — see
+        // this branch's final report for the code-inspection verification of that wiring.
+        let context = validContext(tank: 0)
+        #expect(context.isValid == false)
+    }
+
+    @Test("Gas Only invalid MPG input is rejected by the shared validator")
+    func gasOnlyInvalidMPG_isRejectedByValidator() {
+        let context = validContext(mpg: .nan)
+        #expect(context.isValid == false)
+    }
 }

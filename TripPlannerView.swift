@@ -2199,6 +2199,13 @@ struct TripPlannerView: View {
 
                 if isDiscoveringGasOnlyStations {
                     discoveringGasOnlyCard
+                } else if let message = gasOnlyStationError {
+                    stationsMessageCard(
+                        icon: "exclamationmark.triangle.fill",
+                        tint: AppTheme.Colors.warningRed,
+                        title: "Can't Calculate Fuel Stops",
+                        message: message
+                    )
                 } else if gasOnlyOutcome == .gasFuelStopNeeded {
                     stationsMessageCard(
                         icon: "exclamationmark.triangle.fill",
@@ -3285,10 +3292,22 @@ struct TripPlannerView: View {
         let startGallons = tankSize * (fuelPercent / 100.0)
         let minSafeArrivalFraction = 0.12
 
-        guard mpg > 0, tankSize > 0 else {
-            gasOnlyOutcome = .gasolineOnly
-            gasOnlyRisk = .low
-            gasOnlyDestinationReserveFraction = 1.0
+        // Reuse RouteFuelContext.isValid — the same authoritative validity check the E85
+        // planner gates on — rather than re-deriving a local finite/positive check here.
+        // Invalid tank/MPG/fuel/reserve inputs must never be reported as a safe Gas Only
+        // plan; a distance that isn't finite and non-negative is equally untrustworthy.
+        let fuelContext = RouteFuelContext(
+            tankSizeGallons: tankSize,
+            mpg: mpg,
+            currentFuelPercent: fuelPercent,
+            targetArrivalReservePercent: targetReservePercent,
+            fuelBackupMode: fuelBackupMode
+        )
+        guard fuelContext.isValid, distanceMiles.isFinite, distanceMiles >= 0 else {
+            gasOnlyOutcome = nil
+            gasOnlyRisk = .high
+            gasOnlyDestinationReserveFraction = nil
+            gasOnlyStationError = "Trip Planner could not calculate a safe plan because the vehicle fuel settings are invalid."
             return
         }
 

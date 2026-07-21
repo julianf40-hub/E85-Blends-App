@@ -50,6 +50,26 @@ struct RouteFuelContext {
     var startRangeMiles: Double { startFuelGallons * mpg }
     /// Target arrival reserve as a fraction of a full tank (0…1).
     var targetReserveFraction: Double { max(0, min(1, targetArrivalReservePercent / 100)) }
+
+    /// Whether every fuel-range value here is finite and mathematically usable for range
+    /// math. Zero/negative/NaN/infinite tank size or MPG, or a fuel/reserve percent outside
+    /// 0...100 or non-finite, all fail this check — those inputs can never be trusted to
+    /// produce a real answer, so callers must not attempt range math with them. Clamping
+    /// `currentFuelPercent` to 0...100 also structurally prevents "current gallons exceeding
+    /// tank capacity," since `startFuelGallons` can then never exceed `tankSizeGallons`.
+    ///
+    /// This is the single authoritative validity check for `RouteFuelContext` — the greedy
+    /// planner (`RouteE85Planner.walkGreedyStops`) and `analyze(...)` both gate on this
+    /// instead of re-deriving their own finite/positive checks. This is NOT a reachability
+    /// check: a valid context can still describe a route that can't be completed on the
+    /// given tank/MPG — that is a legitimate "valid but unreachable" planning result, not an
+    /// invalid input.
+    var isValid: Bool {
+        tankSizeGallons.isFinite && tankSizeGallons > 0 &&
+        mpg.isFinite && mpg > 0 &&
+        currentFuelPercent.isFinite && (0...100).contains(currentFuelPercent) &&
+        targetArrivalReservePercent.isFinite && (0...100).contains(targetArrivalReservePercent)
+    }
 }
 
 // MARK: - Route outcome
@@ -212,6 +232,11 @@ struct GasFallbackPlan {
     let succeeds: Bool
     let destinationReserveFraction: Double?
     let lowestArrivalReserveFraction: Double?
+    /// False when the fuel context or route distance was invalid (see
+    /// `RouteFuelContext.isValid`) — `succeeds` is always false in that case too, but this
+    /// flag lets a caller distinguish "genuinely invalid input" from "valid input, this
+    /// particular gasoline route just doesn't work."
+    let inputsValid: Bool
 }
 
 // MARK: - Analysis result
@@ -239,6 +264,10 @@ enum RouteE85PlannerError: LocalizedError {
     case noStationsFound
     case searchUnavailable
     case network
+    /// The fuel context or route distance isn't finite/mathematically usable (e.g. zero or
+    /// non-finite tank size or MPG) — thrown before any station search or range math is
+    /// attempted, since no trustworthy plan can be computed from these inputs.
+    case invalidInputs
 
     var errorDescription: String? {
         switch self {
@@ -248,6 +277,8 @@ enum RouteE85PlannerError: LocalizedError {
             return "Live E85 station search isn't available right now. Your route and estimates still work."
         case .network:
             return "We couldn't load E85 stations for this route. Check your connection and try again."
+        case .invalidInputs:
+            return "Trip Planner could not calculate a safe plan because the vehicle fuel settings are invalid."
         }
     }
 }
@@ -283,12 +314,21 @@ struct RouteE85Planner {
         context: RouteFuelContext,
         reportedUnavailableKeys: Set<String> = []
     ) async throws -> RouteE85Analysis {
+        // Fuel inputs and route distance must be finite/usable before any station search or
+        // range math is attempted — an invalid context must never fall through to the
+        // station-discovery/greedy-walk path below (see RouteFuelContext.isValid).
+        guard context.isValid else { throw RouteE85PlannerError.invalidInputs }
+        guard routeDistanceMeters.isFinite, routeDistanceMeters >= 0 else {
+            throw RouteE85PlannerError.invalidInputs
+        }
         guard coordinates.count >= 2 else { throw RouteE85PlannerError.noStationsFound }
 
         // 1. Densify the route into evenly-spaced samples with cumulative along-route distance.
         let samples = densifiedSamples(from: coordinates, intervalMiles: geometrySampleIntervalMiles)
         let totalMiles = samples.last?.distanceAlong ?? (routeDistanceMeters / 1609.344)
-        guard totalMiles > 0 else { throw RouteE85PlannerError.noStationsFound }
+        // `.isFinite` guards searchCenters(_:total:spacing:), whose `while target <= total`
+        // loop would never terminate for an infinite totalMiles.
+        guard totalMiles.isFinite, totalMiles > 0 else { throw RouteE85PlannerError.noStationsFound }
 
         // 2. Choose a bounded set of search centers spaced along the corridor.
         let searchInterval = searchIntervalMiles(forTotal: totalMiles)
@@ -542,6 +582,12 @@ struct RouteE85Planner {
         let minViableOptions: Int   // fewest reachable options at any decision point
         let hadRiskyLeg: Bool       // a leg forced arrival below the comfortable reserve
         let skippedE85ForDetour: Bool // gasBackupAllowed: a high-detour E85 stop was intentionally skipped
+        /// False when the fuel context or route distance was invalid — see
+        /// `RouteFuelContext.isValid` and `GreedyWalkResult.inputsValid`. Distinct from a
+        /// merely unreachable trip: an invalid context can never produce a trustworthy
+        /// calculation at all, whereas a valid-but-unreachable trip is a legitimate result
+        /// (see `outcome`/`planComplete`).
+        let inputsValid: Bool
     }
 
     /// A stop chosen during the greedy walk, before we know the final plan-wide outcome.
@@ -566,6 +612,11 @@ struct RouteE85Planner {
         let minViableOptions: Int
         let hadRiskyLeg: Bool
         let skippedForDetour: Bool // gasBackupAllowed: a high-detour stop was intentionally skipped
+        /// False when `context`/`totalMiles` failed `RouteFuelContext.isValid`/finite-distance
+        /// checks — every other field is then an explicit non-safe placeholder, never a
+        /// result of real range math. Callers must check this before trusting the rest of
+        /// the result; see `computeRisk`, which forces `.high` whenever this is false.
+        let inputsValid: Bool
     }
 
     /// The greedy "keep adding the farthest materially useful, reachable stop until the
@@ -583,12 +634,16 @@ struct RouteE85Planner {
         let tank = context.tankSizeGallons
         let targetGallons = context.targetReserveFraction * tank
 
-        guard mpg > 0, tank > 0 else {
+        // Invalid inputs must never be reported as a safe, reachable, 100%-reserve plan —
+        // that direction of failure is unacceptable for a fuel-planning engine. An invalid
+        // context/route distance instead reports as explicitly unreachable with no stops,
+        // and `inputsValid: false` so callers (e.g. computeRisk) never classify it as safe.
+        guard context.isValid, totalMiles.isFinite, totalMiles >= 0 else {
             return GreedyWalkResult(
-                stops: [], planReachesDestination: true, planSatisfiesTarget: true,
-                destinationReserveFraction: 1, noStopDestinationReserveFraction: 1,
-                lowestArrivalReserveFraction: nil, minViableOptions: 0, hadRiskyLeg: false,
-                skippedForDetour: false
+                stops: [], planReachesDestination: false, planSatisfiesTarget: false,
+                destinationReserveFraction: -1, noStopDestinationReserveFraction: -1,
+                lowestArrivalReserveFraction: nil, minViableOptions: 0, hadRiskyLeg: true,
+                skippedForDetour: false, inputsValid: false
             )
         }
 
@@ -750,7 +805,8 @@ struct RouteE85Planner {
             lowestArrivalReserveFraction: lowest,
             minViableOptions: viable,
             hadRiskyLeg: hadRiskyLeg,
-            skippedForDetour: skippedForDetour
+            skippedForDetour: skippedForDetour,
+            inputsValid: true
         )
     }
 
@@ -814,7 +870,8 @@ struct RouteE85Planner {
             lowestArrivalReserveFraction: walk.lowestArrivalReserveFraction,
             minViableOptions: walk.minViableOptions,
             hadRiskyLeg: walk.hadRiskyLeg,
-            skippedE85ForDetour: walk.skippedForDetour
+            skippedE85ForDetour: walk.skippedForDetour,
+            inputsValid: walk.inputsValid
         )
     }
 
@@ -851,7 +908,8 @@ struct RouteE85Planner {
             stops: stops,
             succeeds: walk.planReachesDestination && walk.planSatisfiesTarget,
             destinationReserveFraction: walk.destinationReserveFraction,
-            lowestArrivalReserveFraction: walk.lowestArrivalReserveFraction
+            lowestArrivalReserveFraction: walk.lowestArrivalReserveFraction,
+            inputsValid: walk.inputsValid
         )
     }
 
@@ -861,6 +919,11 @@ struct RouteE85Planner {
         recommendation: Recommendation,
         context: RouteFuelContext
     ) -> TripPlan.RouteRisk {
+        // Invalid inputs can never be classified as anything but the highest risk — this
+        // must be checked before any outcome-based branch below, since none of those branches
+        // know how to distinguish "genuinely low risk" from "the math was never trustworthy."
+        guard recommendation.inputsValid else { return .high }
+
         let target = context.targetReserveFraction
         let destReserve = recommendation.destinationReserveFraction ?? 1
         let lowest = recommendation.lowestArrivalReserveFraction ?? 1
