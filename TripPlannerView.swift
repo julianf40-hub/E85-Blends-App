@@ -2237,7 +2237,7 @@ struct TripPlannerView: View {
                     ForEach(Array(gasOnlyRecommendedStops.enumerated()), id: \.element.id) { index, stop in
                         gasOnlyStopCard(stop, number: index + 1)
                     }
-                    Text("Fill amounts are estimates based on your tank size and MPG settings.")
+                    Text("Suggested fill amounts are the estimated minimum needed for the planned route and selected arrival buffer, based on your tank size and MPG settings.")
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textMuted)
                         .fixedSize(horizontal: false, vertical: true)
