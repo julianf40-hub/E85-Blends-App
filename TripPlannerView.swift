@@ -84,6 +84,10 @@ struct TripPlannerView: View {
     @State private var gasOnlyRisk: TripPlan.RouteRisk?
     /// Estimated arrival reserve at the destination after the Gas Only plan (nil while planning).
     @State private var gasOnlyDestinationReserveFraction: Double?
+    /// Whether the current Gas Only plan's stops (if any) are known to complete the trip —
+    /// the single source every Gas Only UI section reads before presenting the route as
+    /// safe/complete. See `GasOnlyPlanCompleteness`.
+    @State private var gasOnlyCompleteness: GasOnlyPlanCompleteness?
 
     // MARK: - Feature 2: Saved trips
     @State private var showSavedTrips = false
@@ -1266,7 +1270,9 @@ struct TripPlannerView: View {
                     Spacer()
                     if isGasolineOnly {
                         let outcome = gasOnlyOutcome ?? .gasolineOnly
-                        Text(outcome.label)
+                        // Reuses the exact same override the Trip Summary banner reads, so
+                        // this row and the banner can never disagree on a partial plan.
+                        Text(gasOnlyOutcomeLabel ?? outcome.label)
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(outcome.foreground)
                             .multilineTextAlignment(.trailing)
@@ -1376,16 +1382,25 @@ struct TripPlannerView: View {
         return "\(Int((lowest * 100).rounded()))%"
     }
 
-    /// Count-aware label for the Gas Only outcome banner.
+    /// Count-aware label for the Gas Only outcome banner and the "Route outcome" summary
+    /// row — both read this one property so they can never disagree with each other.
     private var gasOnlyOutcomeLabel: String? {
         guard gasOnlyOutcome == .gasStopRecommended else { return nil }
         let n = gasOnlyRecommendedStops.count
+        if gasOnlyCompleteness == .partial {
+            return n == 1 ? "Partial Fuel Plan — 1 Stop Found" : "Partial Fuel Plan — \(n) Stops Found"
+        }
         return n == 1 ? "1 Fuel Stop Recommended" : "\(n) Fuel Stops Recommended"
     }
 
-    /// Refined message for the Gas Only outcome banner when stops are recommended.
+    /// Refined message for the Gas Only outcome banner when stops are recommended. A
+    /// partial plan (real stops found, but the walk couldn't confirm a further leg) must
+    /// never claim the route now meets the selected arrival buffer.
     private var gasOnlyOutcomeMessage: String? {
         guard gasOnlyOutcome == .gasStopRecommended else { return nil }
+        if gasOnlyCompleteness == .partial {
+            return "Some usable gasoline stops were found, but they do not complete this route safely. Verify additional stops before driving."
+        }
         return "This route exceeds your available range while maintaining your selected arrival buffer. Gasoline fuel stops are recommended."
     }
 
@@ -2194,7 +2209,9 @@ struct TripPlannerView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(
                     title: "Recommended Fuel Stops",
-                    subtitle: "These gasoline stops help keep your trip within range and meet your selected arrival buffer."
+                    subtitle: gasOnlyCompleteness == .partial
+                        ? "These are the usable gasoline stops found so far — they do not yet complete this route safely."
+                        : "These gasoline stops help keep your trip within range and meet your selected arrival buffer."
                 )
 
                 if isDiscoveringGasOnlyStations {
@@ -2214,6 +2231,9 @@ struct TripPlannerView: View {
                         message: "No suitable gas station was found along this route. You may need to plan fuel stops manually."
                     )
                 } else if gasOnlyRecommendedStops.isEmpty == false {
+                    if gasOnlyCompleteness == .partial {
+                        gasOnlyPartialPlanBanner
+                    }
                     ForEach(Array(gasOnlyRecommendedStops.enumerated()), id: \.element.id) { index, stop in
                         gasOnlyStopCard(stop, number: index + 1)
                     }
@@ -2225,6 +2245,34 @@ struct TripPlannerView: View {
                 }
             }
         }
+    }
+
+    /// Shown above the stop cards when `gasOnlyCompleteness == .partial` — real, useful
+    /// stops are listed below, but they must not be presented as completing the route.
+    private var gasOnlyPartialPlanBanner: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.warningRed)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Partial fuel plan")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("Some usable gasoline stops were found, but they do not complete this route safely. Verify additional stops before driving.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.warningRed.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.Colors.warningRed.opacity(0.3), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
     }
 
     private var discoveringGasOnlyCard: some View {
@@ -2884,6 +2932,7 @@ struct TripPlannerView: View {
         gasOnlyOutcome = nil
         gasOnlyRisk = nil
         gasOnlyDestinationReserveFraction = nil
+        gasOnlyCompleteness = nil
         return generation
     }
 
@@ -3249,6 +3298,7 @@ struct TripPlannerView: View {
         gasOnlyOutcome = nil
         gasOnlyRisk = nil
         gasOnlyDestinationReserveFraction = nil
+        gasOnlyCompleteness = nil
         isDiscoveringGasOnlyStations = true
 
         let coordinates = route.polyline.routeCoordinates
@@ -3292,6 +3342,7 @@ struct TripPlannerView: View {
             gasOnlyRisk = result.risk
             gasOnlyDestinationReserveFraction = result.destinationReserveFraction
             gasOnlyStationError = result.stationError
+            gasOnlyCompleteness = result.completeness
         }
     }
 

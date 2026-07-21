@@ -17,6 +17,24 @@
 
 import Foundation
 
+/// Whether a valid Gas Only plan's stops (if any) are known to complete the trip.
+/// Distinct from `inputsValid`/`RouteFuelContext.isValid`: this only applies once the
+/// inputs are already known to be valid, and it never affects `stops` — a partial plan's
+/// stops are exactly the real, useful stops the walk found, still worth showing and
+/// getting directions to; only the "does this route now meet your buffer" claim changes.
+enum GasOnlyPlanCompleteness: Equatable {
+    /// The route is reachable and the selected arrival buffer is met — either no stop was
+    /// needed, or the recommended stops (if any) fully satisfy the trip.
+    case complete
+    /// One or more usable stops were found and are being recommended, but the walk could
+    /// not confirm the route reaches the destination while meeting the arrival buffer —
+    /// e.g. it ran out of further usable stations for a later leg. The stops shown are
+    /// real and still useful; the trip is not confirmed safe/complete with them alone.
+    case partial
+    /// No usable stops exist at all — the existing no-station state.
+    case noUsableStations
+}
+
 /// The complete outcome of one Gas Only planning attempt, ready to publish atomically.
 struct GasOnlyPlanResult {
     /// The raw discovered candidate stations (echoes the input; kept for parity with the
@@ -31,6 +49,11 @@ struct GasOnlyPlanResult {
     /// `RouteFuelContext.isValid`. Every other field is then an explicit non-safe
     /// placeholder (no stations, no stops, no outcome), never a result of real range math.
     let inputsValid: Bool
+    /// Nil only when `inputsValid` is false. The single source every Gas Only UI section
+    /// (Trip Summary banner, Fuel Plan, Recommended Fuel Stops heading, route-outcome row)
+    /// must read to decide whether it's safe to present the route as complete — see
+    /// `GasOnlyPlanCompleteness`.
+    let completeness: GasOnlyPlanCompleteness?
 }
 
 enum GasOnlyPlanner {
@@ -55,7 +78,8 @@ enum GasOnlyPlanner {
                 risk: .high,
                 destinationReserveFraction: nil,
                 stationError: "Trip Planner could not calculate a safe plan because the vehicle fuel settings are invalid.",
-                inputsValid: false
+                inputsValid: false,
+                completeness: nil
             )
         }
 
@@ -76,7 +100,8 @@ enum GasOnlyPlanner {
                 risk: (noStopReserveFraction - targetFraction) < 0.05 ? .medium : .low,
                 destinationReserveFraction: noStopReserveFraction,
                 stationError: nil,
-                inputsValid: true
+                inputsValid: true,
+                completeness: .complete
             )
         }
 
@@ -89,7 +114,8 @@ enum GasOnlyPlanner {
                 risk: noStopReserveFraction < 0 ? .high : .medium,
                 destinationReserveFraction: noStopReserveFraction,
                 stationError: nil,
-                inputsValid: true
+                inputsValid: true,
+                completeness: .noUsableStations
             )
         }
 
@@ -169,13 +195,16 @@ enum GasOnlyPlanner {
         // that WERE found, not as an outcome that contradicts (and hides) them.
         let outcome: RouteOutcome
         let risk: TripPlan.RouteRisk
+        let completeness: GasOnlyPlanCompleteness
         if stops.isEmpty {
             if planFailed || finalReserveFraction < targetFraction {
                 outcome = .gasFuelStopNeeded
                 risk = .high
+                completeness = .noUsableStations
             } else {
                 outcome = .gasolineOnly
                 risk = .low
+                completeness = .complete
             }
         } else {
             outcome = .gasStopRecommended
@@ -189,6 +218,10 @@ enum GasOnlyPlanner {
             } else {
                 risk = .low
             }
+            // The walk running out of further usable stations for a later leg (planFailed)
+            // means these real stops don't confirm the route meets the buffer — that must
+            // stay visible as "partial," not get silently folded into a normal complete plan.
+            completeness = planFailed ? .partial : .complete
         }
 
         return GasOnlyPlanResult(
@@ -198,7 +231,8 @@ enum GasOnlyPlanner {
             risk: risk,
             destinationReserveFraction: finalReserveFraction,
             stationError: nil,
-            inputsValid: true
+            inputsValid: true,
+            completeness: completeness
         )
     }
 }

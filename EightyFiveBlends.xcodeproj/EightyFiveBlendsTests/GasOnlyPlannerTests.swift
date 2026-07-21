@@ -83,6 +83,32 @@ struct GasOnlyPlannerTests {
         // that contradicts them or an error message.
         #expect(result.risk == .high)
         #expect(result.stationError == nil, "a plan with real stops must never also show an error")
+
+        // A plan the walk couldn't confirm completes the route must be explicitly partial,
+        // and must never claim the selected 50% arrival buffer was met.
+        #expect(result.completeness == .partial)
+        #expect((result.destinationReserveFraction ?? 1) < 0.5, "a partial plan must never report the target reserve as satisfied")
+    }
+
+    // MARK: - 1, 6. A plan whose stops genuinely complete the route is reported as complete
+
+    @Test("A plan whose stops complete the route within the arrival buffer is reported as complete, not partial")
+    func stopsCompleteTheRoute_isReportedAsComplete() {
+        // A single stop at 100 mi, with a 20% buffer and a 300 mi trip, is enough for the
+        // walk to succeed after refueling at that one stop — it never runs out of route to
+        // plan for, unlike the partial scenario above.
+        let stations = [gasStation(name: "Corner Store", distanceAlongRouteMiles: 100)]
+        let result = GasOnlyPlanner.plan(
+            stations: stations,
+            distanceMiles: 300,
+            context: context(reservePercent: 20)
+        )
+
+        #expect(result.inputsValid)
+        #expect(result.stops.count == 1)
+        #expect(result.outcome == .gasStopRecommended)
+        #expect(result.completeness == .complete)
+        #expect(result.stationError == nil)
     }
 
     // MARK: - 2, 8. Station identity and order are preserved for every consumer
@@ -113,6 +139,7 @@ struct GasOnlyPlannerTests {
         #expect(result.stops.isEmpty)
         #expect(result.outcome == .gasFuelStopNeeded)
         #expect(result.stationError == nil)
+        #expect(result.completeness == .noUsableStations)
     }
 
     // MARK: - 9. Valid input never shows the input-contract invalid-input error
@@ -138,6 +165,7 @@ struct GasOnlyPlannerTests {
         #expect(zeroTank.outcome == nil)
         #expect(zeroTank.destinationReserveFraction == nil)
         #expect(zeroTank.stationError != nil)
+        #expect(zeroTank.completeness == nil, "completeness must be nil, never .complete/.partial, when inputs are invalid")
 
         let nanMPG = GasOnlyPlanner.plan(stations: stations, distanceMiles: 200, context: context(mpg: .nan))
         #expect(nanMPG.inputsValid == false)
@@ -162,6 +190,7 @@ struct GasOnlyPlannerTests {
         #expect(result.stops.isEmpty)
         #expect(result.outcome == .gasolineOnly)
         #expect(result.risk == .low || result.risk == .medium)
+        #expect(result.completeness == .complete)
     }
 
     // MARK: - 5, 6, 7. Generation-consistent publication (verified by code inspection)
@@ -170,10 +199,11 @@ struct GasOnlyPlannerTests {
     // returns comes from one call with no intermediate suspension point, so there is no
     // window in which "half" a result could be computed. TripPlannerView.discoverGasOnlyStations
     // computes the full GasOnlyPlanResult from a local station snapshot, checks
-    // requestTracker.isCurrent(generation) exactly once, and only then assigns all six
+    // requestTracker.isCurrent(generation) exactly once, and only then assigns all seven
     // related @State properties (gasOnlyStations, gasOnlyRecommendedStops, gasOnlyOutcome,
-    // gasOnlyRisk, gasOnlyDestinationReserveFraction, gasOnlyStationError) as one
-    // uninterrupted sequence of synchronous statements — Swift cannot suspend mid-sequence
+    // gasOnlyRisk, gasOnlyDestinationReserveFraction, gasOnlyStationError,
+    // gasOnlyCompleteness) as one uninterrupted sequence of synchronous statements —
+    // Swift cannot suspend mid-sequence
     // without an `await`, so a superseded request (failing that single generation check)
     // can never publish any part of this result, and the unchanged
     // `defer { if requestTracker.isCurrent(generation) { isDiscoveringGasOnlyStations = false } }`
