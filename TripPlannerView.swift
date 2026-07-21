@@ -2211,7 +2211,7 @@ struct TripPlannerView: View {
                     title: "Recommended Fuel Stops",
                     subtitle: gasOnlyCompleteness == .partial
                         ? "These are the usable gasoline stops found so far — they do not yet complete this route safely."
-                        : "These gasoline stops help keep your trip within range and meet your selected arrival buffer."
+                        : "Follow these recommended stops and fill amounts to reach your destination with your selected fuel reserve."
                 )
 
                 if isDiscoveringGasOnlyStations {
@@ -2473,24 +2473,38 @@ struct TripPlannerView: View {
             }
         }
 
-        // "Arrive with about 21% buffer · approx. 3.9 gal" or "Arrival buffer unavailable".
+        // "Expected destination reserve: about 21% · approx. 3.9 gal" or
+        // "Arrival buffer unavailable".
         func arrivalLine(fraction: Double) -> String {
             if fraction < 0 { return "Arrival buffer unavailable" }
             let pct = Int((fraction * 100).rounded())
             if tank > 0 {
-                return "Arrive with about \(pct)% buffer · approx. \(String(format: "%.1f gal", fraction * tank))"
+                return "Expected destination reserve: about \(pct)% · approx. \(String(format: "%.1f gal", fraction * tank))"
             }
-            return "Arrive with about \(pct)% buffer"
+            return "Expected destination reserve: about \(pct)%"
         }
 
-        // "About 14% buffer · approx. 2.6 gal on arrival" shown as a sub-line under each stop name.
+        // "Expected fuel on arrival: about 14% · approx. 2.6 gal" shown as a sub-line
+        // under each stop name.
         func stopArrivalLine(fraction: Double) -> String {
             if fraction < 0 { return "Arrives below empty" }
             let pct = Int((fraction * 100).rounded())
             if tank > 0 {
-                return "About \(pct)% buffer · approx. \(String(format: "%.1f gal", fraction * tank)) on arrival"
+                return "Expected fuel on arrival: about \(pct)% · approx. \(String(format: "%.1f gal", fraction * tank))"
             }
-            return "About \(pct)% buffer on arrival"
+            return "Expected fuel on arrival: about \(pct)%"
+        }
+
+        // Explains, in plain language, what this stop's suggested purchase accomplishes —
+        // shown as a subtle secondary line beneath "Add approximately X gallons" so the
+        // user never has to work out on their own why a stop is needed despite a
+        // comfortable-looking arrival percentage. Deliberately never mentions the
+        // planner's internal terms (no "optimization," no "algorithm").
+        func fillReasonCaption(nextLegMiles: Double, isFinalLeg: Bool) -> String {
+            let miles = formattedMiles(max(0.0, nextLegMiles))
+            return isFinalLeg
+                ? "Covers the remaining \(miles) to your destination while keeping your selected reserve."
+                : "Covers the next \(miles) to your next stop while keeping your selected reserve."
         }
 
         let startPct = Int(currentFuelPercent.rounded())
@@ -2509,9 +2523,13 @@ struct TripPlannerView: View {
                 add("fuelpump.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.stationYellow, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
                     fuelReserveColor(for: stop.arrivalReserveFraction))
-                add("plus.circle.fill", "Add \(String(format: "%.1f gal", stop.suggestedFillGallons))", AppTheme.Colors.stationYellow)
+                add("plus.circle.fill", "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons", AppTheme.Colors.stationYellow)
+                let isFinalStop = i + 1 == totalStops
+                let nextLegMiles = isFinalStop
+                    ? plan.distanceMiles - stop.station.distanceAlongRouteMiles
+                    : gasOnlyRecommendedStops[i + 1].station.distanceAlongRouteMiles - stop.station.distanceAlongRouteMiles
+                add("info.circle.fill", fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: isFinalStop), AppTheme.Colors.textMuted)
                 prevMiles = stop.station.distanceAlongRouteMiles
-                _ = totalStops // suppress unused-variable warning
             }
             addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
             if let f = gasOnlyDestinationReserveFraction {
@@ -2523,6 +2541,7 @@ struct TripPlannerView: View {
             // gas backup was verified to work — the planner switched entirely to this
             // route, so show it as the plan instead of the (replaced) E85 attempt.
             // Requirement 6: the required backup stop(s) belong directly in the main plan.
+            let totalFallbackStops = fallback.stops.count
             for (i, stop) in fallback.stops.enumerated() {
                 let stopLabel = "Stop \(i + 1)"
                 addLeg(stop.station.distanceAlongRouteMiles - prevMiles, destination: stopLabel)
@@ -2532,7 +2551,12 @@ struct TripPlannerView: View {
                 add("fuelpump.and.filter", "\(stopLabel) — \(fullName) (Gas Backup)", AppTheme.Colors.gasOrange, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
                     fuelReserveColor(for: stop.arrivalReserveFraction))
-                add("plus.circle.fill", "Add \(String(format: "%.1f gal", stop.suggestedFillGallons))", AppTheme.Colors.gasOrange)
+                add("plus.circle.fill", "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons", AppTheme.Colors.gasOrange)
+                let isFinalStop = i + 1 == totalFallbackStops
+                let nextLegMiles = isFinalStop
+                    ? plan.distanceMiles - stop.station.distanceAlongRouteMiles
+                    : fallback.stops[i + 1].station.distanceAlongRouteMiles - stop.station.distanceAlongRouteMiles
+                add("info.circle.fill", fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: isFinalStop), AppTheme.Colors.textMuted)
                 prevMiles = stop.station.distanceAlongRouteMiles
             }
             addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
@@ -2555,9 +2579,18 @@ struct TripPlannerView: View {
                 add("fuelpump.circle.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.primaryGreen, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
                     fuelReserveColor(for: stop.arrivalReserveFraction))
-                add("plus.circle.fill", "Add \(String(format: "%.1f gal", stop.suggestedFillGallons))", AppTheme.Colors.primaryGreen)
+                add("plus.circle.fill", "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons", AppTheme.Colors.primaryGreen)
+                if i + 1 < totalStops {
+                    let nextLegMiles = stops[i + 1].station.distanceAlongRouteMiles - stop.station.distanceAlongRouteMiles
+                    add("info.circle.fill", fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: false), AppTheme.Colors.textMuted)
+                } else if e85CannotCompleteRoute == false {
+                    let nextLegMiles = plan.distanceMiles - stop.station.distanceAlongRouteMiles
+                    add("info.circle.fill", fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: true), AppTheme.Colors.textMuted)
+                }
+                // else: a required backup gas stop follows this one (added below) — the
+                // real next leg isn't known until that point, so the caption is omitted
+                // here rather than describing the wrong leg.
                 prevMiles = stop.station.distanceAlongRouteMiles
-                _ = totalStops // suppress unused-variable warning
             }
 
             // E85 alone (with whatever useful stops it found, possibly none) can't reach
