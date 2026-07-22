@@ -1366,14 +1366,6 @@ struct TripPlannerView: View {
         return "\(Int((fraction * 100).rounded()))%"
     }
 
-    /// Traffic-light colour for a reserve fraction. Use the raw fraction (not a rounded %)
-    /// to avoid rounding artefacts at the boundaries.
-    private func fuelReserveColor(for fraction: Double) -> Color {
-        if fraction >= 0.20 { return AppTheme.Colors.primaryGreen }
-        if fraction >= 0.10 { return AppTheme.Colors.stationYellow }
-        return AppTheme.Colors.warningRed
-    }
-
     private var gasOnlyLowestReserveText: String {
         if isDiscoveringGasOnlyStations { return "…" }
         let all = gasOnlyRecommendedStops.map { $0.arrivalReserveFraction }
@@ -2403,6 +2395,11 @@ struct TripPlannerView: View {
         /// True for the final "Arrive with X%" row: renders at subheadline weight
         /// but uses `accent` for its text colour instead of textPrimary.
         var isArrival: Bool = false
+        /// True for the three numbers a driver actually needs at the pump — expected fuel
+        /// on arrival, the suggested fill amount, and the expected destination reserve.
+        /// Renders at a significantly larger, bolder style than every other row so these
+        /// values never require hunting for.
+        var isPrimary: Bool = false
         /// Optional plain secondary text shown beneath `label` in the same row, using the
         /// existing muted caption style — no icon of its own. Used to explain what a
         /// suggested fill purchase accomplishes without adding a new row or icon.
@@ -2464,16 +2461,19 @@ struct TripPlannerView: View {
         // If the user hasn't entered tank size yet we skip the gallons display.
         let tank = tankSizeValue ?? 0.0
 
-        func add(_ icon: String, _ label: String, _ accent: Color, headline: Bool = false, arrival: Bool = false, caption: String? = nil) {
-            items.append(FuelPlanItem(id: nextId, icon: icon, label: label, accent: accent, isHeadline: headline, isArrival: arrival, caption: caption))
+        func add(_ icon: String, _ label: String, _ accent: Color, headline: Bool = false, arrival: Bool = false, primary: Bool = false, caption: String? = nil) {
+            items.append(FuelPlanItem(id: nextId, icon: icon, label: label, accent: accent, isHeadline: headline, isArrival: arrival, isPrimary: primary, caption: caption))
             nextId += 1
         }
 
         // Adds a "Drive X mi to <destination>" row; clamped so negative roundoff never shows.
+        // Kept as secondary, supporting information — smaller and muted relative to the
+        // three primary numbers, but textSecondary (not textMuted) for better readability
+        // outdoors.
         func addLeg(_ raw: Double, destination: String) {
             let miles = max(0.0, raw)
             if miles > 0.1 {
-                add("arrow.down", "Drive \(formattedMiles(miles)) to \(destination)", AppTheme.Colors.textMuted)
+                add("arrow.down", "Drive \(formattedMiles(miles)) to \(destination)", AppTheme.Colors.textSecondary)
             }
         }
 
@@ -2531,7 +2531,7 @@ struct TripPlannerView: View {
                 let fullName = loc.isEmpty ? name : "\(name), \(loc)"
                 add("fuelpump.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.stationYellow, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
-                    fuelReserveColor(for: stop.arrivalReserveFraction))
+                    AppTheme.Colors.rangeBlue, primary: true)
                 let isFinalStop = i + 1 == totalStops
                 let nextLegMiles = isFinalStop
                     ? plan.distanceMiles - stop.station.distanceAlongRouteMiles
@@ -2539,7 +2539,8 @@ struct TripPlannerView: View {
                 add(
                     "plus.circle.fill",
                     "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
-                    AppTheme.Colors.stationYellow,
+                    AppTheme.Colors.gasOrange,
+                    primary: true,
                     caption: fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: isFinalStop)
                 )
                 prevMiles = stop.station.distanceAlongRouteMiles
@@ -2547,7 +2548,7 @@ struct TripPlannerView: View {
             addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
             if let f = gasOnlyDestinationReserveFraction {
                 add("mappin.circle.fill", arrivalLine(fraction: f),
-                    fuelReserveColor(for: f), arrival: true)
+                    AppTheme.Colors.rangeBlue, arrival: true, primary: true)
             }
         } else if let fallback = gasFallbackPlan, fallback.succeeds {
             // The selected ethanol plan couldn't complete the trip or meet the buffer, and
@@ -2563,7 +2564,7 @@ struct TripPlannerView: View {
                 let fullName = loc.isEmpty ? name : "\(name), \(loc)"
                 add("fuelpump.and.filter", "\(stopLabel) — \(fullName) (Gas Backup)", AppTheme.Colors.gasOrange, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
-                    fuelReserveColor(for: stop.arrivalReserveFraction))
+                    AppTheme.Colors.rangeBlue, primary: true)
                 let isFinalStop = i + 1 == totalFallbackStops
                 let nextLegMiles = isFinalStop
                     ? plan.distanceMiles - stop.station.distanceAlongRouteMiles
@@ -2572,6 +2573,7 @@ struct TripPlannerView: View {
                     "plus.circle.fill",
                     "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
                     AppTheme.Colors.gasOrange,
+                    primary: true,
                     caption: fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: isFinalStop)
                 )
                 prevMiles = stop.station.distanceAlongRouteMiles
@@ -2579,9 +2581,9 @@ struct TripPlannerView: View {
             addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
             if let f = fallback.destinationReserveFraction {
                 add("mappin.circle.fill", arrivalLine(fraction: f),
-                    fuelReserveColor(for: f), arrival: true)
+                    AppTheme.Colors.rangeBlue, arrival: true, primary: true)
             } else {
-                add("mappin.circle.fill", "Arrival buffer unavailable", AppTheme.Colors.textMuted)
+                add("mappin.circle.fill", "Arrival buffer unavailable", AppTheme.Colors.textSecondary)
             }
         } else if isGasolineOnly == false {
             let stops = analysis?.recommendedStops ?? []
@@ -2595,7 +2597,7 @@ struct TripPlannerView: View {
                 let fullName = loc.isEmpty ? name : "\(name), \(loc)"
                 add("fuelpump.circle.fill", "\(stopLabel) — \(fullName)", AppTheme.Colors.primaryGreen, headline: true)
                 add("drop.fill", stopArrivalLine(fraction: stop.arrivalReserveFraction),
-                    fuelReserveColor(for: stop.arrivalReserveFraction))
+                    AppTheme.Colors.rangeBlue, primary: true)
                 let fillCaption: String?
                 if i + 1 < totalStops {
                     let nextLegMiles = stops[i + 1].station.distanceAlongRouteMiles - stop.station.distanceAlongRouteMiles
@@ -2612,7 +2614,8 @@ struct TripPlannerView: View {
                 add(
                     "plus.circle.fill",
                     "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
-                    AppTheme.Colors.primaryGreen,
+                    AppTheme.Colors.gasOrange,
+                    primary: true,
                     caption: fillCaption
                 )
                 prevMiles = stop.station.distanceAlongRouteMiles
@@ -2652,7 +2655,7 @@ struct TripPlannerView: View {
                         finalArrivalFraction = nil
                     }
                 } else if isDiscoveringGasStations {
-                    add("ellipsis.circle", "Searching for a required backup gas stop…", AppTheme.Colors.textMuted)
+                    add("ellipsis.circle", "Searching for a required backup gas stop…", AppTheme.Colors.textSecondary)
                 } else {
                     add("exclamationmark.triangle.fill",
                         "No backup gas station found along this route — plan fuel manually.",
@@ -2663,9 +2666,9 @@ struct TripPlannerView: View {
             addLeg(plan.distanceMiles - prevMiles, destination: "Destination")
             if let f = finalArrivalFraction {
                 add("mappin.circle.fill", arrivalLine(fraction: f),
-                    fuelReserveColor(for: f), arrival: true)
+                    AppTheme.Colors.rangeBlue, arrival: true, primary: true)
             } else {
-                add("mappin.circle.fill", "Arrival buffer unavailable", AppTheme.Colors.textMuted)
+                add("mappin.circle.fill", "Arrival buffer unavailable", AppTheme.Colors.textSecondary)
             }
         }
 
@@ -2675,26 +2678,38 @@ struct TripPlannerView: View {
     private func fuelPlanItemRow(_ item: FuelPlanItem) -> some View {
         let useSemibold = item.isHeadline || item.isArrival
         let textColor: Color = item.isHeadline ? AppTheme.Colors.textPrimary : item.accent
+        // The three numbers a driver needs at the pump — expected fuel on arrival, the
+        // suggested fill, and the expected destination reserve — render noticeably larger
+        // and bolder than everything else in the card so they never require hunting for.
+        // Every other row (stop name, drive legs, captions) keeps its existing, smaller size.
+        let iconFont: Font = item.isPrimary
+            ? .title3.weight(.bold)
+            : (useSemibold ? .subheadline.weight(.semibold) : .caption.weight(.semibold))
+        let labelFont: Font = item.isPrimary
+            ? .title3.weight(.bold)
+            : (useSemibold ? .subheadline.weight(.semibold) : .caption)
         return HStack(alignment: item.caption == nil ? .center : .top, spacing: 10) {
             Image(systemName: item.icon)
-                .font(useSemibold ? .subheadline.weight(.semibold) : .caption.weight(.semibold))
+                .font(iconFont)
                 .foregroundStyle(item.accent)
-                .frame(width: 20)
+                .frame(width: item.isPrimary ? 26 : 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.label)
-                    .font(useSemibold ? .subheadline.weight(.semibold) : .caption)
+                    .font(labelFont)
                     // Headline rows: textPrimary (station names, start row).
-                    // Arrival rows (isArrival): accent colour = reserve traffic-light colour.
+                    // Primary rows (isPrimary): accent colour = blue (informational) or
+                    // orange (the fill action) — see item accent assignment at each call site.
                     // All other non-headline rows: accent colour (drive muted / add accented).
                     .foregroundStyle(textColor)
                     .fixedSize(horizontal: false, vertical: true)
                 if let caption = item.caption {
-                    // Plain secondary text, no icon of its own — reuses the same muted
-                    // caption style already used elsewhere in this card (e.g. the
-                    // estimates footnote below the stop list).
+                    // Plain secondary text, no icon of its own — reuses the same caption
+                    // style already used elsewhere in this card (e.g. the estimates footnote
+                    // below the stop list), at textSecondary for better outdoor readability
+                    // while staying clearly subordinate to the primary rows above.
                     Text(caption)
                         .font(.caption)
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
