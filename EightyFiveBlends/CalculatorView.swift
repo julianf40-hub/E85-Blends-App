@@ -34,6 +34,7 @@ struct CalculatorView: View {
     @State private var loadedDefaultsKey = ""
     @State private var calculatorFuelLogDraft: FuelLogDraft?
     @Environment(StationLocationManager.self) private var locationManager
+    @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @State private var pumpModeStation: FuelStation?
     @State private var isShowingPumpMode = false
     @State private var didAutoPromptPumpMode = false
@@ -201,6 +202,7 @@ struct CalculatorView: View {
         .onAppear {
             applyDefaultsIfNeeded(for: activeVehicleKey)
             requestPumpModeLocationIfNeeded()
+            resolvePendingDetectedStationIfNeeded()
         }
         .onChange(of: activeVehicleKey) { _, newValue in
             applyDefaultsIfNeeded(for: newValue)
@@ -213,10 +215,18 @@ struct CalculatorView: View {
         }
         .onChange(of: locationManager.authorizationStatus) { _, newValue in
             handleAuthorizationChange(newValue)
+            refreshPumpDetectionMonitoredStations(reason: "Location authorization changed")
         }
         .onChange(of: locationManager.latestCoordinate) { _, _ in
             refreshPumpModeStation()
             evaluateAutoPromptPumpMode()
+            refreshPumpDetectionMonitoredStations(reason: "Location updated")
+        }
+        .onChange(of: pumpDetectionService.pendingDetectedStation) { _, _ in
+            resolvePendingDetectedStationIfNeeded()
+        }
+        .onChange(of: savedStations) { _, _ in
+            refreshPumpDetectionMonitoredStations(reason: "Saved stations changed")
         }
         .sheet(isPresented: calculatorFuelLogSheetBinding) {
             if let calculatorFuelLogDraft {
@@ -398,6 +408,35 @@ struct CalculatorView: View {
                 return (station, currentLocation.distance(from: stationLocation))
             }
             .min { $0.distance < $1.distance }
+    }
+
+    /// Feeds the current saved-station list into Automatic Pump Detection's monitor
+    /// refresh — the service itself decides (via movement/authorization gates) whether a
+    /// real rebuild is warranted, so this is safe to call from every location update.
+    private func refreshPumpDetectionMonitoredStations(reason: String) {
+        let snapshots = savedStations.map {
+            SavedStationSnapshot(name: $0.name, latitude: $0.latitude, longitude: $0.longitude, address: $0.address)
+        }
+        pumpDetectionService.refreshMonitoredStations(savedStations: snapshots, reason: reason)
+    }
+
+    /// Resolves a background-detected station (from a tapped notification) back to a live
+    /// `FuelStation` by matching name + coordinate, since Automatic Pump Detection persists
+    /// only lightweight metadata, not a SwiftData reference. Fails safely — if the station
+    /// was deleted or no longer matches, Pump Mode simply opens without a preselected
+    /// station rather than crashing or showing stale data.
+    private func resolvePendingDetectedStationIfNeeded() {
+        guard let detected = pumpDetectionService.pendingDetectedStation else { return }
+
+        let match = savedStations.first { station in
+            guard let latitude = station.latitude, let longitude = station.longitude else { return false }
+            let expectedID = AutomaticPumpDetectionStationKey.make(name: station.name, latitude: latitude, longitude: longitude)
+            return expectedID == detected.id
+        }
+
+        pumpModeStation = match
+        isShowingPumpMode = true
+        pumpDetectionService.pendingDetectedStation = nil
     }
 
     private func openPumpMode() {

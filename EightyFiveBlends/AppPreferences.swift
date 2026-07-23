@@ -26,6 +26,14 @@ enum AppPreferenceKey {
     static let lastPumpE85Content = "lastPumpE85Content"
     static let lastPumpFuelLevel = "lastPumpFuelLevel"
     static let lastPumpFuelType = "lastPumpFuelType"
+    // Automatic Pump Detection — opt-in background arrival detection (see
+    // AutomaticPumpDetectionService). All persisted state is namespaced under this prefix.
+    static let automaticPumpDetectionEnabled = "automaticPumpDetectionEnabled"
+    static let automaticPumpDetectionMonitoredStations = "automaticPumpDetectionMonitoredStations"
+    static let automaticPumpDetectionCooldownState = "automaticPumpDetectionCooldownState"
+    static let automaticPumpDetectionLastRefreshLatitude = "automaticPumpDetectionLastRefreshLatitude"
+    static let automaticPumpDetectionLastRefreshLongitude = "automaticPumpDetectionLastRefreshLongitude"
+    static let automaticPumpDetectionLastRefreshAt = "automaticPumpDetectionLastRefreshAt"
 }
 
 enum MapsAppOption: String, CaseIterable {

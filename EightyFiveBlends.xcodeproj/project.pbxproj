@@ -262,6 +262,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "85Blends Internal";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "85Blends uses your location in the background to recognize when you arrive at an E85 station and notify you that At The Pump is ready.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to find nearby E85/fuel stations and help detect the station you're at when logging fuel.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "85Blends lets you choose a vehicle photo for your Garage profile.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -429,6 +430,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "85Blends uses your location in the background to recognize when you arrive at an E85 station and notify you that At The Pump is ready.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to find nearby E85/fuel stations and help detect the station you're at when logging fuel.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "85Blends lets you choose a vehicle photo for your Garage profile.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -472,6 +474,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "85Blends uses your location in the background to recognize when you arrive at an E85 station and notify you that At The Pump is ready.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "85Blends uses your location to find nearby E85/fuel stations and help detect the station you're at when logging fuel.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "85Blends lets you choose a vehicle photo for your Garage profile.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

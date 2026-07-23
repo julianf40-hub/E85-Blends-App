@@ -18,6 +18,7 @@ struct EightyFiveBlendsApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var locationManager = StationLocationManager()
+    @State private var automaticPumpDetectionService = AutomaticPumpDetectionService()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
     private let isUsingInMemoryFallback: Bool
@@ -108,11 +109,16 @@ struct EightyFiveBlendsApp: App {
         WindowGroup {
             ContentView()
                 .environment(locationManager)
+                .environment(automaticPumpDetectionService)
                 .preferredColorScheme(
                     ThemePreferenceOption(rawValue: themePreference)?.colorScheme
                 )
                 .onAppear {
                     AppTheme.applyTabBarAppearance()
+                    // Wires region-monitoring/notification callbacks and, if the feature
+                    // was already enabled from a previous launch, resumes it. Safe to call
+                    // every launch — a no-op background-monitoring resume when disabled.
+                    automaticPumpDetectionService.attach(to: locationManager)
                 }
                 .task {
                     await SubscriptionManager.shared.refreshEntitlements()
