@@ -35,10 +35,20 @@ struct CalculatorView: View {
     @State private var calculatorFuelLogDraft: FuelLogDraft?
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
+    @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
+    @Environment(\.scenePhase) private var scenePhase
     @State private var pumpModeStation: FuelStation?
     @State private var isShowingPumpMode = false
     @State private var didAutoPromptPumpMode = false
     @State private var autoPromptStation: FuelStation?
+    /// Manually opened Pump Mode's station-context resolution — separate from
+    /// `pumpModeStation`/PumpProximity, which remain the untouched source for the
+    /// automatic prompt (`evaluateAutoPromptPumpMode`). See `openPumpMode()`.
+    @State private var pumpContextState: PumpModeStationContextState = .noMatch
+    /// Incremented on every Pump Mode open; an in-flight resolution checks this before
+    /// applying its result so a stale async result from a closed/reopened session can
+    /// never mutate a later, unrelated session (Phase 8).
+    @State private var pumpModeSessionToken = 0
 
     private var fallbackDefaults: CalculatorDefaults {
         CalculatorDefaults(
@@ -228,6 +238,18 @@ struct CalculatorView: View {
         .onChange(of: savedStations) { _, _ in
             refreshPumpDetectionMonitoredStations(reason: "Saved stations changed")
         }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Returning to the foreground while Pump Mode is still open is the one case
+            // worth a fresh, bounded re-resolution — the cached fix from before
+            // backgrounding may now be stale (Phase 8). This never requests permissions,
+            // never loops, and is a no-op whenever Pump Mode isn't presented.
+            guard newPhase == .active, isShowingPumpMode else { return }
+            let sessionToken = pumpModeSessionToken
+            debugPumpContextLog("App became active while Pump Mode is open — re-resolving session \(sessionToken).")
+            Task { @MainActor in
+                await resolvePumpStationContext(sessionToken: sessionToken)
+            }
+        }
         .sheet(isPresented: calculatorFuelLogSheetBinding) {
             if let calculatorFuelLogDraft {
                 AddEditFuelLogView(entry: nil, initialDraft: calculatorFuelLogDraft) { draft in
@@ -253,13 +275,20 @@ struct CalculatorView: View {
                 initialE85Octane: doubleValue(from: e85Octane),
                 initialGasOctane: doubleValue(from: gasOctane),
                 activeVehicle: pumpModeActiveVehicle,
-                nearestStation: pumpModeStation,
+                stationContext: pumpContextState,
                 locationAccessDenied: locationManager.authorizationDenied,
                 lastLoggedBlendPercent: lastLoggedBlendForActiveVehicle,
+                selectAmbiguousCandidateAction: { candidate in
+                    pumpContextState = .matched(candidate)
+                },
                 logFillUpAction: { updatedCalculation in
                     openPumpModeFuelLog(with: updatedCalculation)
                 },
                 closeAction: {
+                    // Bump the session token so a still-in-flight resolution from this
+                    // session is discarded on arrival rather than silently applying to a
+                    // now-closed sheet (Phase 8).
+                    pumpModeSessionToken += 1
                     isShowingPumpMode = false
                 }
             )
@@ -270,7 +299,17 @@ struct CalculatorView: View {
             }
             Button("Open Pump Mode") {
                 pumpModeStation = autoPromptStation
+                // The automatic prompt already confirmed this station via PumpProximity's
+                // strict gate — trust it directly rather than re-running the manual
+                // resolver, so the sheet never regresses to "resolving"/"no match" for a
+                // station we're already certain about.
+                if let autoPromptStation, let candidate = pumpContextCandidate(from: autoPromptStation) {
+                    pumpContextState = .matched(candidate)
+                } else {
+                    pumpContextState = .noMatch
+                }
                 autoPromptStation = nil
+                pumpModeSessionToken += 1
                 isShowingPumpMode = true
             }
         } message: {
@@ -435,6 +474,16 @@ struct CalculatorView: View {
         }
 
         pumpModeStation = match
+        pumpModeSessionToken += 1
+        // A background arrival notification already carries a precisely confirmed
+        // station (see AutomaticPumpDetectionService's Stage-B confirmation) — trust it
+        // directly rather than re-running the manual resolver, so the sheet never briefly
+        // regresses to "No Nearby E85 Station Found" while a resolution we don't need runs.
+        if let match, let candidate = pumpContextCandidate(from: match) {
+            pumpContextState = .matched(candidate)
+        } else {
+            pumpContextState = .noMatch
+        }
         isShowingPumpMode = true
         pumpDetectionService.pendingDetectedStation = nil
     }
@@ -446,8 +495,157 @@ struct CalculatorView: View {
             locationManager.requestUserLocation()
         }
 
-        refreshPumpModeStation()
+        // Manual open no longer resolves station context from whatever coordinate happens
+        // to be cached (that stale-read race was the root cause of "No Nearby Station
+        // Detected" while standing at a real pump) — present the sheet immediately with a
+        // resolving state, then let resolvePumpStationContext fetch a fresh, bounded fix.
+        pumpModeSessionToken += 1
+        let sessionToken = pumpModeSessionToken
+        pumpContextState = .resolving
         isShowingPumpMode = true
+
+        Task { @MainActor in
+            await resolvePumpStationContext(sessionToken: sessionToken)
+        }
+    }
+
+    /// Re-resolves station context for the currently open Pump Mode session with a fresh,
+    /// bounded location fetch. Safe to call multiple times per session (e.g. the app
+    /// becoming active again) — any result is discarded if `sessionToken` no longer
+    /// matches the current session (Pump Mode was closed/reopened in the meantime).
+    private func resolvePumpStationContext(sessionToken: Int) async {
+        let cachedAccuracyDescription = locationManager.latestHorizontalAccuracyMeters.map { "\(Int($0)) m" } ?? "unknown"
+        debugPumpContextLog("Manual Pump Mode opened (session \(sessionToken)) — cached fix accuracy: \(cachedAccuracyDescription) (not used for resolution; a fresh fix is always requested).")
+
+        let fix = await requestBoundedFreshLocation(sessionToken: sessionToken)
+        guard sessionToken == pumpModeSessionToken else {
+            debugPumpContextLog("Discarding stale resolution for session \(sessionToken) — a newer session is active.")
+            return
+        }
+
+        if let fix {
+            debugPumpContextLog("Fresh fix received — accuracy \(Int(fix.horizontalAccuracyMeters)) m.")
+        } else {
+            debugPumpContextLog("No fresh fix available within the attempt/timeout budget.")
+        }
+
+        let savedCandidates = savedStations.compactMap { station in
+            pumpContextCandidate(from: station)
+        }
+        let liveEntries = recentLiveStationCache.currentEntries(now: Date())
+        let liveCandidates = liveEntries.compactMap { PumpStationContextResolver.candidate(fromLive: $0) }
+        let cacheAgeDescription = recentLiveStationCache.fetchedAt.map { "\(Int(Date().timeIntervalSince($0))) s old" } ?? "empty"
+        debugPumpContextLog("Considering \(savedCandidates.count) saved and \(liveCandidates.count) recent live candidate(s) (live cache: \(cacheAgeDescription)).")
+
+        let result = PumpStationContextResolver.resolve(
+            candidates: savedCandidates + liveCandidates,
+            freshLatitude: fix?.coordinate.latitude,
+            freshLongitude: fix?.coordinate.longitude,
+            horizontalAccuracyMeters: fix?.horizontalAccuracyMeters,
+            locationTimestamp: fix?.timestamp,
+            now: Date()
+        )
+
+        guard sessionToken == pumpModeSessionToken else {
+            debugPumpContextLog("Discarding stale resolution for session \(sessionToken) — a newer session is active.")
+            return
+        }
+
+        applyPumpContextResult(result, fix: fix)
+    }
+
+    /// Up to `PumpStationContextResolver.maximumFreshLocationAttempts` bounded fresh-fix
+    /// requests, accepting the first one that meets the manual-context accuracy bar (or
+    /// the last attempt's result, even if imperfect, once attempts are exhausted — the
+    /// resolver itself will correctly reject it if it's still not good enough).
+    private func requestBoundedFreshLocation(sessionToken: Int) async -> StationLocationManager.FreshLocationResult? {
+        var lastFix: StationLocationManager.FreshLocationResult?
+
+        for attempt in 1...PumpStationContextResolver.maximumFreshLocationAttempts {
+            guard sessionToken == pumpModeSessionToken else { return nil }
+
+            debugPumpContextLog("Fresh-location attempt \(attempt) started (timeout \(Int(PumpStationContextResolver.freshLocationTimeout))s).")
+            guard let fix = await locationManager.requestFreshLocationAsync(timeout: PumpStationContextResolver.freshLocationTimeout) else {
+                debugPumpContextLog("Fresh-location attempt \(attempt) timed out or was unauthorized.")
+                continue
+            }
+
+            lastFix = fix
+            let isGoodEnough = fix.horizontalAccuracyMeters >= 0
+                && fix.horizontalAccuracyMeters <= PumpStationContextResolver.maximumAccuracyMeters
+            if isGoodEnough {
+                return fix
+            }
+            debugPumpContextLog("Fresh-location attempt \(attempt) was too inaccurate (\(Int(fix.horizontalAccuracyMeters)) m) — retrying if attempts remain.")
+        }
+
+        return lastFix
+    }
+
+    private func applyPumpContextResult(_ result: PumpStationContextResult, fix: StationLocationManager.FreshLocationResult?) {
+        switch result {
+        case .matched(let candidate):
+            pumpContextState = .matched(candidate)
+            debugPumpContextLog("Resolver matched \(candidate.source == .saved ? "saved" : "live") station: \(candidate.name).")
+        case .ambiguous(let candidates):
+            // The resolver already confirmed these are all within the manual context
+            // radius of the same fix that produced this result — recompute each
+            // candidate's distance from that same fix purely for display in the picker.
+            let userLocation = fix.map { CLLocation(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude) }
+            let withDistance = candidates.map { candidate -> PumpStationContextAmbiguousCandidate in
+                let distance = userLocation?.distance(from: CLLocation(latitude: candidate.latitude, longitude: candidate.longitude)) ?? 0
+                return PumpStationContextAmbiguousCandidate(candidate: candidate, distanceMeters: distance)
+            }
+            pumpContextState = .ambiguous(withDistance)
+            debugPumpContextLog("Resolver found \(candidates.count) ambiguous candidates — asking the user to choose.")
+        case .noCandidates:
+            pumpContextState = .noMatch
+            debugPumpContextLog("Resolver result: no candidate within the manual context radius.")
+        case .locationUnavailable:
+            pumpContextState = .locationUnavailable
+            debugPumpContextLog("Resolver result: location unavailable.")
+        case .locationStale, .locationInaccurate:
+            // Reduced ("Approximate") accuracy authorization is the single most common,
+            // actionable cause of a persistently poor fix — surface that specifically when
+            // it applies, since turning Precise Location back on directly fixes it.
+            if locationManager.isPreciseLocationEnabled == false {
+                pumpContextState = .preciseLocationRequired
+                debugPumpContextLog("Resolver result: \(result == .locationStale ? "stale" : "inaccurate") fix with reduced accuracy authorization.")
+            } else {
+                pumpContextState = .locationUnavailable
+                debugPumpContextLog("Resolver result: \(result == .locationStale ? "stale" : "inaccurate") fix.")
+            }
+        }
+        debugPumpContextLog("Final Pump Mode context state: \(pumpContextStateDebugLabel).")
+    }
+
+    private var pumpContextStateDebugLabel: String {
+        switch pumpContextState {
+        case .resolving: return "resolving"
+        case .matched(let candidate): return "matched(\(candidate.source == .saved ? "saved" : "live"))"
+        case .noMatch: return "noMatch"
+        case .locationUnavailable: return "locationUnavailable"
+        case .preciseLocationRequired: return "preciseLocationRequired"
+        case .ambiguous(let candidates): return "ambiguous(\(candidates.count))"
+        }
+    }
+
+    /// Converts a saved `FuelStation` into a resolver candidate. Returns nil for a station
+    /// without valid coordinates, matching `nearestSavedStation`'s existing filtering.
+    private func pumpContextCandidate(from station: FuelStation) -> PumpStationContextCandidate? {
+        PumpStationContextResolver.candidate(fromSaved: PumpContextSavedStationSnapshot(
+            name: station.name,
+            latitude: station.latitude,
+            longitude: station.longitude,
+            address: [station.address, station.city, station.state].filter { $0.isEmpty == false }.joined(separator: ", "),
+            e85Price: station.lastKnownE85Price > 0 ? station.lastKnownE85Price : nil
+        ))
+    }
+
+    private func debugPumpContextLog(_ message: @autoclosure () -> String) {
+        #if DEBUG
+        print("[85Blends][pumpContext] \(message())")
+        #endif
     }
 
     private func openPumpModeFuelLog(with result: BlendCalculator.Result) {
@@ -463,11 +661,11 @@ struct CalculatorView: View {
     private func pumpModeFuelLogDraft(from result: BlendCalculator.Result) -> FuelLogDraft {
         var draft = FuelLogStore.prefillDraft(from: result, vehicle: activeVehicle)
 
-        if let pumpModeStation {
-            draft.stationName = pumpModeStation.name
+        if case .matched(let candidate) = pumpContextState {
+            draft.stationName = candidate.name
 
-            if pumpModeStation.lastKnownE85Price > 0 {
-                draft.e85PricePerGallon = pumpModeStation.lastKnownE85Price
+            if let price = candidate.e85Price, price > 0 {
+                draft.e85PricePerGallon = price
             }
         }
 

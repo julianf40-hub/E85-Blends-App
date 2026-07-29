@@ -19,6 +19,7 @@ struct EightyFiveBlendsApp: App {
 
     @State private var locationManager = StationLocationManager()
     @State private var automaticPumpDetectionService = AutomaticPumpDetectionService()
+    @State private var recentLiveStationCache = RecentLiveStationCache()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
     private let isUsingInMemoryFallback: Bool
@@ -110,6 +111,7 @@ struct EightyFiveBlendsApp: App {
             ContentView()
                 .environment(locationManager)
                 .environment(automaticPumpDetectionService)
+                .environment(recentLiveStationCache)
                 .preferredColorScheme(
                     ThemePreferenceOption(rawValue: themePreference)?.colorScheme
                 )

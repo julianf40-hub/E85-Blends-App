@@ -33,6 +33,7 @@ struct StationsView: View {
     @State private var selectedMapStationID: PersistentIdentifier?
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
+    @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
     @State private var locationDeniedAlert = false
     @State private var liveStations: [LiveFuelStation] = []
     @State private var isSearchingLive = false
@@ -1492,6 +1493,12 @@ struct StationsView: View {
                 if results.isEmpty {
                     liveSearchError = "No E85 stations found within \(selectedRadius) of \(stationSearchSource.displayName). Try selecting a larger radius above."
                 }
+                // Shares this completed search with manually opened Pump Mode, so a
+                // station the user just found (but hasn't saved) can still be recognized
+                // if they're standing at it — see RecentLiveStationCache/PumpStationContextResolver.
+                // Replaces (rather than merges with) any previous search's results, and
+                // is not persisted — see RecentLiveStationCache's own documentation.
+                recentLiveStationCache.replace(with: results, fetchedAt: Date())
                 refreshCommunityPricePreviews()
             } catch {
                 guard Task.isCancelled == false else { return }

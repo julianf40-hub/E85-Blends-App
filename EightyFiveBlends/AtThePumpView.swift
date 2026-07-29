@@ -5,7 +5,9 @@
 //  Created by Codex on 5/2/26.
 //
 
+import CoreLocation
 import SwiftUI
+import UIKit
 
 struct AtThePumpView: View {
     /// What the user says is coming out of the pump hose today.
@@ -16,7 +18,12 @@ struct AtThePumpView: View {
     }
 
     let activeVehicle: VehicleProfile?
-    let nearestStation: FuelStation?
+    /// Manually opened Pump Mode's station-context resolution — see
+    /// `PumpModeStationContextState`/`PumpStationContextResolver`. Automatic-prompt and
+    /// notification-driven opens settle this to `.matched` immediately (before the sheet
+    /// is even presented); a manual open starts at `.resolving` and transitions once a
+    /// fresh, bounded location fix has been resolved (see the `.onChange` in `body`).
+    let stationContext: PumpModeStationContextState
     let locationAccessDenied: Bool
     /// Final blend from the newest fuel log for the active vehicle, if any — the
     /// smartest available default for "what's in the tank right now".
@@ -24,6 +31,8 @@ struct AtThePumpView: View {
     /// Fuel level restored from the last visit, if any — drives the "last used level"
     /// hint so we never imply the app knows the real gauge reading.
     private let restoredFuelLevelPercent: Double?
+    /// Applies the user's choice from the ambiguous-candidate picker for this session only.
+    let selectAmbiguousCandidateAction: (PumpStationContextCandidate) -> Void
     let logFillUpAction: (BlendCalculator.Result) -> Void
     let closeAction: () -> Void
 
@@ -54,6 +63,9 @@ struct AtThePumpView: View {
     @State private var e85PriceInput: String = ""
     @State private var gasPriceInput: String = ""
     @State private var budgetInput: String = ""
+    /// True once the user has manually typed into the E85 price field — once set, a later
+    /// station-context resolution must never silently overwrite what they typed.
+    @State private var e85PriceUserEdited = false
 
     init(
         initialTankSizeGallons: Double,
@@ -65,16 +77,18 @@ struct AtThePumpView: View {
         initialE85Octane: Double,
         initialGasOctane: Double,
         activeVehicle: VehicleProfile?,
-        nearestStation: FuelStation?,
+        stationContext: PumpModeStationContextState,
         locationAccessDenied: Bool,
         lastLoggedBlendPercent: Double? = nil,
+        selectAmbiguousCandidateAction: @escaping (PumpStationContextCandidate) -> Void,
         logFillUpAction: @escaping (BlendCalculator.Result) -> Void,
         closeAction: @escaping () -> Void
     ) {
         self.activeVehicle = activeVehicle
-        self.nearestStation = nearestStation
+        self.stationContext = stationContext
         self.locationAccessDenied = locationAccessDenied
         self.lastLoggedBlendPercent = lastLoggedBlendPercent
+        self.selectAmbiguousCandidateAction = selectAmbiguousCandidateAction
         self.logFillUpAction = logFillUpAction
         self.closeAction = closeAction
 
@@ -121,8 +135,12 @@ struct AtThePumpView: View {
         _pumpFuelSelection = State(initialValue: saved.fuelType)
         _isMaxE85Selected = State(initialValue: saved.targetIsMaxE85)
 
-        // Pre-fill E85 price from station if available
-        if let price = nearestStation?.lastKnownE85Price, price > 0 {
+        // Pre-fill E85 price if a station context is already known at presentation time
+        // (auto-prompt/notification opens resolve synchronously before the sheet
+        // appears). A manually opened session usually starts at `.resolving` and picks
+        // this up later via the `.onChange(of: stationContext)` in `body`, once a fresh
+        // fix has actually been resolved — see `PumpStationContextResolver`.
+        if case .matched(let candidate) = stationContext, let price = candidate.e85Price, price > 0 {
             _e85PriceInput = State(initialValue: String(format: "%.2f", price))
         }
     }
@@ -288,6 +306,20 @@ struct AtThePumpView: View {
         Int(currentFuelLevelPercent.rounded()) == Int(targetFuelLevelPercent.rounded())
     }
 
+    /// Wraps `$e85PriceInput` so only a genuine TextField edit (the user actually typing)
+    /// marks `e85PriceUserEdited` — a programmatic auto-fill from station-context
+    /// resolution assigns `e85PriceInput` directly and never goes through this binding's
+    /// setter, so it can never be mistaken for a user edit.
+    private var e85PriceInputBinding: Binding<String> {
+        Binding(
+            get: { e85PriceInput },
+            set: { newValue in
+                e85PriceInput = newValue
+                e85PriceUserEdited = true
+            }
+        )
+    }
+
     // True whenever current level is at 100% — target slider must not render to avoid a stride crash.
     private var currentLevelIsFull: Bool {
         Int(currentFuelLevelPercent.rounded()) >= 100
@@ -429,6 +461,19 @@ struct AtThePumpView: View {
             .onChange(of: currentFuelLevelPercent) { _, _ in persistLastPumpSetup() }
             .onChange(of: pumpFuelSelection) { _, _ in persistLastPumpSetup() }
             .onChange(of: isMaxE85Selected) { _, _ in persistLastPumpSetup() }
+            .onChange(of: stationContext) { _, newValue in
+                // A manual open typically starts at `.resolving`; once resolution
+                // completes (possibly seconds later, after a fresh location fix), prefill
+                // the price the same way `init` does for an already-known station —
+                // but only if the user hasn't already typed their own price in the
+                // meantime.
+                guard case .matched(let candidate) = newValue,
+                      let price = candidate.e85Price, price > 0,
+                      e85PriceUserEdited == false else {
+                    return
+                }
+                e85PriceInput = String(format: "%.2f", price)
+            }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .keyboardDoneToolbar()
@@ -514,11 +559,18 @@ struct AtThePumpView: View {
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                Text(nearestStation.map { "At: \($0.name)" } ?? "Quick blend guidance while you fuel")
+                Text(headerStationSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
         }
+    }
+
+    private var headerStationSubtitle: String {
+        if case .matched(let candidate) = stationContext {
+            return "At: \(candidate.name)"
+        }
+        return "Quick blend guidance while you fuel"
     }
 
     private var vehicleCard: some View {
@@ -902,7 +954,7 @@ struct AtThePumpView: View {
 
                         if isBudgetExpanded {
                             HStack(spacing: 8) {
-                                priceInputField(label: "E85 $/gal", text: $e85PriceInput, hint: "3.49")
+                                priceInputField(label: "E85 $/gal", text: e85PriceInputBinding, hint: "3.49")
                                 priceInputField(label: "Gas $/gal", text: $gasPriceInput, hint: "3.99")
                                 priceInputField(label: "Budget $", text: $budgetInput, hint: "20")
                             }
@@ -1170,37 +1222,174 @@ struct AtThePumpView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SectionHeader(title: "Station Context", subtitle: nil)
 
-                if let nearestStation {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(nearestStation.name)
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                        if nearestStation.lastKnownE85Price > 0 {
-                            Text(String(format: "Saved E85 price: $%.2f/gal", nearestStation.lastKnownE85Price))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.Colors.primaryGreen)
-                        } else {
-                            Text("No saved E85 price on this station yet.")
-                                .font(.subheadline)
-                                .foregroundStyle(AppTheme.Colors.textSecondary)
-                        }
-
-                        Text("Last updated \(formattedDate(nearestStation.lastUpdated))")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.Colors.textMuted)
-                    }
+                if locationAccessDenied {
+                    stationContextMessage(
+                        title: "Location Access Turned Off",
+                        message: "Enable location in Settings to detect nearby saved stations automatically.",
+                        showsSettingsButton: true
+                    )
                 } else {
-                    Text(locationAccessDenied ? "Location Access Turned Off" : "No Nearby Station Detected")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text(locationAccessDenied ? "Enable location in Settings to detect nearby saved stations automatically." : "Save stations with coordinates in the Stations tab so they can be detected automatically next time.")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                    switch stationContext {
+                    case .resolving:
+                        stationContextResolvingView
+                    case .matched(let candidate):
+                        stationContextMatchedView(candidate)
+                    case .noMatch:
+                        stationContextMessage(
+                            title: "No Nearby E85 Station Found",
+                            message: "No saved or recently discovered E85 station was close enough to identify automatically."
+                        )
+                    case .locationUnavailable:
+                        stationContextMessage(
+                            title: "Location Unavailable",
+                            message: "We couldn't get a location fix just now. Move outdoors or try again in a moment."
+                        )
+                    case .preciseLocationRequired:
+                        stationContextMessage(
+                            title: "Precise Location Needed",
+                            message: "Turn on Precise Location to identify the E85 station you're visiting.",
+                            showsSettingsButton: true
+                        )
+                    case .ambiguous(let candidates):
+                        stationContextAmbiguousView(candidates)
+                    }
                 }
             }
         }
+    }
+
+    private var stationContextResolvingView: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .tint(AppTheme.Colors.primaryGreen)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Finding Nearby Station")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("Getting a more accurate location…")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+    }
+
+    private func stationContextMatchedView(_ candidate: PumpStationContextCandidate) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(candidate.name)
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            if let price = candidate.e85Price, price > 0 {
+                Text(String(format: "Saved E85 price: $%.2f/gal", price))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+            } else {
+                Text("No saved E85 price on this station yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            if let address = candidate.address, address.isEmpty == false {
+                Text(address)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+
+            // Live results are never silently saved or favorited — this line exists
+            // purely so the user understands where the match came from.
+            if candidate.source == .live {
+                Text("Detected from nearby search results")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+        }
+    }
+
+    private func stationContextAmbiguousView(_ candidates: [PumpStationContextAmbiguousCandidate]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose Your Station")
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            Text("Multiple E85 stations are nearby. Select the station for this fill-up.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            VStack(spacing: 8) {
+                ForEach(candidates) { entry in
+                    Button {
+                        AppHaptics.selection()
+                        selectAmbiguousCandidateAction(entry.candidate)
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.candidate.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                if let address = entry.candidate.address, address.isEmpty == false {
+                                    Text(address)
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.Colors.textMuted)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            Text(formattedDistance(entry.distanceMeters))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(AppTheme.Colors.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(AppTheme.Colors.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text("Your selection applies to this fill-up only.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+        }
+    }
+
+    private func stationContextMessage(title: String, message: String, showsSettingsButton: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            if showsSettingsButton {
+                Button {
+                    openSystemSettings()
+                } label: {
+                    Text("Open Settings")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func formattedDistance(_ meters: CLLocationDistance) -> String {
+        let feet = meters * 3.28084
+        if feet < 1000 {
+            return "\(Int(feet.rounded())) ft"
+        }
+        return String(format: "%.1f mi", meters / 1609.34)
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // MARK: - Safety / actions
@@ -1579,10 +1768,6 @@ struct AtThePumpView: View {
         }
 
         currentFuelEthanolPercent = parsedValue
-    }
-
-    private func formattedDate(_ date: Date) -> String {
-        date.formatted(date: .abbreviated, time: .omitted)
     }
 
     private static func formatInput(_ value: Double) -> String {

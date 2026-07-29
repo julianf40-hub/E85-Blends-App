@@ -123,6 +123,32 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// Bounded variant of `requestFreshLocationAsync()` for manual Pump Mode's
+    /// station-context resolution, which must never block the UI indefinitely. Races the
+    /// existing single-continuation request against a timeout and returns whichever
+    /// finishes first. If the timeout wins, the underlying request (if still in flight) is
+    /// left alone — its continuation is still resumed normally by the delegate callbacks
+    /// above when Core Location eventually responds, satisfying "never leave a
+    /// continuation unresolved" — this call simply stops waiting for that value. Does not
+    /// alter `requestFreshLocationAsync()`'s existing behavior or its callers (Automatic
+    /// Pump Detection), and does not begin continuous updates.
+    func requestFreshLocationAsync(timeout: TimeInterval) async -> FreshLocationResult? {
+        await withTaskGroup(of: FreshLocationResult?.self) { group -> FreshLocationResult? in
+            group.addTask { await self.requestFreshLocationAsync() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                return nil
+            }
+            // `group.next()` unwraps one level (does a child exist); its result is itself
+            // the child's `FreshLocationResult?` — do not double-unwrap it away.
+            guard let firstResult = await group.next() else {
+                return nil
+            }
+            group.cancelAll()
+            return firstResult
+        }
+    }
+
     /// Registers a small circular region for background entry/exit monitoring. Does not
     /// enable continuous location updates or set `allowsBackgroundLocationUpdates` — Core
     /// Location delivers region-monitoring events (and, briefly, background execution time
