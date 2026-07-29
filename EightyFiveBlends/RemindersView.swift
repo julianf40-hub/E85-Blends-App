@@ -374,12 +374,19 @@ struct RemindersView: View {
         )
     }
 
-    private func odometer(for reminder: MaintenanceReminder) -> Int? {
+    // The VehicleProfile a reminder is assigned to — not necessarily the globally active
+    // vehicle. Completion logic must read and update this vehicle's odometer, never the
+    // active vehicle's, when a reminder belongs to a different one.
+    private func vehicleProfile(for reminder: MaintenanceReminder) -> VehicleProfile? {
         if reminder.vehicleName == activeVehicle?.nickname {
-            return activeVehicle?.currentOdometer
+            return activeVehicle
         }
 
-        return vehicles.first(where: { $0.nickname == reminder.vehicleName })?.currentOdometer
+        return vehicles.first(where: { $0.nickname == reminder.vehicleName })
+    }
+
+    private func odometer(for reminder: MaintenanceReminder) -> Int? {
+        vehicleProfile(for: reminder)?.currentOdometer
     }
 
     private func createReminder(from draft: ReminderDraft) {
@@ -478,14 +485,14 @@ struct RemindersView: View {
     }
 
     private func beginCompletion(for reminder: MaintenanceReminder) {
-        let initialMileage = activeVehicle?.currentOdometer ?? reminder.dueMileage
+        let currentVehicleOdometer = odometer(for: reminder)
+        let initialMileage = currentVehicleOdometer ?? reminder.dueMileage
         completionMileageInput = reminder.mileageEnabled ? String(initialMileage) : ""
         completionDate = .now
         completionMileageError = nil
         completionContext = ReminderCompletionContext(
             reminder: reminder,
-            activeVehicleOdometer: activeVehicle?.currentOdometer,
-            currentVehicleOdometer: odometer(for: reminder),
+            currentVehicleOdometer: currentVehicleOdometer,
             initialMileage: initialMileage
         )
     }
@@ -497,10 +504,14 @@ struct RemindersView: View {
             return
         }
 
+        // The sheet's DatePicker already restricts selection to today or earlier; this is a
+        // defensive backstop so a future date can never reach persistence another way.
+        let safeCompletionDate = ReminderScheduling.isFutureCompletionDate(completionDate) ? Date.now : completionDate
+
         completeReminder(
             context.reminder,
             completionMileage: completionMileage,
-            completionDate: completionDate
+            completionDate: safeCompletionDate
         )
         dismissCompletionSheet()
     }
@@ -513,17 +524,14 @@ struct RemindersView: View {
     }
 
     private func validatedCompletionMileage(for context: ReminderCompletionContext) -> Int? {
-        let trimmedMileage = completionMileageInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let completionMileage = Int(trimmedMileage), completionMileage >= 0 else {
+        guard let completionMileage = ReminderScheduling.validatedCompletionMileage(from: completionMileageInput) else {
             completionMileageError = "Enter a valid completion mileage to continue."
             return nil
         }
 
-        if let currentVehicleOdometer = context.currentVehicleOdometer, completionMileage < currentVehicleOdometer {
-            completionMileageError = "Completion mileage cannot be lower than the current vehicle odometer."
-            return nil
-        }
-
+        // A completion mileage lower than the vehicle's current odometer is a valid historical
+        // service entry — ReminderCompletionSheet shows a calm, non-blocking notice for it, and
+        // it must never be rejected here or made to overwrite/lower the vehicle's odometer.
         completionMileageError = nil
         return completionMileage
     }
@@ -543,8 +551,12 @@ struct RemindersView: View {
         )
         modelContext.insert(completionRecord)
 
-        if repeatsMileage, let completionMileage {
-            reminder.dueMileage = completionMileage + reminder.repeatMileageInterval
+        if let completionMileage,
+           let nextDueMileage = ReminderScheduling.nextDueMileage(
+               afterCompleting: completionMileage,
+               repeatMileageInterval: reminder.repeatMileageInterval
+           ) {
+            reminder.dueMileage = nextDueMileage
         }
 
         if repeatsDate {
@@ -564,9 +576,18 @@ struct RemindersView: View {
 
         reminder.completedMileage = completionMileage
 
-        if let completionMileage, let activeVehicle, completionMileage > activeVehicle.currentOdometer {
-            activeVehicle.currentOdometer = completionMileage
-            activeVehicle.updatedAt = .now
+        // Advance the *reminder's assigned* vehicle's odometer — never the globally active
+        // vehicle when the reminder belongs to a different one — and never backward for a
+        // historical completion below the current reading.
+        if let completionMileage, let targetVehicle = vehicleProfile(for: reminder) {
+            let advancedOdometer = ReminderScheduling.advancedOdometer(
+                current: targetVehicle.currentOdometer,
+                completionMileage: completionMileage
+            )
+            if advancedOdometer != targetVehicle.currentOdometer {
+                targetVehicle.currentOdometer = advancedOdometer
+                targetVehicle.updatedAt = .now
+            }
         }
 
         reminder.updatedAt = .now
@@ -1306,7 +1327,8 @@ private struct ReminderCompletionRecordCard: View {
 private struct ReminderCompletionContext: Identifiable {
     let id = UUID()
     let reminder: MaintenanceReminder
-    let activeVehicleOdometer: Int?
+    // The odometer of the vehicle this reminder is assigned to — not necessarily the globally
+    // active vehicle. Always the value the sheet should display and reason about.
     let currentVehicleOdometer: Int?
     let initialMileage: Int
 }
@@ -1336,8 +1358,8 @@ private struct ReminderCompletionSheet: View {
                     VStack(alignment: .leading, spacing: 12) {
                         if context.reminder.mileageEnabled {
                             completionMetric(
-                                title: "Current Active Vehicle Odometer",
-                                value: context.activeVehicleOdometer.map { "\($0.formatted(.number.grouping(.automatic))) mi" } ?? "Unavailable"
+                                title: "Current Vehicle Odometer",
+                                value: context.currentVehicleOdometer.map { "\($0.formatted(.number.grouping(.automatic))) mi" } ?? "Unavailable"
                             )
                             completionMetric(
                                 title: "Due Mileage",
@@ -1362,6 +1384,14 @@ private struct ReminderCompletionSheet: View {
                                     )
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
+
+                            // Calm, non-blocking notice for a valid historical completion — never
+                            // an error color, and never disables Confirm Completion.
+                            if let historicalEntryNotice {
+                                Text(historicalEntryNotice)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -1372,6 +1402,7 @@ private struct ReminderCompletionSheet: View {
                             DatePicker(
                                 "Completion Date",
                                 selection: $completionDate,
+                                in: ...Date(),
                                 displayedComponents: .date
                             )
                             .labelsHidden()
@@ -1397,7 +1428,7 @@ private struct ReminderCompletionSheet: View {
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationTitle("Confirm Completion")
+            .navigationTitle("Complete Service")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1412,6 +1443,20 @@ private struct ReminderCompletionSheet: View {
             }
         }
         .keyboardDoneToolbar()
+    }
+
+    // A calm, informational notice — never an error — shown when the entered mileage is a
+    // valid historical completion below the reminder's assigned vehicle's current odometer.
+    // Mirrors the same parsing/validity rule as RemindersView.validatedCompletionMileage so
+    // this only appears once the entry is otherwise valid.
+    private var historicalEntryNotice: String? {
+        guard let currentVehicleOdometer = context.currentVehicleOdometer,
+              let enteredMileage = ReminderScheduling.validatedCompletionMileage(from: completionMileageInput),
+              enteredMileage < currentVehicleOdometer else {
+            return nil
+        }
+
+        return "Historical service entry. Your current vehicle odometer will remain \(currentVehicleOdometer.formatted(.number.grouping(.automatic))) mi."
     }
 
     private func completionMetric(title: String, value: String) -> some View {

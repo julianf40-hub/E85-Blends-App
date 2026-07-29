@@ -285,4 +285,157 @@ struct ReminderSchedulingTests {
         let expected = date("2026-10-18 14:25:00", calendar: calendar)
         #expect(next == expected)
     }
+
+    // MARK: - Historical service completions (2.2.4)
+    //
+    // Covers RemindersView's completion-sheet fix: a completion mileage below the vehicle's
+    // current odometer is a valid historical entry, must never lower/overwrite the odometer,
+    // and the next due mileage/date must be computed from the entered completion values —
+    // not from the vehicle's current state. Scenario letters (A-G) match the task's test plan.
+    //
+    // Scenario F ("wrong active vehicle") is not exercised here: RemindersView.vehicleProfile
+    // (for:) — the function this scenario depends on — reads @Query'd SwiftData models and
+    // View @State, and this repo has no wired SwiftData/XCTest target (see the note at the top
+    // of this file's sibling test files and CLAUDE.md). It is a direct equality check
+    // (`reminder.vehicleName == activeVehicle?.nickname`, else search `vehicles` by name) with
+    // no branch that could fall back to the active vehicle by mistake — verified by inspection.
+
+    // MARK: A. Historical mileage / G. Invalid input
+
+    @Test("A completion mileage below the current vehicle odometer is a valid historical entry, not rejected")
+    func validatedCompletionMileage_belowCurrentOdometer_isValid() {
+        // Vehicle odometer 149,024; completion mileage 148,132 — historical entry (Scenario A).
+        // validatedCompletionMileage never compares against a vehicle odometer at all.
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "148132") == 148132)
+    }
+
+    @Test("Empty completion mileage input is rejected")
+    func validatedCompletionMileage_empty_isRejected() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "") == nil)
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "   ") == nil)
+    }
+
+    @Test("Zero completion mileage is rejected")
+    func validatedCompletionMileage_zero_isRejected() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "0") == nil)
+    }
+
+    @Test("Negative completion mileage is rejected")
+    func validatedCompletionMileage_negative_isRejected() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "-100") == nil)
+    }
+
+    @Test("Malformed or NaN completion mileage input is rejected")
+    func validatedCompletionMileage_malformed_isRejected() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "abc") == nil)
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "NaN") == nil)
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "148,132") == nil)
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "148132.5") == nil)
+    }
+
+    @Test("Overflowing completion mileage input is rejected")
+    func validatedCompletionMileage_overflow_isRejected() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "999999999999999999999999999999") == nil)
+    }
+
+    @Test("A valid positive completion mileage is accepted")
+    func validatedCompletionMileage_validPositive_isAccepted() {
+        #expect(ReminderScheduling.validatedCompletionMileage(from: "  148132  ") == 148132)
+    }
+
+    // MARK: B/C. Recurring mileage calculation, including an already-overdue result
+
+    @Test("Next due mileage is computed from the entered completion mileage, not the current odometer")
+    func nextDueMileage_fromHistoricalCompletion_advancesByInterval() {
+        // Completion mileage 148,132; interval 5,000 -> next due 153,132 (Scenario B).
+        #expect(ReminderScheduling.nextDueMileage(afterCompleting: 148132, repeatMileageInterval: 5000) == 153132)
+    }
+
+    @Test("A historical completion can produce a next due mileage that is already behind the current odometer")
+    func nextDueMileage_historicalCompletion_canLandBehindCurrentOdometer() {
+        // Current odometer 160,000; completion 148,132; interval 5,000 -> next due 153,132,
+        // which is already behind 160,000 mi and must be displayed as overdue (Scenario C).
+        // The scheduling math itself doesn't know about "current odometer" — RemindersView's
+        // existing ReminderStatusInfo.isMileageOverdue (currentOdometer >= dueMileage) is what
+        // surfaces this as overdue once dueMileage is set from this value.
+        let nextDueMileage = ReminderScheduling.nextDueMileage(afterCompleting: 148132, repeatMileageInterval: 5000)
+        #expect(nextDueMileage == 153132)
+        let currentOdometer = 160000
+        #expect(nextDueMileage.map { currentOdometer >= $0 } == true)
+    }
+
+    @Test("A non-repeating (non-positive interval) reminder has no next due mileage")
+    func nextDueMileage_nonPositiveInterval_returnsNil() {
+        #expect(ReminderScheduling.nextDueMileage(afterCompleting: 148132, repeatMileageInterval: 0) == nil)
+        #expect(ReminderScheduling.nextDueMileage(afterCompleting: 148132, repeatMileageInterval: -10) == nil)
+    }
+
+    // MARK: D. Forward odometer protection
+
+    @Test("A completion mileage below the current odometer never lowers the odometer")
+    func advancedOdometer_belowCurrent_leavesOdometerUnchanged() {
+        // Vehicle odometer 149,024; completion 148,132 -> odometer stays 149,024 (Scenario A/D).
+        #expect(ReminderScheduling.advancedOdometer(current: 149024, completionMileage: 148132) == 149024)
+    }
+
+    @Test("A completion mileage above the current odometer advances the odometer forward")
+    func advancedOdometer_aboveCurrent_movesForward() {
+        // Existing forward-update behavior is preserved for a newer completion mileage.
+        #expect(ReminderScheduling.advancedOdometer(current: 149024, completionMileage: 150500) == 150500)
+    }
+
+    @Test("A completion mileage equal to the current odometer leaves it unchanged")
+    func advancedOdometer_equalToCurrent_isUnchanged() {
+        #expect(ReminderScheduling.advancedOdometer(current: 149024, completionMileage: 149024) == 149024)
+    }
+
+    @Test("advancedOdometer is equivalent to max(current, completionMileage) and can never decrease the odometer")
+    func advancedOdometer_isEquivalentToMax_neverDecreases() {
+        let cases: [(current: Int, completion: Int)] = [
+            (149024, 148132), (149024, 150000), (0, 5000), (200000, 1), (149024, 149024)
+        ]
+        for testCase in cases {
+            let result = ReminderScheduling.advancedOdometer(current: testCase.current, completionMileage: testCase.completion)
+            #expect(result == max(testCase.current, testCase.completion))
+            #expect(result >= testCase.current)
+        }
+    }
+
+    // MARK: E. Past completion dates / future-date rejection
+
+    @Test("A past completion date is not a future date")
+    func isFutureCompletionDate_pastDate_isFalse() {
+        let calendar = utcCalendar()
+        let now = date("2026-07-29 12:00:00", calendar: calendar)
+        let pastCompletion = date("2026-06-01 09:00:00", calendar: calendar)
+        #expect(ReminderScheduling.isFutureCompletionDate(pastCompletion, asOf: now, calendar: calendar) == false)
+    }
+
+    @Test("Today's completion date, at any time of day, is not a future date")
+    func isFutureCompletionDate_today_isFalse() {
+        let calendar = utcCalendar()
+        let now = date("2026-07-29 08:00:00", calendar: calendar)
+        let laterToday = date("2026-07-29 23:00:00", calendar: calendar)
+        #expect(ReminderScheduling.isFutureCompletionDate(laterToday, asOf: now, calendar: calendar) == false)
+    }
+
+    @Test("A completion date after today's calendar day is a future date")
+    func isFutureCompletionDate_futureDate_isTrue() {
+        let calendar = utcCalendar()
+        let now = date("2026-07-29 12:00:00", calendar: calendar)
+        let futureCompletion = date("2026-07-30 00:01:00", calendar: calendar)
+        #expect(ReminderScheduling.isFutureCompletionDate(futureCompletion, asOf: now, calendar: calendar))
+    }
+
+    @Test("A historical completion date drives the recurring next due date, not the current date")
+    func nextDueDate_usesHistoricalCompletionDate_notNow() {
+        // Scenario E: the recurring next date must be computed from the entered (historical)
+        // completion date, matching how RemindersView.completeReminder always passes the
+        // user-selected completionDate — never `.now` — into nextDueDate.
+        let calendar = utcCalendar()
+        let historicalCompletionDate = date("2026-06-01 09:00:00", calendar: calendar)
+        let next = ReminderScheduling.nextDueDate(afterCompleting: historicalCompletionDate, repeatIntervalDays: 90, calendar: calendar)
+        let expected = date("2026-08-30 09:00:00", calendar: calendar)
+        #expect(next == expected)
+    }
 }

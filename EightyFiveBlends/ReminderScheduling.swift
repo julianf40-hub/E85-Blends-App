@@ -40,4 +40,35 @@ enum ReminderScheduling {
         guard repeatIntervalDays > 0 else { return nil }
         return calendar.date(byAdding: .day, value: repeatIntervalDays, to: completionDate)
     }
+
+    /// Parses and validates a completion-mileage text field entry. Rejects empty, non-numeric,
+    /// malformed/NaN, zero, negative, and out-of-range (overflow) input. Deliberately does NOT
+    /// compare against a vehicle's current odometer — a completion mileage lower than the
+    /// current odometer is a valid historical service entry, not an invalid one.
+    static func validatedCompletionMileage(from input: String) -> Int? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let mileage = Int(trimmed), mileage > 0 else { return nil }
+        return mileage
+    }
+
+    /// The next due mileage after completing a recurring, mileage-based reminder, computed from
+    /// the actual completion mileage entered — including a historical completion below the
+    /// vehicle's current odometer — never from the vehicle's current odometer. A non-positive
+    /// interval means the reminder does not repeat by mileage.
+    static func nextDueMileage(afterCompleting completionMileage: Int, repeatMileageInterval: Int) -> Int? {
+        guard repeatMileageInterval > 0 else { return nil }
+        return completionMileage + repeatMileageInterval
+    }
+
+    /// The vehicle odometer to persist after recording a completion. A completion can only
+    /// ever move a vehicle's odometer forward (or leave it unchanged for a historical entry
+    /// below the current reading) — never backward.
+    static func advancedOdometer(current: Int, completionMileage: Int) -> Int {
+        max(current, completionMileage)
+    }
+
+    /// True when `completionDate`'s calendar day is strictly after `asOf`'s calendar day.
+    static func isFutureCompletionDate(_ completionDate: Date, asOf: Date = .now, calendar: Calendar = .current) -> Bool {
+        calendar.startOfDay(for: completionDate) > calendar.startOfDay(for: asOf)
+    }
 }
