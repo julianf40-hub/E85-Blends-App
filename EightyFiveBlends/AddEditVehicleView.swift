@@ -44,6 +44,19 @@ struct AddEditVehicleView: View {
         isSoleActiveVehicle && draft.isActive == false
     }
 
+    // True only when editing an existing vehicle and the entered odometer is below its stored
+    // reading. Always false when creating a new vehicle — there is no prior value to regress
+    // against.
+    private var isOdometerRegression: Bool {
+        guard let vehicle else { return false }
+        return VehicleOdometerPolicy.isRegression(existing: vehicle.currentOdometer, requested: draft.currentOdometer)
+    }
+
+    private var odometerRegressionMessage: String? {
+        guard isOdometerRegression, let vehicle else { return nil }
+        return "Current odometer cannot be lower than the saved reading of \(vehicle.currentOdometer.formatted(.number.grouping(.automatic))) mi."
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -72,6 +85,9 @@ struct AddEditVehicleView: View {
                         dismiss()
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
+                    // Routine editing must never lower the odometer — see saveVehicle for the
+                    // authoritative guarantee this mirrors.
+                    .disabled(isOdometerRegression)
                 }
             }
         }
@@ -204,6 +220,15 @@ struct AddEditVehicleView: View {
                 tankLookupHelperSection
             }
             IntInputField(title: "Current Odometer", value: $draft.currentOdometer, keyboard: .numberPad)
+
+            // Calm, non-blocking explanation — never a destructive/alarming style — for why
+            // Save is disabled. Disappears the moment the value is restored to equal or higher.
+            if let odometerRegressionMessage {
+                Text(odometerRegressionMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
             DoubleInputField(title: "Required Octane", value: $draft.requiredOctane, keyboard: .decimalPad)
         }
     }

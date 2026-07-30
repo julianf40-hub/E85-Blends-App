@@ -210,7 +210,13 @@ struct GarageView: View {
             vehicle.model = draft.model
             vehicle.trim = draft.trim
             vehicle.tankSizeGallons = draft.tankSizeGallons
-            vehicle.currentOdometer = draft.currentOdometer
+            // Routine editing must never lower the odometer — AddEditVehicleView disables Save
+            // while the entered value is a regression, but this is the actual guarantee: it
+            // holds even if that UI check is ever bypassed or stale.
+            vehicle.currentOdometer = VehicleOdometerPolicy.resolvedOdometerForRoutineEdit(
+                existing: vehicle.currentOdometer,
+                requested: draft.currentOdometer
+            )
             vehicle.defaultTargetEthanolPercent = draft.defaultTargetEthanolPercent
             vehicle.defaultCurrentEthanolPercent = draft.defaultCurrentEthanolPercent
             vehicle.defaultPumpEthanolPercent = draft.defaultPumpEthanolPercent
