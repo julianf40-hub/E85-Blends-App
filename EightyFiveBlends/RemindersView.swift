@@ -23,7 +23,7 @@ struct RemindersView: View {
     @State private var sheetReminder: MaintenanceReminder?
     @State private var isAddingReminder = false
     @State private var reminderPendingDeletion: MaintenanceReminder?
-    @State private var completionRecordPendingDeletion: ReminderCompletionRecord?
+    @State private var completionRecordDeletionContext: CompletionRecordDeletionContext?
     @State private var completionContext: ReminderCompletionContext?
     @State private var completionMileageInput = ""
     @State private var completionDate = Date()
@@ -217,15 +217,18 @@ struct RemindersView: View {
         } message: {
             Text("This reminder will be removed from your maintenance schedule.")
         }
-        .alert("Delete Completed History?", isPresented: completionRecordDeleteAlertBinding) {
-            Button("Delete", role: .destructive) {
+        .alert(
+            completionRecordDeletionAlertTitle,
+            isPresented: completionRecordDeleteAlertBinding
+        ) {
+            Button(completionRecordDeletionActionLabel, role: .destructive) {
                 confirmCompletionRecordDeletion()
             }
             Button("Cancel", role: .cancel) {
-                completionRecordPendingDeletion = nil
+                completionRecordDeletionContext = nil
             }
         } message: {
-            Text("This completed history entry will be removed. The recurring reminder itself will stay intact.")
+            Text(completionRecordDeletionMessage)
         }
         .alert("Save Error", isPresented: Binding(
             get: { saveErrorMessage != nil },
@@ -359,6 +362,9 @@ struct RemindersView: View {
                         completeAction: { beginCompletion(for: info.reminder) },
                         editAction: { sheetReminder = info.reminder },
                         deleteAction: { reminderPendingDeletion = info.reminder },
+                        // This section only ever shows overdue/upcoming (non-.completed)
+                        // reminders, where this action is never used.
+                        undoCompletionAction: nil,
                         linkOpenFailedAction: { showReminderFeedback("Couldn’t open this link.") }
                     )
                 }
@@ -393,11 +399,18 @@ struct RemindersView: View {
                             completeAction: { },
                             editAction: { sheetReminder = info.reminder },
                             deleteAction: { reminderPendingDeletion = info.reminder },
+                            // A one-time reminder's own latest completion never appears as a
+                            // standalone history card (see recurringCompletionRecords), so this
+                            // is the only entry point for undoing it. nil (no button shown) if
+                            // no matching completion record can be found at all.
+                            undoCompletionAction: latestOwnCompletionRecord(for: info.reminder).map { record in
+                                { beginCompletionRecordDeletion(record) }
+                            },
                             linkOpenFailedAction: { showReminderFeedback("Couldn’t open this link.") }
                         )
                     case .record(let record):
                         ReminderCompletionRecordCard(record: record) {
-                            completionRecordPendingDeletion = record
+                            beginCompletionRecordDeletion(record)
                         }
                     }
                 }
@@ -418,13 +431,37 @@ struct RemindersView: View {
 
     private var completionRecordDeleteAlertBinding: Binding<Bool> {
         Binding(
-            get: { completionRecordPendingDeletion != nil },
+            get: { completionRecordDeletionContext != nil },
             set: { isPresented in
                 if isPresented == false {
-                    completionRecordPendingDeletion = nil
+                    completionRecordDeletionContext = nil
                 }
             }
         )
+    }
+
+    private var completionRecordDeletionAlertTitle: String {
+        switch completionRecordDeletionContext?.classification {
+        case .undoLatestCompletion:
+            return "Undo Latest Completion?"
+        case .olderCompletion, .latestButNotUndoable, nil:
+            return "Delete History Entry?"
+        }
+    }
+
+    private var completionRecordDeletionMessage: String {
+        switch completionRecordDeletionContext?.classification {
+        case .undoLatestCompletion:
+            return "This will remove the service-history entry and restore the reminder to its previous schedule. Your vehicle odometer will not be lowered."
+        case .olderCompletion:
+            return "This is not the latest completion. Deleting it will remove only this history entry and will not change the current reminder schedule."
+        case .latestButNotUndoable, nil:
+            return "This older entry does not contain enough information to safely restore the reminder. Deleting it will remove the history entry only."
+        }
+    }
+
+    private var completionRecordDeletionActionLabel: String {
+        completionRecordDeletionContext?.classification == .undoLatestCompletion ? "Undo Completion" : "Delete Entry"
     }
 
     // The VehicleProfile a reminder is assigned to — not necessarily the globally active
@@ -465,7 +502,8 @@ struct RemindersView: View {
             completedAt: nil,
             completedMileage: nil,
             createdAt: .now,
-            updatedAt: .now
+            updatedAt: .now,
+            reminderIdentifier: UUID().uuidString
         )
 
         modelContext.insert(reminder)
@@ -497,7 +535,8 @@ struct RemindersView: View {
             completedAt: nil,
             completedMileage: nil,
             createdAt: .now,
-            updatedAt: .now
+            updatedAt: .now,
+            reminderIdentifier: UUID().uuidString
         )
 
         modelContext.insert(reminder)
@@ -598,16 +637,21 @@ struct RemindersView: View {
         let repeatsMileage = reminder.repeatMileageInterval > 0
         let repeatsDate = reminder.repeatDateIntervalDays > 0
 
-        let completionRecord = ReminderCompletionRecord(
-            reminderTitle: reminder.title,
-            vehicleName: reminder.vehicleName,
-            category: reminder.category,
-            completedAt: completionDate,
-            completedMileage: completionMileage,
-            notes: reminder.notes.isEmpty ? nil : reminder.notes,
-            createdAt: .now
-        )
-        modelContext.insert(completionRecord)
+        // Self-heal: a reminder created before 2.2.2 has no stable identity yet. Assign one now,
+        // the first time it's needed, rather than a bulk migration — every completion from this
+        // point on can be matched back to this exact reminder unambiguously, even if another
+        // reminder shares its title/vehicle/category.
+        if reminder.reminderIdentifier.isEmpty {
+            reminder.reminderIdentifier = UUID().uuidString
+        }
+
+        // Captured before any mutation below — this is what a later undo (deleting this
+        // completion's history record) restores the reminder to.
+        let priorDueMileage = reminder.dueMileage
+        let priorDueDate = reminder.dueDate
+        let priorIsCompleted = reminder.isCompleted
+        let priorCompletedAt = reminder.completedAt
+        let priorCompletedMileage = reminder.completedMileage
 
         if let completionMileage,
            let nextDueMileage = ReminderScheduling.nextDueMileage(
@@ -649,6 +693,31 @@ struct RemindersView: View {
         }
 
         reminder.updatedAt = .now
+
+        // Built after the mutations above so resultingDueMileage/resultingDueDate/
+        // resultingIsCompleted reflect the reminder's actual new state — the safety check a
+        // later undo uses to confirm nothing else has changed the reminder since this
+        // completion before trusting priorDueMileage/priorDueDate/priorIsCompleted.
+        let completionRecord = ReminderCompletionRecord(
+            reminderTitle: reminder.title,
+            vehicleName: reminder.vehicleName,
+            category: reminder.category,
+            completedAt: completionDate,
+            completedMileage: completionMileage,
+            notes: reminder.notes.isEmpty ? nil : reminder.notes,
+            createdAt: .now,
+            reminderIdentifier: reminder.reminderIdentifier,
+            priorDueMileage: priorDueMileage,
+            priorDueDate: priorDueDate,
+            priorIsCompleted: priorIsCompleted,
+            priorCompletedAt: priorCompletedAt,
+            priorCompletedMileage: priorCompletedMileage,
+            resultingDueMileage: reminder.dueMileage,
+            resultingDueDate: reminder.dueDate,
+            resultingIsCompleted: reminder.isCompleted
+        )
+        modelContext.insert(completionRecord)
+
         do {
             try modelContext.save()
             AppHaptics.success()
@@ -676,20 +745,141 @@ struct RemindersView: View {
         self.reminderPendingDeletion = nil
     }
 
+    // The MaintenanceReminder a completion record belongs to. Uses the stable identifier when
+    // the record has one (authoritative — see ReminderCompletionRecord.hasUndoMetadata);
+    // otherwise falls back to the legacy title/vehicle/category match, which is best-effort and
+    // only ever used to phrase confirmation copy accurately, never to justify an automatic
+    // undo. Returns nil if the reminder no longer exists (e.g. it was separately deleted) —
+    // undo is impossible in that case, so the record is treated as non-undoable.
+    private func owningReminder(for record: ReminderCompletionRecord) -> MaintenanceReminder? {
+        if record.reminderIdentifier.isEmpty == false {
+            return reminders.first(where: { $0.reminderIdentifier == record.reminderIdentifier })
+        }
+
+        return reminders.first(where: {
+            $0.title == record.reminderTitle &&
+                $0.vehicleName == record.vehicleName &&
+                $0.category == record.category
+        })
+    }
+
+    // Every completion record for a given reminder, unordered. Unlike owningReminder(for:) —
+    // which resolves a single record to a single reminder and must not blend match strategies —
+    // this is a union of the stable-ID and legacy matches. A reminder that predates this fix can
+    // have older records with no reminderIdentifier alongside newer ones that have it; using
+    // only the stable-ID match would silently under-count those older siblings and could make a
+    // genuinely-latest record look not-latest. The union only ever adds candidates to compare
+    // against, so it can make the "is this the latest?" check more conservative (denying an
+    // eligible undo) but never less — it can never manufacture a false "yes, latest" that
+    // wasn't already true, so this stays safe even if the legacy portion occasionally pulls in
+    // a same-titled different reminder's record.
+    private func completionRecords(for reminder: MaintenanceReminder) -> [ReminderCompletionRecord] {
+        var matches = completionRecords.filter {
+            $0.reminderTitle == reminder.title &&
+                $0.vehicleName == reminder.vehicleName &&
+                $0.category == reminder.category
+        }
+
+        if reminder.reminderIdentifier.isEmpty == false {
+            let matchedIDs = Set(matches.map(\.persistentModelID))
+            let stableMatches = completionRecords.filter {
+                $0.reminderIdentifier == reminder.reminderIdentifier && matchedIDs.contains($0.persistentModelID) == false
+            }
+            matches.append(contentsOf: stableMatches)
+        }
+
+        return matches
+    }
+
+    // The most recent completion record belonging to a reminder, if any. Used to give a
+    // completed one-time reminder — whose own latest completion is deliberately not shown as a
+    // separate history card, see recurringCompletionRecords — a way to undo that completion.
+    private func latestOwnCompletionRecord(for reminder: MaintenanceReminder) -> ReminderCompletionRecord? {
+        completionRecords(for: reminder).max(by: { $0.completedAt < $1.completedAt })
+    }
+
+    private func recordSnapshot(_ record: ReminderCompletionRecord) -> ReminderCompletionUndo.RecordSnapshot {
+        // persistentModelID has no public stable string form guaranteed to sort meaningfully
+        // across launches, but it only needs to be a deterministic, unique-per-record value for
+        // the duration of this single ordering decision — String(describing:) satisfies that.
+        ReminderCompletionUndo.RecordSnapshot(completedAt: record.completedAt, tiebreaker: String(describing: record.persistentModelID))
+    }
+
+    private func beginCompletionRecordDeletion(_ record: ReminderCompletionRecord) {
+        guard let owningReminder = owningReminder(for: record) else {
+            // The reminder this completion belonged to no longer exists — nothing to restore.
+            completionRecordDeletionContext = CompletionRecordDeletionContext(
+                record: record,
+                owningReminder: nil,
+                classification: .latestButNotUndoable
+            )
+            return
+        }
+
+        let siblingSnapshots = completionRecords(for: owningReminder).map(recordSnapshot)
+        let candidateSnapshot = recordSnapshot(record)
+        let isLatest = ReminderCompletionUndo.isLatest(candidateSnapshot, among: siblingSnapshots)
+        let hasUndoMetadata = record.hasUndoMetadata
+        let stateMatchesRecordedResult = hasUndoMetadata && ReminderCompletionUndo.reminderMatchesRecordedResult(
+            isCompleted: owningReminder.isCompleted,
+            resultingIsCompleted: record.resultingIsCompleted,
+            mileageEnabled: owningReminder.mileageEnabled,
+            dueMileage: owningReminder.dueMileage,
+            resultingDueMileage: record.resultingDueMileage,
+            dateEnabled: owningReminder.dateEnabled,
+            dueDate: owningReminder.dueDate,
+            resultingDueDate: record.resultingDueDate
+        )
+
+        let classification = ReminderCompletionUndo.classify(
+            candidateIsLatest: isLatest,
+            candidateHasUndoMetadata: hasUndoMetadata,
+            reminderStateMatchesRecordedResult: stateMatchesRecordedResult
+        )
+
+        completionRecordDeletionContext = CompletionRecordDeletionContext(
+            record: record,
+            owningReminder: owningReminder,
+            classification: classification
+        )
+    }
+
     private func confirmCompletionRecordDeletion() {
-        guard let completionRecordPendingDeletion else { return }
-        modelContext.delete(completionRecordPendingDeletion)
+        guard let context = completionRecordDeletionContext else { return }
+
+        // Restore and delete happen against the same in-memory ModelContext and are committed
+        // by the single modelContext.save() below — the restoration is never persisted without
+        // the record deletion also succeeding, or vice versa.
+        if context.classification == .undoLatestCompletion, let owningReminder = context.owningReminder {
+            let record = context.record
+            owningReminder.dueMileage = record.priorDueMileage ?? owningReminder.dueMileage
+            owningReminder.dueDate = record.priorDueDate ?? owningReminder.dueDate
+            owningReminder.isCompleted = record.priorIsCompleted
+            owningReminder.completedAt = record.priorCompletedAt
+            owningReminder.completedMileage = record.priorCompletedMileage
+            // Never lower the odometer — undoing a completion restores the reminder's schedule
+            // only. A historical completion below the current odometer never advanced it in the
+            // first place (see completeReminder/ReminderScheduling.advancedOdometer), so there
+            // is nothing to reverse here even for that case.
+            owningReminder.updatedAt = .now
+        }
+
+        modelContext.delete(context.record)
+
         do {
             try modelContext.save()
             AppHaptics.warning()
-            showReminderFeedback("Completed history deleted.")
+            showReminderFeedback(context.classification == .undoLatestCompletion ? "Completion undone." : "Completed history deleted.")
         } catch {
             #if DEBUG
             print("[85Blends] RemindersView: completion record deletion save failed:", error)
             #endif
-            saveErrorMessage = "Couldn't delete history. Please try again."
+            saveErrorMessage = context.classification == .undoLatestCompletion
+                ? "Couldn't undo this completion. Please try again."
+                : "Couldn't delete history. Please try again."
         }
-        self.completionRecordPendingDeletion = nil
+
+        completionRecordDeletionContext = nil
     }
 
     private func sectionSubtitle(for title: String) -> String {
@@ -888,6 +1078,11 @@ private struct ReminderRowCard: View {
     let completeAction: () -> Void
     let editAction: () -> Void
     let deleteAction: () -> Void
+    // Only meaningful (non-nil) when info.group == .completed: undoes this reminder's own
+    // latest completion, restoring it per REM-P1-005A. nil when no matching completion record
+    // exists to undo, in which case the button stays disabled exactly as it did before this
+    // action existed.
+    let undoCompletionAction: (() -> Void)?
     let linkOpenFailedAction: () -> Void
 
     var body: some View {
@@ -971,21 +1166,21 @@ private struct ReminderRowCard: View {
             }
 
             HStack(spacing: 10) {
-                Button(action: completeAction) {
-                    Text(info.group == .completed ? "Completed" : "Mark Complete")
+                Button(action: primaryAction) {
+                    Text(primaryActionLabel)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(info.group == .completed ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary)
+                        .foregroundStyle(isPrimaryActionDisabled ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background(info.group == .completed ? AppTheme.Colors.surface : AppTheme.Colors.accentGreen.opacity(0.22))
+                        .background(isPrimaryActionDisabled ? AppTheme.Colors.surface : AppTheme.Colors.accentGreen.opacity(0.22))
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(info.group == .completed ? AppTheme.Colors.border : AppTheme.Colors.accentGreen, lineWidth: 1)
+                                .stroke(isPrimaryActionDisabled ? AppTheme.Colors.border : AppTheme.Colors.accentGreen, lineWidth: 1)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
-                .disabled(info.group == .completed)
-                .accessibilityLabel(info.group == .completed ? "\(reminderTitle) completed" : "Mark \(reminderTitle) complete")
+                .disabled(isPrimaryActionDisabled)
+                .accessibilityLabel(primaryActionAccessibilityLabel)
 
                 Button(action: editAction) {
                     Text("Edit")
@@ -1048,6 +1243,30 @@ private struct ReminderRowCard: View {
 
     private var reminderTitle: String {
         info.reminder.title.isEmpty ? "Untitled Reminder" : info.reminder.title
+    }
+
+    // The card's primary action slot serves three purposes depending on state: complete an
+    // active reminder, undo a completed one's latest completion (reusing the same slot rather
+    // than adding a fourth button), or — if no completion record could be found to undo, which
+    // shouldn't normally happen for a genuinely completed reminder — a disabled label exactly
+    // matching this button's pre-REM-P1-005A appearance.
+    private var isPrimaryActionDisabled: Bool {
+        info.group == .completed && undoCompletionAction == nil
+    }
+
+    private var primaryActionLabel: String {
+        if info.group != .completed { return "Mark Complete" }
+        return undoCompletionAction != nil ? "Undo Completion" : "Completed"
+    }
+
+    private var primaryAction: () -> Void {
+        if info.group != .completed { return completeAction }
+        return undoCompletionAction ?? {}
+    }
+
+    private var primaryActionAccessibilityLabel: String {
+        if info.group != .completed { return "Mark \(reminderTitle) complete" }
+        return undoCompletionAction != nil ? "Undo completion for \(reminderTitle)" : "\(reminderTitle) completed"
     }
 
     private var cardBorder: Color {
@@ -1389,6 +1608,17 @@ private struct ReminderCompletionContext: Identifiable {
     // active vehicle. Always the value the sheet should display and reason about.
     let currentVehicleOdometer: Int?
     let initialMileage: Int
+}
+
+// The record pending deletion, its resolved owning reminder (nil if that reminder no longer
+// exists), and the already-computed classification driving which confirmation copy and outcome
+// apply. Computed once in beginCompletionRecordDeletion so the alert and the actual mutation
+// always agree on the same decision.
+private struct CompletionRecordDeletionContext: Identifiable {
+    let id = UUID()
+    let record: ReminderCompletionRecord
+    let owningReminder: MaintenanceReminder?
+    let classification: ReminderCompletionUndo.DeletionClassification
 }
 
 private struct ReminderCompletionSheet: View {

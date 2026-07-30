@@ -37,6 +37,14 @@ final class MaintenanceReminder {
     var completedMileage: Int?
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
+    // Stable per-reminder identity (2.2.2+), independent of title/vehicle/category so
+    // ReminderCompletionRecord can reference the reminder it belongs to unambiguously even when
+    // multiple reminders share the same display fields. Empty string means this reminder
+    // predates this field — existing records load safely with this default (CloudKit requires
+    // an inline default on every non-optional attribute) and are treated as having no stable
+    // identity until self-healed (see RemindersView.completeReminder, which assigns a fresh
+    // UUID the first time such a reminder is completed).
+    var reminderIdentifier: String = ""
 
     init(
         vehicleName: String = "",
@@ -55,7 +63,8 @@ final class MaintenanceReminder {
         completedAt: Date? = nil,
         completedMileage: Int? = nil,
         createdAt: Date = .now,
-        updatedAt: Date = .now
+        updatedAt: Date = .now,
+        reminderIdentifier: String = ""
     ) {
         self.vehicleName = vehicleName
         self.title = title
@@ -74,6 +83,7 @@ final class MaintenanceReminder {
         self.completedMileage = completedMileage
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.reminderIdentifier = reminderIdentifier
     }
 }
 
