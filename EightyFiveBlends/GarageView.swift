@@ -39,7 +39,11 @@ struct GarageView: View {
                             odometerAction: { beginOdometerUpdate(for: activeVehicle) }
                         )
                     } else {
-                        EmptyGarageCard()
+                        // Distinguish "no vehicles saved yet" from "vehicles exist but none is
+                        // flagged active" (e.g. restored/synced data) — the two need different
+                        // guidance, and the second must not tell the user to add a vehicle they
+                        // already have.
+                        EmptyGarageCard(hasSavedVehicles: vehicles.isEmpty == false)
                     }
 
                     savedVehiclesSection
@@ -53,7 +57,12 @@ struct GarageView: View {
         .sheet(item: $sheetContext) { context in
             AddEditVehicleView(
                 vehicle: context.vehicle,
-                existingVehiclesCount: vehicles.count
+                existingVehiclesCount: vehicles.count,
+                // Lets the form explain, live, why turning "Active" off won't take effect —
+                // the actual guarantee is enforced in saveVehicle regardless of this hint.
+                isSoleActiveVehicle: context.vehicle.map { editingVehicle in
+                    editingVehicle.isActive && vehicles.filter(\.isActive).count == 1
+                } ?? false
             ) { draft in
                 saveVehicle(from: draft, editing: context.vehicle)
             }
@@ -174,7 +183,20 @@ struct GarageView: View {
     }
 
     private func saveVehicle(from draft: VehicleDraft, editing vehicle: VehicleProfile?) {
-        let shouldBeActive = vehicle == nil ? (vehicles.isEmpty || draft.isActive) : draft.isActive
+        var shouldBeActive = vehicle == nil ? (vehicles.isEmpty || draft.isActive) : draft.isActive
+
+        // Never let a normal edit leave every vehicle inactive: if this is the only currently
+        // active vehicle and the edit would turn it off, keep it active instead. Zero active
+        // vehicles hides every reminder under the Reminders tab's default filter, so this
+        // invariant is enforced here regardless of what AddEditVehicleView's toggle shows —
+        // that view surfaces the matching explanation, but this is the actual guarantee.
+        if let vehicle, VehicleActivation.shouldKeepActive(
+            editedVehicleIsActive: vehicle.isActive,
+            requestedActive: shouldBeActive,
+            anyOtherVehicleIsActive: vehicles.contains(where: { $0.persistentModelID != vehicle.persistentModelID && $0.isActive })
+        ) {
+            shouldBeActive = true
+        }
 
         if shouldBeActive {
             clearActiveFlag(except: vehicle)
@@ -443,12 +465,25 @@ private struct ActiveVehicleCard: View {
 }
 
 private struct EmptyGarageCard: View {
+    let hasSavedVehicles: Bool
+
     var body: some View {
-        EmptyStateView(
-            title: "No Active Vehicle",
-            message: "Add your first vehicle to personalize blends, reminders, and At the Pump mode.",
-            systemImage: "car.circle"
-        )
+        if hasSavedVehicles {
+            // Vehicles exist, but none is flagged active (restored/synced data, or an edge case
+            // that predates this app version) — never tell the user to add a vehicle they
+            // already have.
+            EmptyStateView(
+                title: "No Active Vehicle",
+                message: "No active vehicle is selected. Edit a vehicle below and set it as active.",
+                systemImage: "car.circle"
+            )
+        } else {
+            EmptyStateView(
+                title: "No Active Vehicle",
+                message: "Add your first vehicle to personalize blends, reminders, and At the Pump mode.",
+                systemImage: "car.circle"
+            )
+        }
     }
 }
 

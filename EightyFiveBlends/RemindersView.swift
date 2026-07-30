@@ -76,13 +76,31 @@ struct RemindersView: View {
     private func matchesVehicleFilter(_ reminderVehicleName: String) -> Bool {
         switch vehicleFilter {
         case .activeVehicle:
-            let activeName = activeVehicle?.nickname ?? ""
-            return reminderVehicleName == activeName
+            if let activeVehicle {
+                return reminderVehicleName == activeVehicle.nickname
+            }
+            // No active vehicle is selected — invalid legacy/synced data, or every vehicle was
+            // deactivated outside normal UI flow (saveVehicle now prevents this going forward).
+            // Never silently hide every reminder by matching against an impossible empty
+            // string: fall back to showing all vehicles' reminders (isActiveVehicleFallback
+            // surfaces the explanatory banner). If there are no vehicles at all, there is
+            // nothing to fall back to — keep the existing "nothing matches" behavior so the
+            // top-level "No Reminders Yet" / "add your first vehicle" empty state still applies.
+            return VehicleActivation.shouldFallBackToAllVehicles(hasActiveVehicle: false, hasAnyVehicle: vehicles.isEmpty == false)
         case .allVehicles:
             return true
         case .vehicle(let name):
             return reminderVehicleName == name
         }
+    }
+
+    // True only when the Active Vehicle filter is silently falling back to showing every
+    // vehicle's reminders because no vehicle is currently flagged active. Never true when the
+    // active vehicle genuinely has zero reminders (that's a normal, honest empty state) or when
+    // there are no vehicles at all (a different, already-handled empty state).
+    private var isActiveVehicleFilterFallback: Bool {
+        vehicleFilter == .activeVehicle &&
+            VehicleActivation.shouldFallBackToAllVehicles(hasActiveVehicle: activeVehicle != nil, hasAnyVehicle: vehicles.isEmpty == false)
     }
 
     private var overdueReminders: [ReminderStatusInfo] {
@@ -125,6 +143,9 @@ struct RemindersView: View {
                     headerSection
                     if vehicles.count > 1 {
                         vehicleFilterRow
+                    }
+                    if isActiveVehicleFilterFallback {
+                        noActiveVehicleBanner
                     }
                     if reminders.isEmpty {
                         ReminderTemplateCard(templates: reminderTemplates) { template in
@@ -230,6 +251,38 @@ struct RemindersView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // Shown only when isActiveVehicleFilterFallback is true — never reassuring "you're all
+    // caught up" phrasing here, since reminders may simply be showing from every vehicle
+    // rather than genuinely being absent. No new navigation is introduced; the instruction is
+    // plain text pointing at the Garage tab, which already owns vehicle-active state.
+    private var noActiveVehicleBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "car.circle")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("No active vehicle is selected.")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text("Showing reminders for all vehicles. Open the Garage tab and set a vehicle as active to filter this list again.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func vehicleFilterChip(_ option: ReminderVehicleFilter) -> some View {

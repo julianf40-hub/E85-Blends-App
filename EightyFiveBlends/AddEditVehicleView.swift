@@ -15,6 +15,10 @@ struct AddEditVehicleView: View {
 
     let vehicle: VehicleProfile?
     let existingVehiclesCount: Int
+    // True when `vehicle` is currently the only active vehicle. Used only to explain, live,
+    // why turning "Active" off won't take effect — saveVehicle enforces the actual guarantee
+    // regardless of this hint, so a stale value here can never let the invariant slip.
+    let isSoleActiveVehicle: Bool
     let onSave: (VehicleDraft) -> Void
 
     @State private var draft: VehicleDraft
@@ -24,12 +28,20 @@ struct AddEditVehicleView: View {
     init(
         vehicle: VehicleProfile?,
         existingVehiclesCount: Int,
+        isSoleActiveVehicle: Bool = false,
         onSave: @escaping (VehicleDraft) -> Void
     ) {
         self.vehicle = vehicle
         self.existingVehiclesCount = existingVehiclesCount
+        self.isSoleActiveVehicle = isSoleActiveVehicle
         self.onSave = onSave
         _draft = State(initialValue: VehicleDraft(vehicle: vehicle, existingVehiclesCount: existingVehiclesCount))
+    }
+
+    // True when saving right now would leave zero active vehicles — i.e. this is the sole
+    // active vehicle and the user has turned its "Active" toggle off in the form.
+    private var wouldLeaveNoActiveVehicle: Bool {
+        isSoleActiveVehicle && draft.isActive == false
     }
 
     var body: some View {
@@ -257,6 +269,15 @@ struct AddEditVehicleView: View {
                 title: existingVehiclesCount == 0 ? "Active Vehicle (first vehicle auto-activates)" : "Set As Active Vehicle",
                 isOn: $draft.isActive
             )
+
+            // Calm, non-blocking explanation — never an error — for why this vehicle will stay
+            // active on save. Matches the historical-entry notice style used for reminder
+            // completion: informational, not alarming, and doesn't disable Save.
+            if wouldLeaveNoActiveVehicle {
+                Text("At least one vehicle must remain active. Set another vehicle active before turning this one off.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
         }
     }
 
