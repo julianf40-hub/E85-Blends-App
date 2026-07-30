@@ -404,8 +404,12 @@ struct RemindersView: View {
             // Both fields set explicitly in init for new records; use purchaseLinks setter on existing ones.
             purchaseURLString: draft.purchaseLinks.first?.urlString,
             purchaseLinksJSON: MaintenanceReminder.encodePurchaseLinks(draft.purchaseLinks),
-            isCompleted: draft.isCompleted,
-            completedAt: draft.isCompleted ? .now : nil,
+            // A newly-created reminder is always active. Completion — with its history record,
+            // odometer advance, and recurrence math — only ever happens through the "Mark
+            // Complete" pipeline (beginCompletion -> ReminderCompletionSheet -> completeReminder),
+            // never through form state.
+            isCompleted: false,
+            completedAt: nil,
             completedMileage: nil,
             createdAt: .now,
             updatedAt: .now
@@ -468,9 +472,10 @@ struct RemindersView: View {
         reminder.notes = draft.notes
         // Setter keeps both purchaseLinksJSON (primary) and purchaseURLString (legacy) in sync.
         reminder.purchaseLinks = draft.purchaseLinks
-        reminder.isCompleted = draft.isCompleted
-        reminder.completedAt = draft.isCompleted ? (reminder.completedAt ?? .now) : nil
-        reminder.completedMileage = draft.isCompleted ? reminder.completedMileage : nil
+        // isCompleted/completedAt/completedMileage are deliberately left untouched here. An
+        // ordinary edit (title, vehicle, category, notes, due values, recurrence) must never
+        // mark a reminder complete, uncomplete it, or rewrite its completion metadata — only
+        // the "Mark Complete" pipeline (completeReminder) may change those fields.
         reminder.updatedAt = .now
 
         do {

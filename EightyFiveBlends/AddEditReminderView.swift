@@ -194,8 +194,6 @@ struct AddEditReminderView: View {
             }
 
             purchaseLinksSection
-
-            ReminderToggleRow(title: "Completed", isOn: $draft.isCompleted)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -275,7 +273,6 @@ struct ReminderDraft {
     var repeatDateIntervalDays: Int
     var notes: String
     var purchaseLinks: [ReminderPurchaseLink]
-    var isCompleted: Bool
 
     @MainActor
     init(reminder: MaintenanceReminder?, defaultVehicleName: String) {
@@ -291,7 +288,6 @@ struct ReminderDraft {
         notes = reminder?.notes ?? ""
         let links = reminder?.purchaseLinks ?? []
         purchaseLinks = links.isEmpty ? [ReminderPurchaseLink()] : links
-        isCompleted = reminder?.isCompleted ?? false
     }
 
     mutating func normalizeForSave() {
