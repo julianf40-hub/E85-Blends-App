@@ -18,6 +18,13 @@ struct OnboardingView: View {
     @AppStorage(AppPreferenceKey.disclaimerAcknowledgedAt) private var disclaimerAcknowledgedAt = 0.0
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
+    // Default (.normal, i.e. this key absent) is exactly the safe fallback required if a user
+    // somehow reaches completeOnboarding() without tapping either choice on tabSelectionCard.
+    @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
+
+    private var appExperienceMode: AppExperienceMode {
+        .resolved(from: appExperienceModeRaw)
+    }
 
     @State private var currentStep = 0
     @State private var draft = VehicleDraft(vehicle: nil, existingVehiclesCount: 0)
@@ -58,11 +65,11 @@ struct OnboardingView: View {
                 "Cost Calculator to compare blends vs gasoline."
             ]
         ),
-        // 3: Tab selection (tabSelectionStepIndex)
+        // 3: App Experience + tab selection (tabSelectionStepIndex)
         .init(
             emoji: "🎨",
-            title: "Built for E85 Enthusiasts",
-            subtitle: "Save vehicles, track fuel history, and stay on top of maintenance reminders."
+            title: "Choose Your Experience",
+            subtitle: "Pick how much of 85Blends you want to see day to day. You can change this anytime in Settings."
         ),
         // 4: Disclaimer (disclaimerStepIndex)
         .init(
@@ -559,23 +566,38 @@ struct OnboardingView: View {
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
 
-                onboardingTabToggleCard(
-                    title: "Garage",
-                    description: "Save vehicles, tank sizes, odometer, and calculator defaults.",
-                    systemImage: "car.fill",
-                    tint: AppTheme.Colors.accentGreen,
-                    isOn: $showGarageTab
-                )
-                onboardingTabToggleCard(
-                    title: "Reminders",
-                    description: "Track oil changes, service intervals, dates, and mileage-based tasks.",
-                    systemImage: "bell.badge.fill",
-                    tint: AppTheme.Colors.stationYellow,
-                    isOn: $showRemindersTab
-                )
-                Text("Calculator, Stations, and More always stay visible. Theme, blend defaults, and preferred maps app can be changed anytime in More \u{2192} Preferences.")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                VStack(spacing: 10) {
+                    ForEach(AppExperienceMode.allCases) { mode in
+                        onboardingExperienceModeCard(mode)
+                    }
+                }
+
+                // Garage/Reminders visibility is a Normal Mode customization — Simple Mode
+                // always shows just Calculator, Stations, and More, so these toggles would be
+                // meaningless there. Their stored values are untouched either way.
+                if appExperienceMode == .normal {
+                    onboardingTabToggleCard(
+                        title: "Garage",
+                        description: "Save vehicles, tank sizes, odometer, and calculator defaults.",
+                        systemImage: "car.fill",
+                        tint: AppTheme.Colors.accentGreen,
+                        isOn: $showGarageTab
+                    )
+                    onboardingTabToggleCard(
+                        title: "Reminders",
+                        description: "Track oil changes, service intervals, dates, and mileage-based tasks.",
+                        systemImage: "bell.badge.fill",
+                        tint: AppTheme.Colors.stationYellow,
+                        isOn: $showRemindersTab
+                    )
+                    Text("Calculator, Stations, and More always stay visible. Theme, blend defaults, and preferred maps app can be changed anytime in More \u{2192} Preferences.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                } else {
+                    Text("Calculator, Stations, and More are the core of Simple Mode. Switch to Normal anytime in More \u{2192} Preferences to unlock Garage, Fuel Log, Reminders, Trip Planner, and more.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -835,6 +857,72 @@ private struct OnboardingToggleRow: View {
 }
 
 private extension OnboardingView {
+    @ViewBuilder
+    func onboardingExperienceModeCard(_ mode: AppExperienceMode) -> some View {
+        let isSelected = appExperienceMode == mode
+
+        Button {
+            appExperienceModeRaw = mode.rawValue
+            AppHaptics.selection()
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(mode.displayName)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Spacer(minLength: 12)
+
+                    // Selection state is never color-only: the glyph itself changes, and the
+                    // border weight changes too, so it reads correctly without relying on hue.
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(isSelected ? AppTheme.Colors.accentGreen : AppTheme.Colors.textMuted)
+                        .accessibilityHidden(true)
+                }
+
+                Text(mode.onboardingHeadline)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    ForEach(mode.onboardingFeatureBullets, id: \.self) { feature in
+                        Text(feature)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AppTheme.Colors.surface)
+                            .clipShape(Capsule())
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                isSelected
+                    ? AppTheme.Colors.softGreenBackground
+                    : AppTheme.Colors.surface
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(
+                        isSelected ? AppTheme.Colors.accentGreen : AppTheme.Colors.border,
+                        lineWidth: isSelected ? 1.6 : 1
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(mode.displayName) mode. \(mode.onboardingHeadline) Includes \(mode.onboardingFeatureBullets.joined(separator: ", "))."
+        )
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
     func onboardingTabToggleCard(
         title: String,
         description: String,

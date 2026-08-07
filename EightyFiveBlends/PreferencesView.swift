@@ -13,9 +13,14 @@ struct PreferencesView: View {
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
+    @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @AppStorage(AppPreferenceKey.hasCompletedOnboarding) private var hasCompletedOnboarding = true
     @AppStorage(AppPreferenceKey.hasAcknowledgedDisclaimer) private var hasAcknowledgedDisclaimer = false
     @AppStorage(AppPreferenceKey.disclaimerAcknowledgedAt) private var disclaimerAcknowledgedAt = 0.0
+
+    private var appExperienceMode: AppExperienceMode {
+        .resolved(from: appExperienceModeRaw)
+    }
 
     var body: some View {
         ScrollView {
@@ -30,6 +35,7 @@ struct PreferencesView: View {
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
 
+                appExperienceCard
                 settingsCard
                 proStatusCard
             }
@@ -38,6 +44,36 @@ struct PreferencesView: View {
         .background(AppTheme.Colors.charcoal)
         .navigationTitle("Preferences")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // Switching modes takes effect immediately (both @AppStorage-backed) and never touches
+    // showGarageTab/showRemindersTab, SwiftData, CloudKit, or Pro entitlement state — see
+    // AppExperienceMode/AppExperienceNavigation.swift.
+    private var appExperienceCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "App Experience",
+                subtitle: "Choose how much of 85Blends is shown. Nothing is deleted either way."
+            )
+
+            AppExperienceModeSelectorRow(
+                selection: Binding(
+                    get: { appExperienceMode },
+                    set: { newMode in
+                        appExperienceModeRaw = newMode.rawValue
+                        AppHaptics.selection()
+                    }
+                )
+            )
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private var settingsCard: some View {
@@ -64,8 +100,24 @@ struct PreferencesView: View {
 
             AccentThemeSelectorRow()
 
-            PreferenceToggleRow(title: "Show Garage Tab", isOn: $showGarageTab)
-            PreferenceToggleRow(title: "Show Reminders Tab", isOn: $showRemindersTab)
+            // Garage/Reminders tab visibility only applies to Normal Mode — Simple Mode always
+            // shows just Calculator, Stations, and More. The toggles stay visible (disabled,
+            // not hidden) so it's clear these choices are preserved, not lost, while in Simple
+            // Mode; switching back to Normal Mode restores them unchanged.
+            VStack(alignment: .leading, spacing: 8) {
+                PreferenceToggleRow(title: "Show Garage Tab", isOn: $showGarageTab)
+                    .disabled(appExperienceMode == .simple)
+                    .opacity(appExperienceMode == .simple ? 0.5 : 1)
+                PreferenceToggleRow(title: "Show Reminders Tab", isOn: $showRemindersTab)
+                    .disabled(appExperienceMode == .simple)
+                    .opacity(appExperienceMode == .simple ? 0.5 : 1)
+
+                if appExperienceMode == .simple {
+                    Text("Unavailable in Simple Mode. Your selections are saved and return when you switch back to Normal Mode.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+            }
 
             Button {
                 hasCompletedOnboarding = false
@@ -245,6 +297,70 @@ private struct PreferenceToggleRow: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct AppExperienceModeSelectorRow: View {
+    @Binding var selection: AppExperienceMode
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(AppExperienceMode.allCases) { mode in
+                modeOptionRow(mode)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func modeOptionRow(_ mode: AppExperienceMode) -> some View {
+        let isSelected = selection == mode
+
+        Button {
+            selection = mode
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mode.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text(mode.settingsSummary)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                // Selection is never color-only — the checkmark glyph and stroke weight both
+                // change, so it reads correctly for colorblind and reduced-transparency users.
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                isSelected
+                    ? AppTheme.Colors.softGreenBackground
+                    : AppTheme.Colors.cardBackground
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? AppTheme.Colors.primaryGreen.opacity(0.6)
+                            : AppTheme.Colors.borderColor,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(mode.displayName) mode. \(mode.settingsSummary)")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 }
 

@@ -10,8 +10,13 @@ import SwiftData
 
 struct MoreView: View {
     @Environment(\.openURL) private var openURL
+    @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
 
     @State private var sponsorLinkMessage: String?
+
+    private var appExperienceMode: AppExperienceMode {
+        .resolved(from: appExperienceModeRaw)
+    }
 
     var body: some View {
         NavigationStack {
@@ -44,13 +49,17 @@ struct MoreView: View {
                             ProUpgradeView()
                         }
 
-                        MoreNavigationRow(
-                            title: "Fuel Log",
-                            subtitle: "Review fill-up history, spend, and MPG trends.",
-                            systemImage: "list.bullet.clipboard",
-                            tint: AppTheme.Colors.accentGreen
-                        ) {
-                            FuelLogView()
+                        // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
+                        // Calculator, Stations, and streamlined Settings only.
+                        if appExperienceMode == .normal {
+                            MoreNavigationRow(
+                                title: "Fuel Log",
+                                subtitle: "Review fill-up history, spend, and MPG trends.",
+                                systemImage: "list.bullet.clipboard",
+                                tint: AppTheme.Colors.accentGreen
+                            ) {
+                                FuelLogView()
+                            }
                         }
 
                         MoreNavigationRow(
@@ -126,7 +135,13 @@ struct MoreView: View {
                         }
                     }
 
-                    proPreviewSection
+                    // Trip Planner, Advanced Fuel Analytics, and Station Price Alerts are
+                    // Normal Mode feature navigation — not offered through the Simple Mode
+                    // More screen. Nothing here is deleted; a Pro subscriber who switches back
+                    // to Normal Mode sees this section again unchanged.
+                    if appExperienceMode == .normal {
+                        proPreviewSection
+                    }
                 }
                 .padding(16)
             }

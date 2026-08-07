@@ -40,6 +40,7 @@ struct StationsView: View {
     @State private var liveSearchError: String?
     @State private var pendingLiveSearch = false
     @State private var liveSearchTask: Task<Void, Never>?
+    @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @State private var priceInput = ""
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
@@ -59,6 +60,10 @@ struct StationsView: View {
 
     private var appVersionString: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+    }
+
+    private var appExperienceMode: AppExperienceMode {
+        .resolved(from: appExperienceModeRaw)
     }
 
     // MARK: - Unified display model
@@ -174,7 +179,12 @@ struct StationsView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         headerSection
                         automaticPumpDetectionSection
-                        proFeaturesSection
+                        // Trip Planner / Station Price Alerts entry points are Normal Mode
+                        // feature navigation — core station search, map, favorites, directions,
+                        // and community pricing below remain fully functional in both modes.
+                        if appExperienceMode == .normal {
+                            proFeaturesSection
+                        }
                         mapSection
                         findNearbyButton
                         radiusSelector

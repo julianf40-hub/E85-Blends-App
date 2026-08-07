@@ -16,6 +16,11 @@ enum AppPreferenceKey {
     static let accentTheme = "appAccentTheme"
     static let showGarageTab = "showGarageTab"
     static let showRemindersTab = "showRemindersTab"
+    // App Experience Mode (Simple / Normal) — presentation/navigation preference only. See
+    // AppExperienceMode below and AppExperienceNavigation.swift for the tab-visibility rules
+    // this key drives. Absence of this key (never-set / pre-feature installs) must resolve to
+    // .normal — see AppExperienceMode.resolved(from:).
+    static let appExperienceMode = "appExperienceMode"
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
     static let hasAcknowledgedDisclaimer = "hasAcknowledgedDisclaimer"
     static let disclaimerAcknowledgedAt = "disclaimerAcknowledgedAt"
@@ -74,6 +79,62 @@ enum AppAccentTheme: String, CaseIterable {
         switch self {
         case .originalGreen: return Color(red: 0.13, green: 0.28, blue: 0.20)
         case .performanceBlue: return Color(red: 0.063, green: 0.157, blue: 0.373)
+        }
+    }
+}
+
+/// Simple vs. Normal app presentation. This is purely a navigation/UI preference — switching
+/// modes never touches SwiftData, CloudKit, Pro entitlements, or any of the other preference
+/// keys above (in particular `showGarageTab`/`showRemindersTab`, which Normal Mode continues to
+/// honor exactly as before; Simple Mode simply doesn't consult them). See
+/// AppExperienceNavigation.swift for the tab-visibility rules this drives.
+enum AppExperienceMode: String, CaseIterable, Identifiable {
+    case simple
+    case normal
+
+    var id: String { rawValue }
+
+    /// Existing installs — and any stored value this app version doesn't recognize — must
+    /// resolve to `.normal` so an update never hides a tab a current user already relies on.
+    /// Every read site should go through this rather than `AppExperienceMode(rawValue:)`
+    /// directly, so that guarantee lives in exactly one place.
+    static func resolved(from rawValue: String) -> AppExperienceMode {
+        AppExperienceMode(rawValue: rawValue) ?? .normal
+    }
+
+    var displayName: String {
+        switch self {
+        case .simple: return "Simple"
+        case .normal: return "Normal"
+        }
+    }
+
+    /// One-line summary shown next to the mode picker in Settings.
+    var settingsSummary: String {
+        switch self {
+        case .simple:
+            return "Calculator and Stations with a streamlined interface."
+        case .normal:
+            return "Full 85Blends experience including Garage, Fuel Log, Reminders, Trip Planner, and other features."
+        }
+    }
+
+    /// Longer description for the onboarding choice cards.
+    var onboardingHeadline: String {
+        switch self {
+        case .simple:
+            return "For drivers who mainly want to calculate ethanol blends and find E85 stations."
+        case .normal:
+            return "The complete 85Blends experience with vehicles, fuel tracking, reminders, trip planning, and more."
+        }
+    }
+
+    var onboardingFeatureBullets: [String] {
+        switch self {
+        case .simple:
+            return ["Calculator", "Stations"]
+        case .normal:
+            return ["Calculator", "Stations", "Garage", "Fuel Log", "Reminders", "Trip Planner", "Analytics"]
         }
     }
 }
