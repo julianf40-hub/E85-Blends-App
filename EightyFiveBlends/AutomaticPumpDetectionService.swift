@@ -80,6 +80,16 @@ final class AutomaticPumpDetectionService: NSObject {
     /// Plain-language reason the feature isn't fully active, for Settings UI to display.
     private(set) var lastEnableFailureReason: String?
 
+    /// Read-only mirror of CalculatorView's live foreground state, published purely so
+    /// Stations' hidden diagnostics sheet (a different view/tab) can observe it — see
+    /// PumpDetectionDiagnosticsView. CalculatorView remains the sole owner of the real
+    /// decision logic; these properties are written by it (via the two methods in the
+    /// "Foreground diagnostics mirror" section below) and never read by any pump-detection
+    /// or prompt-suppression code path, so they can never influence behavior.
+    private(set) var isForegroundRefreshActive = false
+    private(set) var foregroundHasNearbyStation = false
+    private(set) var foregroundHasPromptedForCurrentVisit = false
+
     var status: Status {
         guard isEnabled else { return .disabled }
         guard let locationManager else { return .locationNotDetermined }
@@ -201,6 +211,28 @@ final class AutomaticPumpDetectionService: NSObject {
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshLongitude)
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshAt)
         debugLog("Disabled — all station monitors removed, persisted metadata cleared.")
+    }
+
+    // MARK: - Foreground diagnostics mirror (read-only signal for Stations' diagnostics sheet)
+    //
+    // Both methods below are called only from CalculatorView (see runPeriodicPumpLocationRefresh()
+    // and the locationManager.latestCoordinate/onAppear wiring) and only ever WRITE these
+    // mirror properties — nothing in this file, or in CalculatorView's own actual
+    // detection/suppression logic, ever reads them back. That one-way flow is what keeps this
+    // diagnostics-only: it cannot change when a notification fires, when the in-app prompt
+    // fires, or how suppression behaves.
+
+    /// Whether CalculatorView's periodic foreground location-refresh loop is currently
+    /// running (i.e. the app is foregrounded and Calculator is in the view hierarchy).
+    func updateForegroundRefreshActive(_ isActive: Bool) {
+        isForegroundRefreshActive = isActive
+    }
+
+    /// Snapshot of CalculatorView's live "At the Pump?" visit state after a
+    /// refreshPumpModeStation()/evaluateAutoPromptPumpMode() pass.
+    func updateForegroundVisitState(hasNearbyStation: Bool, hasPromptedForCurrentVisit: Bool) {
+        foregroundHasNearbyStation = hasNearbyStation
+        foregroundHasPromptedForCurrentVisit = hasPromptedForCurrentVisit
     }
 
     // MARK: - Monitor refresh

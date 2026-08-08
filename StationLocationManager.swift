@@ -38,6 +38,11 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     /// means the fix is unreliable. Pump-mode auto-triggering gates on this so a coarse
     /// indoor/cell fix can never place the user "at the pump" from half a mile away.
     var latestHorizontalAccuracyMeters: CLLocationAccuracy?
+    /// Timestamp Core Location attached to the fix behind `latestCoordinate` (not when this
+    /// app received it — the two can differ under poor signal). Nothing in the pump-detection
+    /// logic reads this; it exists solely so diagnostics UI can show "last location age"
+    /// without adding a second source of truth for freshness.
+    var latestFixTimestamp: Date?
 
     /// Fired on region monitoring entry/exit/failure. Set by a feature (e.g. Automatic
     /// Pump Detection) that registered regions via `startMonitoringRegion`.
@@ -93,8 +98,10 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
             manager.requestLocation()
         case .denied, .restricted:
             latestCoordinate = nil
+            latestFixTimestamp = nil
         @unknown default:
             latestCoordinate = nil
+            latestFixTimestamp = nil
         }
     }
 
@@ -172,6 +179,7 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let location = locations.last {
             latestHorizontalAccuracyMeters = location.horizontalAccuracy
+            latestFixTimestamp = location.timestamp
             latestCoordinate = StationCoordinate(
                 latitude: location.coordinate.latitude,
                 longitude: location.coordinate.longitude
@@ -197,6 +205,7 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         if let clError = error as? CLError, clError.code == .denied {
             authorizationStatus = manager.authorizationStatus
             latestCoordinate = nil
+            latestFixTimestamp = nil
         }
     }
 
@@ -208,6 +217,7 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
             manager.requestLocation()
         case .denied, .restricted:
             latestCoordinate = nil
+            latestFixTimestamp = nil
         default:
             break
         }

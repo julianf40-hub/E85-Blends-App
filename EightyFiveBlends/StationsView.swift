@@ -10,7 +10,6 @@ import SwiftData
 import MapKit
 import CoreLocation
 import UIKit
-import UserNotifications
 
 struct StationsView: View {
     // Neutral continental-US overview — used only when no location or station data exists.
@@ -36,6 +35,11 @@ struct StationsView: View {
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
     @State private var locationDeniedAlert = false
+    /// Presented by a discreet ~2s long-press on the "Automatic Pump Detection" section
+    /// header — see automaticPumpDetectionSection. No persistent, discoverable row for this
+    /// in the normal UI; see PumpDetectionDiagnosticsView for why it must exist in every
+    /// build configuration, including production Release.
+    @State private var isShowingPumpDiagnostics = false
     @State private var liveStations: [LiveFuelStation] = []
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
@@ -262,6 +266,9 @@ struct StationsView: View {
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice)
         }
+        .sheet(isPresented: $isShowingPumpDiagnostics) {
+            PumpDetectionDiagnosticsView(savedStations: stations)
+        }
         .alert("Delete Station?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
                 confirmDeletion()
@@ -294,6 +301,18 @@ struct StationsView: View {
     private var automaticPumpDetectionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Automatic Pump Detection")
+                // Discreet, undocumented diagnostics entry point — no visible affordance, no
+                // label change, nothing an ordinary user would notice or accidentally trigger
+                // with a normal tap. Scoped to just this header (not the whole card below,
+                // which contains the real Toggle/"Open Settings" controls) so a long-press
+                // here can never compete with or accidentally fire those. See
+                // PumpDetectionDiagnosticsView for why this needs to open in every build,
+                // including production Release.
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 2.0) {
+                    AppHaptics.success()
+                    isShowingPumpDiagnostics = true
+                }
 
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(isOn: automaticPumpDetectionToggleBinding) {
@@ -310,10 +329,6 @@ struct StationsView: View {
                 .tint(AppTheme.Colors.primaryGreen)
 
                 automaticPumpDetectionStatusRow
-
-                #if DEBUG || INTERNAL_BUILD
-                automaticPumpDetectionDiagnosticsSection
-                #endif
 
                 Text("Foreground detection at the pump always works, even without background access. Detection never tracks or displays your travel history — a notification just opens At The Pump; nothing happens automatically.")
                     .font(.caption2)
@@ -425,99 +440,6 @@ struct StationsView: View {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
     }
-
-    // MARK: - Automatic Pump Detection diagnostics (DEBUG / Internal builds only)
-    //
-    // Surfaces exactly why the feature is or isn't about to fire, for real-device
-    // troubleshooting — never shown in a production Release build (gated by the
-    // #if DEBUG || INTERNAL_BUILD at the call site, matching PreferencesView's/
-    // SubscriptionManager's existing debug-row precedent). Deliberately reports only
-    // distance/accuracy figures and station names already visible elsewhere in this
-    // screen — never raw coordinates.
-    #if DEBUG || INTERNAL_BUILD
-    @ViewBuilder
-    private var automaticPumpDetectionDiagnosticsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("DIAGNOSTICS (INTERNAL BUILD)")
-                .font(.caption2.weight(.bold))
-                .tracking(1.0)
-                .foregroundStyle(AppTheme.Colors.textMuted)
-
-            diagnosticsRow("Detector status", "\(pumpDetectionService.status)")
-            diagnosticsRow("Notifications", "\(pumpDetectionService.notificationAuthorizationStatus)")
-            diagnosticsRow("Monitored stations", "\(pumpDetectionService.monitoredStationCount)")
-            diagnosticsRow("Location auth", "\(locationManager.authorizationStatus)")
-            diagnosticsRow("Fix accuracy", diagnosticsAccuracyText)
-            diagnosticsRow("Nearest saved station", diagnosticsNearestStationText)
-            diagnosticsRow("Proximity gate", diagnosticsProximityGateText)
-        }
-        .padding(10)
-        .background(AppTheme.Colors.textMuted.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func diagnosticsRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textMuted)
-                .frame(width: 128, alignment: .leading)
-            Text(value)
-                .font(.caption2)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// Nearest saved station to the last known fix, computed independently of Automatic Pump
-    /// Detection's own (background-region-capped) candidate set — this mirrors CalculatorView's
-    /// own `nearestSavedStation` (including its optional-coordinate unwrap — FuelStation's
-    /// latitude/longitude are `Double?`), so the diagnostic reflects what the foreground path
-    /// itself would see, not just what's currently monitored in the background.
-    private var diagnosticsNearestPumpCandidate: (station: FuelStation, distance: CLLocationDistance)? {
-        guard let coordinate = locationManager.latestCoordinate else { return nil }
-        let currentLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-
-        return stations
-            .compactMap { station -> (station: FuelStation, distance: CLLocationDistance)? in
-                guard let latitude = station.latitude, let longitude = station.longitude else {
-                    return nil
-                }
-                let stationLocation = CLLocation(latitude: latitude, longitude: longitude)
-                return (station, currentLocation.distance(from: stationLocation))
-            }
-            .min { $0.distance < $1.distance }
-    }
-
-    private var diagnosticsAccuracyText: String {
-        guard let accuracy = locationManager.latestHorizontalAccuracyMeters else { return "No fix yet" }
-        return "\(Int(accuracy))m"
-    }
-
-    private var diagnosticsNearestStationText: String {
-        guard let candidate = diagnosticsNearestPumpCandidate else {
-            return stations.isEmpty ? "No saved stations" : "No fix yet"
-        }
-        return "\(candidate.station.name) — \(Int(candidate.distance))m away"
-    }
-
-    private var diagnosticsProximityGateText: String {
-        guard let candidate = diagnosticsNearestPumpCandidate else { return "N/A" }
-
-        // Always evaluated against the (tighter) entry radius — the same bar a brand-new
-        // arrival must clear. CalculatorView's own live wasAtPump/hysteresis state isn't
-        // visible from this screen, so this intentionally shows the stricter, more useful
-        // "would a fresh arrival be detected right now" answer rather than approximating it.
-        if let reason = PumpProximity.rejectionReason(
-            distanceMeters: candidate.distance,
-            horizontalAccuracyMeters: locationManager.latestHorizontalAccuracyMeters,
-            wasAtPump: false
-        ) {
-            return reason
-        }
-        return "Within range \u{2713}"
-    }
-    #endif
 
     // 85Blends Pro entry points. Free users see locked preview cards (tapping opens the
     // paywall); Pro users get the live feature shells. Basic station search, favorites, and
