@@ -52,11 +52,15 @@ struct ContentView: View {
                         }
                         .tag(Tab.stations)
 
-                    // Normal Mode honors the user's existing Garage/Reminders tab preferences
-                    // exactly as before. Simple Mode shows only Calculator, Stations, and More,
-                    // regardless of these preferences — they're never read, or mutated, while
-                    // in Simple Mode (see AppExperienceNavigation.visibleTabs).
-                    if appExperienceMode == .normal && showGarageTab {
+                    // Rendered tab membership is driven by the same visibleTabs computed
+                    // property the mode-switch redirect below uses, rather than re-deriving
+                    // "appExperienceMode == .normal && showGarageTab" inline here — one source
+                    // of truth (AppExperienceNavigation.visibleTabs) instead of two copies of
+                    // the same rule that could silently drift apart. Normal Mode honors the
+                    // user's existing Garage/Reminders tab preferences exactly as before; Simple
+                    // Mode shows only Calculator, Stations, and More, regardless of those
+                    // preferences — they're never read, or mutated, while in Simple Mode.
+                    if visibleTabs.contains(.garage) {
                         GarageView()
                             .tabItem {
                                 Label("Garage", systemImage: "car.fill")
@@ -64,7 +68,7 @@ struct ContentView: View {
                             .tag(Tab.garage)
                     }
 
-                    if appExperienceMode == .normal && showRemindersTab {
+                    if visibleTabs.contains(.reminders) {
                         RemindersView()
                             .tabItem {
                                 Label("Reminders", systemImage: "bell.badge")

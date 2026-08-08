@@ -12,8 +12,17 @@
 //  target in project.pbxproj (see CLAUDE.md) — `xcodebuild test` will not run these until a
 //  test target is added. Written to compile and pass once one exists.
 //
-//  Two of the ten required scenarios aren't expressible as pure-function tests and are recorded
-//  here as inspection facts instead:
+//  Three of the ten required scenarios aren't expressible as pure-function tests and are
+//  recorded here as inspection facts instead:
+//  - "Existing user / no preference resolves to .normal": the actual "key absent" case is the
+//    @AppStorage default-value literal (`= AppExperienceMode.normal.rawValue`) at each of its
+//    five declaration sites (ContentView, MoreView, StationsView, PreferencesView,
+//    OnboardingView) — confirmed identical at all five by inspection/grep. AppExperienceMode.
+//    resolved(from:) has no way to receive "no value was ever stored" as an input (it only ever
+//    sees a String), so resolved_normalRawValue_isNormal below — which does compile and run —
+//    is the closest a pure-function test can get: it confirms the literal string that default
+//    stands for round-trips back to .normal, which is what actually matters once that default
+//    is read out of UserDefaults.
 //  - "Pro entitlement unchanged by mode switch": AppExperienceMode (defined in AppPreferences.swift)
 //    and AppExperienceNavigation.swift contain zero references to SubscriptionManager, StoreKit,
 //    or any entitlement type — grep confirms this — and no file this feature touches
@@ -32,9 +41,16 @@ struct AppExperienceNavigationTests {
 
     // MARK: 1-3. AppExperienceMode.resolved(from:) — existing-user migration + explicit choice
 
-    @Test("Absence of a stored value (the app's own @AppStorage default) resolves to .normal")
-    func resolved_defaultRawValue_isNormal() {
-        #expect(AppExperienceMode.resolved(from: AppExperienceMode.normal.rawValue) == .normal)
+    @Test("Raw values persisted to UserDefaults are pinned — renaming a case without preserving these would silently reset existing installs")
+    func rawValues_arePinned() {
+        // These strings are what actually lands in UserDefaults. Swift synthesizes a raw value
+        // from the case name when none is given, so an innocent-looking rename of `case simple`/
+        // `case normal` would silently change what's already persisted on real devices — every
+        // existing install's stored string would stop matching, and resolved(from:) would treat
+        // it as "unrecognized" and fall back to .normal. That's the RIGHT failure mode for a
+        // genuinely corrupt value, but not a change anyone should make by accident.
+        #expect(AppExperienceMode.simple.rawValue == "simple")
+        #expect(AppExperienceMode.normal.rawValue == "normal")
     }
 
     @Test("An unrecognized/corrupted stored value falls back to .normal, never Simple")
