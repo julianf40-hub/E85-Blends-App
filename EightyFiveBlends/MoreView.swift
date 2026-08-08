@@ -62,9 +62,12 @@ struct MoreView: View {
                             }
                         }
 
+                        // Same underlying CostCalculatorView ("Compare Fuel Cost") Calculator's
+                        // own entry card opens — kept here too so this existing, known route
+                        // isn't removed.
                         MoreNavigationRow(
-                            title: "Cost Calculator",
-                            subtitle: "Compare blend cost, range, and savings.",
+                            title: "Compare Fuel Cost",
+                            subtitle: "See what different ethanol blends cost.",
                             systemImage: "dollarsign.circle",
                             tint: AppTheme.Colors.accentYellow
                         ) {

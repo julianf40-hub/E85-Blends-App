@@ -24,6 +24,11 @@ enum AppPreferenceKey {
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
     static let hasAcknowledgedDisclaimer = "hasAcknowledgedDisclaimer"
     static let disclaimerAcknowledgedAt = "disclaimerAcknowledgedAt"
+    // The app version (CFBundleShortVersionString) the "What's New" sheet was last shown for.
+    // Empty/absent means "never shown" — true both for a brand-new install and for an existing
+    // install upgrading from a version that predates this feature. See
+    // WhatsNewPresentation.shouldPresent(...) for how ContentView tells those two apart.
+    static let lastPresentedWhatsNewVersion = "lastPresentedWhatsNewVersion"
     // Last At the Pump setup — lightweight UI memory only. Current blend deliberately
     // has no key here: it always comes from the fuel log / vehicle, never from memory.
     static let lastPumpTargetBlend = "lastPumpTargetBlend"

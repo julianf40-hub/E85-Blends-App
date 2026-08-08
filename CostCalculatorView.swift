@@ -2,6 +2,17 @@
 //  CostCalculatorView.swift
 //  EightyFiveBlends
 //
+//  "Compare Fuel Cost" — reachable from a Calculator entry card (Simple and Normal App
+//  Experience Mode alike) and from More. Both open this exact view; there is no second,
+//  duplicated calculator. Gallons/cost math comes from BlendCostMath.result(...) (shared, pure,
+//  unit-tested) rather than a private reimplementation. Tank size and fuel prices auto-populate
+//  read-only from the active vehicle and its most recent fuel log entries — see
+//  FuelPriceLookup.swift — and nothing here ever writes to VehicleProfile, FuelLogEntry, or any
+//  other stored data; this screen only reads.
+//
+//  Internal type/file name kept as CostCalculatorView (unchanged from before this pass) — only
+//  the user-facing title changed, avoiding churn across the one other call site (MoreView).
+//
 
 import SwiftUI
 import SwiftData
@@ -9,7 +20,7 @@ import SwiftData
 private enum BlendStrategy: String, CaseIterable, Identifiable {
     case e30 = "E30"
     case e50 = "E50"
-    case e60 = "E60"
+    case e70 = "E70"
     case e85 = "E85"
     case custom = "Custom"
 
@@ -19,7 +30,7 @@ private enum BlendStrategy: String, CaseIterable, Identifiable {
         switch self {
         case .e30: return 30
         case .e50: return 50
-        case .e60: return 60
+        case .e70: return 70
         case .e85: return 85
         case .custom: return nil
         }
@@ -29,7 +40,7 @@ private enum BlendStrategy: String, CaseIterable, Identifiable {
         switch self {
         case .e30: return "Daily / Range"
         case .e50: return "Balanced"
-        case .e60: return "Performance"
+        case .e70: return "Performance"
         case .e85: return "Max Ethanol"
         case .custom: return "Custom"
         }
@@ -43,33 +54,26 @@ private struct BlendCostResult {
     let e85Gallons: Double
     let gasGallons: Double
     let tankCost: Double
-    let estimatedRange: Double?
-    let costPerMile: Double?
-    let savingsPerTank: Double
+    let savingsVsGasOnly: Double
 }
 
 struct CostCalculatorView: View {
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
+    @Query(sort: \FuelLogEntry.date, order: .reverse)
+    private var fuelLogEntries: [FuelLogEntry]
 
     @State private var gallons = ""
     @State private var e85Price = ""
     @State private var gasPrice = ""
-    @State private var gasMPG = ""
-    @State private var selectedGasGrade = "91"
-    @State private var mpgLossPercent = 25
     @State private var selectedStrategy: BlendStrategy = .e85
     @State private var customBlendPercent: Double = 40
     @State private var didPrefill = false
-
-    private let gasGrades = ["87", "89", "91", "93"]
-    private let mpgLossOptions = [15, 20, 25, 30, 35]
 
     private var activeVehicle: VehicleProfile? { activeVehicles.first }
     private var gallonsValue: Double { Double(gallons) ?? 0 }
     private var e85PriceValue: Double { Double(e85Price) ?? 0 }
     private var gasPriceValue: Double { Double(gasPrice) ?? 0 }
-    private var gasMPGValue: Double { Double(gasMPG) ?? 0 }
 
     private var e85Ethanol: Double { activeVehicle?.defaultPumpEthanolPercent ?? 85 }
     private var gasEthanol: Double { activeVehicle?.gasEthanolPercent ?? 10 }
@@ -78,71 +82,30 @@ struct CostCalculatorView: View {
         selectedStrategy.ethanolPercent ?? customBlendPercent
     }
 
-    private var selectedBlendLabel: String {
-        "E\(Int(selectedEthanolPercent.rounded()))"
-    }
-
     private var hasBasicInputs: Bool {
         gallonsValue > 0 && e85PriceValue > 0 && gasPriceValue > 0
     }
 
-    private var hasRangeInputs: Bool {
-        hasBasicInputs && gasMPGValue > 0
-    }
-
     private var gasTankCost: Double { gallonsValue * gasPriceValue }
 
-    private var gasRange: Double? {
-        gasMPGValue > 0 ? gasMPGValue * gallonsValue : nil
-    }
-
-    private var gasCostPerMile: Double? {
-        guard let r = gasRange, r > 0 else { return nil }
-        return gasTankCost / r
-    }
-
     private func blendResult(for ethanolPercent: Double, tierLabel: String) -> BlendCostResult? {
-        let delta = e85Ethanol - gasEthanol
-        guard delta > 0 else { return nil }
-
-        let fraction = (ethanolPercent - gasEthanol) / delta
-        guard fraction >= 0, fraction <= 1 else { return nil }
-
-        let e85Gal = gallonsValue * fraction
-        let gasGal = gallonsValue * (1 - fraction)
-        let cost = e85Gal * e85PriceValue + gasGal * gasPriceValue
-
-        let scaledLoss = Double(mpgLossPercent) / 100.0 * fraction
-        let blendMultiplier = 1 - scaledLoss
-
-        let range: Double?
-        let cpm: Double?
-        if gasMPGValue > 0, blendMultiplier > 0 {
-            let r = gasMPGValue * blendMultiplier * gallonsValue
-            range = r
-            cpm = r > 0 ? cost / r : nil
-        } else {
-            range = nil
-            cpm = nil
-        }
-
-        let savings: Double
-        if blendMultiplier > 0, gasMPGValue > 0 {
-            savings = gasTankCost - cost / blendMultiplier
-        } else {
-            savings = gasTankCost - cost
-        }
+        guard let math = BlendCostMath.result(
+            totalGallons: gallonsValue,
+            targetEthanolPercent: ethanolPercent,
+            e85EthanolPercent: e85Ethanol,
+            gasEthanolPercent: gasEthanol,
+            e85PricePerGallon: e85PriceValue,
+            gasPricePerGallon: gasPriceValue
+        ) else { return nil }
 
         return BlendCostResult(
-            ethanolPercent: ethanolPercent,
-            label: "E\(Int(ethanolPercent.rounded()))",
+            ethanolPercent: math.ethanolPercent,
+            label: "E\(Int(math.ethanolPercent.rounded()))",
             tierLabel: tierLabel,
-            e85Gallons: e85Gal,
-            gasGallons: gasGal,
-            tankCost: cost,
-            estimatedRange: range,
-            costPerMile: cpm,
-            savingsPerTank: savings
+            e85Gallons: math.e85Gallons,
+            gasGallons: math.gasGallons,
+            tankCost: math.totalCost,
+            savingsVsGasOnly: gasTankCost - math.totalCost
         )
     }
 
@@ -152,43 +115,11 @@ struct CostCalculatorView: View {
     }
 
     private var comparisonBlends: [(strategy: BlendStrategy, result: BlendCostResult)] {
-        [BlendStrategy.e30, .e50, .e60, .e85].compactMap { strategy in
+        [BlendStrategy.e30, .e50, .e70, .e85].compactMap { strategy in
             guard let pct = strategy.ethanolPercent,
                   let result = blendResult(for: pct, tierLabel: strategy.tierLabel) else { return nil }
             return (strategy, result)
         }
-    }
-
-    private var cheapestPerMileStrategy: BlendStrategy? {
-        comparisonBlends
-            .filter { $0.result.costPerMile != nil }
-            .min { ($0.result.costPerMile ?? .infinity) < ($1.result.costPerMile ?? .infinity) }?
-            .strategy
-    }
-
-    private var bestRangeStrategy: BlendStrategy? {
-        comparisonBlends
-            .filter { $0.result.estimatedRange != nil }
-            .max { ($0.result.estimatedRange ?? 0) < ($1.result.estimatedRange ?? 0) }?
-            .strategy
-    }
-
-    private var breakEvenE85Price: Double? {
-        guard hasRangeInputs else { return nil }
-        let delta = e85Ethanol - gasEthanol
-        guard delta > 0 else { return nil }
-
-        let fraction = (selectedEthanolPercent - gasEthanol) / delta
-        guard fraction > 0, fraction <= 1 else { return nil }
-
-        let e85Gal = gallonsValue * fraction
-        let gasGal = gallonsValue * (1 - fraction)
-        let scaledLoss = Double(mpgLossPercent) / 100.0 * fraction
-        let blendMultiplier = 1 - scaledLoss
-        guard blendMultiplier > 0, e85Gal > 0 else { return nil }
-
-        let price = gasPriceValue * (blendMultiplier * gallonsValue - gasGal) / e85Gal
-        return price > 0 ? price : nil
     }
 
     // MARK: - Body
@@ -199,12 +130,11 @@ struct CostCalculatorView: View {
                 headerSection
                 tankSizeCard
                 pricesCard
-                gasGradeCard
-                gasMPGCard
-                mpgLossCard
                 blendStrategyCard
 
                 if hasBasicInputs {
+                    estimateAssumptionCard
+
                     if let result = selectedBlendResult {
                         selectedResultCard(result)
                     } else {
@@ -213,10 +143,6 @@ struct CostCalculatorView: View {
 
                     if comparisonBlends.isEmpty == false {
                         comparisonSection
-                    }
-
-                    if let breakEven = breakEvenE85Price {
-                        breakEvenCard(breakEven)
                     }
                 } else {
                     missingInputsCard
@@ -228,15 +154,41 @@ struct CostCalculatorView: View {
         }
         .dismissKeyboardOnTap()
         .background(AppTheme.Colors.charcoal)
-        .navigationTitle("Cost Calculator")
+        .navigationTitle("Compare Fuel Cost")
         .navigationBarTitleDisplayMode(.inline)
         .keyboardDoneToolbar()
         .onAppear {
             guard didPrefill == false else { return }
             didPrefill = true
-            if let vehicle = activeVehicle, gallons.isEmpty {
-                gallons = formatInput(vehicle.tankSizeGallons)
-            }
+            prefillFromActiveVehicleAndFuelLog()
+        }
+    }
+
+    // Read-only initialization of the input fields — never writes to VehicleProfile,
+    // FuelLogEntry, or any other stored data. Tank size only prefills from a vehicle with a
+    // genuinely set (> 0) tank size; prices only prefill from the most recent fuel log entry for
+    // this exact vehicle with a valid (finite, positive, plausible) recorded price. Anything not
+    // found is left blank for manual entry rather than guessed. The user can freely overwrite
+    // any prefilled value.
+    private func prefillFromActiveVehicleAndFuelLog() {
+        if let vehicle = activeVehicle, vehicle.tankSizeGallons > 0, gallons.isEmpty {
+            gallons = formatInput(vehicle.tankSizeGallons)
+        }
+
+        guard let vehicleName = activeVehicle?.nickname, vehicleName.isEmpty == false else { return }
+
+        if e85Price.isEmpty,
+           let price = FuelPriceLookup.mostRecentValidPrice(
+               in: fuelLogEntries, vehicleName: vehicleName, price: { $0.e85PricePerGallon }
+           ) {
+            e85Price = formatInput(price)
+        }
+
+        if gasPrice.isEmpty,
+           let price = FuelPriceLookup.mostRecentValidPrice(
+               in: fuelLogEntries, vehicleName: vehicleName, price: { $0.gasPricePerGallon }
+           ) {
+            gasPrice = formatInput(price)
         }
     }
 
@@ -249,11 +201,11 @@ struct CostCalculatorView: View {
                 .tracking(1.4)
                 .foregroundStyle(AppTheme.Colors.textMuted)
 
-            Text("Blend vs Gas")
+            Text("Compare Fuel Cost")
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
 
-            Text("Compare blend cost, range, and savings against gasoline.")
+            Text("See what different ethanol blends cost compared to gasoline.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
@@ -267,6 +219,7 @@ struct CostCalculatorView: View {
                 SectionHeader(
                     title: "Tank Size",
                     subtitle: activeVehicle.map { "Prefilled from \($0.nickname.isEmpty ? "active vehicle" : $0.nickname)." }
+                        ?? "No active vehicle — enter your tank size manually."
                 )
                 costInputField(title: "Gallons", text: $gallons, placeholder: "15.5")
             }
@@ -276,80 +229,9 @@ struct CostCalculatorView: View {
     private var pricesCard: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Fuel Prices", subtitle: "Enter current pump prices near you.")
+                SectionHeader(title: "Fuel Prices", subtitle: "Prefilled from your most recent fill-up when available — edit anytime.")
                 costInputField(title: "E85 Price per Gallon", text: $e85Price, placeholder: "2.89")
                 costInputField(title: "Gas Price per Gallon", text: $gasPrice, placeholder: "3.49")
-            }
-        }
-    }
-
-    private var gasGradeCard: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Gas Grade", subtitle: "Label only: calculations use the gas price you enter.")
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 10)], alignment: .leading, spacing: 10) {
-                    ForEach(gasGrades, id: \.self) { grade in
-                        let isSelected = selectedGasGrade == grade
-                        Button {
-                            AppHaptics.selection()
-                            selectedGasGrade = grade
-                        } label: {
-                            Text(grade)
-                                .font(.headline.weight(.semibold))
-                                .foregroundStyle(isSelected ? AppTheme.Colors.charcoal : AppTheme.Colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.surface)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.border, lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    private var gasMPGCard: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "Gasoline MPG Estimate", subtitle: "Your typical MPG on gasoline. Enables range and cost-per-mile estimates.")
-                costInputField(title: "MPG on Gas", text: $gasMPG, placeholder: "25")
-            }
-        }
-    }
-
-    private var mpgLossCard: some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(title: "E85 MPG Loss", subtitle: "E85 typically reduces fuel economy 15-35%. Loss is scaled for partial blends.")
-
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 10)], alignment: .leading, spacing: 10) {
-                    ForEach(mpgLossOptions, id: \.self) { option in
-                        let isSelected = mpgLossPercent == option
-                        Button {
-                            AppHaptics.selection()
-                            mpgLossPercent = option
-                        } label: {
-                            Text("\(option)%")
-                                .font(.headline.weight(.semibold))
-                                .foregroundStyle(isSelected ? AppTheme.Colors.charcoal : AppTheme.Colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.surface)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.border, lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
             }
         }
     }
@@ -392,41 +274,45 @@ struct CostCalculatorView: View {
                             .tint(AppTheme.Colors.primaryGreen)
                     }
                 }
+
+                // Ethanol-content accuracy: E50/E70 name a target ethanol PERCENTAGE, not a
+                // volumetric gasoline/E85 split — and E85 pump fuel itself isn't always exactly
+                // 85% ethanol (see e85Ethanol above, which uses the vehicle's own recorded
+                // value). Stated once here rather than repeated per chip.
+                Text("Blends are target ethanol content, not a volumetric gasoline/E85 split.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var estimateAssumptionCard: some View {
+        InfoCard(
+            title: "What This Estimates",
+            message: "Estimated cost to fill an empty \(tankSizeDisplayText) tank to the selected blend.",
+            systemImage: "info.circle"
+        )
+    }
+
+    private var tankSizeDisplayText: String {
+        gallons.isEmpty ? "" : "\(formatInput(gallonsValue)) gal"
     }
 
     // MARK: - Selected Result
 
     private func selectedResultCard(_ result: BlendCostResult) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            SectionHeader(
-                title: "\(result.label) Result",
-                subtitle: "\(result.tierLabel) \u{2014} adjusted for \(scaledLossLabel(for: result.ethanolPercent)) MPG loss."
-            )
+            SectionHeader(title: "\(result.label) Result", subtitle: result.tierLabel)
 
             HStack(spacing: 12) {
-                resultMetric(title: "Gas tank cost", value: String(format: "$%.2f", gasTankCost), accent: AppTheme.Colors.gasOrange)
-                resultMetric(title: "\(result.label) tank cost", value: String(format: "$%.2f", result.tankCost), accent: AppTheme.Colors.primaryGreen)
+                resultMetric(title: "Gas-only cost", value: String(format: "$%.2f", gasTankCost), accent: AppTheme.Colors.gasOrange)
+                resultMetric(title: "\(result.label) cost", value: String(format: "$%.2f", result.tankCost), accent: AppTheme.Colors.primaryGreen)
             }
 
             HStack(spacing: 12) {
                 resultMetric(title: "E85 gallons", value: String(format: "%.1f", result.e85Gallons), accent: AppTheme.Colors.primaryGreen)
                 resultMetric(title: "Gas gallons", value: String(format: "%.1f", result.gasGallons), accent: AppTheme.Colors.gasOrange)
-            }
-
-            if let gasR = gasRange, let blendR = result.estimatedRange {
-                HStack(spacing: 12) {
-                    resultMetric(title: "Gas range", value: String(format: "%.0f mi", gasR), accent: AppTheme.Colors.gasOrange)
-                    resultMetric(title: "\(result.label) range", value: String(format: "%.0f mi", blendR), accent: AppTheme.Colors.primaryGreen)
-                }
-            }
-
-            if let gasCPM = gasCostPerMile, let blendCPM = result.costPerMile {
-                HStack(spacing: 12) {
-                    resultMetric(title: "Gas \u{00A2}/mile", value: String(format: "%.1f\u{00A2}", gasCPM * 100), accent: AppTheme.Colors.gasOrange)
-                    resultMetric(title: "\(result.label) \u{00A2}/mile", value: String(format: "%.1f\u{00A2}", blendCPM * 100), accent: AppTheme.Colors.primaryGreen)
-                }
             }
 
             savingsMessageView(result)
@@ -442,30 +328,23 @@ struct CostCalculatorView: View {
     }
 
     private func savingsMessageView(_ result: BlendCostResult) -> some View {
-        let saves = result.savingsPerTank > 0
-        let amount = abs(result.savingsPerTank)
+        let saves = result.savingsVsGasOnly > 0
+        let amount = abs(result.savingsVsGasOnly)
 
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(saves
-                 ? "\(result.label) saves about \(String(format: "$%.2f", amount)) per tank."
-                 : "Gas may be cheaper by about \(String(format: "$%.2f", amount)) per tank.")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
-
-            Text(gasMPGValue > 0
-                 ? "Compared over the same driving distance at \(scaledLossLabel(for: result.ethanolPercent)) MPG loss."
-                 : "Enter gasoline MPG above to compare over the same driving distance.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(saves ? AppTheme.Colors.softGreenBackground.opacity(0.6) : AppTheme.Colors.warningRed.opacity(0.1))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(saves ? AppTheme.Colors.primaryGreen.opacity(0.5) : AppTheme.Colors.warningRed.opacity(0.4), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        return Text(saves
+             ? "\(result.label) costs about \(String(format: "$%.2f", amount)) less than filling with gasoline only."
+             : "\(result.label) costs about \(String(format: "$%.2f", amount)) more than filling with gasoline only.")
+            .font(.title3.weight(.bold))
+            .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(saves ? AppTheme.Colors.softGreenBackground.opacity(0.6) : AppTheme.Colors.warningRed.opacity(0.1))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(saves ? AppTheme.Colors.primaryGreen.opacity(0.5) : AppTheme.Colors.warningRed.opacity(0.4), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var impossibleBlendCard: some View {
@@ -499,9 +378,7 @@ struct CostCalculatorView: View {
 
     private func comparisonCard(strategy: BlendStrategy, result: BlendCostResult) -> some View {
         let isSelected = selectedStrategy == strategy
-        let isCheapest = cheapestPerMileStrategy == strategy
-        let isBestRange = bestRangeStrategy == strategy
-        let saves = result.savingsPerTank > 0
+        let saves = result.savingsVsGasOnly > 0
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -526,36 +403,19 @@ struct CostCalculatorView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
 
-            if let range = result.estimatedRange {
-                Text(String(format: "%.0f mi", range))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
-
-            if let cpm = result.costPerMile {
-                Text(String(format: "%.1f\u{00A2}/mi", cpm * 100))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
+            Text(String(format: "%.1f gal E85 \u{00B7} %.1f gal gas", result.e85Gallons, result.gasGallons))
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             Text(saves
-                 ? String(format: "Saves $%.2f", abs(result.savingsPerTank))
-                 : String(format: "+$%.2f", abs(result.savingsPerTank)))
+                 ? String(format: "$%.2f less than gas-only", abs(result.savingsVsGasOnly))
+                 : String(format: "$%.2f more than gas-only", abs(result.savingsVsGasOnly)))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
-
-            if isCheapest || isBestRange {
-                HStack(spacing: 4) {
-                    if isCheapest {
-                        badgeView("Cheapest", color: AppTheme.Colors.primaryGreen)
-                    }
-                    if isBestRange {
-                        badgeView("Best Range", color: AppTheme.Colors.rangeColor)
-                    }
-                }
-            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -577,31 +437,6 @@ struct CostCalculatorView: View {
             .clipShape(Capsule())
     }
 
-    // MARK: - Break-Even
-
-    private func breakEvenCard(_ price: Double) -> some View {
-        AppCard {
-            VStack(alignment: .leading, spacing: 10) {
-                SectionHeader(
-                    title: "Break-Even E85 Price",
-                    subtitle: "E85 needs to be under this price for \(selectedBlendLabel) to beat gas per mile."
-                )
-
-                Text(String(format: "$%.2f", price))
-                    .font(.system(size: 38, weight: .bold, design: .rounded))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-
-                Text("per gallon at \(scaledLossLabel(for: selectedEthanolPercent)) MPG loss vs \(selectedGasGrade)-octane at \(String(format: "$%.2f", gasPriceValue))")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                Text("E85 needs to be under \(String(format: "$%.2f", price))/gal to break even.")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-            }
-        }
-    }
-
     // MARK: - Missing & Disclaimer
 
     private var missingInputsCard: some View {
@@ -615,7 +450,7 @@ struct CostCalculatorView: View {
     private var disclaimerCard: some View {
         WarningCard(
             title: "Estimates Only",
-            message: "Actual MPG depends on tune, ethanol content, driving style, and vehicle setup."
+            message: "Actual cost depends on real pump prices, ethanol content, and tank fill amount."
         )
     }
 
@@ -663,14 +498,6 @@ struct CostCalculatorView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func scaledLossLabel(for ethanolPercent: Double) -> String {
-        let delta = e85Ethanol - gasEthanol
-        guard delta > 0 else { return "0%" }
-        let fraction = (ethanolPercent - gasEthanol) / delta
-        let scaledLoss = Double(mpgLossPercent) * fraction
-        return String(format: "%.0f%%", scaledLoss)
-    }
-
     private func formatInput(_ value: Double) -> String {
         value.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(value)) : String(format: "%.1f", value)
     }
@@ -680,5 +507,5 @@ struct CostCalculatorView: View {
     NavigationStack {
         CostCalculatorView()
     }
-    .modelContainer(for: VehicleProfile.self, inMemory: true)
+    .modelContainer(for: [VehicleProfile.self, FuelLogEntry.self], inMemory: true)
 }

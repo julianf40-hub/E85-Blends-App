@@ -33,6 +33,7 @@ struct CalculatorView: View {
     @State private var gasOctane = "91"
     @State private var loadedDefaultsKey = ""
     @State private var calculatorFuelLogDraft: FuelLogDraft?
+    @State private var isShowingCompareFuelCost = false
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
@@ -137,6 +138,7 @@ struct CalculatorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     headerSection
+                    compareFuelCostCard
 
                     if showsVehicleHint {
                         vehicleHintCard
@@ -292,6 +294,21 @@ struct CalculatorView: View {
                     isShowingPumpMode = false
                 }
             )
+        }
+        // CostCalculatorView doesn't self-wrap in a NavigationStack (it's normally pushed from
+        // More's own stack), so a NavigationStack + explicit Done button is added here at the
+        // sheet call site only — More's existing NavigationLink entry point is untouched.
+        .sheet(isPresented: $isShowingCompareFuelCost) {
+            NavigationStack {
+                CostCalculatorView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") {
+                                isShowingCompareFuelCost = false
+                            }
+                        }
+                    }
+            }
         }
         .alert("At the Pump?", isPresented: autoPromptAlertBinding) {
             Button("Not Now", role: .cancel) {
@@ -728,6 +745,53 @@ struct CalculatorView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
         }
+    }
+
+    // Discoverable entry point to Compare Fuel Cost — high on the screen, before the long Tank
+    // Info form, so it doesn't require scrolling to find. Available in both Simple and Normal
+    // App Experience Mode (Calculator itself is never gated by mode), and opens the exact same
+    // CostCalculatorView the More entry reaches — no separate/duplicated calculator.
+    private var compareFuelCostCard: some View {
+        Button {
+            AppHaptics.selection()
+            isShowingCompareFuelCost = true
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "dollarsign.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(AppTheme.Colors.accentYellow)
+                    .frame(width: 36, height: 36)
+                    .background(AppTheme.Colors.accentYellow.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Compare Fuel Cost")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text("See what different ethanol blends cost.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+            .padding(14)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens a tool to compare fuel costs across ethanol blends.")
     }
 
     private var vehicleHintCard: some View {

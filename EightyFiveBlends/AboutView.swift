@@ -45,16 +45,14 @@ struct AboutView: View {
                     message: versionText
                 )
 
+                // Reads ReleaseNotes.currentHighlights/currentHighlightsTitle rather than a
+                // hardcoded array — the exact same source WhatsNewView's popup shows, so the
+                // two can never drift into independently maintained copies, and the version in
+                // the title is always read live from the bundle instead of hand-typed here.
                 changelogGroup(
-                    title: "What's New in 2.3.0",
+                    title: ReleaseNotes.currentHighlightsTitle,
                     subtitle: "Recent product-facing updates.",
-                    items: [
-                        "New Simple Mode gives drivers a streamlined experience focused on the Blend Calculator and E85 Stations.",
-                        "New Normal Mode keeps the complete 85Blends experience, including Garage, Fuel Log, Reminders, Trip Planner, and more.",
-                        "Choose your preferred experience during onboarding, and switch between Simple and Normal anytime from Preferences.",
-                        "Switching modes preserves your vehicles, fuel history, reminders, saved data, and app preferences.",
-                        "Improved onboarding makes it easier to choose the 85Blends experience that fits how you use the app.",
-                    ]
+                    items: ReleaseNotes.currentHighlights
                 )
 
                 collapsibleChangelogGroup(

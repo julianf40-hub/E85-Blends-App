@@ -21,8 +21,19 @@ struct ContentView: View {
     // Absence of this key (pre-App-Experience-Mode installs) resolves to .normal via
     // AppExperienceMode.resolved(from:) — existing users never lose a tab on update.
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
+    @AppStorage(AppPreferenceKey.lastPresentedWhatsNewVersion) private var lastPresentedWhatsNewVersion = ""
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @State private var selectedTab: Tab = .calculator
+    @State private var isShowingWhatsNew = false
+    @State private var hasEvaluatedWhatsNewEligibility = false
+    // Snapshotted once, synchronously, from the raw persisted value at the moment this view is
+    // first created — deliberately NOT read via @AppStorage/.onChange, whose relative firing
+    // order against .onAppear on a newly-mounted view isn't something to depend on. This makes
+    // "did onboarding complete during this exact launch" a plain, deterministic comparison
+    // instead of a race between two SwiftUI update-cycle callbacks.
+    @State private var wasOnboardingAlreadyCompleteAtLaunch = UserDefaults.standard.bool(
+        forKey: AppPreferenceKey.hasCompletedOnboarding
+    )
 
     private var appExperienceMode: AppExperienceMode {
         .resolved(from: appExperienceModeRaw)
@@ -34,6 +45,14 @@ struct ContentView: View {
             showGarageTab: showGarageTab,
             showRemindersTab: showRemindersTab
         )
+    }
+
+    // True only when onboarding transitioned from incomplete to complete during this same
+    // launch — i.e. a brand-new (or onboarding-reset) user finishing onboarding just now. False
+    // for every other case, including an existing user who completed onboarding in some past
+    // session, however long ago. See WhatsNewPresentation.shouldPresent(...).
+    private var onboardingJustCompletedThisLaunch: Bool {
+        hasCompletedOnboarding && wasOnboardingAlreadyCompleteAtLaunch == false
     }
 
     var body: some View {
@@ -104,10 +123,43 @@ struct ContentView: View {
                         visibleTabs: visibleTabs
                     )
                 }
+                // Attached to the TabView branch itself (not the outer Group), so this can only
+                // ever run once onboarding is complete and the normal app interface is active —
+                // structurally, not just by a runtime check, satisfying "never over active
+                // onboarding." Not tied to any specific tab, so this works identically in
+                // Simple and Normal App Experience Mode.
+                .onAppear {
+                    evaluateWhatsNewEligibility()
+                }
+                .sheet(
+                    isPresented: $isShowingWhatsNew,
+                    onDismiss: {
+                        // Fires for every dismissal path — the Continue button and a
+                        // swipe-away alike — so either one reliably records the version as
+                        // shown and neither leaves the sheet re-appearing on a later launch.
+                        lastPresentedWhatsNewVersion = WhatsNewPresentation.versionToPersistOnDismiss(
+                            currentAppVersion: ReleaseNotes.currentAppVersion
+                        )
+                    }
+                ) {
+                    WhatsNewView(onContinue: { isShowingWhatsNew = false })
+                }
             } else {
                 OnboardingView()
             }
         }
+    }
+
+    private func evaluateWhatsNewEligibility() {
+        guard hasEvaluatedWhatsNewEligibility == false else { return }
+        hasEvaluatedWhatsNewEligibility = true
+
+        isShowingWhatsNew = WhatsNewPresentation.shouldPresent(
+            currentAppVersion: ReleaseNotes.currentAppVersion,
+            lastPresentedVersion: lastPresentedWhatsNewVersion,
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            onboardingJustCompletedThisLaunch: onboardingJustCompletedThisLaunch
+        )
     }
 }
 
