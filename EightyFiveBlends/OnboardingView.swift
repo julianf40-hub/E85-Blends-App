@@ -886,29 +886,24 @@ private extension OnboardingView {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                // Wrapped in a ScrollView rather than a plain HStack so Normal Mode's seven
-                // feature bullets lay out without clipping past the card's trailing edge at
-                // large Dynamic Type accessibility sizes (a plain HStack doesn't wrap). This
-                // whole row is purely decorative reinforcement of the sentence above
-                // (mode.onboardingHeadline already fully describes the mode, both visually and
-                // via the card's combined accessibilityLabel below), so allowsHitTesting(false)
-                // turns off the ScrollView's own scroll gesture entirely rather than leaving a
-                // working drag gesture nested inside the card's own Button — avoiding any
-                // tap-vs-scroll gesture conflict on the card.
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(mode.onboardingFeatureBullets, id: \.self) { feature in
-                            Text(feature)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(AppTheme.Colors.textPrimary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(AppTheme.Colors.surface)
-                                .clipShape(Capsule())
-                        }
+                // Plain, non-scrolling row — AppExperienceMode.onboardingFeatureBullets is
+                // deliberately kept short (2 items for Simple, 5 for Normal) so this fits on one
+                // line inside the card at normal Dynamic Type sizes with no clipping and no
+                // scrolling affordance the user could miss. This row is purely decorative
+                // reinforcement of the sentence above (mode.onboardingHeadline already fully
+                // describes the mode, both visually and via the card's combined
+                // accessibilityLabel below), hence accessibilityHidden.
+                HStack(spacing: 6) {
+                    ForEach(mode.onboardingFeatureBullets, id: \.self) { feature in
+                        Text(feature)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AppTheme.Colors.surface)
+                            .clipShape(Capsule())
                     }
                 }
-                .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
             .padding(16)

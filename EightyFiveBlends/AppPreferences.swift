@@ -129,12 +129,16 @@ enum AppExperienceMode: String, CaseIterable, Identifiable {
         }
     }
 
+    // A small, representative set only — not an exhaustive feature list. Kept short enough to
+    // lay out on one line inside the onboarding choice card at normal Dynamic Type sizes without
+    // clipping or scrolling; onboardingHeadline's sentence already communicates that Normal is
+    // the complete experience, so Fuel Log/Trip Planner/Analytics don't need their own chips.
     var onboardingFeatureBullets: [String] {
         switch self {
         case .simple:
             return ["Calculator", "Stations"]
         case .normal:
-            return ["Calculator", "Stations", "Garage", "Fuel Log", "Reminders", "Trip Planner", "Analytics"]
+            return ["Calculator", "Stations", "Garage", "Reminders", "More"]
         }
     }
 }
