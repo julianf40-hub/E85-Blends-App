@@ -886,22 +886,22 @@ private extension OnboardingView {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                // Plain, non-scrolling row — AppExperienceMode.onboardingFeatureBullets is
-                // deliberately kept short (2 items for Simple, 5 for Normal) so this fits on one
-                // line inside the card at normal Dynamic Type sizes with no clipping and no
-                // scrolling affordance the user could miss. This row is purely decorative
-                // reinforcement of the sentence above (mode.onboardingHeadline already fully
-                // describes the mode, both visually and via the card's combined
-                // accessibilityLabel below), hence accessibilityHidden.
-                HStack(spacing: 6) {
-                    ForEach(mode.onboardingFeatureBullets, id: \.self) { feature in
-                        Text(feature)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(AppTheme.Colors.surface)
-                            .clipShape(Capsule())
+                // Wrapped across rows of up to 3 chips rather than forced into one HStack —
+                // Normal Mode's 5 bullets (Calculator, Stations, Garage, Reminders, More) were
+                // cramming into a single row on-device, which compressed "Calculator" and
+                // "Reminders" into an awkward mid-word wrap inside their capsules. chipRows(for:)
+                // is plain array chunking (no custom Layout/reusable flow system needed); Simple
+                // Mode's 2 bullets naturally collapse to a single row via the same chunking. This
+                // block is purely decorative reinforcement of the sentence above
+                // (mode.onboardingHeadline already fully describes the mode, both visually and
+                // via the card's combined accessibilityLabel below), hence accessibilityHidden.
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(chipRows(for: mode.onboardingFeatureBullets), id: \.self) { row in
+                        HStack(spacing: 6) {
+                            ForEach(row, id: \.self) { feature in
+                                chip(feature)
+                            }
+                        }
                     }
                 }
                 .accessibilityHidden(true)
@@ -928,6 +928,33 @@ private extension OnboardingView {
             "\(mode.displayName) mode. \(mode.onboardingHeadline) Includes \(mode.onboardingFeatureBullets.joined(separator: ", "))."
         )
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// Splits `bullets` into rows of up to 3, preserving order — e.g. 5 items become a 3-then-2
+    /// split, 2 items stay a single row. Plain array chunking, not a layout system: it decides
+    /// row *membership*, while the HStack/VStack pairing in onboardingExperienceModeCard does
+    /// the actual layout.
+    func chipRows(for bullets: [String]) -> [[String]] {
+        stride(from: 0, to: bullets.count, by: 3).map {
+            Array(bullets[$0..<min($0 + 3, bullets.count)])
+        }
+    }
+
+    /// The onboarding feature-chip visual style, factored out so onboardingExperienceModeCard's
+    /// two-row layout and any future call site share one definition. lineLimit(1) +
+    /// fixedSize(horizontal:) keep a label from ever wrapping/hyphenating inside its capsule
+    /// under space pressure — deliberately not a shrinking font or minimumScaleFactor, so labels
+    /// stay fully legible at every Dynamic Type size rather than getting harder to read.
+    func chip(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(AppTheme.Colors.surface)
+            .clipShape(Capsule())
     }
 
     func onboardingTabToggleCard(
