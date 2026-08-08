@@ -3,7 +3,8 @@
 //  EightyFiveBlendsTests
 //
 //  Tests for manually opened Pump Mode's station-context resolver — deliberately separate
-//  from PumpProximityTests.swift, which covers the unchanged automatic-prompt threshold.
+//  from PumpProximityTests.swift, which covers the automatic-prompt threshold on its own
+//  (the two radii are independently maintained; see pumpProximityThresholdsIndependentOfManualResolver).
 //  No real Core Location manager, network access, or wall-clock timing is used: `now` and
 //  every location/accuracy input are injected directly into the functions under test.
 //
@@ -86,15 +87,16 @@ struct PumpStationContextResolverSelectionTests {
         #expect(result == .matched(station))
     }
 
-    @Test("Saved station ~9.1 m away is matchable in manual context, while PumpProximity's automatic prompt would remain false")
+    @Test("Saved station ~35 m away is matchable in manual context, while PumpProximity's automatic prompt would remain false")
     func matchesAtAutomaticPromptBoundary() {
-        let station = savedCandidate(meters: 9.1)
+        let station = savedCandidate(meters: 35)
         let result = resolve(candidates: [station])
         #expect(result == .matched(station))
-        // The automatic prompt is a separate, unchanged, stricter gate — 9.1 m is just
-        // outside its 9 m entry radius and must stay rejected there regardless of this
-        // resolver's outcome.
-        #expect(PumpProximity.isAtPump(distanceMeters: 9.1, horizontalAccuracyMeters: 5, wasAtPump: false) == false)
+        // The automatic prompt is a separate, stricter gate (its own 40 m manual-context
+        // radius vs. PumpProximity's 30 m automatic entry radius) — 35 m is comfortably
+        // inside this resolver's manual radius but just outside the automatic prompt's entry
+        // radius, and must stay rejected there regardless of this resolver's outcome.
+        #expect(PumpProximity.isAtPump(distanceMeters: 35, horizontalAccuracyMeters: 5, wasAtPump: false) == false)
     }
 
     @Test("Saved station ~18 m away is matched in manual context")
@@ -159,7 +161,7 @@ struct PumpStationContextResolverSelectionTests {
         let station = savedCandidate(meters: 3)
         let result = resolve(candidates: [station], accuracy: PumpStationContextResolver.maximumAccuracyMeters + 1)
         #expect(result == .locationInaccurate)
-        #expect(PumpStationContextResolver.maximumAccuracyMeters == 50) // wider than PumpProximity's 20 m, deliberately
+        #expect(PumpStationContextResolver.maximumAccuracyMeters == 50) // matches PumpProximity's own max accuracy gate
     }
 
     @Test("Two distinct stations within the ambiguity threshold are returned as ambiguous")
@@ -204,21 +206,24 @@ struct PumpStationContextResolverSelectionTests {
         #expect(result == .matched(station))
     }
 
-    @Test("PumpProximity's automatic-prompt thresholds are unchanged by this feature")
-    func pumpProximityThresholdsUnchanged() {
-        #expect(PumpProximity.atPumpEntryRadiusMeters == 9.0)
-        #expect(PumpProximity.atPumpExitRadiusMeters == 27.0)
-        #expect(PumpProximity.maximumPumpModeLocationAccuracyMeters == 20.0)
+    @Test("PumpProximity's automatic-prompt thresholds stay independent of this resolver's manual-context radius")
+    func pumpProximityThresholdsIndependentOfManualResolver() {
+        // These are PumpProximity's real-world-calibrated values (see PumpProximity.swift) —
+        // asserted here only to guard against this file's manual-context tests silently
+        // masking a change to the automatic prompt's own, separately maintained thresholds.
+        #expect(PumpProximity.atPumpEntryRadiusMeters == 30.0)
+        #expect(PumpProximity.atPumpExitRadiusMeters == 75.0)
+        #expect(PumpProximity.maximumPumpModeLocationAccuracyMeters == 50.0)
     }
 
     @Test("A candidate matchable at the 40 m manual-context radius does not become eligible for the automatic prompt")
     func manualRadiusNeverFeedsAutomaticPrompt() {
-        // 18 m is comfortably inside the manual context radius (40 m) but well outside
-        // PumpProximity's 9 m entry radius — the automatic prompt must still refuse it.
-        let station = savedCandidate(meters: 18)
+        // 35 m is comfortably inside the manual context radius (40 m) but outside
+        // PumpProximity's 30 m entry radius — the automatic prompt must still refuse it.
+        let station = savedCandidate(meters: 35)
         let result = resolve(candidates: [station])
         #expect(result == .matched(station))
-        #expect(PumpProximity.isAtPump(distanceMeters: 18, horizontalAccuracyMeters: 5, wasAtPump: false) == false)
+        #expect(PumpProximity.isAtPump(distanceMeters: 35, horizontalAccuracyMeters: 5, wasAtPump: false) == false)
     }
 }
 

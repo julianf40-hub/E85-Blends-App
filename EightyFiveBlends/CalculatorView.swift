@@ -40,7 +40,11 @@ struct CalculatorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var pumpModeStation: FuelStation?
     @State private var isShowingPumpMode = false
-    @State private var didAutoPromptPumpMode = false
+    // Visit-based, not permanent: reset whenever pumpModeStation clears (see
+    // clearPumpModeStation()) so leaving the station's exit radius and returning later — even
+    // within the same app session — makes the prompt eligible again. Renamed from
+    // didAutoPromptPumpMode, which never reset and so could only ever prompt once per launch.
+    @State private var hasPromptedForCurrentPumpVisit = false
     @State private var autoPromptStation: FuelStation?
     /// Manually opened Pump Mode's station-context resolution — separate from
     /// `pumpModeStation`/PumpProximity, which remain the untouched source for the
@@ -216,6 +220,19 @@ struct CalculatorView: View {
             requestPumpModeLocationIfNeeded()
             resolvePendingDetectedStationIfNeeded()
         }
+        // StationLocationManager's requestUserLocation() is a ONE-SHOT fix, not continuous
+        // updates (this app never calls startUpdatingLocation()) — without this loop, the
+        // foreground "At the Pump?" path gets exactly one chance to catch a good GPS fix per
+        // tab appearance. Re-requesting periodically while the tab is visible and the app is
+        // foregrounded lets a user who is already standing at the pump (or whose first fix was
+        // a coarse one) still get caught by refreshPumpModeStation()/evaluateAutoPromptPumpMode()
+        // on a later fix. .task(id: scenePhase) restarts (and SwiftUI auto-cancels the previous
+        // run of) this loop whenever scenePhase changes, so it's inert the instant the app
+        // backgrounds and never fires while this view isn't on screen.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await runPeriodicPumpLocationRefresh()
+        }
         .onChange(of: activeVehicleKey) { _, newValue in
             applyDefaultsIfNeeded(for: newValue)
         }
@@ -384,12 +401,24 @@ struct CalculatorView: View {
         locationManager.requestUserLocation()
     }
 
+    /// Backing loop for the `.task(id: scenePhase)` above — requests a fresh one-shot fix
+    /// every ~20s while active. requestPumpModeLocationIfNeeded() already guards on
+    /// authorization, so this never triggers a permission prompt (it only ever reaches
+    /// `.requestLocation()`, never `.requestWhenInUseAuthorization()`). 20s balances catching a
+    /// good fix promptly against not polling GPS so fast it wastes battery.
+    private func runPeriodicPumpLocationRefresh() async {
+        while Task.isCancelled == false {
+            requestPumpModeLocationIfNeeded()
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+        }
+    }
+
     private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {
         switch status {
         case .authorizedAlways, .authorizedWhenInUse:
             locationManager.requestUserLocation()
         case .denied, .restricted:
-            pumpModeStation = nil
+            clearPumpModeStation()
         default:
             break
         }
@@ -398,13 +427,13 @@ struct CalculatorView: View {
     private func refreshPumpModeStation() {
         guard let coordinate = locationManager.latestCoordinate else {
             if locationManager.authorizationDenied {
-                pumpModeStation = nil
+                clearPumpModeStation()
             }
             return
         }
 
         guard let candidate = nearestSavedStation(to: coordinate) else {
-            pumpModeStation = nil
+            clearPumpModeStation()
             return
         }
 
@@ -418,7 +447,7 @@ struct CalculatorView: View {
         )
 
         guard isAtPump else {
-            pumpModeStation = nil
+            clearPumpModeStation()
             return
         }
 
@@ -431,12 +460,21 @@ struct CalculatorView: View {
         }
     }
 
-    private func evaluateAutoPromptPumpMode() {
-        guard didAutoPromptPumpMode == false else {
-            return
-        }
+    /// Clears the current pump-mode station and, critically, resets the per-visit prompt
+    /// suppression flag with it. Every "leave the station" path funnels through here so that
+    /// re-entering later — even later in the same app session — makes the "At the Pump?"
+    /// prompt eligible again instead of being permanently silenced after the first visit.
+    private func clearPumpModeStation() {
+        guard pumpModeStation != nil else { return }
+        pumpModeStation = nil
+        hasPromptedForCurrentPumpVisit = false
+    }
 
-        guard locationManager.isAuthorizedForUserLocation else {
+    private func evaluateAutoPromptPumpMode() {
+        guard PumpVisitPromptPolicy.shouldPrompt(
+            hasPromptedForCurrentVisit: hasPromptedForCurrentPumpVisit,
+            isAuthorized: locationManager.isAuthorizedForUserLocation
+        ) else {
             return
         }
 
@@ -444,7 +482,7 @@ struct CalculatorView: View {
             return
         }
 
-        didAutoPromptPumpMode = true
+        hasPromptedForCurrentPumpVisit = true
         autoPromptStation = nearbyStation
     }
 

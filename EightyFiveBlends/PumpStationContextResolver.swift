@@ -3,11 +3,12 @@
 //  EightyFiveBlends
 //
 //  Pure station-context matching for a MANUALLY opened Pump Mode session — deliberately
-//  separate from PumpProximity, which remains the sole, unchanged authority for the
-//  automatic "At the Pump?" prompt. This resolver answers a different question: once the
+//  separate from PumpProximity, which remains the sole authority for the automatic "At the
+//  Pump?" prompt (this resolver's own radius is independently maintained; it doesn't read
+//  or reuse PumpProximity's constants). This resolver answers a different question: once the
 //  user has already explicitly chosen Pump Mode, which nearby station (saved OR recently
 //  seen via live search) most likely matches where they're standing? It tolerates normal
-//  GPS drift under a gas-station canopy that the automatic prompt's tight 9 m/27 m gate
+//  GPS drift under a gas-station canopy that the automatic prompt's tighter 30 m/75 m gate
 //  correctly refuses to.
 //
 //  Never feed this resolver's radius or result into the automatic prompt
@@ -98,7 +99,7 @@ enum PumpStationContextResolver {
     // MARK: Policy constants (separate from PumpProximity; never reused for the auto-prompt)
 
     /// Station-context match radius after the user has explicitly opened Pump Mode.
-    /// Deliberately wider than PumpProximity's 9 m entry radius to tolerate normal GPS
+    /// Deliberately wider than PumpProximity's 30 m entry radius to tolerate normal GPS
     /// drift under a canopy, but still tightly bounded — nowhere near the old half-mile
     /// "detect station" search radius used elsewhere in the fuel log.
     static let manualContextRadiusMeters: CLLocationDistance = 40
@@ -106,9 +107,9 @@ enum PumpStationContextResolver {
     /// Oldest a fresh fix may be before it's treated as stale for context matching.
     static let maximumLocationAge: TimeInterval = 120
 
-    /// Worst horizontal accuracy accepted for context matching. Wider than
-    /// PumpProximity's 20 m (which gates the automatic prompt) because this only decides
-    /// *which* station to attribute a fill-up to, not whether to interrupt the user.
+    /// Worst horizontal accuracy accepted for context matching. Matches PumpProximity's own
+    /// 50 m accuracy gate — both decisions (attributing a fill-up here vs. interrupting the
+    /// user there) tolerate the same realistic canopy-degraded GPS accuracy.
     static let maximumAccuracyMeters: CLLocationAccuracy = 50
 
     /// How long a single fresh-location request is allowed to take before giving up on it.

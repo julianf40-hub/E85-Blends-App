@@ -146,11 +146,11 @@ struct AutomaticPumpDetectionConfirmationTests {
 
     @Test("Rejects distances beyond the existing pump threshold, without loosening it")
     func rejectsBeyondThreshold() {
-        // PumpProximity.atPumpEntryRadiusMeters is 9 m — 12 m must still be rejected here,
+        // PumpProximity.atPumpEntryRadiusMeters is 30 m — 35 m must still be rejected here,
         // proving this evaluator never widens the authoritative threshold.
-        let outcome = evaluate(distanceMeters: 12)
+        let outcome = evaluate(distanceMeters: 35)
         #expect(outcome == .rejected(.outsideThreshold))
-        #expect(PumpProximity.atPumpEntryRadiusMeters == 9.0) // guards against the threshold being edited elsewhere
+        #expect(PumpProximity.atPumpEntryRadiusMeters == 30.0) // guards against the threshold being edited elsewhere
     }
 
     @Test("Accepts a fresh, accurate location within the threshold")
@@ -271,7 +271,7 @@ struct AutomaticPumpDetectionServiceTests {
         service.disable()
         #expect(service.isEnabled == false)
 
-        #expect(PumpProximity.isAtPump(distanceMeters: 8, horizontalAccuracyMeters: 5, wasAtPump: false))
-        #expect(!PumpProximity.isAtPump(distanceMeters: 12, horizontalAccuracyMeters: 5, wasAtPump: false))
+        #expect(PumpProximity.isAtPump(distanceMeters: 25, horizontalAccuracyMeters: 5, wasAtPump: false))
+        #expect(!PumpProximity.isAtPump(distanceMeters: 35, horizontalAccuracyMeters: 5, wasAtPump: false))
     }
 }

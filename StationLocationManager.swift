@@ -61,7 +61,7 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
 
     /// False when the user has granted only "Approximate Location" (iOS 14+). A reduced
     /// fix is commonly hundreds of meters off — far too coarse for Automatic Pump
-    /// Detection's Stage-B confirmation, which needs to trust distances against a ~9 m
+    /// Detection's Stage-B confirmation, which needs to trust distances against a ~30 m
     /// threshold. Surfaced so Settings UI can explain why background detection isn't fully
     /// active even with Always authorization granted.
     var isPreciseLocationEnabled: Bool {
@@ -78,8 +78,8 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         authorizationStatus = manager.authorizationStatus
         super.init()
         manager.delegate = self
-        // Pump-mode auto-triggering needs a fix roughly as tight as its ~9 m entry radius
-        // (see PumpProximity). Hundred-meter fixes made the old prompt fire from far away.
+        // Pump-mode auto-triggering needs a fix roughly as tight as PumpProximity's entry
+        // radius. Hundred-meter fixes made the old prompt fire from far away.
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
     }
 

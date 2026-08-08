@@ -7,8 +7,10 @@
 //  region monitoring (StationLocationManager.startMonitoringRegion) instead of continuous
 //  location updates. A region entry is only a coarse wake-up signal (Stage A) — it is never
 //  trusted directly. On wake, this service requests one fresh location fix and re-validates
-//  distance/accuracy against PumpProximity's existing, UNCHANGED pump-arrival threshold
-//  (Stage B) before ever scheduling a notification or opening Pump Mode.
+//  distance/accuracy against PumpProximity's shared pump-arrival threshold (Stage B) —
+//  the same threshold CalculatorView's foreground path uses, so background and foreground
+//  detection can never disagree on what "at the pump" means — before ever scheduling a
+//  notification or opening Pump Mode.
 //
 //  Deliberately does NOT set `allowsBackgroundLocationUpdates = true` and does NOT declare
 //  the "location" UIBackgroundModes capability. Region monitoring wakes the app through a
@@ -48,7 +50,7 @@ final class AutomaticPumpDetectionService: NSObject {
     // MARK: - Tunable, named constants (no scattered literals)
 
     /// Coarse "you're near a known station" wake-up radius (Stage A). Deliberately much
-    /// larger than PumpProximity's ~9 m entry radius — real-world region-monitoring
+    /// larger than PumpProximity's ~30 m entry radius — real-world region-monitoring
     /// boundary-crossing detection is commonly off by 100+ meters, so a small geofence
     /// would miss delivery entirely. Stage B's precise confirmation — not this radius — is
     /// what actually gates a notification.
