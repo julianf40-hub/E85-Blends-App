@@ -46,14 +46,14 @@ struct AboutView: View {
                 )
 
                 changelogGroup(
-                    title: "What's New in 2.2.1",
+                    title: "What's New in 2.3.0",
                     subtitle: "Recent product-facing updates.",
                     items: [
-                        "Smarter Trip Planner fallback routing when E85 alone cannot complete a route.",
-                        "Required gasoline-backup stops now appear directly in the Fuel Plan.",
-                        "Backup gas station options now start collapsed for a cleaner results view.",
-                        "E85 Required mode now stays E85-only and clearly marks unreachable routes.",
-                        "Route summaries now show desired fuel, actual route mode, buffer, and risk more clearly.",
+                        "New Simple Mode gives drivers a streamlined experience focused on the Blend Calculator and E85 Stations.",
+                        "New Normal Mode keeps the complete 85Blends experience, including Garage, Fuel Log, Reminders, Trip Planner, and more.",
+                        "Choose your preferred experience during onboarding, and switch between Simple and Normal anytime from Preferences.",
+                        "Switching modes preserves your vehicles, fuel history, reminders, saved data, and app preferences.",
+                        "Improved onboarding makes it easier to choose the 85Blends experience that fits how you use the app.",
                     ]
                 )
 
@@ -61,6 +61,11 @@ struct AboutView: View {
                     title: "Previous Highlights",
                     isExpanded: $showPreviousHighlights,
                     items: [
+                        "Smarter Trip Planner fallback routing when E85 alone cannot complete a route.",
+                        "Required gasoline-backup stops now appear directly in the Fuel Plan.",
+                        "Backup gas station options now start collapsed for a cleaner results view.",
+                        "E85 Required mode now stays E85-only and clearly marks unreachable routes.",
+                        "Route summaries now show desired fuel, actual route mode, buffer, and risk more clearly.",
                         "Added Trip Planner for Pro users with route distance, fuel range, arrival buffer, and stop planning.",
                         "Added Saved Trips so planned routes can be reopened later.",
                         "Improved station discovery, saved stations, favorites, and map handoff to Apple Maps, Google Maps, and Waze.",
