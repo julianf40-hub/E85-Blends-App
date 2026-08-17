@@ -157,6 +157,7 @@ struct PreferencesView: View {
             SectionHeader(title: "85Blends Pro", subtitle: "Your current subscription status.")
 
             proStatusRow
+            entitlementDiagnosticRow
 
             #if DEBUG || INTERNAL_BUILD
             debugOverrideRow
@@ -206,6 +207,32 @@ struct PreferencesView: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// TEMPORARY (TestFlight investigation aid — see `SubscriptionManager.lastEntitlementDiagnostic`).
+    /// Shown here (not just on the paywall) specifically so it can be checked right after a
+    /// relaunch — Preferences is reachable without opening the paywall or attempting another
+    /// purchase, matching the "inspect the entitlement diagnostic after launch, before tapping
+    /// Unlock again" validation step. Intentionally NOT gated behind #if DEBUG || INTERNAL_BUILD:
+    /// the build under investigation is the production TestFlight app, which compiles that
+    /// block out entirely. Not part of the real Preferences design; remove once entitlement
+    /// persistence is root-caused and fixed.
+    @ViewBuilder
+    private var entitlementDiagnosticRow: some View {
+        if let diagnostic = SubscriptionManager.shared.lastEntitlementDiagnostic {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Entitlement diagnostic (temporary)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                Text(diagnostic)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+        }
     }
 
     #if DEBUG || INTERNAL_BUILD

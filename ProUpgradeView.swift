@@ -189,6 +189,8 @@ struct ProUpgradeView: View {
 
             purchaseStateRow
             purchaseDiagnosticRow
+            purchaseTransactionDetailRow
+            entitlementDiagnosticRow
 
             // Restore stays visible in every paywall state (including when already Pro), as
             // App Review expects. Tapping while Pro just re-verifies and confirms active status.
@@ -240,19 +242,49 @@ struct ProUpgradeView: View {
     @ViewBuilder
     private var purchaseDiagnosticRow: some View {
         if let diagnostic = manager.lastPurchaseDiagnostic {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Purchase diagnostic (temporary)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                Text(diagnostic)
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 2)
+            diagnosticBlock(title: "Purchase diagnostic (temporary)", body: diagnostic)
         }
+    }
+
+    /// TEMPORARY (TestFlight investigation aid — see `SubscriptionManager.lastPurchaseTransactionDetail`).
+    /// Safe metadata (product ID, dates, revocation, environment — never receipt/JWS data) from
+    /// the exact `Transaction` the last successful purchase verified, so it's readable on-device
+    /// without Xcode. Only ever shown after a genuinely successful, verified purchase.
+    @ViewBuilder
+    private var purchaseTransactionDetailRow: some View {
+        if let detail = manager.lastPurchaseTransactionDetail {
+            diagnosticBlock(title: "Purchase transaction (temporary)", body: detail)
+        }
+    }
+
+    /// TEMPORARY (TestFlight investigation aid — see `SubscriptionManager.lastEntitlementDiagnostic`).
+    /// What `Transaction.currentEntitlements` and the independent subscription-status API
+    /// reported the moment entitlements were last refreshed — updates on every refresh (launch,
+    /// foreground, purchase, restore), not only right after a purchase, so this is what should be
+    /// checked first after a relaunch, before attempting another purchase.
+    @ViewBuilder
+    private var entitlementDiagnosticRow: some View {
+        if let diagnostic = manager.lastEntitlementDiagnostic {
+            diagnosticBlock(title: "Entitlement diagnostic (temporary)", body: diagnostic)
+        }
+    }
+
+    /// Shared low-key styling for the temporary diagnostic rows above — small muted caption
+    /// text, selectable so it can be copied into a bug report. Not part of the real paywall
+    /// design; remove alongside the diagnostic state once this investigation concludes.
+    private func diagnosticBlock(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            Text(body)
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 2)
     }
 
     private func unlockButton(disabled: Bool) -> some View {

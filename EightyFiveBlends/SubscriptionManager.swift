@@ -146,6 +146,24 @@ final class SubscriptionManager {
     // TestFlight regression is root-caused and fixed. Not intended to ship long-term.
     private(set) var lastPurchaseDiagnostic: String?
 
+    /// Safe metadata from the exact `Transaction` the last successful `purchase()` call
+    /// verified (productID, dates, revocation, environment — never receipt/JWS/account data).
+    /// `nil` until a purchase has actually succeeded; cleared alongside `lastPurchaseDiagnostic`
+    /// at the start of every new attempt. See `transactionDiagnosticDescription(_:)`.
+    ///
+    /// TEMPORARY — same removal condition as `lastPurchaseDiagnostic` above.
+    private(set) var lastPurchaseTransactionDetail: String?
+
+    /// What `Transaction.currentEntitlements` and the independent subscription-status API
+    /// (`Product.SubscriptionInfo.status`) reported the moment `refreshEntitlements()` last
+    /// ran — updated on EVERY refresh (app launch, foreground, after purchase, after restore),
+    /// not just after a purchase. This is what answers "does StoreKit itself still consider the
+    /// subscription active right now," independent of whatever `lastPurchaseTransactionDetail`
+    /// captured at the moment of purchase — comparing the two is the point of this diagnostic.
+    ///
+    /// TEMPORARY — same removal condition as `lastPurchaseDiagnostic` above.
+    private(set) var lastEntitlementDiagnostic: String?
+
     // MARK: - Private
     private var transactionListenerTask: Task<Void, Error>?
     private var isRefreshing = false
@@ -162,11 +180,11 @@ final class SubscriptionManager {
         #endif
         transactionListenerTask = Task.detached(priority: .background) { [weak self] in
             for await result in Transaction.updates {
-                await self?.handle(result)
+                await self?.handle(result, source: "transactionUpdates")
             }
         }
         Task { [weak self] in
-            await self?.refreshEntitlements()
+            await self?.refreshEntitlements(source: "launch")
             await self?.loadProducts()
         }
     }
@@ -177,23 +195,129 @@ final class SubscriptionManager {
 
     // MARK: - Public API
 
+    /// - Parameter source: diagnostic-only tag identifying which call site triggered this
+    ///   refresh (e.g. "launch", "scenePhaseActive", "purchase", "transactionUpdates",
+    ///   "restore") — logged and folded into `lastEntitlementDiagnostic` so the entitlement
+    ///   investigation can tell WHEN and WHY each refresh ran, not just what it found. Purely
+    ///   informational; does not affect behavior. Defaults to "unspecified" so this stays
+    ///   source-compatible with any call site that doesn't pass one.
     @MainActor
-    func refreshEntitlements() async {
-        guard !isRefreshing else { return }
+    func refreshEntitlements(source: String = "unspecified") async {
+        guard !isRefreshing else {
+            print("[85Blends][StoreKit] refreshEntitlements(\(source)) skipped — a refresh is already in flight.")
+            return
+        }
         isRefreshing = true
         defer { isRefreshing = false }
+
+        // Walk Transaction.currentEntitlements exactly as before (no manual expiration/
+        // revocation/upgrade filtering — Transaction.currentEntitlements already guarantees it
+        // only yields transactions that represent a currently-active entitlement per Apple's
+        // documented contract, so re-implementing that check here would be redundant at best
+        // and a bug-prone duplicate source of truth at worst). The ONLY thing added below is
+        // capturing counts/reasons for diagnostics — the accept/reject logic itself (line with
+        // `hasPro = true`) is byte-for-byte the same condition as before this investigation.
         var hasPro = false
+        var totalCount = 0
+        var verifiedCount = 0
+        var unverifiedCount = 0
+        var matchedTransactionDetail: String?
+        var firstRejectionReason: String?
+
         for await result in Transaction.currentEntitlements {
-            if case .verified(let tx) = result,
-               Self.allProductIDs.contains(tx.productID) {
-                hasPro = true
+            totalCount += 1
+            switch result {
+            case .unverified(let tx, let verificationError):
+                unverifiedCount += 1
+                print("[85Blends][StoreKit] currentEntitlements(\(source)): unverified transaction for \(tx.productID) — \(String(describing: verificationError))")
+            case .verified(let tx):
+                verifiedCount += 1
+                if Self.allProductIDs.contains(tx.productID) {
+                    hasPro = true
+                    matchedTransactionDetail = transactionDiagnosticDescription(tx)
+                } else if firstRejectionReason == nil {
+                    firstRejectionReason = "verified transaction productID \"\(tx.productID)\" is not in allProductIDs (\(Self.allProductIDs))"
+                }
             }
         }
+
         isProStoreKit = hasPro
+
+        let subscriptionStatusText = await subscriptionStatusDiagnostic()
+
+        let entitlementsSummary: String
+        if totalCount == 0 {
+            entitlementsSummary = "CURRENT ENTITLEMENTS\ncount: 0\naccepted: n/a\nreason: no current entitlement returned by StoreKit"
+        } else if hasPro {
+            entitlementsSummary = "CURRENT ENTITLEMENTS\ncount: \(totalCount) (verified: \(verifiedCount), unverified: \(unverifiedCount))\naccepted: yes\n\(matchedTransactionDetail ?? "")"
+        } else {
+            let reason = firstRejectionReason
+                ?? (unverifiedCount > 0 ? "\(unverifiedCount) entitlement(s) present but failed verification" : "no entitlement matched product ID \(Self.monthlyID)")
+            entitlementsSummary = "CURRENT ENTITLEMENTS\ncount: \(totalCount) (verified: \(verifiedCount), unverified: \(unverifiedCount))\naccepted: no\nreason: \(reason)"
+        }
+
+        lastEntitlementDiagnostic = "\(entitlementsSummary)\n\n\(subscriptionStatusText)\n\nFINAL 85BLENDS PRO: \(hasPro)"
+
         // Always-on (not #if DEBUG-gated), matching the loadProducts() precedent below: this is
         // a critical commerce path and a future TestFlight validation needs this in the device
         // console regardless of build configuration. No receipt/transaction payload is logged.
-        print("[85Blends][StoreKit] Entitlement refreshed: isPro=\(hasPro)")
+        print("[85Blends][StoreKit] Entitlement refresh(\(source)) complete")
+        print("[85Blends][StoreKit] matchedProEntitlement: \(hasPro)")
+        print("[85Blends][StoreKit] final isProStoreKit: \(hasPro)")
+    }
+
+    /// Independent second signal (Product.SubscriptionInfo.status), separate from
+    /// Transaction.currentEntitlements above — lets the diagnostic distinguish "app-side bug"
+    /// (the two signals disagree) from "StoreKit itself doesn't consider this active" (they
+    /// agree). Requires `monthlyProduct` to already be loaded; at cold launch `refreshEntitlements`
+    /// runs before `loadProducts` (see `init`), so the very first launch-time diagnostic will
+    /// legitimately report "product not yet loaded" here — expected, not a bug, and self-corrects
+    /// on the next refresh (foreground, purchase, or re-opening the paywall).
+    @MainActor
+    private func subscriptionStatusDiagnostic() async -> String {
+        guard let product = monthlyProduct, let subscriptionInfo = product.subscription else {
+            return "SUBSCRIPTION STATUS\nunavailable (monthly product not yet loaded)"
+        }
+        do {
+            let statuses = try await subscriptionInfo.status
+            guard !statuses.isEmpty else {
+                return "SUBSCRIPTION STATUS\ncount: 0"
+            }
+            var lines = ["SUBSCRIPTION STATUS", "count: \(statuses.count)"]
+            for status in statuses {
+                lines.append("state: \(String(describing: status.state))")
+                switch status.transaction {
+                case .verified(let tx):
+                    lines.append("statusTransaction: verified, product \(tx.productID)")
+                case .unverified(let tx, let error):
+                    lines.append("statusTransaction: unverified, product \(tx.productID) — \(String(describing: error))")
+                }
+            }
+            return lines.joined(separator: "\n")
+        } catch {
+            return "SUBSCRIPTION STATUS\nquery failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Safe, non-sensitive metadata from a single verified `Transaction` for the diagnostics
+    /// above. Deliberately omits the JWS payload, receipt data, `appAccountToken`, and any
+    /// Apple-ID-identifying field — only product/date/state facts needed to answer "is this
+    /// transaction for the right product, and does StoreKit consider it currently valid."
+    private func transactionDiagnosticDescription(_ tx: Transaction) -> String {
+        [
+            "PURCHASE TRANSACTION",
+            "product: \(tx.productID)",
+            "productType: \(String(describing: tx.productType))",
+            "bundleID: \(tx.bundleID)",
+            "environment: \(String(describing: tx.environment))",
+            "subscriptionGroupID: \(tx.subscriptionGroupID ?? "nil")",
+            "purchaseDate: \(tx.purchaseDate.formatted())",
+            "originalPurchaseDate: \(tx.originalPurchaseDate.formatted())",
+            "expires: \(tx.expirationDate?.formatted() ?? "nil")",
+            "revoked: \(tx.revocationDate != nil ? "yes (\(tx.revocationDate!.formatted()))" : "no")",
+            "isUpgraded: \(tx.isUpgraded)",
+            "ownershipType: \(String(describing: tx.ownershipType))",
+        ].joined(separator: "\n")
     }
 
     @MainActor
@@ -248,18 +372,20 @@ final class SubscriptionManager {
         // Ignore repeat taps while a purchase or restore is already in flight.
         guard purchaseState != .purchasing, purchaseState != .restoring else { return }
         purchaseState = .purchasing
-        // Clear the previous attempt's diagnostic the moment a new attempt begins, so a stale
+        // Clear the previous attempt's diagnostics the moment a new attempt begins, so a stale
         // result from an earlier tap is never misread as describing this one.
         lastPurchaseDiagnostic = nil
+        lastPurchaseTransactionDetail = nil
         print("[85Blends][StoreKit] Purchase requested: \(product.id)")
         do {
             switch try await product.purchase() {
             case .success(let verification):
                 print("[85Blends][StoreKit] Purchase result: success")
-                let verified = await handle(verification)
-                if verified {
+                if let tx = await handle(verification, source: "purchase") {
                     purchaseState = .succeeded
                     lastPurchaseDiagnostic = "Purchase result: success (transaction verified)"
+                    lastPurchaseTransactionDetail = transactionDiagnosticDescription(tx)
+                    print("[85Blends][StoreKit] \(lastPurchaseTransactionDetail ?? "")")
                 } else {
                     // The purchase completed but the transaction failed verification — this
                     // must never be reported as success (handle() already refused to grant
@@ -304,7 +430,7 @@ final class SubscriptionManager {
         print("[85Blends][StoreKit] Restore requested")
         do {
             try await AppStore.sync()
-            await refreshEntitlements()
+            await refreshEntitlements(source: "restore")
             // AppStore.sync() succeeding doesn't mean the user owns Pro — distinguish a fresh
             // restore from "already active" and from "nothing to restore" so the UI is honest.
             if isProStoreKit {
@@ -339,23 +465,29 @@ final class SubscriptionManager {
         return "\(type(of: error)): \(error.localizedDescription)"
     }
 
-    /// Returns whether the transaction was verified (and, if so, finished + entitlements
-    /// refreshed). Callers that need to reflect verification outcome in UI/diagnostic state
-    /// (see `purchase(_:)`) use the return value; the background `Transaction.updates` listener
-    /// in `init` ignores it (`@discardableResult`) since it has no UI state to update.
+    /// Returns the verified transaction (finished + entitlements refreshed), or `nil` if
+    /// verification failed. Callers that need the transaction itself for diagnostics (see
+    /// `purchase(_:)`) use the return value; the background `Transaction.updates` listener in
+    /// `init` ignores it (`@discardableResult`) since it has no UI state to update.
+    ///
+    /// Order is deliberately unchanged from before this investigation: verify → finish() →
+    /// refreshEntitlements(). Apple's documented semantics are that `finish()` only acknowledges
+    /// delivery of purchased content — it does not gate or remove the transaction from
+    /// `Transaction.currentEntitlements`, so this order is not a suspected cause and was not
+    /// altered; see the entitlement investigation report for why this wasn't touched.
     @MainActor
     @discardableResult
-    private func handle(_ result: VerificationResult<Transaction>) async -> Bool {
+    private func handle(_ result: VerificationResult<Transaction>, source: String) async -> Transaction? {
         guard case .verified(let tx) = result else {
             // Previously silent — an unverified transaction was dropped with zero trace. This
             // doesn't change behavior (an unverified transaction must never grant entitlement),
             // it just makes that correct-but-silent path visible in a device log.
-            print("[85Blends][StoreKit] Transaction verification failed — ignoring unverified transaction.")
-            return false
+            print("[85Blends][StoreKit] Transaction verification failed (source: \(source)) — ignoring unverified transaction.")
+            return nil
         }
-        print("[85Blends][StoreKit] Transaction verified: \(tx.productID)")
+        print("[85Blends][StoreKit] Transaction verified (source: \(source)): \(tx.productID)")
         await tx.finish()
-        await refreshEntitlements()
-        return true
+        await refreshEntitlements(source: source)
+        return tx
     }
 }
