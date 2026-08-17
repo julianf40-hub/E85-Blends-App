@@ -308,7 +308,7 @@ final class SubscriptionManager {
             "PURCHASE TRANSACTION",
             "product: \(tx.productID)",
             "productType: \(String(describing: tx.productType))",
-            "bundleID: \(tx.bundleID)",
+            "bundleID: \(tx.appBundleID)",
             "environment: \(String(describing: tx.environment))",
             "subscriptionGroupID: \(tx.subscriptionGroupID ?? "nil")",
             "purchaseDate: \(tx.purchaseDate.formatted())",
