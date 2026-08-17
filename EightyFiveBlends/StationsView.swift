@@ -2672,7 +2672,9 @@ private struct StationPriceUpdateContext: Identifiable {
             streetAddress: address,
             city: city,
             state: state,
-            zip: zipCode
+            zip: zipCode,
+            latitude: latitude,
+            longitude: longitude
         )
     }
 
