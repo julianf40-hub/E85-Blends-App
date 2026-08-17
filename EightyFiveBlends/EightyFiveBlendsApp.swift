@@ -123,16 +123,14 @@ struct EightyFiveBlendsApp: App {
                     automaticPumpDetectionService.attach(to: locationManager)
                 }
                 .task {
-                    // source tag is diagnostic-only (temporary entitlement investigation aid) —
-                    // see SubscriptionManager.refreshEntitlements(source:).
-                    await SubscriptionManager.shared.refreshEntitlements(source: "appLaunchTask")
+                    await SubscriptionManager.shared.refreshEntitlements()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,
                     // expiration, Family Sharing, etc.). refreshEntitlements() guards against
                     // overlapping runs, so this is safe alongside the launch .task above.
                     if newPhase == .active {
-                        Task { await SubscriptionManager.shared.refreshEntitlements(source: "scenePhaseActive") }
+                        Task { await SubscriptionManager.shared.refreshEntitlements() }
                     }
                 }
                 .onChange(of: themePreference) { _, _ in
