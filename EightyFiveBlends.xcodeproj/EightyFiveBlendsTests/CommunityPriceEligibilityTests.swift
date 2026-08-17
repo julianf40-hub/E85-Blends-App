@@ -22,11 +22,16 @@
 //  too permissive in a follow-up safety audit: it let a station be reported using nothing but a
 //  bare name — including LiveFuelStation.init(from:)'s literal "Unknown Station" fallback and a
 //  FuelStation created by FuelLogStore.updateStationIfNeeded from nothing but a typed name and
-//  price. canReport now requires genuine LOCATION-bearing data (street address, city, state,
-//  zip, or a real coordinate pair) — name alone is never sufficient — while
-//  CommunityStationKey.normalizedKey (which backs the read/display path, where a wrong or missed
-//  match is only a minor UI inaccuracy) intentionally keeps its original, more permissive rule.
-//  See CommunityPriceEligibility.canReport's doc comment for the full rationale.
+//  price. A SECOND pass (still "any single LOCATION field non-blank") was found to still be too
+//  permissive in a further safety audit: it let a station report using nothing but city ==
+//  "Phoenix", state == "AZ", or a bare zip code alone — narrows a search area, not one physical
+//  pump. canReport now requires either a real coordinate pair, or a street address PLUS enough
+//  locality context to disambiguate it (a zip code, or a city+state pair together — city or
+//  state alone still doesn't count, and neither does a street address with no locality context
+//  at all). CommunityStationKey.normalizedKey (which backs the read/display path, where a wrong
+//  or missed match is only a minor UI inaccuracy) intentionally keeps its original, more
+//  permissive rule throughout. See CommunityPriceEligibility.canReport's doc comment for the
+//  full rationale and exact expression.
 //
 //  Several of the fixed bug's required regression scenarios are covered here as pure tests; the
 //  remainder (network submission, community_stations upsert/reuse over the wire, Save Locally,
@@ -129,7 +134,7 @@ struct CommunityPriceEligibilityTests {
         // came from; see canReport_nameOnlyStation_isNotEligible below for the flip side — a
         // name-only station is *equally* ineligible no matter which call site it came from.
         let withLocation = CommunityPriceEligibility.canReport(
-            name: "Any Station", streetAddress: "1 Any St", city: "", state: "", zip: "",
+            name: "Any Station", streetAddress: "1 Any St", city: "", state: "", zip: "12345",
             latitude: nil, longitude: nil
         )
         #expect(withLocation == true)
@@ -182,12 +187,74 @@ struct CommunityPriceEligibilityTests {
         ) == false)
     }
 
-    @Test("A single non-blank LOCATION field (address, city, state, or zip alone) is enough to be eligible, even without a name")
-    func canReport_singleLocationField_isEligible() {
-        #expect(CommunityPriceEligibility.canReport(name: "", streetAddress: "123 Main St", city: "", state: "", zip: "", latitude: nil, longitude: nil) == true)
-        #expect(CommunityPriceEligibility.canReport(name: "", streetAddress: "", city: "Springfield", state: "", zip: "", latitude: nil, longitude: nil) == true)
-        #expect(CommunityPriceEligibility.canReport(name: "", streetAddress: "", city: "", state: "IL", zip: "", latitude: nil, longitude: nil) == true)
-        #expect(CommunityPriceEligibility.canReport(name: "", streetAddress: "", city: "", state: "", zip: "62701", latitude: nil, longitude: nil) == true)
+    // MARK: 4c. A single location field (city/state/zip alone) is ALSO not enough (second-round audit finding)
+
+    @Test("City alone is NOT eligible — 'Phoenix' narrows a metro area, not one physical pump")
+    func canReport_cityOnly_isNotEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "", city: "Phoenix", state: "", zip: "", latitude: nil, longitude: nil
+        ) == false)
+    }
+
+    @Test("State alone is NOT eligible — 'AZ' narrows to an entire state")
+    func canReport_stateOnly_isNotEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "", city: "", state: "AZ", zip: "", latitude: nil, longitude: nil
+        ) == false)
+    }
+
+    @Test("ZIP alone is NOT eligible — a zip code still covers many possible stations")
+    func canReport_zipOnly_isNotEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "", city: "", state: "", zip: "85001", latitude: nil, longitude: nil
+        ) == false)
+    }
+
+    @Test("Name plus city only, or name plus state only, is NOT eligible — adding a name doesn't fix an under-specified location")
+    func canReport_nameWithCityOrStateOnly_isNotEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "Chevron", streetAddress: "", city: "Phoenix", state: "", zip: "", latitude: nil, longitude: nil
+        ) == false)
+        #expect(CommunityPriceEligibility.canReport(
+            name: "Chevron", streetAddress: "", city: "", state: "AZ", zip: "", latitude: nil, longitude: nil
+        ) == false)
+    }
+
+    @Test("A street address with no zip and no city+state pair is NOT eligible — a bare street name alone can exist in many different cities/states")
+    func canReport_streetAddressAloneWithNoLocalityContext_isNotEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "123 Main St", city: "", state: "", zip: "", latitude: nil, longitude: nil
+        ) == false)
+        // City alone (no state) paired with the address still isn't enough — city and state must
+        // be present together, not just one of them.
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "123 Main St", city: "Springfield", state: "", zip: "", latitude: nil, longitude: nil
+        ) == false)
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "123 Main St", city: "", state: "IL", zip: "", latitude: nil, longitude: nil
+        ) == false)
+    }
+
+    @Test("A street address plus a zip code is eligible, even with no city/state text at all")
+    func canReport_streetAddressPlusZip_isEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "123 Main St", city: "", state: "", zip: "62701", latitude: nil, longitude: nil
+        ) == true)
+    }
+
+    @Test("A street address plus city and state together is eligible, even with no zip code")
+    func canReport_streetAddressPlusCityAndState_isEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "", latitude: nil, longitude: nil
+        ) == true)
+    }
+
+    @Test("A fully populated street address (address, city, state, and zip together) is eligible")
+    func canReport_fullAddress_isEligible() {
+        #expect(CommunityPriceEligibility.canReport(
+            name: "Chevron - Team C B", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: nil, longitude: nil
+        ) == true)
     }
 
     @Test("A real coordinate pair alone is enough to be eligible, even with no name or textual address")

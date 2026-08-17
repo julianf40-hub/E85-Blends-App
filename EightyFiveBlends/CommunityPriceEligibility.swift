@@ -74,8 +74,17 @@ enum CommunityPriceEligibility {
     /// DISPLAY (looking up whether a sparse local station happens to match an existing community
     /// price — a wrong/missed match there is just a minor UI inaccuracy). Reporting is a WRITE
     /// that can create or attach to a shared `community_stations` row every user of the app may
-    /// see, so it requires genuine location-bearing information — a street address, city, state,
-    /// zip, or a real coordinate pair — not just a name, however specific that name looks.
+    /// see, so it requires genuine location-bearing information — not just a name, however
+    /// specific that name looks.
+    ///
+    /// A single location field alone is ALSO not sufficient — city, state, or zip in isolation
+    /// (e.g. city == "Phoenix", state == "AZ", or a bare zip code) narrows a search area, not a
+    /// single physical pump, and neither does a street address with no locality context at all
+    /// (many different cities/states share street names like "Main St"). The rule instead
+    /// requires either:
+    /// - a real (both-present) coordinate pair, which pins one physical point directly, or
+    /// - a street address PLUS enough locality context to disambiguate it: a zip code, or a
+    ///   city+state pair together (city or state alone doesn't count).
     ///
     /// Two real, already-shipped station-creation paths make this distinction necessary, not
     /// theoretical:
@@ -89,10 +98,11 @@ enum CommunityPriceEligibility {
     ///   that name doesn't already match a saved station — address/city/state/zipCode all take
     ///   `FuelStation`'s `""` default, latitude/longitude stay `nil`. That station is reachable
     ///   from Update Price exactly like any other saved station.
-    /// Without this stricter rule, a bare brand string like "Chevron", "Phoenix", or the literal
-    /// "Unknown Station" fallback would be treated as enough to safely identify a specific
-    /// physical pump, when it plainly is not — it could collide with, or be mistaken for, any
-    /// other station sharing that name anywhere.
+    /// A genuine Nearby-search result and a properly-addressed manual station both carry their
+    /// street address, city, state, zip, and coordinates together as one unit (see
+    /// `saveLiveStation`/`upsertLocalStation` in StationsView.swift, which copy the full source
+    /// record rather than a subset), so this stricter rule does not regress legitimate reporting
+    /// — only the genuinely ambiguous partial-identity cases above lose eligibility.
     static func canReport(
         name: String,
         streetAddress: String,
@@ -102,10 +112,14 @@ enum CommunityPriceEligibility {
         latitude: Double?,
         longitude: Double?
     ) -> Bool {
-        let hasLocationText = [streetAddress, city, state, zip].contains { field in
-            CommunityStationKey.normalizedText(field).isEmpty == false
-        }
-        let hasCoordinate = latitude != nil && longitude != nil
-        return hasLocationText || hasCoordinate
+        let hasValidCoordinate = latitude != nil && longitude != nil
+
+        let hasStreetAddress = CommunityStationKey.normalizedText(streetAddress).isEmpty == false
+        let hasZip = CommunityStationKey.normalizedText(zip).isEmpty == false
+        let hasCityAndState = CommunityStationKey.normalizedText(city).isEmpty == false
+            && CommunityStationKey.normalizedText(state).isEmpty == false
+        let hasSufficientLocality = hasStreetAddress && (hasZip || hasCityAndState)
+
+        return hasValidCoordinate || hasSufficientLocality
     }
 }
