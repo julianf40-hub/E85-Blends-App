@@ -188,6 +188,7 @@ struct ProUpgradeView: View {
             }
 
             purchaseStateRow
+            purchaseDiagnosticRow
 
             // Restore stays visible in every paywall state (including when already Pro), as
             // App Review expects. Tapping while Pro just re-verifies and confirms active status.
@@ -226,6 +227,31 @@ struct ProUpgradeView: View {
                 .buttonStyle(.plain)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// TEMPORARY (TestFlight investigation aid — see `SubscriptionManager.lastPurchaseDiagnostic`).
+    /// Surfaces the literal StoreKit outcome of the most recent purchase attempt directly on the
+    /// paywall, since the person validating this build has no Xcode console attached. Deliberately
+    /// separate from `purchaseStateRow`'s real user-facing messaging — low-key styling, selectable
+    /// text so it can be copied into a bug report, and never shown until a purchase attempt has
+    /// actually completed. Remove this once the split-second-purchase-failure investigation
+    /// concludes; not intended to ship in a real release.
+    @ViewBuilder
+    private var purchaseDiagnosticRow: some View {
+        if let diagnostic = manager.lastPurchaseDiagnostic {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Purchase diagnostic (temporary)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                Text(diagnostic)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
         }
     }
 

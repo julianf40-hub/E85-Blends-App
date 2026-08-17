@@ -131,6 +131,21 @@ final class SubscriptionManager {
     }
     private(set) var purchaseState: PurchaseState = .idle
 
+    // MARK: - Temporary purchase diagnostic (TestFlight investigation aid)
+    //
+    // `purchaseState` alone can't say WHY a purchase attempt ended — `.userCancelled` and
+    // `.pending` both collapse to `.idle`, indistinguishable on screen from "nothing happened."
+    // The person validating this build doesn't have Xcode/console access, so this captures the
+    // literal StoreKit outcome (result case, or thrown error type/description — never receipt
+    // or transaction payload data) directly on the device. Set only from the purchase() call
+    // this manager itself drives — never from the background Transaction.updates listener or
+    // from refreshEntitlements(), so it can't be silently overwritten by unrelated concurrent
+    // StoreKit activity while the user is trying to read it.
+    //
+    // TEMPORARY: remove once the split-second "Processing your purchase…" → back-to-normal
+    // TestFlight regression is root-caused and fixed. Not intended to ship long-term.
+    private(set) var lastPurchaseDiagnostic: String?
+
     // MARK: - Private
     private var transactionListenerTask: Task<Void, Error>?
     private var isRefreshing = false
@@ -175,6 +190,10 @@ final class SubscriptionManager {
             }
         }
         isProStoreKit = hasPro
+        // Always-on (not #if DEBUG-gated), matching the loadProducts() precedent below: this is
+        // a critical commerce path and a future TestFlight validation needs this in the device
+        // console regardless of build configuration. No receipt/transaction payload is logged.
+        print("[85Blends][StoreKit] Entitlement refreshed: isPro=\(hasPro)")
     }
 
     @MainActor
@@ -185,15 +204,21 @@ final class SubscriptionManager {
             isLoadingProducts = false
             hasAttemptedProductLoad = true
         }
+        print("[85Blends][StoreKit] Loading products… requested IDs: \(Self.allProductIDs)")
         do {
             let products = try await Product.products(for: Self.allProductIDs)
             availableProducts = products
+            print("[85Blends][StoreKit] Products returned: \(products.count)")
             if products.isEmpty {
                 // Empty result with no error means the product IDs returned nothing from
                 // App Store Connect. Most common causes: the product ID in code doesn't
                 // exactly match what's configured in App Store Connect, or the product
                 // is not yet in "Ready to Submit" / approved status.
                 print("[85Blends][StoreKit] loadProducts: 0 products returned for IDs: \(Self.allProductIDs). Verify the product IDs exactly match App Store Connect and the product status is Ready to Submit or approved.")
+            } else {
+                for product in products {
+                    print("[85Blends][StoreKit] Loaded product: \(product.id) — \(product.displayName) — \(product.displayPrice)")
+                }
             }
         } catch {
             availableProducts = []
@@ -207,7 +232,14 @@ final class SubscriptionManager {
     /// Purchases the live `com.85blends.subscription.monthly` product via StoreKit.
     @MainActor
     func purchasePro() async {
-        guard let product = monthlyProduct else { return }
+        guard let product = monthlyProduct else {
+            // The paywall's unlockButton is already disabled whenever canPurchase is false, so
+            // this guard should be unreachable from a real tap — but log it in case it's ever
+            // hit anyway (e.g. a future call site that doesn't check canPurchase first), so a
+            // "tap did nothing" report is never a total dead end in the console.
+            print("[85Blends][StoreKit] Purchase requested but no product is loaded — ignoring tap (canPurchase=false).")
+            return
+        }
         await purchase(product)
     }
 
@@ -216,18 +248,50 @@ final class SubscriptionManager {
         // Ignore repeat taps while a purchase or restore is already in flight.
         guard purchaseState != .purchasing, purchaseState != .restoring else { return }
         purchaseState = .purchasing
+        // Clear the previous attempt's diagnostic the moment a new attempt begins, so a stale
+        // result from an earlier tap is never misread as describing this one.
+        lastPurchaseDiagnostic = nil
+        print("[85Blends][StoreKit] Purchase requested: \(product.id)")
         do {
             switch try await product.purchase() {
             case .success(let verification):
-                await handle(verification)
-                purchaseState = .succeeded
-            case .userCancelled, .pending:
+                print("[85Blends][StoreKit] Purchase result: success")
+                let verified = await handle(verification)
+                if verified {
+                    purchaseState = .succeeded
+                    lastPurchaseDiagnostic = "Purchase result: success (transaction verified)"
+                } else {
+                    // The purchase completed but the transaction failed verification — this
+                    // must never be reported as success (handle() already refused to grant
+                    // entitlement in this case; previously purchaseState was set to .succeeded
+                    // here unconditionally regardless of verification outcome, which could show
+                    // a false "success" UI state even when Pro was never actually granted).
+                    print("[85Blends][StoreKit] Purchase result: success, but transaction verification failed")
+                    purchaseState = .failed("We couldn't verify your purchase. Please try again or contact support.")
+                    lastPurchaseDiagnostic = "StoreKit result: success, but transaction verification failed"
+                }
+            case .userCancelled:
+                print("[85Blends][StoreKit] Purchase result: userCancelled")
                 purchaseState = .idle
+                lastPurchaseDiagnostic = "StoreKit result: userCancelled"
+            case .pending:
+                print("[85Blends][StoreKit] Purchase result: pending")
+                purchaseState = .idle
+                lastPurchaseDiagnostic = "StoreKit result: pending (e.g. Ask to Buy approval required)"
             @unknown default:
+                print("[85Blends][StoreKit] Purchase result: unrecognized result case")
                 purchaseState = .idle
+                lastPurchaseDiagnostic = "StoreKit result: unrecognized case (@unknown default)"
             }
         } catch {
+            // Previously this error only ever reached purchaseState (UI-only) and never the
+            // console — a real TestFlight device log had no way to see it. Now logged (and
+            // surfaced on-screen) in all builds, matching the loadProducts() precedent above.
+            let description = errorDiagnosticDescription(error)
+            print("[85Blends][StoreKit] Purchase error type: \(type(of: error))")
+            print("[85Blends][StoreKit] Purchase error: \(description)")
             purchaseState = .failed(error.localizedDescription)
+            lastPurchaseDiagnostic = "StoreKit error: \(description)"
         }
     }
 
@@ -237,6 +301,7 @@ final class SubscriptionManager {
         guard purchaseState != .restoring, purchaseState != .purchasing else { return }
         let wasProBefore = isProStoreKit
         purchaseState = .restoring
+        print("[85Blends][StoreKit] Restore requested")
         do {
             try await AppStore.sync()
             await refreshEntitlements()
@@ -244,20 +309,53 @@ final class SubscriptionManager {
             // restore from "already active" and from "nothing to restore" so the UI is honest.
             if isProStoreKit {
                 purchaseState = wasProBefore ? .info("85Blends Pro is active.") : .restored
+                print("[85Blends][StoreKit] Restore result: \(wasProBefore ? "already active" : "restored")")
             } else {
                 purchaseState = .info("No active subscription found.")
+                print("[85Blends][StoreKit] Restore result: no active subscription found")
             }
         } catch {
+            print("[85Blends][StoreKit] Restore failed: \(error.localizedDescription)")
             purchaseState = .failed("We couldn't restore your purchases. Please try again.")
         }
     }
 
     // MARK: - Private helpers
 
+    /// Compile-safe error categorization for diagnostics only — never throws, never guesses at
+    /// enum cases that may not exist in this SDK. Tries StoreKit's two documented `purchase()`
+    /// error types (`StoreKitError`, `Product.PurchaseError`) for a readable case name via
+    /// `String(describing:)` (which works regardless of the exact case set, so this can't fail
+    /// to compile or crash if a future/unlisted case is returned); falls back to the error's own
+    /// type name + description for anything else. Deliberately contains no receipt, transaction,
+    /// JWS, or Apple ID data — only case names, descriptions, and localized messages.
+    private func errorDiagnosticDescription(_ error: Error) -> String {
+        if let storeKitError = error as? StoreKitError {
+            return "StoreKitError.\(String(describing: storeKitError))"
+        }
+        if let purchaseError = error as? Product.PurchaseError {
+            return "PurchaseError.\(String(describing: purchaseError))"
+        }
+        return "\(type(of: error)): \(error.localizedDescription)"
+    }
+
+    /// Returns whether the transaction was verified (and, if so, finished + entitlements
+    /// refreshed). Callers that need to reflect verification outcome in UI/diagnostic state
+    /// (see `purchase(_:)`) use the return value; the background `Transaction.updates` listener
+    /// in `init` ignores it (`@discardableResult`) since it has no UI state to update.
     @MainActor
-    private func handle(_ result: VerificationResult<Transaction>) async {
-        guard case .verified(let tx) = result else { return }
+    @discardableResult
+    private func handle(_ result: VerificationResult<Transaction>) async -> Bool {
+        guard case .verified(let tx) = result else {
+            // Previously silent — an unverified transaction was dropped with zero trace. This
+            // doesn't change behavior (an unverified transaction must never grant entitlement),
+            // it just makes that correct-but-silent path visible in a device log.
+            print("[85Blends][StoreKit] Transaction verification failed — ignoring unverified transaction.")
+            return false
+        }
+        print("[85Blends][StoreKit] Transaction verified: \(tx.productID)")
         await tx.finish()
         await refreshEntitlements()
+        return true
     }
 }
