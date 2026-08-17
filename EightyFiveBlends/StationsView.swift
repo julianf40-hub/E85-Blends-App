@@ -1642,9 +1642,7 @@ struct StationsView: View {
     }
 
     private func normalizedStationText(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        CommunityStationKey.normalizedText(value)
     }
 
     private func normalizedStationKey(for station: FuelStation) -> String? {
@@ -1674,19 +1672,13 @@ struct StationsView: View {
         state: String,
         zip: String
     ) -> String? {
-        let components = [
-            normalizedStationText(name),
-            normalizedStationText(streetAddress),
-            normalizedStationText(city),
-            normalizedStationText(state),
-            normalizedStationText(zip)
-        ]
-
-        guard components.contains(where: { $0.isEmpty == false }) else {
-            return nil
-        }
-
-        return components.joined(separator: "|")
+        CommunityStationKey.normalizedKey(
+            name: name,
+            streetAddress: streetAddress,
+            city: city,
+            state: state,
+            zip: zip
+        )
     }
 
     private func communitySummary(for station: FuelStation) -> CommunityPriceSummary? {
@@ -1846,9 +1838,9 @@ struct StationsView: View {
         }
         refreshCommunityPricePreviews()
 
-        guard reportToCommunity, context.isLiveDiscovered else {
+        guard reportToCommunity, context.canReportToCommunity else {
             if reportToCommunity {
-                infoMessage = "Price saved locally. Community reporting is only available for stations found through nearby search."
+                infoMessage = "Price saved locally. This station doesn't have enough location information to report to the community yet."
             }
             dismissPriceUpdateSheet()
             return
@@ -2642,16 +2634,7 @@ private struct StationPriceUpdateContext: Identifiable {
     let zipCode: String
     let latitude: Double?
     let longitude: Double?
-    // true only when this context was built from a live NREL search result.
-    // Local/manual FuelStation records carry false regardless of how they were created,
-    // since the model has no source marker and we cannot reliably distinguish them.
-    let isLiveDiscovered: Bool
 
-    // TODO: FuelStation has no source marker, so NREL-saved and legacy manual stations are
-    // indistinguishable here. isLiveDiscovered is conservatively false for all saved records.
-    // Future migration: add a StationSource enum field (e.g. .nrelSearch / .manual) to
-    // FuelStation. Once available, set isLiveDiscovered = (station.source == .nrelSearch) so
-    // NREL-backed saved stations regain community price reporting while manual ones stay local.
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
         StationPriceUpdateContext(
             station: station,
@@ -2661,8 +2644,7 @@ private struct StationPriceUpdateContext: Identifiable {
             state: station.state,
             zipCode: station.zipCode,
             latitude: station.latitude,
-            longitude: station.longitude,
-            isLiveDiscovered: false
+            longitude: station.longitude
         )
     }
 
@@ -2675,8 +2657,22 @@ private struct StationPriceUpdateContext: Identifiable {
             state: station.state,
             zipCode: station.zip,
             latitude: station.latitude == 0 ? nil : station.latitude,
-            longitude: station.longitude == 0 ? nil : station.longitude,
-            isLiveDiscovered: true
+            longitude: station.longitude == 0 ? nil : station.longitude
+        )
+    }
+
+    /// Whether this station carries enough identifying information to safely report an E85
+    /// price to the community feed. A DATA-sufficiency check, not a provenance check — a saved
+    /// station is exactly as reportable as a freshly-discovered one whenever it can be
+    /// identified, matching the same rule that already determines whether this station can
+    /// display an existing community price. See `CommunityPriceEligibility`.
+    var canReportToCommunity: Bool {
+        CommunityPriceEligibility.canReport(
+            name: stationName,
+            streetAddress: address,
+            city: city,
+            state: state,
+            zip: zipCode
         )
     }
 
@@ -2782,7 +2778,7 @@ private struct StationPriceUpdateSheet: View {
                             .buttonStyle(.plain)
                             .disabled(isSubmittingCommunityPrice)
 
-                            if context.isLiveDiscovered {
+                            if context.canReportToCommunity {
                                 Button(action: saveAndReportAction) {
                                     HStack(spacing: 8) {
                                         if isSubmittingCommunityPrice {
@@ -2801,7 +2797,7 @@ private struct StationPriceUpdateSheet: View {
                                 .buttonStyle(.plain)
                                 .disabled(isSubmittingCommunityPrice)
                             } else {
-                                Text("Community price reporting is available for stations found through nearby search.")
+                                Text("This station doesn't have enough location information for community reporting yet.")
                                     .font(.caption)
                                     .foregroundStyle(AppTheme.Colors.textSecondary)
                                     .multilineTextAlignment(.center)
