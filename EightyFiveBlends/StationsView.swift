@@ -54,6 +54,18 @@ struct StationsView: View {
     @State private var communityPriceSummaries: [String: CommunityPriceSummary] = [:]
     @State private var communityPriceSyncMessage: String?
     @State private var communityPriceTask: Task<Void, Never>?
+    // Dedicated presentation state for the post-submission celebration — deliberately separate
+    // from `infoMessage` (the generic error/info alert) so a successful community report can
+    // never be confused with, or collide with, an unrelated info/error alert. Set only at the
+    // exact point a Save & Report submission is confirmed to have succeeded remotely; see
+    // `presentCommunityReportSuccess()`/`savePriceUpdate`. Identical for Nearby- and
+    // Saved-Station-originated reports — this state carries no station provenance. The pure
+    // present/dismiss transitions live in CommunityReportCelebrationLifecycle so they're directly
+    // unit-testable; see CommunityReportCelebrationPresentationTests.swift.
+    @State private var communityReportCelebration = CommunityReportCelebrationLifecycle()
+    // Tracks the pending 2s auto-dismiss so a manual "Awesome" tap, a new price-update flow, or
+    // this view disappearing can all cancel it cleanly with no leaked Task and no double dismiss.
+    @State private var communityReportSuccessDismissTask: Task<Void, Never>?
 
     // Trip-planner / typed-location search
     @State private var locationSearchText = ""
@@ -220,6 +232,7 @@ struct StationsView: View {
         .onDisappear {
             liveSearchTask?.cancel()
             communityPriceTask?.cancel()
+            communityReportSuccessDismissTask?.cancel()
             isSearchingLive = false
             pendingLiveSearch = false
         }
@@ -285,13 +298,26 @@ struct StationsView: View {
         } message: {
             Text("Location access is turned off. Enable it in Settings → Privacy → Location Services to find E85 stations near you.")
         }
-        .alert(infoAlertTitle, isPresented: infoAlertBinding) {
+        .alert("Stations", isPresented: infoAlertBinding) {
             Button("OK", role: .cancel) {
                 infoMessage = nil
             }
         } message: {
             Text(infoMessage ?? "")
         }
+        .overlay {
+            // Presentation-only: never touches Community Price persistence, local price-save
+            // behavior, or refresh semantics — those already happened before this is shown. Lives
+            // above the sheet's presenting content, not inside the sheet itself, since the price
+            // update sheet is already dismissed (see savePriceUpdate) by the time this can show.
+            if communityReportCelebration.isPresented {
+                CommunityReportSuccessOverlay {
+                    dismissCommunityReportSuccess()
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: communityReportCelebration.isPresented)
     }
 
     // Automatic Pump Detection — opt-in, free for all users (not a Pro feature; see the
@@ -1334,14 +1360,6 @@ struct StationsView: View {
         )
     }
 
-    private var infoAlertTitle: String {
-        infoMessage == thankYouCommunityReportMessage ? "Thank You! 🙌" : "Stations"
-    }
-
-    private var thankYouCommunityReportMessage: String {
-        "Your E85 price report is live and helps other drivers in your area find the best price."
-    }
-
     private func updateStation(_ station: FuelStation, from draft: StationDraft) {
         if draft.lastKnownE85Price != 0, StationDataValidation.isValidPrice(draft.lastKnownE85Price) == false {
             infoMessage = "Enter a valid E85 price greater than $0 (or leave it at $0 if unknown)."
@@ -1792,6 +1810,8 @@ struct StationsView: View {
     }
 
     private func beginPriceUpdate(for station: FuelStation) {
+        // A celebration from a previous report shouldn't linger into an unrelated new operation.
+        dismissCommunityReportSuccess()
         priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
         priceNoteInput = station.notes
         priceValidationMessage = nil
@@ -1799,6 +1819,8 @@ struct StationsView: View {
     }
 
     private func beginPriceUpdate(for station: LiveFuelStation) {
+        // Same as the saved-station overload above — Nearby and Saved share identical handling.
+        dismissCommunityReportSuccess()
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
@@ -1811,6 +1833,30 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+    }
+
+    /// The one and only call site for showing the celebration — invoked exactly where
+    /// `savePriceUpdate` has already confirmed the remote community submission succeeded, never
+    /// earlier in that async operation. Fires the success haptic immediately before presenting,
+    /// matching the required "haptic → overlay presents" sequence.
+    private func presentCommunityReportSuccess() {
+        communityReportSuccessDismissTask?.cancel()
+        AppHaptics.success()
+        communityReportCelebration.present()
+        communityReportSuccessDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard Task.isCancelled == false else { return }
+            dismissCommunityReportSuccess()
+        }
+    }
+
+    /// Cleanly cancels any pending auto-dismiss — called on manual "Awesome" tap, on auto-dismiss
+    /// itself, when this view disappears, and when a new price-update flow begins — so the
+    /// celebration can never double-dismiss or survive into an unrelated station operation.
+    private func dismissCommunityReportSuccess() {
+        communityReportSuccessDismissTask?.cancel()
+        communityReportSuccessDismissTask = nil
+        communityReportCelebration.dismiss()
     }
 
     private func savePriceUpdate(for context: StationPriceUpdateContext, reportToCommunity: Bool) {
@@ -1849,7 +1895,11 @@ struct StationsView: View {
         isSubmittingCommunityPrice = true
 
         Task {
-            let message: String
+            // nil only on the success path — the community submission is confirmed to have
+            // succeeded (both requests below completed without throwing) at the point this stays
+            // nil. Everything downstream of the do/catch branches on exactly this, so the
+            // celebration can only ever be triggered by a genuine, already-confirmed success.
+            var failureMessage: String?
 
             do {
                 let service = try CommunityPriceService()
@@ -1873,23 +1923,30 @@ struct StationsView: View {
                     notes: trimmedNote.isEmpty ? nil : trimmedNote,
                     appVersion: appVersionString
                 )
-                message = thankYouCommunityReportMessage
             } catch {
 #if DEBUG
                 print("Community price report failed:", error)
 #endif
                 if let serviceError = error as? CommunityPriceServiceError,
                    case .notConfigured = serviceError {
-                    message = "Price saved locally. Community reporting is not available right now."
+                    failureMessage = "Price saved locally. Community reporting is not available right now."
                 } else {
-                    message = "Price saved locally. Community report could not be submitted — please try again later."
+                    failureMessage = "Price saved locally. Community report could not be submitted — please try again later."
                 }
             }
 
             await MainActor.run {
-                infoMessage = message
                 refreshCommunityPricePreviews()
                 dismissPriceUpdateSheet()
+                let shouldCelebrate = CommunityReportCelebrationDecision.shouldCelebrate(
+                    reportToCommunity: reportToCommunity,
+                    submissionSucceeded: failureMessage == nil
+                )
+                if shouldCelebrate {
+                    presentCommunityReportSuccess()
+                } else if let failureMessage {
+                    infoMessage = failureMessage
+                }
             }
         }
     }
