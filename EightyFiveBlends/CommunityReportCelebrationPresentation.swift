@@ -30,6 +30,20 @@ enum CommunityReportCelebrationDecision {
     static func shouldCelebrate(reportToCommunity: Bool, submissionSucceeded: Bool) -> Bool {
         reportToCommunity && submissionSucceeded
     }
+
+    /// Whether the immediate local-save success haptic — fired right after `modelContext.save()`
+    /// succeeds, before any community submission is attempted or its outcome is known — should
+    /// fire. True only for Save Locally.
+    ///
+    /// For Save & Report, success feedback is deferred entirely to `shouldCelebrate` above: firing
+    /// this haptic unconditionally as well produced a double haptic on a successful report, and a
+    /// misleading success haptic when the station turned out to be ineligible to report or the
+    /// remote submission failed — neither of which should ever feel like a success. This and
+    /// `shouldCelebrate` are mutually exclusive by construction (one requires `reportToCommunity
+    /// == false`, the other requires it `== true`), so a single submission can never fire both.
+    static func shouldFireLocalSaveHaptic(reportToCommunity: Bool) -> Bool {
+        reportToCommunity == false
+    }
 }
 
 /// Pure present/dismiss transitions for the celebration's lifecycle. StationsView's

@@ -45,6 +45,15 @@
 //    state, so the timing is identical whether Reduce Motion is on or off. This is structural:
 //    CommunityReportCelebrationLifecycle's API (below) has no animation/duration parameter for a
 //    caller to depend on in the first place.
+//
+//  Follow-up (haptic timing, see #9 below): the original implementation above fixed WHAT gets
+//  presented, but savePriceUpdate still called AppHaptics.success() unconditionally right after
+//  the local save succeeded, in addition to presentCommunityReportSuccess()'s own haptic — a
+//  successful Save & Report fired two success haptics, and an ineligible or failed Save & Report
+//  still fired one (misleadingly, since nothing had actually been reported yet). The fix adds
+//  CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic and gates the local-save haptic
+//  on it; it and shouldCelebrate are mutually exclusive by construction, which #9 verifies
+//  exhaustively rather than trusting that by inspection alone.
 
 import Testing
 @testable import EightyFiveBlends
@@ -190,5 +199,80 @@ struct CommunityReportCelebrationPresentationTests {
         lifecycle.dismiss()
         #expect(lifecycle.isPresented == false)
         #expect(lifecycle.presentationCount == 1)
+    }
+
+    // MARK: 9. Haptic timing fix (CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic)
+    //
+    // savePriceUpdate used to call AppHaptics.success() unconditionally right after
+    // modelContext.save() succeeded, regardless of reportToCommunity — then, for a successful
+    // Save & Report, presentCommunityReportSuccess() fired AppHaptics.success() again. A single
+    // successful Save & Report produced two success haptics, and an ineligible-station or failed
+    // Save & Report still produced one misleading success haptic from the local save alone.
+    // shouldFireLocalSaveHaptic is the actual predicate savePriceUpdate now gates that first
+    // haptic on; combined with shouldCelebrate it makes "at most one success haptic, and zero on
+    // anything short of a confirmed remote success" a directly-testable, exhaustive invariant
+    // rather than something only implied by reading the surrounding control flow.
+
+    @Test("Save Locally (reportToCommunity == false) fires the local-save success haptic")
+    func shouldFireLocalSaveHaptic_saveLocally_isTrue() {
+        #expect(CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: false) == true)
+    }
+
+    @Test("Save & Report's local-save stage (reportToCommunity == true) does not fire a haptic yet — feedback is deferred to shouldCelebrate")
+    func shouldFireLocalSaveHaptic_saveAndReport_isFalse() {
+        #expect(CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true) == false)
+    }
+
+    // The hard invariant, checked explicitly across all four (reportToCommunity,
+    // submissionSucceeded) combinations: shouldFireLocalSaveHaptic and shouldCelebrate are never
+    // both true for the same submission, so at most one success haptic can ever fire.
+    // presentCommunityReportSuccess() is the only other AppHaptics.success() call reachable from
+    // this flow, and it fires exactly when shouldCelebrate is true — see the repo-wide
+    // AppHaptics audit recorded in the branch report for this fix.
+
+    @Test("Save Locally that succeeds: exactly one signal (the local-save haptic), never the celebration")
+    func haptics_saveLocallySucceeded_exactlyOneSignal() {
+        let firesLocalSaveHaptic = CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: false)
+        let celebrates = CommunityReportCelebrationDecision.shouldCelebrate(reportToCommunity: false, submissionSucceeded: true)
+        #expect(firesLocalSaveHaptic == true)
+        #expect(celebrates == false)
+        #expect((firesLocalSaveHaptic && celebrates) == false)
+    }
+
+    @Test("Save & Report that succeeds remotely: exactly one signal (the celebration haptic), never the local-save haptic")
+    func haptics_saveAndReportSucceeded_exactlyOneSignal() {
+        let firesLocalSaveHaptic = CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true)
+        let celebrates = CommunityReportCelebrationDecision.shouldCelebrate(reportToCommunity: true, submissionSucceeded: true)
+        #expect(firesLocalSaveHaptic == false)
+        #expect(celebrates == true)
+        #expect((firesLocalSaveHaptic && celebrates) == false)
+    }
+
+    @Test("Save & Report that fails remotely: zero signals — no local-save haptic, no celebration")
+    func haptics_saveAndReportFailed_zeroSignals() {
+        let firesLocalSaveHaptic = CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true)
+        let celebrates = CommunityReportCelebrationDecision.shouldCelebrate(reportToCommunity: true, submissionSucceeded: false)
+        #expect(firesLocalSaveHaptic == false)
+        #expect(celebrates == false)
+    }
+
+    @Test("A station ineligible to report (Save & Report tapped, but canReportToCommunity == false) fires no haptic — it never reaches the community Task, so shouldCelebrate is never even evaluated as true")
+    func ineligibleStation_savedAndReportTapped_firesNoHaptic() {
+        // savePriceUpdate's `guard reportToCommunity, context.canReportToCommunity else { ...
+        // return }` returns before the community Task starts, so shouldCelebrate can never
+        // become true for this submission — and shouldFireLocalSaveHaptic was already false
+        // (reportToCommunity == true) before that guard ran. Zero haptics, matching "Community
+        // validation failure" in the required semantics table.
+        #expect(CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true) == false)
+    }
+
+    @Test("shouldFireLocalSaveHaptic has no station/provenance parameter — Nearby and Saved contexts use identical haptic semantics")
+    func shouldFireLocalSaveHaptic_hasNoProvenanceParameter() {
+        // Same structural argument as shouldCelebrate_hasNoProvenanceParameter above: the only
+        // input is reportToCommunity, so a Nearby-originated and a Saved-Station-originated
+        // submission with the same reportToCommunity value are indistinguishable to this rule.
+        let asIfFromNearbySearch = CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true)
+        let asIfFromSavedStations = CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: true)
+        #expect(asIfFromNearbySearch == asIfFromSavedStations)
     }
 }

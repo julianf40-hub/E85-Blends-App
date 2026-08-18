@@ -1875,7 +1875,13 @@ struct StationsView: View {
         _ = upsertLocalStation(for: context, price: roundedLocalPrice, note: trimmedNote)
         do {
             try modelContext.save()
-            AppHaptics.success()
+            // Save Locally gets its one success haptic right here. Save & Report defers success
+            // feedback entirely to presentCommunityReportSuccess() below, which fires the single
+            // haptic only once the remote community submission is confirmed to have succeeded —
+            // see CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic's doc comment.
+            if CommunityReportCelebrationDecision.shouldFireLocalSaveHaptic(reportToCommunity: reportToCommunity) {
+                AppHaptics.success()
+            }
         } catch {
             #if DEBUG
             print("[85Blends] StationsView: price update save failed:", error)
