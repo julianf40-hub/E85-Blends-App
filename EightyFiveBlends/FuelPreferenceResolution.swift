@@ -55,9 +55,11 @@ enum VehiclePreferenceSemantics {
 }
 
 /// True only for a finite value in the meaningful 0...100 ethanol-percent range. Used
-/// throughout this file so an explicit 0 (a legitimate "pure gasoline" reading) is always
-/// treated as present data, while NaN/±infinity/out-of-range values are treated as absent.
-private func isValidEthanolPercent(_ value: Double) -> Bool {
+/// throughout this file (and, deliberately not `private`, by CalculatorView's own Fuel Log
+/// history scan) so an explicit 0 (a legitimate "pure gasoline" reading) is always treated as
+/// present data, while NaN/±infinity/out-of-range values are treated as absent. This is the one
+/// canonical ethanol-percent validity check in the app — do not reimplement it at a call site.
+func isValidEthanolPercent(_ value: Double) -> Bool {
     value.isFinite && (0...100).contains(value)
 }
 
@@ -123,14 +125,79 @@ enum TankSizeResolution {
     }
 }
 
+/// Decides whether it's safe to associate a vehicle with its Fuel Log history through the
+/// legacy `FuelLogEntry.vehicleName == VehicleProfile.nickname` relationship — the ONLY
+/// relationship that exists between the two (no `@Relationship`, no stable ID match; see
+/// GarageView.propagateVehicleRename, which keeps FuelLogEntry.vehicleName in sync with the
+/// vehicle's nickname on rename using the exact same exact-string comparison used here).
+///
+/// Garage does not require nicknames to be non-empty or unique, so a naive name match can
+/// silently associate one vehicle with a *different* vehicle's fuel log history (or with none,
+/// or with more than one vehicle's). This type exists solely to make that association safe:
+/// this is an identity-safety check, not a new persistence relationship, and performs no writes.
+enum VehicleFuelLogIdentityResolution {
+    /// True when `nickname` carries no real name — either truly empty, or made only of
+    /// whitespace/newlines. Used only to decide whether a nickname is usable as an identifier at
+    /// all; the actual Fuel Log match key stays the exact, untrimmed string (see
+    /// `isSafeFuelLogVehicleName` below) — this does NOT introduce a normalized/trimmed
+    /// comparison into how Fuel Log entries are actually matched anywhere in the app.
+    static func isBlank(_ nickname: String) -> Bool {
+        nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Whether `nickname` is safe to use as the legacy FuelLogEntry.vehicleName lookup key:
+    /// non-blank, and an EXACT match (not trimmed, not case-insensitive) to exactly one entry in
+    /// `allNicknames` (every saved vehicle's raw, as-stored nickname, including this one).
+    ///
+    /// Deliberately exact-string, matching the comparison FuelLogEntry.vehicleName is already
+    /// matched with everywhere else in the app (CalculatorView's own history scan,
+    /// GarageView.propagateVehicleRename's `#Predicate { $0.vehicleName == oldName }`) — not a
+    /// new, broader normalization (e.g. case-insensitive) that could combine Fuel Log records
+    /// that were previously distinct. Two nicknames that differ only by case or internal
+    /// whitespace are NOT considered duplicates here, because they are not duplicates from the
+    /// real Fuel Log relationship's point of view either.
+    static func isSafeFuelLogVehicleName(_ nickname: String, among allNicknames: [String]) -> Bool {
+        guard isBlank(nickname) == false else { return false }
+        return allNicknames.filter { $0 == nickname }.count == 1
+    }
+
+    /// Convenience overload for the real call site: returns `vehicle.nickname` when it's safe to
+    /// use as a Fuel Log lookup key, else `nil`. `vehicles` should be every saved vehicle
+    /// (including `vehicle` itself) — not just active ones — so a duplicate on an *inactive*
+    /// vehicle is still caught. Performs no persistence writes.
+    static func safeFuelLogVehicleName(for vehicle: VehicleProfile, among vehicles: [VehicleProfile]) -> String? {
+        isSafeFuelLogVehicleName(vehicle.nickname, among: vehicles.map(\.nickname)) ? vehicle.nickname : nil
+    }
+}
+
+/// Scans Fuel Log history for the newest entry belonging to a given (already safety-checked —
+/// see VehicleFuelLogIdentityResolution) vehicle name with a genuinely valid ethanol percentage,
+/// skipping any entry that isn't. Kept independent of SwiftUI so it's directly unit-testable
+/// with plain, in-memory `FuelLogEntry` instances rather than a live `@Query`.
+enum LatestValidFuelLogBlend {
+    /// `entries` is assumed already sorted newest-first (matching
+    /// `@Query(sort: \FuelLogEntry.date, order: .reverse)`, unchanged by this pass) — this scans
+    /// that order and returns the first (i.e. most recent) matching entry whose
+    /// `finalBlendPercent` is valid (finite, 0...100 — an explicit E0 counts and is never
+    /// skipped), rather than only ever looking at the single newest row for this vehicle. One
+    /// corrupted/out-of-range historical entry must not hide otherwise-good, older history.
+    static func resolve(entries: [FuelLogEntry], vehicleName: String) -> Double? {
+        entries
+            .first(where: { $0.vehicleName == vehicleName && isValidEthanolPercent($0.finalBlendPercent) })?
+            .finalBlendPercent
+    }
+}
+
 enum CurrentEthanolResolution {
     /// Current Ethanol precedence — tank/fill *state*, never a vehicle-permanent property:
     /// 1. the latest valid Fuel Log blend for the selected vehicle, 2. E10.
     ///
     /// `latestLoggedBlendPercent` must already be scoped to the vehicle being resolved for (see
-    /// CalculatorView.lastLoggedBlendForActiveVehicle) — this function never accepts a
-    /// vehicle-agnostic "last known" value, so switching vehicles can never leak one vehicle's
-    /// current ethanol into another's.
+    /// CalculatorView.lastLoggedBlendForActiveVehicle, which also only trusts the legacy
+    /// FuelLogEntry.vehicleName relationship when the vehicle's nickname is unambiguous — see
+    /// VehicleFuelLogIdentityResolution) — this function never accepts a vehicle-agnostic "last
+    /// known" value, so switching vehicles can never leak one vehicle's current ethanol into
+    /// another's.
     static func resolve(latestLoggedBlendPercent: Double?) -> Double {
         validEthanolPercent(latestLoggedBlendPercent) ?? FuelPreferenceDefaults.currentEthanolPercent
     }

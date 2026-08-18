@@ -14,6 +14,11 @@ struct CalculatorView: View {
     @AppStorage(AppPreferenceKey.defaultTargetBlend) private var preferredDefaultTargetBlend = BlendPreferenceOption.e30.rawValue
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
+    // Unfiltered — needed so lastLoggedBlendForActiveVehicle can check whether the active
+    // vehicle's nickname is unique across ALL saved vehicles, not just active ones, before
+    // trusting the legacy FuelLogEntry.vehicleName relationship for Current Ethanol.
+    @Query(sort: \VehicleProfile.createdAt, order: .forward)
+    private var allVehicles: [VehicleProfile]
     @Query(sort: \FuelLogEntry.date, order: .reverse)
     private var fuelLogEntries: [FuelLogEntry]
     @Query(sort: \FuelStation.updatedAt, order: .reverse)
@@ -97,17 +102,29 @@ struct CalculatorView: View {
         activeVehicles.first(where: { $0.isActive }) ?? activeVehicles.first
     }
 
-    /// Final blend from the newest fuel log for the active vehicle — read-only smart
-    /// default for the pump sheet's "current blend". Entries are already sorted
-    /// newest-first by the query.
+    /// Final blend from the newest valid fuel log for the active vehicle — read-only smart
+    /// default for Current Ethanol (main tab and the pump sheet alike). Entries are already
+    /// sorted newest-first by the query; this walks that order and returns the first (i.e.
+    /// most recent) entry with a genuinely valid ethanol percentage, skipping any historical row
+    /// that isn't (finite, 0...100) rather than only ever looking at the single newest row —
+    /// one corrupted/out-of-range historical entry must not hide otherwise-good recent history.
+    /// An explicit E0 entry is valid data and is never skipped.
+    ///
+    /// Only trusts the legacy FuelLogEntry.vehicleName relationship when the active vehicle's
+    /// nickname is unambiguous — non-blank and unique among every saved vehicle (see
+    /// VehicleFuelLogIdentityResolution). Garage allows blank and duplicate nicknames, so a
+    /// naive name match here could otherwise pull in a *different* vehicle's fuel log history,
+    /// leaking that vehicle's current-ethanol state into this one. When the nickname isn't safe
+    /// to use, this returns nil — CurrentEthanolResolution then falls back to E10 — rather than
+    /// guessing.
     private var lastLoggedBlendForActiveVehicle: Double? {
-        guard let vehicle = pumpModeActiveVehicle else {
+        guard let vehicle = pumpModeActiveVehicle,
+              let safeVehicleName = VehicleFuelLogIdentityResolution.safeFuelLogVehicleName(for: vehicle, among: allVehicles)
+        else {
             return nil
         }
 
-        return fuelLogEntries
-            .first(where: { $0.vehicleName == vehicle.nickname && $0.finalBlendPercent > 0 })?
-            .finalBlendPercent
+        return LatestValidFuelLogBlend.resolve(entries: fuelLogEntries, vehicleName: safeVehicleName)
     }
 
     // Pump/Gas Ethanol are deliberately NOT part of this key — they're app-level preferences
