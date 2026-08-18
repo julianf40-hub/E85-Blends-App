@@ -149,41 +149,38 @@ struct GarageView: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
-        // Purely decorative/non-interactive — must never intercept a touch meant for
-        // addVehicleButton beside it (the original partial-hit-area bug: this stack's laid-out
-        // frame, sized by its Text children's ideal width before wrapping is applied, could
-        // extend further than its rendered glyphs and sit in front of the button in hit-test
-        // terms even though nothing was visibly wrong).
+        // Purely decorative/non-interactive — kept non-hit-testable defensively (it can never
+        // legitimately need to receive a touch), though real-device testing showed this alone
+        // was not what was stealing addVehicleButton's taps — see addVehicleButton below for the
+        // actual fix.
         .allowsHitTesting(false)
     }
 
+    // Real-device testing showed the button still failed to reliably respond across its whole
+    // visible area even after locking its width (.fixedSize/.layoutPriority) and matching its
+    // .contentShape to its painted RoundedRectangle — i.e. this was never really a width-
+    // negotiation problem. The remaining common factor was that the button was a hand-simulated
+    // control: .buttonStyle(.plain) plus a manually painted background/clipShape, whose tap
+    // region depends on SwiftUI correctly bridging a synthesized .contentShape to the underlying
+    // UIKit hit-test responder — a known source of exactly this kind of "visually fine, tap
+    // region doesn't match" fragility inside a ScrollView, that a genuine system button style
+    // isn't subject to (its hit-testing is implemented natively, not synthesized). Switched to
+    // .buttonStyle(.borderedProminent) so the actual Button chrome IS the tappable control,
+    // rather than emulating one.
     private var addVehicleButton: some View {
         Button {
             sheetContext = .add
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                Text("Add Vehicle")
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            .background(AppTheme.Colors.accentGreen)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            // Matches the visible rounded rect exactly (rather than a plain Rectangle), applied
-            // after the size/shape chain above so the button's full visible background — not
-            // just its text/icon glyphs — is the tappable region.
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Label("Add Vehicle", systemImage: "plus")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .frame(minHeight: 44)
         }
-        .buttonStyle(.plain)
-        // Locks this button to its natural (unwrapped) content width and gives it first claim
-        // on horizontal space in headerRow's HStack, so the more-flexible (wrap-capable) title
-        // stack beside it can never compress the button below its full intrinsic/rendered size —
-        // the root cause of the original bug: the button's declared frame(minHeight: 44) only
-        // ever guaranteed its HEIGHT, leaving its laid-out WIDTH to ordinary HStack space
-        // negotiation, which could end up narrower than what was actually painted on screen.
+        .buttonStyle(.borderedProminent)
+        .tint(AppTheme.Colors.accentGreen)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
+        // Defensive, not the fix itself: still keeps the button from being squeezed by the
+        // more-flexible title stack beside it in headerRow's HStack.
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
         .accessibilityLabel("Add Vehicle")
