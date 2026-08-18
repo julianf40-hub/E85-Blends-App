@@ -37,6 +37,7 @@ struct PreferencesView: View {
 
                 appExperienceCard
                 settingsCard
+                AutomaticPumpDetectionPreferenceCard()
                 proStatusCard
             }
             .padding(16)
