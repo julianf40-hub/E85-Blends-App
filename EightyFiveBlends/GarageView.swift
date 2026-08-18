@@ -51,16 +51,6 @@ struct GarageView: View {
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            // Was .navigationBarHidden(true) — the one Garage-specific holdout; every sibling
-            // tab (Calculator, Stations, Reminders) already hides its bar with the modern
-            // .toolbar(.hidden, for: .navigationBar) API. .navigationBarHidden(true) inside a
-            // NavigationStack is known to leave the UINavigationBar's own gesture/touch
-            // handling live and hit-testable over the top of the screen even though it's
-            // painted invisible — sitting in front of whatever SwiftUI content (here, the
-            // header row) is scrolled underneath it. That fits this bug's profile exactly: it
-            // lives outside GarageView's own view tree, so no button-level fix inside
-            // GarageView (see addVehicleButton below) could ever have addressed it. Matching
-            // the other tabs here is the actual root-cause fix.
             .toolbar(.hidden, for: .navigationBar)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
@@ -109,19 +99,13 @@ struct GarageView: View {
         }
     }
 
-    // Add Vehicle lives on its own row below the title stack rather than sharing a horizontal
-    // HStack with it — see addVehicleButton below for why. One side effect: the header no
-    // longer needs a separate normal-row/stacked-at-accessibility-size layout (there's nothing
-    // left for the button to compete with for width at any Dynamic Type size), so this is now
-    // one simple layout instead of two.
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        HStack(alignment: .top, spacing: 16) {
             headerTitleStack
 
-            HStack {
-                Spacer()
-                addVehicleButton
-            }
+            Spacer()
+
+            addVehicleButton
         }
     }
 
@@ -142,32 +126,21 @@ struct GarageView: View {
         }
     }
 
-    // Real-device testing burned through three prior fix attempts on this button alone (manual
-    // button + contentShape; width/hit-testing modifiers stacked on top of that; a switch to a
-    // native .borderedProminent button) — none of which changed the symptom, which is the
-    // strongest evidence the cause was never this button's own styling. Fresh inspection found
-    // a concrete, structural difference instead: GarageView was the only sibling tab still
-    // hiding its navigation bar with .navigationBarHidden(true) (fixed above, in body) rather
-    // than .toolbar(.hidden, for: .navigationBar) — a known source of a still-hit-testable
-    // phantom nav bar sitting over scrolled content underneath it. That fix can't be confirmed
-    // from static inspection alone (no on-device access in this environment), so this button is
-    // also now structurally isolated from the title stack (see headerSection above) as defense
-    // in depth: with nothing beside it to compete with, .fixedSize/.layoutPriority are no
-    // longer needed either.
     private var addVehicleButton: some View {
         Button {
             sheetContext = .add
         } label: {
-            Label("Add Vehicle", systemImage: "plus")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .frame(minHeight: 44)
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                Text("Add Vehicle")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(AppTheme.Colors.accentGreen)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .buttonStyle(.borderedProminent)
-        .tint(AppTheme.Colors.accentGreen)
-        .buttonBorderShape(.roundedRectangle(radius: 14))
-        .controlSize(.large)
-        .accessibilityLabel("Add Vehicle")
     }
 
     private var savedVehiclesSection: some View {
