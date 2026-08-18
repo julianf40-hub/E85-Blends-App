@@ -36,6 +36,10 @@ enum AppPreferenceKey {
     static let lastPumpE85Content = "lastPumpE85Content"
     static let lastPumpFuelLevel = "lastPumpFuelLevel"
     static let lastPumpFuelType = "lastPumpFuelType"
+    // App-level "remembered" Gas Ethanol setting — 85Blends 2.3.0 Garage simplification moved
+    // Gas Ethanol from a per-vehicle Garage field to this single app-level preference. See
+    // FuelPreferenceResolution.swift (GasEthanolResolution / RememberedFuelPreferenceStore).
+    static let rememberedGasEthanolPercent = "rememberedGasEthanolPercent"
     // Automatic Pump Detection — opt-in background arrival detection (see
     // AutomaticPumpDetectionService). All persisted state is namespaced under this prefix.
     static let automaticPumpDetectionEnabled = "automaticPumpDetectionEnabled"
