@@ -11,6 +11,8 @@ import UIKit
 
 struct GarageView: View {
     @Environment(\.modelContext) private var modelContext
+    // Drives headerSection's normal-row vs. stacked fallback layout — see headerSection.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \VehicleProfile.createdAt, order: .forward)
     private var vehicles: [VehicleProfile]
 
@@ -99,44 +101,92 @@ struct GarageView: View {
         }
     }
 
+    // Normal sizes use headerRow (title stack + button side by side, unchanged from Build 80's
+    // appearance). At accessibility Dynamic Type sizes — where the two can no longer reliably
+    // share one row — headerStack puts the button on its own line below the title stack instead
+    // of letting either get compressed. Driven by an explicit dynamicTypeSize check rather than
+    // ViewThatFits: ViewThatFits picks a candidate by each view's *ideal* (unconstrained) width,
+    // and an un-fixed-size Text's ideal width is its single-line, unwrapped width — for the
+    // subtitle here that's wider than the screen even at normal sizes, so ViewThatFits would
+    // pick the stacked fallback unconditionally rather than only at genuinely-too-narrow sizes.
     private var headerSection: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("VEHICLE SETUP")
-                    .font(.caption.weight(.bold))
-                    .tracking(1.4)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-
-                Text("Garage")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                Text("Manage your vehicles and calculator defaults.")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                headerStack
+            } else {
+                headerRow
             }
-
-            Spacer()
-
-            Button {
-                sheetContext = .add
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus")
-                    Text("Add Vehicle")
-                }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(minHeight: 44)
-                .background(AppTheme.Colors.accentGreen)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Add Vehicle")
         }
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            headerTitleStack
+            Spacer()
+            addVehicleButton
+        }
+    }
+
+    private var headerStack: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            headerTitleStack
+            addVehicleButton
+        }
+    }
+
+    private var headerTitleStack: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("VEHICLE SETUP")
+                .font(.caption.weight(.bold))
+                .tracking(1.4)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+
+            Text("Garage")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            Text("Manage your vehicles and calculator defaults.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+        // Purely decorative/non-interactive — must never intercept a touch meant for
+        // addVehicleButton beside it (the original partial-hit-area bug: this stack's laid-out
+        // frame, sized by its Text children's ideal width before wrapping is applied, could
+        // extend further than its rendered glyphs and sit in front of the button in hit-test
+        // terms even though nothing was visibly wrong).
+        .allowsHitTesting(false)
+    }
+
+    private var addVehicleButton: some View {
+        Button {
+            sheetContext = .add
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                Text("Add Vehicle")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .background(AppTheme.Colors.accentGreen)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            // Matches the visible rounded rect exactly (rather than a plain Rectangle), applied
+            // after the size/shape chain above so the button's full visible background — not
+            // just its text/icon glyphs — is the tappable region.
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        // Locks this button to its natural (unwrapped) content width and gives it first claim
+        // on horizontal space in headerRow's HStack, so the more-flexible (wrap-capable) title
+        // stack beside it can never compress the button below its full intrinsic/rendered size —
+        // the root cause of the original bug: the button's declared frame(minHeight: 44) only
+        // ever guaranteed its HEIGHT, leaving its laid-out WIDTH to ordinary HStack space
+        // negotiation, which could end up narrower than what was actually painted on screen.
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
+        .accessibilityLabel("Add Vehicle")
     }
 
     private var savedVehiclesSection: some View {
@@ -617,7 +667,7 @@ private struct VehicleSummary: View {
             ) {
                 summaryMetric(title: "Tank", value: vehicle.tankSizeGallons > 0 ? "\(display(vehicle.tankSizeGallons, places: 1)) gal" : "Not set")
                 summaryMetric(title: "Octane", value: display(vehicle.requiredOctane, places: 0))
-                summaryMetric(title: "Target", value: "E\(display(resolvedTargetPercent, places: 0))")
+                summaryMetric(title: "Target", value: configuredTargetPercent.map { "E\(display($0, places: 0))" } ?? "Not set")
                 summaryMetric(title: "Odometer", value: odometerText)
             }
         }
@@ -629,12 +679,14 @@ private struct VehicleSummary: View {
             .joined(separator: " ")
     }
 
-    // Resolved the same way Calculator does (PreferredTargetResolution) rather than reading the
-    // frozen legacy defaultTargetEthanolPercent field directly — for a new-semantics vehicle
-    // with no Preferred Ethanol Target set, that field no longer reflects what the calculator
-    // will actually use. See VehicleProfile.swift / FuelPreferenceResolution.swift.
-    private var resolvedTargetPercent: Double {
-        PreferredTargetResolution.resolve(vehicle: vehicle, appPreferredTarget: AppPreferredTargetBlend.currentPercent())
+    // What the user has actually CONFIGURED on this vehicle — deliberately NOT Calculator's
+    // PreferredTargetResolution, which additionally falls through to an app-level preference and
+    // then E30 for a vehicle with no target set. Garage answers a different question ("what is
+    // configured?") than Calculator ("what should be used right now?"); a current-semantics
+    // vehicle with no preference must show "Not set" here even though Calculator correctly
+    // resolves an effective target for it. See GarageVehicleTargetDisplay.swift.
+    private var configuredTargetPercent: Double? {
+        GarageVehicleTargetDisplay.targetPercent(for: vehicle)
     }
 
     private func summaryMetric(title: String, value: String) -> some View {
