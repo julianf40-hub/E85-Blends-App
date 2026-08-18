@@ -161,8 +161,8 @@ private struct ConfettiPiece: Identifiable {
     let scale: CGFloat
     let delay: Double
 
-    /// ~15-30 pieces, generated once per presentation — never regenerated on body re-evaluation
-    /// (this is only ever called from a `@State` initial-value expression).
+    /// Exactly 45 pieces, generated once per presentation — never regenerated on body
+    /// re-evaluation (this is only ever called from a `@State` initial-value expression).
     static func makeBurst() -> [ConfettiPiece] {
         let colors: [Color] = [
             AppTheme.Colors.primaryGreen,
@@ -170,7 +170,7 @@ private struct ConfettiPiece: Identifiable {
             AppTheme.Colors.stationYellow
         ]
         let symbols = ["circle.fill", "sparkle", "seal.fill"]
-        let count = Int.random(in: 15...30)
+        let count = 45
 
         return (0..<count).map { _ in
             ConfettiPiece(
