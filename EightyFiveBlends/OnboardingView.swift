@@ -419,6 +419,12 @@ struct OnboardingView: View {
                 }
             }
 
+            // Onboarding's simplified vehicle card never shows Preferred Ethanol Target, so
+            // draft.preferredEthanolTargetPercent is always nil here — no hidden E30 (or any
+            // other) vehicle-specific target is silently created just because VehicleDraft used
+            // to default this to E30 pre-2.3.0. Legacy default*/gasEthanolPercent fields are
+            // intentionally omitted — they take VehicleProfile's own persistence-compatible
+            // defaults and are never read as a preference for a new-semantics vehicle.
             let vehicle = VehicleProfile(
                 nickname: draft.nickname,
                 year: draft.year,
@@ -427,15 +433,13 @@ struct OnboardingView: View {
                 trim: draft.trim,
                 tankSizeGallons: draft.tankSizeGallons,
                 currentOdometer: draft.currentOdometer,
-                defaultTargetEthanolPercent: draft.defaultTargetEthanolPercent,
-                defaultCurrentEthanolPercent: draft.defaultCurrentEthanolPercent,
-                defaultPumpEthanolPercent: draft.defaultPumpEthanolPercent,
-                gasEthanolPercent: draft.gasEthanolPercent,
                 requiredOctane: draft.requiredOctane,
                 isFlexFuel: draft.isFlexFuel,
                 isActive: true,
                 createdAt: .now,
-                updatedAt: .now
+                updatedAt: .now,
+                preferredEthanolTargetPercent: draft.preferredEthanolTargetPercent,
+                calculatorPreferenceSemanticsVersion: VehiclePreferenceSemantics.current
             )
 
             modelContext.insert(vehicle)

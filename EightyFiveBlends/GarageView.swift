@@ -217,10 +217,13 @@ struct GarageView: View {
                 existing: vehicle.currentOdometer,
                 requested: draft.currentOdometer
             )
-            vehicle.defaultTargetEthanolPercent = draft.defaultTargetEthanolPercent
-            vehicle.defaultCurrentEthanolPercent = draft.defaultCurrentEthanolPercent
-            vehicle.defaultPumpEthanolPercent = draft.defaultPumpEthanolPercent
-            vehicle.gasEthanolPercent = draft.gasEthanolPercent
+            // Saving through the Edit Vehicle form always transitions the vehicle to the current
+            // preference semantics — even if the resulting value equals what the legacy field
+            // already held (see VehicleProfile.calculatorPreferenceSemanticsVersion). The legacy
+            // default*/gasEthanolPercent fields are intentionally left untouched below: they are
+            // frozen, unread compatibility columns from here on — see VehicleProfile.swift.
+            vehicle.preferredEthanolTargetPercent = draft.preferredEthanolTargetPercent
+            vehicle.calculatorPreferenceSemanticsVersion = VehiclePreferenceSemantics.current
             vehicle.requiredOctane = draft.requiredOctane
             vehicle.isFlexFuel = draft.isFlexFuel
             vehicle.isActive = shouldBeActive
@@ -230,6 +233,9 @@ struct GarageView: View {
                 propagateVehicleRename(from: oldNickname, to: draft.nickname)
             }
         } else {
+            // Legacy default*/gasEthanolPercent fields are intentionally omitted here — they
+            // take VehicleProfile's own persistence-compatible defaults and are never read as a
+            // preference for a new-semantics vehicle. See VehicleProfile.swift.
             let newVehicle = VehicleProfile(
                 nickname: draft.nickname,
                 year: draft.year,
@@ -238,16 +244,14 @@ struct GarageView: View {
                 trim: draft.trim,
                 tankSizeGallons: draft.tankSizeGallons,
                 currentOdometer: draft.currentOdometer,
-                defaultTargetEthanolPercent: draft.defaultTargetEthanolPercent,
-                defaultCurrentEthanolPercent: draft.defaultCurrentEthanolPercent,
-                defaultPumpEthanolPercent: draft.defaultPumpEthanolPercent,
-                gasEthanolPercent: draft.gasEthanolPercent,
                 requiredOctane: draft.requiredOctane,
                 isFlexFuel: draft.isFlexFuel,
                 isActive: shouldBeActive,
                 vehiclePhotoData: draft.vehiclePhotoData,
                 createdAt: .now,
-                updatedAt: .now
+                updatedAt: .now,
+                preferredEthanolTargetPercent: draft.preferredEthanolTargetPercent,
+                calculatorPreferenceSemanticsVersion: VehiclePreferenceSemantics.current
             )
             modelContext.insert(newVehicle)
         }
@@ -611,9 +615,9 @@ private struct VehicleSummary: View {
                 alignment: .leading,
                 spacing: 10
             ) {
-                summaryMetric(title: "Tank", value: "\(display(vehicle.tankSizeGallons, places: 1)) gal")
+                summaryMetric(title: "Tank", value: vehicle.tankSizeGallons > 0 ? "\(display(vehicle.tankSizeGallons, places: 1)) gal" : "Not set")
                 summaryMetric(title: "Octane", value: display(vehicle.requiredOctane, places: 0))
-                summaryMetric(title: "Target", value: "E\(display(vehicle.defaultTargetEthanolPercent, places: 0))")
+                summaryMetric(title: "Target", value: "E\(display(resolvedTargetPercent, places: 0))")
                 summaryMetric(title: "Odometer", value: odometerText)
             }
         }
@@ -623,6 +627,14 @@ private struct VehicleSummary: View {
         [vehicle.year, vehicle.make, vehicle.model, vehicle.trim]
             .filter { $0.isEmpty == false }
             .joined(separator: " ")
+    }
+
+    // Resolved the same way Calculator does (PreferredTargetResolution) rather than reading the
+    // frozen legacy defaultTargetEthanolPercent field directly — for a new-semantics vehicle
+    // with no Preferred Ethanol Target set, that field no longer reflects what the calculator
+    // will actually use. See VehicleProfile.swift / FuelPreferenceResolution.swift.
+    private var resolvedTargetPercent: Double {
+        PreferredTargetResolution.resolve(vehicle: vehicle, appPreferredTarget: AppPreferredTargetBlend.currentPercent())
     }
 
     private func summaryMetric(title: String, value: String) -> some View {

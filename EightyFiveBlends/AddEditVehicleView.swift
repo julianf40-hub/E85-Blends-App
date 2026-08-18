@@ -113,7 +113,7 @@ struct AddEditVehicleView: View {
             vehiclePhotoSection
             identityFields
             metricsFields
-            defaultsFields
+            fuelPreferenceFields
             togglesSection
         }
         .padding(18)
@@ -215,7 +215,7 @@ struct AddEditVehicleView: View {
 
     private var metricsFields: some View {
         Group {
-            DoubleInputField(title: "Tank Size Gallons", value: $draft.tankSizeGallons, keyboard: .decimalPad)
+            TankSizeInputField(value: $draft.tankSizeGallons)
             if shouldShowTankLookupHelper {
                 tankLookupHelperSection
             }
@@ -273,17 +273,28 @@ struct AddEditVehicleView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var defaultsFields: some View {
+    // 85Blends 2.3.0 Garage simplification: this section used to be "Calculator Defaults" with
+    // four separate ethanol fields (Default Target/Current/Pump Ethanol %, Gas Ethanol %).
+    // Current/Pump/Gas Ethanol are tank/session/app-level state now, not vehicle properties —
+    // see FuelPreferenceResolution.swift — so only one, optional field remains here.
+    private var fuelPreferenceFields: some View {
         Group {
             SectionHeader(
-                title: "Calculator Defaults",
-                subtitle: "Used to prefill your blend setup on the calculator tab."
+                title: "Fuel Preference",
+                subtitle: nil
             )
 
-            DoubleInputField(title: "Default Target Ethanol %", value: $draft.defaultTargetEthanolPercent, keyboard: .decimalPad)
-            DoubleInputField(title: "Default Current Ethanol %", value: $draft.defaultCurrentEthanolPercent, keyboard: .decimalPad)
-            DoubleInputField(title: "Default Pump Ethanol %", value: $draft.defaultPumpEthanolPercent, keyboard: .decimalPad)
-            DoubleInputField(title: "Gas Ethanol %", value: $draft.gasEthanolPercent, keyboard: .decimalPad)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Preferred Ethanol Target")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text("Optional \u{00B7} Used as your starting target in the Blend Calculator.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                OptionalPercentField(value: $draft.preferredEthanolTargetPercent)
+            }
         }
     }
 
@@ -363,13 +374,17 @@ struct VehicleDraft {
     var make: String
     var model: String
     var trim: String
+    /// `0` means "not entered" — TankSizeInputField displays it as a blank field rather than a
+    /// literal "0". See VehicleProfile.tankSizeGallons and audit item 7 (Tank Size). Never
+    /// silently defaulted to a placeholder like 16 — a real tank is never 0 gallons, so 0 is a
+    /// safe, unambiguous "unset" sentinel here, unlike an ethanol percent (where 0 is a real,
+    /// meaningful value and must never be reused as "unset").
     var tankSizeGallons: Double
     var currentOdometer: Int
     var requiredOctane: Double
-    var defaultTargetEthanolPercent: Double
-    var defaultCurrentEthanolPercent: Double
-    var defaultPumpEthanolPercent: Double
-    var gasEthanolPercent: Double
+    /// `nil` means "no preference" — see VehicleProfile.preferredEthanolTargetPercent. Must
+    /// never be coerced to a specific percentage (E0/E10/E30/etc.) anywhere in this type.
+    var preferredEthanolTargetPercent: Double?
     var isFlexFuel: Bool
     var isActive: Bool
     var vehiclePhotoData: Data?
@@ -381,13 +396,27 @@ struct VehicleDraft {
         make = vehicle?.make ?? ""
         model = vehicle?.model ?? ""
         trim = vehicle?.trim ?? ""
-        tankSizeGallons = vehicle?.tankSizeGallons ?? 16
+        // No 16-gallon (or any) placeholder for a brand-new vehicle — Tank Size stays genuinely
+        // optional during creation. See audit item 3/4 and TankSizeInputField.
+        tankSizeGallons = vehicle?.tankSizeGallons ?? 0
         currentOdometer = vehicle?.currentOdometer ?? 0
         requiredOctane = vehicle?.requiredOctane ?? 91
-        defaultTargetEthanolPercent = vehicle?.defaultTargetEthanolPercent ?? 30
-        defaultCurrentEthanolPercent = vehicle?.defaultCurrentEthanolPercent ?? 10
-        defaultPumpEthanolPercent = vehicle?.defaultPumpEthanolPercent ?? 85
-        gasEthanolPercent = vehicle?.gasEthanolPercent ?? 10
+
+        if let vehicle {
+            if vehicle.calculatorPreferenceSemanticsVersion >= VehiclePreferenceSemantics.current {
+                preferredEthanolTargetPercent = vehicle.preferredEthanolTargetPercent
+            } else {
+                // Legacy vehicle: defaultTargetEthanolPercent IS its effective preference today
+                // (see PreferredTargetResolution) — show it as the starting value so opening
+                // Edit Vehicle never appears to silently clear an existing preference. Saving
+                // from this form transitions the vehicle to the new semantics (GarageView).
+                preferredEthanolTargetPercent = vehicle.defaultTargetEthanolPercent
+            }
+        } else {
+            // Brand-new vehicle: genuinely no preference until the user sets one.
+            preferredEthanolTargetPercent = nil
+        }
+
         isFlexFuel = vehicle?.isFlexFuel ?? false
         isActive = vehicle?.isActive ?? (existingVehiclesCount == 0)
         vehiclePhotoData = vehicle?.vehiclePhotoData
@@ -397,10 +426,9 @@ struct VehicleDraft {
         tankSizeGallons = max(tankSizeGallons, 0)
         currentOdometer = max(currentOdometer, 0)
         requiredOctane = max(requiredOctane, 0)
-        defaultTargetEthanolPercent = min(max(defaultTargetEthanolPercent, 0), 100)
-        defaultCurrentEthanolPercent = min(max(defaultCurrentEthanolPercent, 0), 100)
-        defaultPumpEthanolPercent = min(max(defaultPumpEthanolPercent, 0), 100)
-        gasEthanolPercent = min(max(gasEthanolPercent, 0), 100)
+        if let value = preferredEthanolTargetPercent {
+            preferredEthanolTargetPercent = min(max(value, 0), 100)
+        }
     }
 }
 
@@ -479,6 +507,103 @@ private struct DoubleInputField: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+    }
+}
+
+/// Tank Size Gallons — a non-optional `Double` where `0` means "not entered". Displays as a
+/// blank field (rather than the literal "0") so a new/unset vehicle visually communicates that
+/// this is optional, per audit item 3/18. Unparseable, non-empty text leaves the value
+/// unchanged (matches DoubleInputField's retain-last-valid-value behavior); a genuinely empty
+/// field resolves to 0 (unset), never to a guessed placeholder like 16.
+private struct TankSizeInputField: View {
+    @Binding var value: Double
+
+    private var textBinding: Binding<String> {
+        Binding(
+            get: { value > 0 ? formatted(value) : "" },
+            set: { newText in
+                let trimmed = newText.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    value = 0
+                } else if let parsed = Double(trimmed) {
+                    value = parsed
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tank Size Gallons")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            TextField("Optional", text: textBinding)
+                .keyboardType(.decimalPad)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            Text("Optional \u{00B7} We'll ask again in Calculator if it's needed for a blend.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+        }
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(value)) : String(format: "%.1f", value)
+    }
+}
+
+/// Preferred Ethanol Target — a genuinely optional `Double?`. `nil` displays as a blank field
+/// and must never be coerced to a specific percentage. Unparseable, non-empty text leaves the
+/// value unchanged; a genuinely empty field resolves to `nil` ("no preference"), not to 0 or any
+/// other percentage — see audit item 5/11 and VehicleProfile.preferredEthanolTargetPercent.
+private struct OptionalPercentField: View {
+    @Binding var value: Double?
+
+    private var textBinding: Binding<String> {
+        Binding(
+            get: { value.map(formatted) ?? "" },
+            set: { newText in
+                let trimmed = newText.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    value = nil
+                } else if let parsed = Double(trimmed) {
+                    value = parsed
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        HStack {
+            TextField("No preference", text: textBinding)
+                .keyboardType(.decimalPad)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            Text("%")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(value)) : String(format: "%.1f", value)
     }
 }
 
