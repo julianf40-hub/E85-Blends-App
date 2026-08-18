@@ -11,8 +11,6 @@ import UIKit
 
 struct GarageView: View {
     @Environment(\.modelContext) private var modelContext
-    // Drives headerSection's normal-row vs. stacked fallback layout — see headerSection.
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(sort: \VehicleProfile.createdAt, order: .forward)
     private var vehicles: [VehicleProfile]
 
@@ -53,7 +51,17 @@ struct GarageView: View {
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationBarHidden(true)
+            // Was .navigationBarHidden(true) — the one Garage-specific holdout; every sibling
+            // tab (Calculator, Stations, Reminders) already hides its bar with the modern
+            // .toolbar(.hidden, for: .navigationBar) API. .navigationBarHidden(true) inside a
+            // NavigationStack is known to leave the UINavigationBar's own gesture/touch
+            // handling live and hit-testable over the top of the screen even though it's
+            // painted invisible — sitting in front of whatever SwiftUI content (here, the
+            // header row) is scrolled underneath it. That fits this bug's profile exactly: it
+            // lives outside GarageView's own view tree, so no button-level fix inside
+            // GarageView (see addVehicleButton below) could ever have addressed it. Matching
+            // the other tabs here is the actual root-cause fix.
+            .toolbar(.hidden, for: .navigationBar)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .sheet(item: $sheetContext) { context in
@@ -101,36 +109,19 @@ struct GarageView: View {
         }
     }
 
-    // Normal sizes use headerRow (title stack + button side by side, unchanged from Build 80's
-    // appearance). At accessibility Dynamic Type sizes — where the two can no longer reliably
-    // share one row — headerStack puts the button on its own line below the title stack instead
-    // of letting either get compressed. Driven by an explicit dynamicTypeSize check rather than
-    // ViewThatFits: ViewThatFits picks a candidate by each view's *ideal* (unconstrained) width,
-    // and an un-fixed-size Text's ideal width is its single-line, unwrapped width — for the
-    // subtitle here that's wider than the screen even at normal sizes, so ViewThatFits would
-    // pick the stacked fallback unconditionally rather than only at genuinely-too-narrow sizes.
+    // Add Vehicle lives on its own row below the title stack rather than sharing a horizontal
+    // HStack with it — see addVehicleButton below for why. One side effect: the header no
+    // longer needs a separate normal-row/stacked-at-accessibility-size layout (there's nothing
+    // left for the button to compete with for width at any Dynamic Type size), so this is now
+    // one simple layout instead of two.
     private var headerSection: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                headerStack
-            } else {
-                headerRow
-            }
-        }
-    }
-
-    private var headerRow: some View {
-        HStack(alignment: .top, spacing: 16) {
-            headerTitleStack
-            Spacer()
-            addVehicleButton
-        }
-    }
-
-    private var headerStack: some View {
         VStack(alignment: .leading, spacing: 16) {
             headerTitleStack
-            addVehicleButton
+
+            HStack {
+                Spacer()
+                addVehicleButton
+            }
         }
     }
 
@@ -149,24 +140,20 @@ struct GarageView: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
-        // Purely decorative/non-interactive — kept non-hit-testable defensively (it can never
-        // legitimately need to receive a touch), though real-device testing showed this alone
-        // was not what was stealing addVehicleButton's taps — see addVehicleButton below for the
-        // actual fix.
-        .allowsHitTesting(false)
     }
 
-    // Real-device testing showed the button still failed to reliably respond across its whole
-    // visible area even after locking its width (.fixedSize/.layoutPriority) and matching its
-    // .contentShape to its painted RoundedRectangle — i.e. this was never really a width-
-    // negotiation problem. The remaining common factor was that the button was a hand-simulated
-    // control: .buttonStyle(.plain) plus a manually painted background/clipShape, whose tap
-    // region depends on SwiftUI correctly bridging a synthesized .contentShape to the underlying
-    // UIKit hit-test responder — a known source of exactly this kind of "visually fine, tap
-    // region doesn't match" fragility inside a ScrollView, that a genuine system button style
-    // isn't subject to (its hit-testing is implemented natively, not synthesized). Switched to
-    // .buttonStyle(.borderedProminent) so the actual Button chrome IS the tappable control,
-    // rather than emulating one.
+    // Real-device testing burned through three prior fix attempts on this button alone (manual
+    // button + contentShape; width/hit-testing modifiers stacked on top of that; a switch to a
+    // native .borderedProminent button) — none of which changed the symptom, which is the
+    // strongest evidence the cause was never this button's own styling. Fresh inspection found
+    // a concrete, structural difference instead: GarageView was the only sibling tab still
+    // hiding its navigation bar with .navigationBarHidden(true) (fixed above, in body) rather
+    // than .toolbar(.hidden, for: .navigationBar) — a known source of a still-hit-testable
+    // phantom nav bar sitting over scrolled content underneath it. That fix can't be confirmed
+    // from static inspection alone (no on-device access in this environment), so this button is
+    // also now structurally isolated from the title stack (see headerSection above) as defense
+    // in depth: with nothing beside it to compete with, .fixedSize/.layoutPriority are no
+    // longer needed either.
     private var addVehicleButton: some View {
         Button {
             sheetContext = .add
@@ -179,10 +166,7 @@ struct GarageView: View {
         .buttonStyle(.borderedProminent)
         .tint(AppTheme.Colors.accentGreen)
         .buttonBorderShape(.roundedRectangle(radius: 14))
-        // Defensive, not the fix itself: still keeps the button from being squeezed by the
-        // more-flexible title stack beside it in headerRow's HStack.
-        .fixedSize(horizontal: true, vertical: false)
-        .layoutPriority(1)
+        .controlSize(.large)
         .accessibilityLabel("Add Vehicle")
     }
 
