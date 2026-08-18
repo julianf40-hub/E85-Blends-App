@@ -119,7 +119,7 @@ struct GarageView: View {
         // allowsHitTesting(false) guarantees this can never intercept a touch; bottom-leading
         // placement keeps it clear of the header/button under test.
         .overlay(alignment: .bottomLeading) {
-            HitTestDiagnosticReadout(title: "GARAGE HIT TEST", rows: garageHitTestRows)
+            HitTestDiagnosticReadout(title: "GARAGE HIT TEST PHASE 2", rows: garageHitTestRows)
                 .padding(.leading, 12)
                 .padding(.bottom, 12)
                 .allowsHitTesting(false)
@@ -129,15 +129,55 @@ struct GarageView: View {
     // TEMPORARY — feeds the diagnostic readout overlay above. See
     // TemporaryHitTestDiagnostics.swift.
     private var garageHitTestRows: [String] {
-        [
-            "Button: \(hitTestFrames["Add Vehicle button"]?.hitTestDescription ?? "measuring…")",
-            "Header: \(hitTestFrames["Garage headerSection"]?.hitTestDescription ?? "measuring…")",
-            "Action count: \(addVehicleActionCount)",
+        let button = hitTestFrames["Add Vehicle button"]
+        let header = hitTestFrames["Garage headerSection"]
+        let title = hitTestFrames["Garage headerTitleStack"]
+        let rawLabel = hitTestFrames["Garage label content"]
+        let paddedLabel = hitTestFrames["Garage padded label"]
+        let plus = hitTestFrames["Garage plus image"]
+        let text = hitTestFrames["Garage Add Vehicle text"]
+        let deadX = HitTestDiagnosticReference.deadX
+
+        var rows: [String] = [
+            "Outer Button: \(button?.hitTestDescription ?? "measuring…")",
+            "Header: \(header?.hitTestDescription ?? "measuring…")",
+            "Title: \(title?.hitTestDescription ?? "measuring…")",
+            "Padded label: \(paddedLabel?.hitTestDescription ?? "measuring…")",
+            "Raw label: \(rawLabel?.hitTestDescription ?? "measuring…")",
+            "Plus: \(plus?.hitTestDescription ?? "measuring…")",
+            "Text: \(text?.hitTestDescription ?? "measuring…")"
+        ]
+
+        if let title, let button {
+            let gap = button.minX - title.maxX
+            rows.append("Title→Button gap: \(Int(gap.rounded())) pt")
+            rows.append("Overlap: \(title.intersects(button) ? "YES" : "NO")")
+        } else {
+            rows.append("Title→Button gap: measuring…")
+            rows.append("Overlap: measuring…")
+        }
+
+        if let paddedLabel, let button {
+            rows.append("Padded==Outer: \(paddedLabel.isApproximatelyEqual(to: button) ? "YES" : "NO")")
+        } else {
+            rows.append("Padded==Outer: measuring…")
+        }
+
+        rows.append(
+            "Dead-x \(Int(deadX)): outer \(button.map { $0.containsX(deadX) }.hitTestYesNo)" +
+            " | padded \(paddedLabel.map { $0.containsX(deadX) }.hitTestYesNo)" +
+            " | raw \(rawLabel.map { $0.containsX(deadX) }.hitTestYesNo)"
+        )
+
+        rows.append(contentsOf: [
+            "Action: \(addVehicleActionCount)",
             "Button probe: \(addVehicleButtonProbe.count) | last: \(addVehicleButtonProbe.lastLocation?.hitTestDescription ?? "—")",
             "Header probe: \(headerSectionProbe.count) | last: \(headerSectionProbe.lastLocation?.hitTestDescription ?? "—")",
             "Scroll probe: \(scrollViewProbe.count) | last: \(scrollViewProbe.lastLocation?.hitTestDescription ?? "—")",
             "Root probe: \(navigationRootProbe.count) | last: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")"
-        ]
+        ])
+
+        return rows
     }
 
     private var headerSection: some View {
@@ -169,6 +209,10 @@ struct GarageView: View {
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
+        // TEMPORARY — hit-test diagnostic, Phase 2 level G-H1 (title stack). See
+        // TemporaryHitTestDiagnostics.swift. Geometry only — no tap probe added here, per
+        // Phase 2's geometry-only scope for child views.
+        .measureHitTestFrame("Garage headerTitleStack")
     }
 
     private var addVehicleButton: some View {
@@ -179,12 +223,28 @@ struct GarageView: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
+                    // TEMPORARY — Phase 2 level G-H5 (plus glyph). See
+                    // TemporaryHitTestDiagnostics.swift.
+                    .measureHitTestFrame("Garage plus image")
                 Text("Add Vehicle")
+                    // TEMPORARY — Phase 2 level G-H6 ("Add Vehicle" text). See
+                    // TemporaryHitTestDiagnostics.swift.
+                    .measureHitTestFrame("Garage Add Vehicle text")
             }
+            // TEMPORARY — Phase 2 level G-H3: raw label content, measured BEFORE padding is
+            // applied below. See TemporaryHitTestDiagnostics.swift.
+            .measureHitTestFrame("Garage label content")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(AppTheme.Colors.textPrimary)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            // TEMPORARY — Phase 2 level G-H4: padded label, measured AFTER padding but BEFORE
+            // .background/.clipShape below. By SwiftUI's own modifier semantics, `.background`
+            // and `.clipShape` never change a view's frame — only what's painted at that frame
+            // — so this single measurement already equals the visible green pill's frame; a
+            // second measurement taken after .background/.clipShape would be redundant (see the
+            // Phase 2 report for the full reasoning). See TemporaryHitTestDiagnostics.swift.
+            .measureHitTestFrame("Garage padded label")
             .background(AppTheme.Colors.accentGreen)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }

@@ -267,7 +267,7 @@ struct RemindersView: View {
         // intercept a touch; bottom-leading placement keeps it clear of the header/button under
         // test and clear of the existing top-aligned feedback banner overlay above.
         .overlay(alignment: .bottomLeading) {
-            HitTestDiagnosticReadout(title: "REMINDERS HIT TEST", rows: remindersHitTestRows)
+            HitTestDiagnosticReadout(title: "REMINDERS HIT TEST PHASE 2", rows: remindersHitTestRows)
                 .padding(.leading, 12)
                 .padding(.bottom, 12)
                 .allowsHitTesting(false)
@@ -277,15 +277,55 @@ struct RemindersView: View {
     // TEMPORARY — feeds the diagnostic readout overlay above. See
     // TemporaryHitTestDiagnostics.swift.
     private var remindersHitTestRows: [String] {
-        [
-            "Button: \(hitTestFrames["Add Reminder button"]?.hitTestDescription ?? "measuring…")",
-            "Header: \(hitTestFrames["Reminders headerSection"]?.hitTestDescription ?? "measuring…")",
-            "Action count: \(addReminderActionCount)",
+        let button = hitTestFrames["Add Reminder button"]
+        let header = hitTestFrames["Reminders headerSection"]
+        let title = hitTestFrames["Reminders headerTitleStack"]
+        let rawLabel = hitTestFrames["Reminders label content"]
+        let paddedLabel = hitTestFrames["Reminders padded label"]
+        let plus = hitTestFrames["Reminders plus image"]
+        let text = hitTestFrames["Reminders Add Reminder text"]
+        let deadX = HitTestDiagnosticReference.deadX
+
+        var rows: [String] = [
+            "Outer Button: \(button?.hitTestDescription ?? "measuring…")",
+            "Header: \(header?.hitTestDescription ?? "measuring…")",
+            "Title: \(title?.hitTestDescription ?? "measuring…")",
+            "Padded label: \(paddedLabel?.hitTestDescription ?? "measuring…")",
+            "Raw label: \(rawLabel?.hitTestDescription ?? "measuring…")",
+            "Plus: \(plus?.hitTestDescription ?? "measuring…")",
+            "Text: \(text?.hitTestDescription ?? "measuring…")"
+        ]
+
+        if let title, let button {
+            let gap = button.minX - title.maxX
+            rows.append("Title→Button gap: \(Int(gap.rounded())) pt")
+            rows.append("Overlap: \(title.intersects(button) ? "YES" : "NO")")
+        } else {
+            rows.append("Title→Button gap: measuring…")
+            rows.append("Overlap: measuring…")
+        }
+
+        if let paddedLabel, let button {
+            rows.append("Padded==Outer: \(paddedLabel.isApproximatelyEqual(to: button) ? "YES" : "NO")")
+        } else {
+            rows.append("Padded==Outer: measuring…")
+        }
+
+        rows.append(
+            "Dead-x \(Int(deadX)): outer \(button.map { $0.containsX(deadX) }.hitTestYesNo)" +
+            " | padded \(paddedLabel.map { $0.containsX(deadX) }.hitTestYesNo)" +
+            " | raw \(rawLabel.map { $0.containsX(deadX) }.hitTestYesNo)"
+        )
+
+        rows.append(contentsOf: [
+            "Action: \(addReminderActionCount)",
             "Button probe: \(addReminderButtonProbe.count) | last: \(addReminderButtonProbe.lastLocation?.hitTestDescription ?? "—")",
             "Header probe: \(headerSectionProbe.count) | last: \(headerSectionProbe.lastLocation?.hitTestDescription ?? "—")",
             "Scroll probe: \(scrollViewProbe.count) | last: \(scrollViewProbe.lastLocation?.hitTestDescription ?? "—")",
             "Root probe: \(navigationRootProbe.count) | last: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")"
-        ]
+        ])
+
+        return rows
     }
 
     private var vehicleFilterRow: some View {
@@ -368,6 +408,10 @@ struct RemindersView: View {
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
+            // TEMPORARY — hit-test diagnostic, Phase 2 level R-H1 (title stack, control group).
+            // See TemporaryHitTestDiagnostics.swift. Geometry only — no tap probe added here,
+            // per Phase 2's geometry-only scope for child views.
+            .measureHitTestFrame("Reminders headerTitleStack")
 
             Spacer()
 
@@ -379,12 +423,26 @@ struct RemindersView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
+                        // TEMPORARY — Phase 2 level R-H5 (plus glyph, control group). See
+                        // TemporaryHitTestDiagnostics.swift.
+                        .measureHitTestFrame("Reminders plus image")
                     Text("Add Reminder")
+                        // TEMPORARY — Phase 2 level R-H6 ("Add Reminder" text, control group).
+                        // See TemporaryHitTestDiagnostics.swift.
+                        .measureHitTestFrame("Reminders Add Reminder text")
                 }
+                // TEMPORARY — Phase 2 level R-H3: raw label content, measured BEFORE padding is
+                // applied below (control group). See TemporaryHitTestDiagnostics.swift.
+                .measureHitTestFrame("Reminders label content")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
+                // TEMPORARY — Phase 2 level R-H4: padded label, measured AFTER padding but
+                // BEFORE .background/.clipShape below (control group) — see the matching
+                // comment on Garage's addVehicleButton for why one measurement here already
+                // equals the visible pill's frame. See TemporaryHitTestDiagnostics.swift.
+                .measureHitTestFrame("Reminders padded label")
                 .background(AppTheme.Colors.accentGreen)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }

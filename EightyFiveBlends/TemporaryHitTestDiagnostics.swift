@@ -87,6 +87,23 @@ extension CGRect {
     var hitTestDescription: String {
         "x \(Int(minX.rounded()))...\(Int(maxX.rounded())) w \(Int(width.rounded())) | y \(Int(minY.rounded()))...\(Int(maxY.rounded())) h \(Int(height.rounded()))"
     }
+
+    /// Whether this frame's horizontal span alone contains `x` — ignores Y deliberately: the
+    /// Phase 1 device evidence for the "dead" tap only reported an X coordinate, so this checks
+    /// exactly what that evidence can support, nothing more.
+    func containsX(_ x: CGFloat) -> Bool {
+        x >= minX && x <= maxX
+    }
+
+    /// Whether this frame is within `tolerance` points of `other` on every edge — used to
+    /// compare two independently-measured frames (e.g. "does the padded label span the same
+    /// area as the Button's own outer frame?") without floating-point exact-equality noise.
+    func isApproximatelyEqual(to other: CGRect, tolerance: CGFloat = 1) -> Bool {
+        abs(minX - other.minX) <= tolerance &&
+            abs(maxX - other.maxX) <= tolerance &&
+            abs(minY - other.minY) <= tolerance &&
+            abs(maxY - other.maxY) <= tolerance
+    }
 }
 
 extension CGPoint {
@@ -94,6 +111,26 @@ extension CGPoint {
     var hitTestDescription: String {
         "x \(Int(x.rounded())), y \(Int(y.rounded()))"
     }
+}
+
+extension Optional where Wrapped == Bool {
+    /// "yes"/"no" when known, "?" while the frames this depends on are still being measured
+    /// (SwiftUI's first layout pass hasn't reported a preference value yet).
+    var hitTestYesNo: String {
+        switch self {
+        case .some(true): return "yes"
+        case .some(false): return "no"
+        case .none: return "?"
+        }
+    }
+}
+
+/// Phase 1 real-device evidence located the "dead" tap at approximately this global X — used
+/// only to annotate the diagnostic readout ("does frame F span this X?"); never read by, or
+/// fed back into, any production decision. Diagnostic-only by construction: this type has no
+/// members besides this one constant.
+enum HitTestDiagnosticReference {
+    static let deadX: CGFloat = 305
 }
 
 /// Compact, screenshot-friendly readout of whatever rows a caller assembles. Purely
