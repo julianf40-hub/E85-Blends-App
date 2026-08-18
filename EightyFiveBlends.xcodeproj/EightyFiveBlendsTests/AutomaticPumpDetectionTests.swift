@@ -49,6 +49,24 @@
 //    AutomaticPumpDetectionCooldownTests below (suppressesDuplicateWithinCooldown /
 //    allowsAfterConfirmedExit) — unmodified by this follow-up.
 //
+//  Re-enable reconciliation follow-up: fixes a real-device report of "toggle Automatic Pump
+//  Detection off then back on from Preferences — the monitored-station count stays at 0 instead
+//  of restoring." Root cause: AutomaticPumpDetectionService.enable() never itself called
+//  refreshMonitoredStations(...) despite its own doc comment implying it did; nothing else was
+//  guaranteed to trigger a refresh again immediately while the user stayed on the Preferences
+//  screen. Fixed at the call site (AutomaticPumpDetectionPreferenceCard.reconcileMonitoredStations()),
+//  not in this service — enable()/disable()/refreshMonitoredStations() themselves are unchanged
+//  except for doc comments (see below). The two scenarios below need a live StationLocationManager
+//  and SwiftUI's @Observable change propagation to exercise for real, so — same convention as
+//  above — they're recorded as inspection facts rather than faked with a mock:
+//  - "Re-enabling with a coordinate already available force-refreshes immediately": verified by
+//    reading reconcileMonitoredStations() calling refreshMonitoredStations(force: true) synchronously
+//    when locationManager.latestCoordinate != nil, right after enable() resolves.
+//  - "Re-enabling with no coordinate yet still recovers once one arrives": verified by reading
+//    reconcileMonitoredStations()'s else-branch (requestUserLocation() + the one-shot
+//    isAwaitingCoordinateForReconciliation latch) and the card's .onChange(of:
+//    locationManager.latestCoordinate), which consumes that latch exactly once.
+//
 
 import CoreLocation
 import Foundation
@@ -384,5 +402,52 @@ struct AutomaticPumpDetectionServiceTests {
 
         #expect(PumpProximity.isAtPump(distanceMeters: 25, horizontalAccuracyMeters: 5, wasAtPump: false))
         #expect(!PumpProximity.isAtPump(distanceMeters: 35, horizontalAccuracyMeters: 5, wasAtPump: false))
+    }
+
+    @Test("A disabled feature never rebuilds its monitored-station set, even when asked to")
+    func refreshIsANoOpWhileDisabled() {
+        // refreshMonitoredStations(...)'s very first line is `guard isEnabled else { return }`
+        // — checked before it ever touches `locationManager` — so this is safe to call on a
+        // fresh (disabled), unattached service without a real CLLocationManager, same
+        // justification as disableClearsState() above. force: true must not bypass this gate;
+        // it only bypasses the movement-distance throttle further down. Explicitly disabled
+        // rather than relying on a fresh instance's default — isEnabled is seeded from
+        // UserDefaults.standard in init(), which this test doesn't control.
+        let service = AutomaticPumpDetectionService()
+        service.disable()
+        #expect(service.isEnabled == false)
+
+        service.refreshMonitoredStations(
+            savedStations: [SavedStationSnapshot(name: "Test Station", latitude: 40, longitude: -83, address: nil)],
+            userLatitude: 40,
+            userLongitude: -83,
+            force: true,
+            reason: "unit test"
+        )
+
+        #expect(service.monitoredStationCount == 0)
+    }
+
+    @Test("Requesting a refresh on an unattached-but-enabled service is a harmless no-op")
+    func refreshIsANoOpWhenUnattached() async {
+        // Mirrors exactly what AutomaticPumpDetectionPreferenceCard.reconcileMonitoredStations()
+        // does right after enable() resolves — including the (non-production, but must-not-crash)
+        // case where attach(to:) was never called. enable() sets isEnabled = true before its own
+        // `guard let locationManager else { return }`, so an unattached service ends up enabled
+        // with no locationManager — a genuinely different path than isEnabled == false above,
+        // exercising refreshMonitoredStations's own `guard let locationManager, ...` instead.
+        let service = AutomaticPumpDetectionService()
+        await service.enable()
+        #expect(service.isEnabled == true)
+
+        service.refreshMonitoredStations(
+            savedStations: [SavedStationSnapshot(name: "Test Station", latitude: 40, longitude: -83, address: nil)],
+            userLatitude: 40,
+            userLongitude: -83,
+            force: true,
+            reason: "unit test"
+        )
+
+        #expect(service.monitoredStationCount == 0)
     }
 }

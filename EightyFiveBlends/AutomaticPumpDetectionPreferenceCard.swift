@@ -15,11 +15,30 @@
 //  environment (injected once, in EightyFiveBlendsApp) and never constructs its own. Free for
 //  all users — not gated by Pro entitlement, Simple Mode, or Garage/Reminders tab visibility.
 //
+//  Also owns re-enable reconciliation: AutomaticPumpDetectionService deliberately never touches
+//  SwiftData/FuelStation (see that file's header), so it cannot rebuild its own monitored-
+//  station set after enable() — a caller that already has saved stations must push a refresh.
+//  Stations does this on every location/authorization/saved-station change (see
+//  StationsView.refreshPumpDetectionMonitoredStations), but none of those events necessarily
+//  fires again right after the user flips this toggle back on from Preferences, which is what
+//  previously left the monitored count stranded at the disable()-cleared value of 0 until the
+//  user did something else (moved, visited Stations, relaunched). See reconcileMonitoredStations
+//  below for the fix — it queries the SAME [FuelStation] this app already has and maps them
+//  with the identical field-by-field conversion StationsView uses, so the two call sites can
+//  never drift into subtly different snapshots.
 
+import SwiftData
 import SwiftUI
 
 struct AutomaticPumpDetectionPreferenceCard: View {
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
+    @Environment(StationLocationManager.self) private var locationManager
+    @Query(sort: \FuelStation.updatedAt, order: .reverse) private var stations: [FuelStation]
+
+    // Set only while waiting for a fresh coordinate to arrive after re-enabling with none
+    // available yet — see reconcileMonitoredStations()/the .onChange below. Never anything
+    // more than a one-shot latch; not persisted, not a second monitoring state.
+    @State private var isAwaitingCoordinateForReconciliation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -56,21 +75,71 @@ struct AutomaticPumpDetectionPreferenceCard: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        // Reconciliation is bounded to exactly one retry: if enable() resolves before a
+        // coordinate is available, isAwaitingCoordinateForReconciliation latches true and this
+        // fires once when the next coordinate arrives. No timers, no polling — latestCoordinate
+        // is already @Observable, so this is the same pattern StationsView's own
+        // .onChange(of: locationManager.latestCoordinate) uses for its own refresh.
+        .onChange(of: locationManager.latestCoordinate) { _, newCoordinate in
+            guard isAwaitingCoordinateForReconciliation, newCoordinate != nil else { return }
+            isAwaitingCoordinateForReconciliation = false
+            refreshMonitoredStations(force: true)
+        }
     }
 
     // Identical to Stations' former binding: the service remains the single source of truth
-    // for isEnabled — this reads/writes it directly, never a second UserDefaults key.
+    // for isEnabled — this reads/writes it directly, never a second UserDefaults key. The only
+    // addition versus the old Stations binding is the reconciliation call after enable() —
+    // see reconcileMonitoredStations().
     private var toggleBinding: Binding<Bool> {
         Binding(
             get: { pumpDetectionService.isEnabled },
             set: { isOn in
                 AppHaptics.selection()
                 if isOn {
-                    Task { await pumpDetectionService.enable() }
+                    Task {
+                        await pumpDetectionService.enable()
+                        reconcileMonitoredStations()
+                    }
                 } else {
                     pumpDetectionService.disable()
                 }
             }
+        )
+    }
+
+    // Runs immediately after enable() resolves. refreshMonitoredStations(savedStations:...)
+    // already guards on isEnabled/Always-authorization internally and is a harmless no-op when
+    // those aren't met (e.g. When-In-Use-only, or Always denied) — so it's always safe to call
+    // here without re-checking status first. The only thing this function adds on top of that
+    // is handling the one edge case AutomaticPumpDetectionService can't: no coordinate yet.
+    private func reconcileMonitoredStations() {
+        if locationManager.latestCoordinate != nil {
+            refreshMonitoredStations(force: true)
+        } else {
+            // requestUserLocation() is safe to call here even if authorization is still
+            // .notDetermined for some reason (it would just re-prompt); in the normal re-enable
+            // path authorization is already resolved by enable() above, so this reaches
+            // manager.requestLocation() directly — no fresh permission prompt.
+            isAwaitingCoordinateForReconciliation = true
+            locationManager.requestUserLocation()
+        }
+    }
+
+    // force: true bypasses AutomaticPumpDetectionService's movement-distance throttle
+    // (shouldSkipRefresh), which exists to avoid rebuilding on every minor GPS update — that
+    // throttle must NOT suppress an explicit re-enable, since the user just watched the count
+    // drop to 0 and expects it to come back without walking 500 m first. Field-by-field mapping
+    // kept identical to StationsView.refreshPumpDetectionMonitoredStations by design (see the
+    // file header comment) — do not let these two drift apart.
+    private func refreshMonitoredStations(force: Bool) {
+        let snapshots = stations.map {
+            SavedStationSnapshot(name: $0.name, latitude: $0.latitude, longitude: $0.longitude, address: $0.address)
+        }
+        pumpDetectionService.refreshMonitoredStations(
+            savedStations: snapshots,
+            force: force,
+            reason: "Automatic Pump Detection re-enabled from Preferences"
         )
     }
 

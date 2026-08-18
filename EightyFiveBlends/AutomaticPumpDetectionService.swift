@@ -22,8 +22,9 @@
 //  This service owns only its own state (enabled flag, monitored-station metadata,
 //  per-station cooldown). It never touches SwiftData/FuelStation directly — callers that
 //  already have `[FuelStation]` map into `SavedStationSnapshot` at the call site (see
-//  StationsView/CalculatorView), keeping this file free of persistence-layer coupling and
-//  fully independent of Garage/FuelLog data.
+//  StationsView/CalculatorView, and AutomaticPumpDetectionPreferenceCard's re-enable
+//  reconciliation), keeping this file free of persistence-layer coupling and fully
+//  independent of Garage/FuelLog data.
 //
 
 import CoreLocation
@@ -166,13 +167,19 @@ final class AutomaticPumpDetectionService: NSObject {
     // MARK: - Enable / disable (staged authorization)
 
     /// Staged enable flow, run only when the user explicitly turns the feature on:
-    /// 1. (In-app explanation is the always-visible Settings card copy — see StationsView.)
+    /// 1. (In-app explanation is the always-visible Settings card copy — see
+    ///    AutomaticPumpDetectionPreferenceCard.)
     /// 2. Request When In Use if `.notDetermined`.
     /// 3. If When In Use is granted, request Always.
     /// 4. Request notification permission.
-    /// 5. Refresh the monitored set if Always was granted; otherwise the feature stays
-    ///    "enabled" but inert in the background — foreground detection keeps working
-    ///    regardless, via the pre-existing CalculatorView path, which needs none of this.
+    ///
+    /// Deliberately does NOT itself rebuild the monitored-station set — this service never
+    /// touches SwiftData/FuelStation (see the file header), so it has no saved stations to
+    /// build one from. The caller is responsible for following a successful `enable()` with
+    /// `refreshMonitoredStations(savedStations:force:reason:)` once it has current station
+    /// data — see AutomaticPumpDetectionPreferenceCard's toggle handling, which does this
+    /// immediately on re-enable so the monitored count doesn't stay stranded at 0 after an
+    /// off/on cycle.
     func enable() async {
         isEnabled = true
         lastEnableFailureReason = nil
@@ -197,7 +204,7 @@ final class AutomaticPumpDetectionService: NSObject {
         }
 
         if locationManager.isAuthorizedAlways {
-            debugLog("Always authorization granted — refreshing monitored set.")
+            debugLog("Always authorization granted — caller should now refresh the monitored set.")
         } else {
             lastEnableFailureReason = lastEnableFailureReason ?? "Background detection needs Always location access. You can grant it later in Settings — foreground detection works with When In Use."
             debugLog("Always not granted — background monitoring inactive; foreground detection continues via the existing CalculatorView path.")
