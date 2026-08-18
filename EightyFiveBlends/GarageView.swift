@@ -22,6 +22,15 @@ struct GarageView: View {
     @State private var odometerValidationMessage: String?
     @State private var saveErrorMessage: String?
 
+    // TEMPORARY — hit-test diagnostic state. See TemporaryHitTestDiagnostics.swift. Session-only,
+    // never persisted, remove alongside the instrumentation below once the investigation concludes.
+    @State private var addVehicleActionCount = 0
+    @State private var hitTestFrames: [String: CGRect] = [:]
+    @State private var addVehicleButtonProbe = HitTestProbeState()
+    @State private var headerSectionProbe = HitTestProbeState()
+    @State private var scrollViewProbe = HitTestProbeState()
+    @State private var navigationRootProbe = HitTestProbeState()
+
     private var activeVehicle: VehicleProfile? {
         vehicles.first(where: { $0.isActive })
     }
@@ -52,8 +61,17 @@ struct GarageView: View {
             }
             .background(AppTheme.Colors.charcoal)
             .toolbar(.hidden, for: .navigationBar)
+            // TEMPORARY — hit-test diagnostic, level G3 (ScrollView). See
+            // TemporaryHitTestDiagnostics.swift.
+            .measureHitTestFrame("Garage ScrollView")
+            .tapProbe { scrollViewProbe.record($0) }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        // TEMPORARY — hit-test diagnostic, level G4 (NavigationStack/root). See
+        // TemporaryHitTestDiagnostics.swift.
+        .measureHitTestFrame("Garage NavigationStack")
+        .tapProbe { navigationRootProbe.record($0) }
+        .onPreferenceChange(HitTestFramePreferenceKey.self) { hitTestFrames = $0 }
         .sheet(item: $sheetContext) { context in
             AddEditVehicleView(
                 vehicle: context.vehicle,
@@ -97,6 +115,29 @@ struct GarageView: View {
         } message: {
             Text(saveErrorMessage ?? "")
         }
+        // TEMPORARY — hit-test diagnostic readout. See TemporaryHitTestDiagnostics.swift.
+        // allowsHitTesting(false) guarantees this can never intercept a touch; bottom-leading
+        // placement keeps it clear of the header/button under test.
+        .overlay(alignment: .bottomLeading) {
+            HitTestDiagnosticReadout(title: "GARAGE HIT TEST", rows: garageHitTestRows)
+                .padding(.leading, 12)
+                .padding(.bottom, 12)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // TEMPORARY — feeds the diagnostic readout overlay above. See
+    // TemporaryHitTestDiagnostics.swift.
+    private var garageHitTestRows: [String] {
+        [
+            "Button: \(hitTestFrames["Add Vehicle button"]?.hitTestDescription ?? "measuring…")",
+            "Header: \(hitTestFrames["Garage headerSection"]?.hitTestDescription ?? "measuring…")",
+            "Action count: \(addVehicleActionCount)",
+            "Button probe: \(addVehicleButtonProbe.count) | last: \(addVehicleButtonProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Header probe: \(headerSectionProbe.count) | last: \(headerSectionProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Scroll probe: \(scrollViewProbe.count) | last: \(scrollViewProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Root probe: \(navigationRootProbe.count) | last: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")"
+        ]
     }
 
     private var headerSection: some View {
@@ -107,6 +148,10 @@ struct GarageView: View {
 
             addVehicleButton
         }
+        // TEMPORARY — hit-test diagnostic, level G2 (headerSection). See
+        // TemporaryHitTestDiagnostics.swift.
+        .measureHitTestFrame("Garage headerSection")
+        .tapProbe { headerSectionProbe.record($0) }
     }
 
     private var headerTitleStack: some View {
@@ -128,6 +173,8 @@ struct GarageView: View {
 
     private var addVehicleButton: some View {
         Button {
+            // TEMPORARY — hit-test diagnostic counter. See TemporaryHitTestDiagnostics.swift.
+            addVehicleActionCount += 1
             sheetContext = .add
         } label: {
             HStack(spacing: 8) {
@@ -141,6 +188,11 @@ struct GarageView: View {
             .background(AppTheme.Colors.accentGreen)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        // TEMPORARY — hit-test diagnostic, level G1 (Button). See
+        // TemporaryHitTestDiagnostics.swift. Chained after the button's existing, unmodified
+        // definition — does not touch its visual chrome, sizing, or the label's own modifiers.
+        .measureHitTestFrame("Add Vehicle button")
+        .tapProbe { addVehicleButtonProbe.record($0) }
     }
 
     private var savedVehiclesSection: some View {

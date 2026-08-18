@@ -32,6 +32,16 @@ struct RemindersView: View {
     @State private var saveErrorMessage: String?
     @State private var vehicleFilter: ReminderVehicleFilter = .activeVehicle
 
+    // TEMPORARY — hit-test diagnostic state (control group for the Garage Add Vehicle
+    // investigation). See TemporaryHitTestDiagnostics.swift. Session-only, never persisted,
+    // remove alongside the instrumentation below once the investigation concludes.
+    @State private var addReminderActionCount = 0
+    @State private var hitTestFrames: [String: CGRect] = [:]
+    @State private var addReminderButtonProbe = HitTestProbeState()
+    @State private var headerSectionProbe = HitTestProbeState()
+    @State private var scrollViewProbe = HitTestProbeState()
+    @State private var navigationRootProbe = HitTestProbeState()
+
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
     }
@@ -168,8 +178,17 @@ struct RemindersView: View {
             }
             .background(AppTheme.Colors.charcoal)
             .toolbar(.hidden, for: .navigationBar)
+            // TEMPORARY — hit-test diagnostic, level R3 (ScrollView). See
+            // TemporaryHitTestDiagnostics.swift.
+            .measureHitTestFrame("Reminders ScrollView")
+            .tapProbe { scrollViewProbe.record($0) }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+        // TEMPORARY — hit-test diagnostic, level R4 (NavigationStack/root). See
+        // TemporaryHitTestDiagnostics.swift.
+        .measureHitTestFrame("Reminders NavigationStack")
+        .tapProbe { navigationRootProbe.record($0) }
+        .onPreferenceChange(HitTestFramePreferenceKey.self) { hitTestFrames = $0 }
         .overlay(alignment: .top) {
             if let reminderFeedbackMessage {
                 feedbackBanner(text: reminderFeedbackMessage)
@@ -243,6 +262,30 @@ struct RemindersView: View {
                 vehicleFilter = .activeVehicle
             }
         }
+        // TEMPORARY — hit-test diagnostic readout (control group). See
+        // TemporaryHitTestDiagnostics.swift. allowsHitTesting(false) guarantees this can never
+        // intercept a touch; bottom-leading placement keeps it clear of the header/button under
+        // test and clear of the existing top-aligned feedback banner overlay above.
+        .overlay(alignment: .bottomLeading) {
+            HitTestDiagnosticReadout(title: "REMINDERS HIT TEST", rows: remindersHitTestRows)
+                .padding(.leading, 12)
+                .padding(.bottom, 12)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // TEMPORARY — feeds the diagnostic readout overlay above. See
+    // TemporaryHitTestDiagnostics.swift.
+    private var remindersHitTestRows: [String] {
+        [
+            "Button: \(hitTestFrames["Add Reminder button"]?.hitTestDescription ?? "measuring…")",
+            "Header: \(hitTestFrames["Reminders headerSection"]?.hitTestDescription ?? "measuring…")",
+            "Action count: \(addReminderActionCount)",
+            "Button probe: \(addReminderButtonProbe.count) | last: \(addReminderButtonProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Header probe: \(headerSectionProbe.count) | last: \(headerSectionProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Scroll probe: \(scrollViewProbe.count) | last: \(scrollViewProbe.lastLocation?.hitTestDescription ?? "—")",
+            "Root probe: \(navigationRootProbe.count) | last: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")"
+        ]
     }
 
     private var vehicleFilterRow: some View {
@@ -329,6 +372,9 @@ struct RemindersView: View {
             Spacer()
 
             Button {
+                // TEMPORARY — hit-test diagnostic counter (control group). See
+                // TemporaryHitTestDiagnostics.swift.
+                addReminderActionCount += 1
                 isAddingReminder = true
             } label: {
                 HStack(spacing: 8) {
@@ -342,7 +388,17 @@ struct RemindersView: View {
                 .background(AppTheme.Colors.accentGreen)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
+            // TEMPORARY — hit-test diagnostic, level R1 (Button). See
+            // TemporaryHitTestDiagnostics.swift. Chained after the button's existing,
+            // unmodified definition — does not touch its visual chrome, sizing, or the label's
+            // own modifiers.
+            .measureHitTestFrame("Add Reminder button")
+            .tapProbe { addReminderButtonProbe.record($0) }
         }
+        // TEMPORARY — hit-test diagnostic, level R2 (headerSection). See
+        // TemporaryHitTestDiagnostics.swift.
+        .measureHitTestFrame("Reminders headerSection")
+        .tapProbe { headerSectionProbe.record($0) }
     }
 
     @ViewBuilder
