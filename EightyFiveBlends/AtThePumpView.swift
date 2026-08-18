@@ -96,29 +96,48 @@ struct AtThePumpView: View {
         // corrupt preference can never produce an out-of-range calculation.
         let saved = AtThePumpView.savedSetup()
 
-        let resolvedTankSize = activeVehicle?.tankSizeGallons ?? initialTankSizeGallons
-        // Precedence for "what's in the tank": last logged blend beats the vehicle's
-        // static default, which beats whatever the calculator screen had typed in.
-        // Saved setup deliberately never feeds this value.
-        let resolvedCurrentEthanol = lastLoggedBlendPercent
-            ?? activeVehicle?.defaultCurrentEthanolPercent
-            ?? initialCurrentFuelEthanolPercent
-        // Pump content: last visit beats generic defaults — the same pump usually
-        // dispenses the same fuel next week. When restoring into Custom mode, clamp to
-        // the Custom slider's range so the slider position and the math can't disagree.
-        var resolvedPumpEthanol = saved.pumpE85Content
-            ?? activeVehicle?.defaultPumpEthanolPercent
-            ?? initialE85EthanolPercent
+        // Tank size: the vehicle's own real capacity if it has one (audit item 4) — a selected
+        // vehicle with no known tank capacity must never be silently treated as a real number.
+        // Falls through to whatever the Calculator tab already had, which itself is left blank
+        // rather than defaulted to 16 for a selected vehicle with no tank size (see
+        // CalculatorView.applyDefaultsIfNeeded) — so the user can still type a real tank size
+        // directly in Calculator without needing to visit Garage. If neither has one,
+        // BlendCalculator's existing "Enter a tank size greater than 0 gallons" guard clearly
+        // blocks the calculation rather than silently computing a misleading result.
+        let resolvedTankSize = TankSizeResolution.resolve(
+            vehicleTankSizeGallons: activeVehicle?.tankSizeGallons,
+            calculatorTankSizeGallons: initialTankSizeGallons
+        )
+
+        // Current ethanol: tank/fill state, not a vehicle property (audit item 8) — resolved the
+        // same way as the main Calculator tab via CurrentEthanolResolution, so the two screens
+        // can never disagree. lastLoggedBlendPercent is already scoped to THIS vehicle by the
+        // caller (CalculatorView.lastLoggedBlendForActiveVehicle), so switching vehicles can
+        // never leak a different vehicle's current ethanol in here.
+        let resolvedCurrentEthanol = CurrentEthanolResolution.resolve(latestLoggedBlendPercent: lastLoggedBlendPercent)
+
+        // Pump content: session/app-level state, not a vehicle property (audit item 9) —
+        // resolved via the same remembered-preference store the main Calculator tab now also
+        // reads/writes, so a pump ethanol typed in either screen is remembered for both. When
+        // restoring into Custom mode, clamp to the Custom slider's range so the slider position
+        // and the math can't disagree.
+        var resolvedPumpEthanol = PumpEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedPumpEthanolPercent())
         if saved.fuelType == .custom {
             resolvedPumpEthanol = min(max(resolvedPumpEthanol, 50), 95)
         }
-        // Target: "Max E85" intent is restored against today's pump content; otherwise
-        // last visit's number, then the vehicle preference, then the calculator value.
+        // Target: "Max E85" intent is restored against today's pump content; otherwise last
+        // visit's own pump-session target (unchanged, pre-existing memory) still wins first;
+        // below that, the shared Preferred Ethanol Target resolution (audit item 11) replaces
+        // the old raw vehicle-default read — a legacy-semantics vehicle keeps its stored legacy
+        // target, a new-semantics vehicle uses its own preference / the app-level preference /
+        // E30, exactly as the main Calculator tab resolves it, so the two screens can never
+        // disagree once there's no more specific pump-visit memory to use.
         let resolvedTargetEthanol = saved.targetIsMaxE85
             ? resolvedPumpEthanol
-            : (saved.targetBlend ?? activeVehicle?.defaultTargetEthanolPercent ?? initialTargetEthanolPercent)
+            : (saved.targetBlend ?? PreferredTargetResolution.resolve(vehicle: activeVehicle, appPreferredTarget: AppPreferredTargetBlend.currentPercent()))
         let resolvedFuelLevel = saved.fuelLevel ?? initialCurrentFuelLevelPercent
-        let resolvedGasEthanol = activeVehicle?.gasEthanolPercent ?? initialGasEthanolPercent
+        // Gas ethanol: an app-level advanced setting, not a vehicle property (audit item 10).
+        let resolvedGasEthanol = GasEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedGasEthanolPercent())
         let resolvedGasOctane = activeVehicle?.requiredOctane ?? initialGasOctane
 
         restoredFuelLevelPercent = saved.fuelLevel
@@ -186,7 +205,9 @@ struct AtThePumpView: View {
         let defaults = UserDefaults.standard
         defaults.set(targetEthanolPercent, forKey: AppPreferenceKey.lastPumpTargetBlend)
         defaults.set(isMaxE85Selected, forKey: AppPreferenceKey.lastPumpTargetIsMaxE85)
-        defaults.set(e85EthanolPercent, forKey: AppPreferenceKey.lastPumpE85Content)
+        // Routed through the same centralized store the main Calculator tab now reads/writes
+        // (audit item 9) — same key as before (lastPumpE85Content), just written from one place.
+        RememberedFuelPreferenceStore.rememberPumpEthanolPercent(e85EthanolPercent)
         defaults.set(currentFuelLevelPercent, forKey: AppPreferenceKey.lastPumpFuelLevel)
         defaults.set(pumpFuelSelection.rawValue, forKey: AppPreferenceKey.lastPumpFuelType)
     }

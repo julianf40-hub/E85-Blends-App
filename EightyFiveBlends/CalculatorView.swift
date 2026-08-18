@@ -32,6 +32,9 @@ struct CalculatorView: View {
     @State private var gasEthanol = "10"
     @State private var gasOctane = "91"
     @State private var loadedDefaultsKey = ""
+    // Pump/Gas Ethanol app-level preferences are loaded once per view lifetime, independent of
+    // the active-vehicle-triggered defaults refresh above — see loadRememberedFuelPreferencesIfNeeded().
+    @State private var hasLoadedRememberedFuelPreferences = false
     @State private var calculatorFuelLogDraft: FuelLogDraft?
     @State private var isShowingCompareFuelCost = false
     @Environment(StationLocationManager.self) private var locationManager
@@ -55,15 +58,34 @@ struct CalculatorView: View {
     /// never mutate a later, unrelated session (Phase 8).
     @State private var pumpModeSessionToken = 0
 
+    // No vehicle selected at all — unaffected by the 2.3.0 Garage simplification's "don't
+    // silently pretend a SELECTED vehicle has a 16-gallon tank" rule (audit item 4); this is
+    // just the generic starting point shown with no vehicle context, freely editable.
     private var fallbackDefaults: CalculatorDefaults {
         CalculatorDefaults(
             nickname: "No Vehicle Selected",
             tankSizeGallons: 16,
-            targetEthanolPercent: preferredTargetBlendValue,
-            currentEthanolPercent: 10,
-            pumpEthanolPercent: 85,
-            gasEthanolPercent: 10,
+            targetEthanolPercent: PreferredTargetResolution.resolve(vehicle: nil, appPreferredTarget: preferredTargetBlendValue),
+            currentEthanolPercent: CurrentEthanolResolution.resolve(latestLoggedBlendPercent: nil),
             gasOctane: 91
+        )
+    }
+
+    // Vehicle-scoped calculator defaults — tank size, Preferred Ethanol Target, Current Ethanol
+    // (from Fuel Log history), and required octane. Pump Ethanol and Gas Ethanol are NOT part of
+    // this: they are app-level "remembered" preferences now, loaded once independently of the
+    // active vehicle — see loadRememberedFuelPreferencesIfNeeded().
+    private func calculatorDefaults(for vehicle: VehicleProfile) -> CalculatorDefaults {
+        CalculatorDefaults(
+            nickname: vehicle.nickname.isEmpty ? "No Vehicle Selected" : vehicle.nickname,
+            // Raw value, NOT `> 0 ? … : 16` — a selected vehicle with no known tank capacity
+            // must never be silently treated as 16 gallons (audit item 4). applyDefaultsIfNeeded
+            // renders 0 as a blank field, and BlendCalculator's existing "Enter a tank size
+            // greater than 0 gallons" guard clearly communicates what's missing.
+            tankSizeGallons: vehicle.tankSizeGallons,
+            targetEthanolPercent: PreferredTargetResolution.resolve(vehicle: vehicle, appPreferredTarget: preferredTargetBlendValue),
+            currentEthanolPercent: CurrentEthanolResolution.resolve(latestLoggedBlendPercent: lastLoggedBlendForActiveVehicle),
+            gasOctane: vehicle.requiredOctane
         )
     }
 
@@ -88,6 +110,10 @@ struct CalculatorView: View {
             .finalBlendPercent
     }
 
+    // Pump/Gas Ethanol are deliberately NOT part of this key — they're app-level preferences
+    // now (loaded once, independent of the active vehicle) rather than vehicle fields, so
+    // switching vehicles must never reset them. defaultTargetEthanolPercent is still included
+    // because a legacy-semantics vehicle's effective target comes directly from it.
     private var activeVehicleKey: String {
         guard let activeVehicle else {
             return "no-vehicle"
@@ -98,12 +124,23 @@ struct CalculatorView: View {
             String(activeVehicle.createdAt.timeIntervalSinceReferenceDate),
             String(activeVehicle.updatedAt.timeIntervalSinceReferenceDate),
             String(activeVehicle.tankSizeGallons),
+            String(activeVehicle.calculatorPreferenceSemanticsVersion),
+            String(activeVehicle.preferredEthanolTargetPercent ?? -1),
             String(activeVehicle.defaultTargetEthanolPercent),
-            String(activeVehicle.defaultCurrentEthanolPercent),
-            String(activeVehicle.defaultPumpEthanolPercent),
-            String(activeVehicle.gasEthanolPercent),
             String(activeVehicle.requiredOctane),
+            String(lastLoggedBlendForActiveVehicle ?? -1),
         ].joined(separator: "|")
+    }
+
+    // True when the active vehicle's resolved Preferred Ethanol Target actually depends on the
+    // app-level preference (no vehicle at all, or a new-semantics vehicle with no target set) —
+    // used to decide whether a change to that app-level preference needs to re-sync Calculator.
+    // A legacy-semantics vehicle's target never depends on it (PreferredTargetResolution always
+    // honors defaultTargetEthanolPercent for those), so it must NOT trigger a refresh there.
+    private var activeVehicleTargetDependsOnAppPreference: Bool {
+        guard let activeVehicle else { return true }
+        return activeVehicle.calculatorPreferenceSemanticsVersion >= VehiclePreferenceSemantics.current
+            && activeVehicle.preferredEthanolTargetPercent == nil
     }
 
     private var headerNickname: String {
@@ -134,7 +171,7 @@ struct CalculatorView: View {
     }
 
     private var preferredTargetBlendValue: Double {
-        Double(preferredDefaultTargetBlend.dropFirst()) ?? 30
+        AppPreferredTargetBlend.percent(fromRawValue: preferredDefaultTargetBlend)
     }
 
     var body: some View {
@@ -217,6 +254,7 @@ struct CalculatorView: View {
         .keyboardDoneToolbar()
         .onAppear {
             applyDefaultsIfNeeded(for: activeVehicleKey)
+            loadRememberedFuelPreferencesIfNeeded()
             requestPumpModeLocationIfNeeded()
             resolvePendingDetectedStationIfNeeded()
             publishForegroundVisitDiagnostics()
@@ -238,10 +276,16 @@ struct CalculatorView: View {
             applyDefaultsIfNeeded(for: newValue)
         }
         .onChange(of: preferredDefaultTargetBlend) { _, _ in
-            if activeVehicle == nil {
+            if activeVehicleTargetDependsOnAppPreference {
                 loadedDefaultsKey = ""
                 applyDefaultsIfNeeded(for: activeVehicleKey)
             }
+        }
+        .onChange(of: e85Ethanol) { _, newValue in
+            rememberPumpEthanolIfValid(newValue)
+        }
+        .onChange(of: gasEthanol) { _, newValue in
+            rememberGasEthanolIfValid(newValue)
         }
         .onChange(of: locationManager.authorizationStatus) { _, newValue in
             handleAuthorizationChange(newValue)
@@ -750,16 +794,41 @@ struct CalculatorView: View {
             return
         }
 
-        let defaults = activeVehicle.map(CalculatorDefaults.init(vehicle:)) ?? fallbackDefaults
+        let defaults = activeVehicle.map(calculatorDefaults(for:)) ?? fallbackDefaults
 
-        tankSize = formatted(defaults.tankSizeGallons)
+        // Blank, not "0" — a selected vehicle with no known tank capacity must never silently
+        // compute from a guessed 16-gallon assumption (audit item 4). Left blank, the field
+        // parses to 0 and BlendCalculator's existing "Enter a tank size greater than 0 gallons"
+        // guard clearly tells the user what's needed, right here in Calculator — no trip back to
+        // Garage required, and nothing is written back to the vehicle from this screen.
+        tankSize = defaults.tankSizeGallons > 0 ? formatted(defaults.tankSizeGallons) : ""
         targetFuelEthanol = formatted(defaults.targetEthanolPercent)
         currentFuelEthanol = formatted(defaults.currentEthanolPercent)
-        e85Ethanol = formatted(defaults.pumpEthanolPercent)
-        gasEthanol = formatted(defaults.gasEthanolPercent)
         gasOctane = formatted(defaults.gasOctane)
         selectedBlend = nearestBlendChip(for: defaults.targetEthanolPercent)
         loadedDefaultsKey = key
+    }
+
+    // Pump Ethanol / Gas Ethanol are app-level "remembered" preferences (audit items 9-10), not
+    // vehicle fields — loaded once per view lifetime rather than on every active-vehicle switch,
+    // so switching vehicles never resets or leaks a session value that was never vehicle-scoped
+    // to begin with.
+    @MainActor
+    private func loadRememberedFuelPreferencesIfNeeded() {
+        guard hasLoadedRememberedFuelPreferences == false else { return }
+        hasLoadedRememberedFuelPreferences = true
+        e85Ethanol = formatted(PumpEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedPumpEthanolPercent()))
+        gasEthanol = formatted(GasEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedGasEthanolPercent()))
+    }
+
+    private func rememberPumpEthanolIfValid(_ text: String) {
+        guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else { return }
+        RememberedFuelPreferenceStore.rememberPumpEthanolPercent(value)
+    }
+
+    private func rememberGasEthanolIfValid(_ text: String) {
+        guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else { return }
+        RememberedFuelPreferenceStore.rememberGasEthanolPercent(value)
     }
 
     private var headerSection: some View {
@@ -877,42 +946,16 @@ struct CalculatorView: View {
         .environment(StationLocationManager())
 }
 
+// Pump Ethanol / Gas Ethanol are intentionally NOT fields here anymore — they're app-level
+// "remembered" preferences (see FuelPreferenceResolution.swift), not vehicle- or
+// active-vehicle-switch-scoped values. See fallbackDefaults / calculatorDefaults(for:) above and
+// loadRememberedFuelPreferencesIfNeeded() for how they're actually resolved.
 private struct CalculatorDefaults {
     let nickname: String
     let tankSizeGallons: Double
     let targetEthanolPercent: Double
     let currentEthanolPercent: Double
-    let pumpEthanolPercent: Double
-    let gasEthanolPercent: Double
     let gasOctane: Double
-
-    init(
-        nickname: String,
-        tankSizeGallons: Double,
-        targetEthanolPercent: Double,
-        currentEthanolPercent: Double,
-        pumpEthanolPercent: Double,
-        gasEthanolPercent: Double,
-        gasOctane: Double
-    ) {
-        self.nickname = nickname
-        self.tankSizeGallons = tankSizeGallons
-        self.targetEthanolPercent = targetEthanolPercent
-        self.currentEthanolPercent = currentEthanolPercent
-        self.pumpEthanolPercent = pumpEthanolPercent
-        self.gasEthanolPercent = gasEthanolPercent
-        self.gasOctane = gasOctane
-    }
-
-    init(vehicle: VehicleProfile) {
-        nickname = vehicle.nickname.isEmpty ? "No Vehicle Selected" : vehicle.nickname
-        tankSizeGallons = vehicle.tankSizeGallons > 0 ? vehicle.tankSizeGallons : 16
-        targetEthanolPercent = vehicle.defaultTargetEthanolPercent
-        currentEthanolPercent = vehicle.defaultCurrentEthanolPercent
-        pumpEthanolPercent = vehicle.defaultPumpEthanolPercent
-        gasEthanolPercent = vehicle.gasEthanolPercent
-        gasOctane = vehicle.requiredOctane
-    }
 }
 
 private struct TargetBlendSelector: View {

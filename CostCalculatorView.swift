@@ -75,8 +75,11 @@ struct CostCalculatorView: View {
     private var e85PriceValue: Double { Double(e85Price) ?? 0 }
     private var gasPriceValue: Double { Double(gasPrice) ?? 0 }
 
-    private var e85Ethanol: Double { activeVehicle?.defaultPumpEthanolPercent ?? 85 }
-    private var gasEthanol: Double { activeVehicle?.gasEthanolPercent ?? 10 }
+    // Pump Ethanol / Gas Ethanol are app-level "remembered" preferences now, not vehicle
+    // properties (audit item 14) — resolved via the exact same centralized functions Calculator
+    // and At The Pump use, so all three screens can never disagree.
+    private var e85Ethanol: Double { PumpEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedPumpEthanolPercent()) }
+    private var gasEthanol: Double { GasEthanolResolution.resolve(remembered: RememberedFuelPreferenceStore.rememberedGasEthanolPercent()) }
 
     private var selectedEthanolPercent: Double {
         selectedStrategy.ethanolPercent ?? customBlendPercent

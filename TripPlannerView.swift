@@ -2954,7 +2954,14 @@ struct TripPlannerView: View {
         if vehicle.tankSizeGallons > 0 {
             tankSizeText = formattedInput(vehicle.tankSizeGallons)
         }
-        targetBlend = nearestBlendOption(to: vehicle.defaultTargetEthanolPercent)
+        // Shared with Calculator/Fuel Log rather than a third target-resolution algorithm (audit
+        // item 12): a legacy-semantics vehicle keeps its stored legacy target; a new-semantics
+        // vehicle with no Preferred Ethanol Target falls through to the app-level preferred
+        // target, then E30.
+        targetBlend = nearestBlendOption(to: PreferredTargetResolution.resolve(
+            vehicle: vehicle,
+            appPreferredTarget: AppPreferredTargetBlend.currentPercent()
+        ))
         // Default the fuel-backup mode from the vehicle's flex-fuel flag: flex-fuel cars can
         // safely run gasoline, so gas backup is allowed; otherwise default to the stricter
         // E85-required. The user can still override per trip in the Fuel Backup section.

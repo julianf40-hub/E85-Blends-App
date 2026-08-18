@@ -120,13 +120,21 @@ enum FuelLogStore {
     }
 
     static func prefillDraft(from vehicle: VehicleProfile?) -> FuelLogDraft {
+        // Legacy-semantics vehicle: preserves its effective legacy target. New-semantics vehicle
+        // with a Preferred Ethanol Target: uses it. New-semantics vehicle with none: app-level
+        // preferred target, else E30 — see FuelPreferenceResolution.PreferredTargetResolution.
+        let targetBlendPercent = PreferredTargetResolution.resolve(
+            vehicle: vehicle,
+            appPreferredTarget: AppPreferredTargetBlend.currentPercent()
+        )
+
         return FuelLogDraft(
             date: .now,
             vehicleName: vehicle?.nickname ?? "",
             stationName: "",
             odometer: vehicle?.currentOdometer ?? 0,
-            targetBlendPercent: vehicle?.defaultTargetEthanolPercent ?? 30,
-            finalBlendPercent: vehicle?.defaultTargetEthanolPercent ?? 30,
+            targetBlendPercent: targetBlendPercent,
+            finalBlendPercent: targetBlendPercent,
             e85Gallons: 0,
             gasGallons: 0,
             e85PricePerGallon: 0,
