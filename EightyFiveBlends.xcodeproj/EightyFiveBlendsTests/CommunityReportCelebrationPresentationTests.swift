@@ -276,3 +276,53 @@ struct CommunityReportCelebrationPresentationTests {
         #expect(asIfFromNearbySearch == asIfFromSavedStations)
     }
 }
+
+// MARK: - Confetti rendering fix (CommunityReportSuccessOverlay.swift) — inspection facts
+//
+// The confetti burst was rendering exactly as coded but was invisible on a real device: it sat
+// BELOW `card` in the ZStack, and every piece started at dead center with only 60-150pt of
+// travel — well inside the opaque card's own footprint — so it was fully occluded for its entire
+// (fading) lifetime. `ConfettiPiece`/`ConfettiBurstView` are intentionally `private` to
+// CommunityReportSuccessOverlay.swift (not part of this feature's pure-logic surface the way
+// CommunityReportCelebrationDecision/Lifecycle are), and there is no pure, side-effect-free
+// decision buried in "does a ZStack layer render above another" or "does a SwiftUI @State value
+// survive a conditional-mount/unmount cycle" — both are structural facts about the View itself,
+// not independently unit-testable without UI-test infrastructure this project doesn't have and
+// this task does not add. Recorded here as inspection facts instead, mirroring the convention
+// CommunityPriceEligibilityTests.swift already established, each verified by reading the actual
+// post-fix file rather than assumed:
+//
+// 1. "Confetti exists when Reduce Motion is false / does not exist when Reduce Motion is true":
+//    CommunityReportSuccessOverlay.body wraps the entire `ConfettiBurstView(...)` instantiation
+//    in `if reduceMotion == false { ... }` — when Reduce Motion is on, the confetti view is never
+//    constructed at all (not hidden — absent from the tree), and the `.task` that would set
+//    `confettiProgress` also `guard reduceMotion == false else { return }`s immediately.
+// 2. "Burst starts once": the only place `confettiProgress` is ever mutated is the one `.task`
+//    block, which runs once per view identity/mount. `confettiPieces` is a `@State` initial value
+//    (`= ConfettiPiece.makeBurst()`), evaluated once when this view's state storage is first
+//    created — never re-evaluated by a `body` re-render.
+// 3. "Burst can reset for the next celebration": StationsView presents this view via
+//    `.overlay { if communityReportCelebration.isPresented { CommunityReportSuccessOverlay { ... } } }`
+//    — a plain `if`, not an always-mounted view toggling visibility. When `isPresented` goes
+//    false, this view (and its `@State`) is removed from the hierarchy entirely, not just hidden;
+//    when a later report succeeds and `isPresented` goes true again, a genuinely new instance is
+//    mounted with fresh `@State`, so `confettiPieces`/`confettiProgress` start over at their
+//    initial values — a fresh `makeBurst()` and `progress == 0` — with no reuse of stale state
+//    from the previous presentation.
+// 4. "Dismissing the overlay removes the particles": same mechanism as #3 — dismissal flips
+//    `communityReportCelebration.isPresented` to false (see StationsView.dismissCommunityReportSuccess()),
+//    which removes this entire view, including the confetti subtree, from the hierarchy.
+// 5. "No particle receives hit testing": `ConfettiBurstView(...)` carries `.allowsHitTesting(false)`
+//    at its one call site in CommunityReportSuccessOverlay.body — applied to the whole burst, so
+//    every particle inside it is covered, not just the container.
+// 6. "Confetti is accessibility-hidden / decorative, VoiceOver does not focus particles": the same
+//    call site also carries `.accessibilityHidden(true)`, hiding the whole subtree (and every
+//    `Image` inside `ConfettiBurstView`'s `ForEach`) from VoiceOver.
+//
+// What remains real-device-validation-only: whether the burst is actually *visible* in the
+// intended position (around the top/sides of the card, not obstructing text) on a physical
+// screen, and whether the deferred `.task { await Task.yield(); confettiProgress = 1 }` reliably
+// avoids the "first frame already final" SwiftUI timing class of bug this fix defends against —
+// neither can be observed from a Swift Testing assertion without a UI-test harness this project
+// does not have and this task does not introduce. See the branch report's real-device validation
+// checklist.
