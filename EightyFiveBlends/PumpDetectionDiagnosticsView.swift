@@ -67,6 +67,13 @@ struct PumpDetectionDiagnosticsView: View {
                         row("Visit suppression", visitSuppressionText)
                     }
 
+                    group("Background (last event)") {
+                        row("Event", backgroundEventText)
+                        row("Station", backgroundEventStationText)
+                        row("Detail", backgroundEventDetailText)
+                        row("When", backgroundEventAgeText)
+                    }
+
                     group("Thresholds") {
                         row("Entry radius", "\(Int(PumpProximity.atPumpEntryRadiusMeters))m")
                         row("Exit/reset radius", "\(Int(PumpProximity.atPumpExitRadiusMeters))m")
@@ -211,5 +218,34 @@ struct PumpDetectionDiagnosticsView: View {
         return pumpDetectionService.foregroundHasPromptedForCurrentVisit
             ? "Suppressed — already prompted this visit"
             : "Eligible to prompt"
+    }
+
+    /// Single "what happened last" snapshot of the background pipeline (region event → Stage
+    /// B → notification) — see BackgroundDetectionDiagnosticSnapshot. This is the one field
+    /// this view adds specifically so a real-device test that produced no notification can be
+    /// traced to a specific stage after the fact, rather than guessed at.
+    private var backgroundEventText: String {
+        pumpDetectionService.lastBackgroundDiagnostic?.kind.displayLabel ?? "No background event recorded yet"
+    }
+
+    private var backgroundEventStationText: String {
+        pumpDetectionService.lastBackgroundDiagnostic?.stationName ?? "N/A"
+    }
+
+    private var backgroundEventDetailText: String {
+        pumpDetectionService.lastBackgroundDiagnostic?.detail ?? "N/A"
+    }
+
+    private var backgroundEventAgeText: String {
+        guard let timestamp = pumpDetectionService.lastBackgroundDiagnostic?.timestamp else { return "N/A" }
+        let age = Date().timeIntervalSince(timestamp)
+        guard age >= 0 else { return "Just now" }
+        if age < 60 {
+            return "\(Int(age))s ago"
+        }
+        if age < 3600 {
+            return "\(Int(age / 60))m ago"
+        }
+        return "\(Int(age / 3600))h ago"
     }
 }

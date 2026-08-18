@@ -26,6 +26,10 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         case entered
         case exited
         case monitoringFailed
+        /// A `requestState(for:)` reconciliation found the device already inside a monitored
+        /// region — never a live boundary crossing. Kept distinct from `.entered` purely so
+        /// diagnostics can tell the two apart; callers that don't care may treat them the same.
+        case alreadyInside
     }
 
     typealias FreshLocationResult = (coordinate: StationCoordinate, horizontalAccuracyMeters: CLLocationAccuracy, timestamp: Date)
@@ -176,6 +180,20 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// Asks Core Location whether the device is currently inside an already-monitored region.
+    /// Registering a region only fires `didEnterRegion` on a future OUTSIDE-to-INSIDE crossing —
+    /// if the user is already inside at the moment a region is registered (enabling the feature
+    /// while standing at a station, or relaunching while parked at one), no such crossing will
+    /// ever occur and the visit would otherwise go undetected until an unrelated future
+    /// exit+reentry. This reconciles that by treating an `.inside` result exactly like a fresh
+    /// `didEnterRegion` — see `locationManager(_:didDetermineState:for:)` below — reusing the
+    /// same Stage A → Stage B pipeline rather than a second, parallel one. A no-op if the
+    /// identifier isn't currently monitored.
+    func requestState(for identifier: String) {
+        guard let region = manager.monitoredRegions.first(where: { $0.identifier == identifier }) else { return }
+        manager.requestState(for: region)
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let location = locations.last {
             latestHorizontalAccuracyMeters = location.horizontalAccuracy
@@ -225,6 +243,14 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         onRegionEvent?(region.identifier, .entered)
+    }
+
+    /// Response to `requestState(for:)`. Only `.inside` is meaningful here — `.outside` and
+    /// `.unknown` are not events (the user simply isn't confirmed to be there), so they are
+    /// deliberately no-ops rather than being forwarded as an exit or a failure.
+    func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        guard state == .inside else { return }
+        onRegionEvent?(region.identifier, .alreadyInside)
     }
 
     func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {

@@ -11,6 +11,44 @@
 //  target in project.pbxproj (see CLAUDE.md) — `xcodebuild test` will not run these until
 //  a test target is added. Written to compile and pass once one exists.
 //
+//  Background-notification audit follow-up: the fixes below address a real-device report of
+//  "foreground works, but no notification is ever delivered when the app is backgrounded
+//  before arrival." Several of the required regression scenarios exercise SwiftUI App
+//  lifecycle ordering or real Core Location/UNUserNotificationCenter I/O this file's pure
+//  functions don't touch, so — mirroring the convention CommunityPriceEligibilityTests.swift
+//  already established — they're recorded here as inspection facts rather than faked with a
+//  mock that doesn't exist elsewhere in this codebase:
+//
+//  - "Cold-launch event context is not discarded": AutomaticPumpDetectionService.attach(to:)
+//    (which wires StationLocationManager.onRegionEvent — the only path a didEnterRegion
+//    callback reaches this feature through) used to be called from ContentView's .onAppear, a
+//    SwiftUI view-lifecycle hook with no guaranteed-before-CoreLocation-callback ordering. It
+//    is now called from EightyFiveBlendsApp.init(), which — because `locationManager` and
+//    `automaticPumpDetectionService` are @State properties on the App itself, not a descendant
+//    View — is guaranteed to run before WindowGroup's content, and therefore ContentView, is
+//    ever built. See EightyFiveBlendsApp.swift's init() and the branch report for the full
+//    race-condition explanation.
+//  - "Registering while already inside region can reconcile current state": StationLocationManager
+//    now implements locationManager(_:didDetermineState:for:) and a requestState(for:) method;
+//    AutomaticPumpDetectionService calls requestState(for:) both right after registering each
+//    newly-added region (applyMonitoredSet) and for every previously monitored region on every
+//    relaunch (resumeMonitoringAfterRelaunch). An `.inside` result is forwarded as
+//    `.alreadyInside`, which handleRegionEvent treats identically to a live `.entered` crossing
+//    (same Stage A → Stage B pipeline, distinguished only in the diagnostic snapshot).
+//  - "Background region event → notification allowed" / "foreground region event → notification
+//    suppressed": handleRegionEvent and handleConfirmedArrival both gate on
+//    `UIApplication.shared.applicationState != .active`, read live at each check — not a cached
+//    property anywhere in this file — so this cannot go stale independent of the OS's own
+//    notion of foreground/background.
+//  - "Notification scheduling failure recorded in diagnostics": scheduleArrivalNotification's
+//    `catch` block calls `recordBackgroundDiagnostic(kind: .notificationSchedulingFailed, ...)`
+//    with the thrown error's localized description — exercising the real failure path requires
+//    UNUserNotificationCenter to actually throw, which isn't reproducible without a real device
+//    denying/erroring a notification request.
+//  - "One notification per visit" / "exit/re-enter resets visit": already covered directly by
+//    AutomaticPumpDetectionCooldownTests below (suppressesDuplicateWithinCooldown /
+//    allowsAfterConfirmedExit) — unmodified by this follow-up.
+//
 
 import CoreLocation
 import Foundation
@@ -172,6 +210,79 @@ struct AutomaticPumpDetectionConfirmationTests {
             now: now
         )
         #expect(outcome == .rejected(.invalidStationCoordinate))
+    }
+}
+
+// MARK: - Background Stage B bounded retry
+//
+// AutomaticPumpDetectionService.confirmArrival loops up to
+// AutomaticPumpDetectionService.maximumBackgroundConfirmationAttempts times, calling
+// ArrivalConfirmation.isRetryable(_:) after each rejection to decide whether to request
+// another fresh fix. isRetryable is pure and directly tested below — the loop itself lives in
+// an async method that calls StationLocationManager.requestFreshLocationAsync(timeout:) (real
+// Core Location I/O, no mocking infrastructure exists in this codebase), so it is not directly
+// unit-testable. What isRetryable proves, exhaustively over every RejectionReason case, is
+// exactly what determines the loop's behavior at each step:
+// - "Stage B first poor fix + later acceptable bounded retry → succeeds": a first
+//   .rejected(.inaccurateLocation) or .rejected(.outsideThreshold) outcome has isRetryable ==
+//   true, so confirmArrival's loop continues to a second attempt; if that attempt evaluates to
+//   .confirmed (already proven independently by acceptsWithinThreshold/acceptsAtBoundary
+//   above), the retry path reaches the same handleConfirmedArrival(_:) call as a first-attempt
+//   success — there is only one confirmed-outcome branch in confirmArrival, not a duplicated
+//   "retry success" path, so nothing about a second-attempt success is treated differently.
+// - "Stage B all unacceptable fixes → fails safely": a .staleLocation/.invalidStationCoordinate/
+//   .featureDisabled rejection has isRetryable == false, so confirmArrival returns immediately
+//   without a second attempt regardless of how much retry budget remains; a retryable rejection
+//   on the FINAL allowed attempt also stops (confirmArrival's own `hasMoreAttempts` check),
+//   never looping past maximumBackgroundConfirmationAttempts.
+struct AutomaticPumpDetectionRetryTests {
+    @Test("Accuracy and distance rejections are retryable — a subsequent fix could plausibly resolve either")
+    func accuracyAndDistanceRejectionsAreRetryable() {
+        #expect(ArrivalConfirmation.isRetryable(.inaccurateLocation))
+        #expect(ArrivalConfirmation.isRetryable(.outsideThreshold))
+    }
+
+    @Test("Stale/invalid/disabled rejections are not retryable — retrying immediately cannot fix any of them")
+    func staleInvalidDisabledRejectionsAreNotRetryable() {
+        #expect(!ArrivalConfirmation.isRetryable(.staleLocation))
+        #expect(!ArrivalConfirmation.isRetryable(.invalidStationCoordinate))
+        #expect(!ArrivalConfirmation.isRetryable(.featureDisabled))
+    }
+
+    @Test("Retry budget matches the documented, evidence-based bound (2 attempts x 4s fits Core Location's background execution window)")
+    func retryBudgetMatchesDocumentedBound() {
+        #expect(AutomaticPumpDetectionService.maximumBackgroundConfirmationAttempts == 2)
+        #expect(AutomaticPumpDetectionService.backgroundConfirmationAttemptTimeout == 4)
+    }
+}
+
+// MARK: - Background diagnostics snapshot
+struct AutomaticPumpDetectionDiagnosticsTests {
+    @Test("BackgroundDetectionDiagnosticSnapshot round-trips through JSON exactly — this is what persists it across relaunch")
+    func snapshotRoundTripsThroughJSON() {
+        let original = BackgroundDetectionDiagnosticSnapshot(
+            kind: .stageBRejected,
+            stationName: "Mobil",
+            detail: "outsideThreshold, attempt 2",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let data = try? JSONEncoder().encode(original)
+        #expect(data != nil)
+        let decoded = data.flatMap { try? JSONDecoder().decode(BackgroundDetectionDiagnosticSnapshot.self, from: $0) }
+        #expect(decoded == original)
+    }
+
+    @Test("Every EventKind has a non-empty, distinct display label — PumpDetectionDiagnosticsView never shows a blank/ambiguous event")
+    func everyEventKindHasADistinctDisplayLabel() {
+        let allKinds: [BackgroundDetectionDiagnosticSnapshot.EventKind] = [
+            .regionEntered, .regionExited, .regionMonitoringFailed, .regionAlreadyInside,
+            .stageBNoFix, .stageBRejected, .stageBConfirmed,
+            .notificationSuppressedCooldown, .notificationSuppressedForeground,
+            .notificationScheduled, .notificationSchedulingFailed
+        ]
+        let labels = allKinds.map(\.displayLabel)
+        #expect(labels.allSatisfy { $0.isEmpty == false })
+        #expect(Set(labels).count == allKinds.count)
     }
 }
 

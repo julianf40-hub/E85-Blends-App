@@ -44,6 +44,9 @@ enum AppPreferenceKey {
     static let automaticPumpDetectionLastRefreshLatitude = "automaticPumpDetectionLastRefreshLatitude"
     static let automaticPumpDetectionLastRefreshLongitude = "automaticPumpDetectionLastRefreshLongitude"
     static let automaticPumpDetectionLastRefreshAt = "automaticPumpDetectionLastRefreshAt"
+    // Single "last event" background-detection diagnostic snapshot — see
+    // BackgroundDetectionDiagnosticSnapshot / PumpDetectionDiagnosticsView. Never a history.
+    static let automaticPumpDetectionLastBackgroundDiagnostic = "automaticPumpDetectionLastBackgroundDiagnostic"
 }
 
 enum MapsAppOption: String, CaseIterable {

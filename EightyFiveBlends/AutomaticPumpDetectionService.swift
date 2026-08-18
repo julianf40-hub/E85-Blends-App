@@ -60,6 +60,21 @@ final class AutomaticPumpDetectionService: NSObject {
     /// last refresh — avoids rebuilding on every minor GPS update.
     static let refreshMovementThresholdMeters: CLLocationDistance = 500
 
+    /// Stage B, in the background, gets only a region-triggered wake to react to — there's no
+    /// periodic foreground-style refresh loop to fall back on if the first fix is poor, and
+    /// OS-granted background execution time after a region event is short. A single unbounded
+    /// location request risked either never returning before the OS suspended the process, or
+    /// returning exactly once with a canopy-degraded fix and never trying again — see the
+    /// branch report. Bounded instead: up to this many attempts, each capped at
+    /// `backgroundConfirmationAttemptTimeout`, only continuing past a rejection when
+    /// `ArrivalConfirmation.isRetryable` says a fresh fix could plausibly help.
+    static let maximumBackgroundConfirmationAttempts = 2
+
+    /// Per-attempt bound for the retry above. `maximumBackgroundConfirmationAttempts *
+    /// backgroundConfirmationAttemptTimeout` (8s) comfortably fits within the execution window
+    /// Core Location grants after a region event, per Apple's documented background behavior.
+    static let backgroundConfirmationAttemptTimeout: TimeInterval = 4
+
     private static let notificationTitle = "You're at an E85 station"
     private static let notificationTypeKey = "type"
     private static let notificationTypeValue = "automaticPumpDetection"
@@ -79,6 +94,10 @@ final class AutomaticPumpDetectionService: NSObject {
     var pendingDetectedStation: MonitoredStationRecord?
     /// Plain-language reason the feature isn't fully active, for Settings UI to display.
     private(set) var lastEnableFailureReason: String?
+    /// Single "what happened last" snapshot of the background arrival pipeline — region
+    /// events, Stage B outcomes, notification scheduling — for PumpDetectionDiagnosticsView.
+    /// Never a history; always overwritten. See `recordBackgroundDiagnostic(...)`.
+    private(set) var lastBackgroundDiagnostic: BackgroundDetectionDiagnosticSnapshot?
 
     /// Read-only mirror of CalculatorView's live foreground state, published purely so
     /// Stations' hidden diagnostics sheet (a different view/tab) can observe it — see
@@ -127,6 +146,7 @@ final class AutomaticPumpDetectionService: NSObject {
         monitoredStations = Self.loadMonitoredStations()
         cooldownState = Self.loadCooldownState()
         monitoredStationCount = monitoredStations.count
+        lastBackgroundDiagnostic = Self.loadLastBackgroundDiagnostic()
     }
 
     // MARK: - Attachment (called once from EightyFiveBlendsApp)
@@ -205,11 +225,13 @@ final class AutomaticPumpDetectionService: NSObject {
         monitoredStations = []
         monitoredStationCount = 0
         cooldownState = [:]
+        lastBackgroundDiagnostic = nil
         persistMonitoredStations()
         persistCooldownState()
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshLatitude)
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshLongitude)
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshAt)
+        UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastBackgroundDiagnostic)
         debugLog("Disabled — all station monitors removed, persisted metadata cleared.")
     }
 
@@ -315,6 +337,11 @@ final class AutomaticPumpDetectionService: NSObject {
             region.notifyOnEntry = true
             region.notifyOnExit = true
             locationManager.startMonitoringRegion(region)
+            // Reconcile immediately: if the user is already standing inside this region right
+            // now (e.g. enabling the feature, or adding this station, while at the station),
+            // no future didEnterRegion crossing will ever occur for this visit — see
+            // requestState(for:)'s doc comment.
+            locationManager.requestState(for: record.id)
         }
 
         monitoredStations = newRecords
@@ -336,6 +363,15 @@ final class AutomaticPumpDetectionService: NSObject {
         }
         monitoredStationCount = monitoredStations.count
         debugLog("Resumed with \(monitoredStations.count) previously monitored station(s) intact.")
+
+        // Reconcile every previously monitored region on relaunch — including a cold launch
+        // triggered by something other than a region event — so a user who happens to already
+        // be inside a monitored region when the process (re)starts isn't left undetected until
+        // an unrelated future exit+reentry. Region monitoring itself is restored by the OS
+        // automatically; this only asks Core Location for each region's CURRENT state.
+        for record in monitoredStations {
+            locationManager.requestState(for: record.id)
+        }
     }
 
     // MARK: - Stage A -> Stage B
@@ -350,12 +386,23 @@ final class AutomaticPumpDetectionService: NSObject {
                 cooldownState[identifier] = state
                 persistCooldownState()
             }
+            recordBackgroundDiagnostic(
+                kind: .regionExited,
+                stationName: monitoredStations.first(where: { $0.id == identifier })?.name
+            )
             debugLog("Exited monitored area for station id \(identifier).")
             return
         case .monitoringFailed:
+            // Previously DEBUG-log only, so a production build had zero trace of a monitoring
+            // failure ever happening — see the branch report. Recorded here so Diagnostics can
+            // show it even in Release/TestFlight.
+            recordBackgroundDiagnostic(
+                kind: .regionMonitoringFailed,
+                stationName: monitoredStations.first(where: { $0.id == identifier })?.name
+            )
             debugLog("Region monitoring failed for station id \(identifier).")
             return
-        case .entered:
+        case .entered, .alreadyInside:
             break
         }
 
@@ -364,7 +411,13 @@ final class AutomaticPumpDetectionService: NSObject {
             return
         }
 
-        debugLog("Candidate station entered: \(record.name).")
+        recordBackgroundDiagnostic(
+            kind: kind == .alreadyInside ? .regionAlreadyInside : .regionEntered,
+            stationName: record.name
+        )
+        debugLog(kind == .alreadyInside
+            ? "Reconciled already-inside for station: \(record.name)."
+            : "Candidate station entered: \(record.name).")
 
         // Foreground arrivals are already handled by CalculatorView's own existing
         // refreshPumpModeStation/evaluateAutoPromptPumpMode path — skip here so the two
@@ -379,6 +432,11 @@ final class AutomaticPumpDetectionService: NSObject {
         }
     }
 
+    /// Stage B, bounded: up to `maximumBackgroundConfirmationAttempts` fresh-location attempts,
+    /// each capped at `backgroundConfirmationAttemptTimeout`. Retries only when the rejection
+    /// reason is one `ArrivalConfirmation.isRetryable` says a subsequent fix could plausibly
+    /// resolve (poor accuracy/borderline distance) — never for a stale/invalid/disabled
+    /// rejection, which retrying immediately cannot fix. Stops at the first `.confirmed`.
     private func confirmArrival(for record: MonitoredStationRecord) async {
         guard isConfirmingArrival == false else {
             debugLog("Confirmation already in progress — ignoring re-entry for \(record.name).")
@@ -388,28 +446,40 @@ final class AutomaticPumpDetectionService: NSObject {
         defer { isConfirmingArrival = false }
 
         guard let locationManager else { return }
-        guard let fix = await locationManager.requestFreshLocationAsync() else {
-            debugLog("Precise confirmation rejected for \(record.name) — no fresh fix available.")
-            return
-        }
 
-        let outcome = ArrivalConfirmation.evaluate(
-            featureEnabled: isEnabled,
-            stationLatitude: record.latitude,
-            stationLongitude: record.longitude,
-            freshLatitude: fix.coordinate.latitude,
-            freshLongitude: fix.coordinate.longitude,
-            horizontalAccuracyMeters: fix.horizontalAccuracyMeters,
-            locationTimestamp: fix.timestamp,
-            now: Date()
-        )
+        for attempt in 1...Self.maximumBackgroundConfirmationAttempts {
+            guard let fix = await locationManager.requestFreshLocationAsync(timeout: Self.backgroundConfirmationAttemptTimeout) else {
+                debugLog("Precise confirmation attempt \(attempt) for \(record.name) — no fresh fix available.")
+                recordBackgroundDiagnostic(kind: .stageBNoFix, stationName: record.name, detail: "attempt \(attempt) of \(Self.maximumBackgroundConfirmationAttempts)")
+                return
+            }
 
-        switch outcome {
-        case .rejected(let reason):
-            debugLog("Precise confirmation rejected for \(record.name): \(reason.rawValue).")
-        case .confirmed(let distance):
-            debugLog("Precise confirmation accepted for \(record.name) (\(Int(distance)) m).")
-            await handleConfirmedArrival(record)
+            let outcome = ArrivalConfirmation.evaluate(
+                featureEnabled: isEnabled,
+                stationLatitude: record.latitude,
+                stationLongitude: record.longitude,
+                freshLatitude: fix.coordinate.latitude,
+                freshLongitude: fix.coordinate.longitude,
+                horizontalAccuracyMeters: fix.horizontalAccuracyMeters,
+                locationTimestamp: fix.timestamp,
+                now: Date()
+            )
+
+            switch outcome {
+            case .confirmed(let distance):
+                debugLog("Precise confirmation accepted for \(record.name) (\(Int(distance)) m) on attempt \(attempt).")
+                recordBackgroundDiagnostic(kind: .stageBConfirmed, stationName: record.name, detail: "\(Int(distance))m, attempt \(attempt)")
+                await handleConfirmedArrival(record)
+                return
+            case .rejected(let reason):
+                debugLog("Precise confirmation rejected for \(record.name) on attempt \(attempt): \(reason.rawValue).")
+                let hasMoreAttempts = attempt < Self.maximumBackgroundConfirmationAttempts
+                guard ArrivalConfirmation.isRetryable(reason), hasMoreAttempts else {
+                    recordBackgroundDiagnostic(kind: .stageBRejected, stationName: record.name, detail: "\(reason.rawValue), attempt \(attempt)")
+                    return
+                }
+                // Retryable, and attempts remain — loop and request another fresh fix.
+            }
         }
     }
 
@@ -417,12 +487,14 @@ final class AutomaticPumpDetectionService: NSObject {
         let now = Date()
         guard ArrivalCooldownPolicy.shouldNotify(existingState: cooldownState[record.id], now: now) else {
             debugLog("Notification suppressed for \(record.name) — within cooldown.")
+            recordBackgroundDiagnostic(kind: .notificationSuppressedCooldown, stationName: record.name)
             return
         }
 
         guard UIApplication.shared.applicationState != .active else {
             // Confirmed while foregrounded mid-confirmation — the in-app path now owns
             // this, no notification needed.
+            recordBackgroundDiagnostic(kind: .notificationSuppressedForeground, stationName: record.name)
             return
         }
 
@@ -478,8 +550,10 @@ final class AutomaticPumpDetectionService: NSObject {
         do {
             try await UNUserNotificationCenter.current().add(request)
             debugLog("Notification scheduled for \(record.name).")
+            recordBackgroundDiagnostic(kind: .notificationScheduled, stationName: record.name)
         } catch {
             debugLog("Notification scheduling failed for \(record.name): \(error)")
+            recordBackgroundDiagnostic(kind: .notificationSchedulingFailed, stationName: record.name, detail: error.localizedDescription)
         }
     }
 
@@ -557,7 +631,36 @@ final class AutomaticPumpDetectionService: NSObject {
         UserDefaults.standard.set(data, forKey: AppPreferenceKey.automaticPumpDetectionCooldownState)
     }
 
+    private static func loadLastBackgroundDiagnostic() -> BackgroundDetectionDiagnosticSnapshot? {
+        guard let data = UserDefaults.standard.data(forKey: AppPreferenceKey.automaticPumpDetectionLastBackgroundDiagnostic) else { return nil }
+        return try? JSONDecoder().decode(BackgroundDetectionDiagnosticSnapshot.self, from: data)
+    }
+
+    private func persistLastBackgroundDiagnostic() {
+        guard let lastBackgroundDiagnostic, let data = try? JSONEncoder().encode(lastBackgroundDiagnostic) else { return }
+        UserDefaults.standard.set(data, forKey: AppPreferenceKey.automaticPumpDetectionLastBackgroundDiagnostic)
+    }
+
     // MARK: - Diagnostics
+
+    /// Production-accessible (unlike `debugLog` below): overwrites the single "last event"
+    /// snapshot PumpDetectionDiagnosticsView reads, so a real-device test that produced no
+    /// notification can be traced to exactly one of: no region event, a Stage B rejection/no
+    /// fix, a suppressed notification, or a scheduling failure — see the branch report. Never
+    /// passed a coordinate; `detail` is limited to reasons, error descriptions, and distances.
+    private func recordBackgroundDiagnostic(
+        kind: BackgroundDetectionDiagnosticSnapshot.EventKind,
+        stationName: String?,
+        detail: String? = nil
+    ) {
+        lastBackgroundDiagnostic = BackgroundDetectionDiagnosticSnapshot(
+            kind: kind,
+            stationName: stationName,
+            detail: detail,
+            timestamp: Date()
+        )
+        persistLastBackgroundDiagnostic()
+    }
 
     /// Debug-only, never compiled into release builds. Logs station names/distances/
     /// counts for troubleshooting — deliberately never logs raw coordinates or any

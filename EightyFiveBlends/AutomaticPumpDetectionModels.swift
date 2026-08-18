@@ -182,6 +182,69 @@ enum ArrivalConfirmation {
 
         return .confirmed(distanceMeters: distance)
     }
+
+    /// Whether a rejected Stage B outcome is worth retrying with a fresh fix, in the bounded
+    /// background retry loop (see AutomaticPumpDetectionService.confirmArrival). True only for
+    /// reasons a SUBSEQUENT fix could plausibly resolve — poor accuracy or a borderline
+    /// distance, both realistic under a canopy where GPS commonly settles after a few seconds.
+    /// `.staleLocation`/`.invalidStationCoordinate`/`.featureDisabled` would not improve by
+    /// immediately requesting another fix, so retrying those would just spend the limited
+    /// background-execution window for no benefit.
+    static func isRetryable(_ reason: RejectionReason) -> Bool {
+        switch reason {
+        case .inaccurateLocation, .outsideThreshold:
+            return true
+        case .staleLocation, .invalidStationCoordinate, .featureDisabled:
+            return false
+        }
+    }
+}
+
+/// A single "what happened last" snapshot of the background arrival-detection pipeline, for
+/// on-device troubleshooting (see PumpDetectionDiagnosticsView). Deliberately just the ONE most
+/// recent event — never a history/log — and never raw coordinates, matching this feature's
+/// existing privacy posture (see AutomaticPumpDetectionService's persistence section and
+/// PumpDetectionDiagnosticsView's own doc comment). Overwritten every time a new
+/// background-relevant event occurs.
+struct BackgroundDetectionDiagnosticSnapshot: Codable, Equatable {
+    enum EventKind: String, Codable {
+        case regionEntered
+        case regionExited
+        case regionMonitoringFailed
+        case regionAlreadyInside
+        case stageBNoFix
+        case stageBRejected
+        case stageBConfirmed
+        case notificationSuppressedCooldown
+        case notificationSuppressedForeground
+        case notificationScheduled
+        case notificationSchedulingFailed
+
+        /// Short, human-readable label for PumpDetectionDiagnosticsView — never shown without
+        /// its accompanying station name/detail/timestamp, so this stays terse.
+        var displayLabel: String {
+            switch self {
+            case .regionEntered: return "Region entered"
+            case .regionExited: return "Region exited"
+            case .regionMonitoringFailed: return "Region monitoring failed"
+            case .regionAlreadyInside: return "Already inside on reconciliation"
+            case .stageBNoFix: return "Stage B — no fix"
+            case .stageBRejected: return "Stage B — rejected"
+            case .stageBConfirmed: return "Stage B — confirmed"
+            case .notificationSuppressedCooldown: return "Notification suppressed (cooldown)"
+            case .notificationSuppressedForeground: return "Notification suppressed (foreground)"
+            case .notificationScheduled: return "Notification scheduled"
+            case .notificationSchedulingFailed: return "Notification scheduling failed"
+            }
+        }
+    }
+
+    let kind: EventKind
+    let stationName: String?
+    /// Short diagnostic detail — a rejection reason, an error's localized description, an
+    /// attempt count. Never a coordinate, never any form of location history.
+    let detail: String?
+    let timestamp: Date
 }
 
 /// Per-station notification cooldown state — prevents repeated "you're at the pump"

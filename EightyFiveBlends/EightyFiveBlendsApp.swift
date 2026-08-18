@@ -8,6 +8,11 @@
 import SwiftUI
 import SwiftData
 
+// @MainActor so init() below can wire AutomaticPumpDetectionService (itself @MainActor)
+// synchronously — see the comment on that call for why this matters for background pump
+// detection. App-level code already runs on the main actor in practice; this just makes it
+// explicit rather than requiring an async hop.
+@MainActor
 @main
 struct EightyFiveBlendsApp: App {
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
@@ -36,6 +41,19 @@ struct EightyFiveBlendsApp: App {
         let (container, inMemory) = EightyFiveBlendsApp.makeContainer(schema: schema)
         sharedModelContainer = container
         isUsingInMemoryFallback = inMemory
+
+        // Wires region-monitoring/notification callbacks and, if the feature was already
+        // enabled from a previous launch, resumes it. Deliberately called here — during App
+        // init, guaranteed to run before WindowGroup's content ever mounts — rather than from
+        // ContentView's .onAppear as before. A didEnterRegion callback can only fire once
+        // StationLocationManager's underlying CLLocationManager has a delegate (it does, from
+        // the moment `locationManager`'s own default value is constructed above) AND
+        // `locationManager.onRegionEvent` has been wired by attach(to:) below — the previous
+        // .onAppear-based wiring left a real window, during a background/cold-launch relaunch
+        // triggered BY a region event, where Core Location could invoke the delegate before
+        // SwiftUI had mounted its first view and run that .onAppear — silently dropping the
+        // arrival with no retry, since onRegionEvent was still nil. See the branch report.
+        automaticPumpDetectionService.attach(to: locationManager)
     }
 
     // Returns the best available ModelContainer and whether it is in-memory only.
@@ -117,10 +135,8 @@ struct EightyFiveBlendsApp: App {
                 )
                 .onAppear {
                     AppTheme.applyTabBarAppearance()
-                    // Wires region-monitoring/notification callbacks and, if the feature
-                    // was already enabled from a previous launch, resumes it. Safe to call
-                    // every launch — a no-op background-monitoring resume when disabled.
-                    automaticPumpDetectionService.attach(to: locationManager)
+                    // automaticPumpDetectionService.attach(to:) now happens in init() above,
+                    // not here — see that comment for why.
                 }
                 .task {
                     await SubscriptionManager.shared.refreshEntitlements()
