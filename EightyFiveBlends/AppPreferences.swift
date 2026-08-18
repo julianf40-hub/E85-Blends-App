@@ -49,7 +49,7 @@ enum AppPreferenceKey {
     static let automaticPumpDetectionLastRefreshLongitude = "automaticPumpDetectionLastRefreshLongitude"
     static let automaticPumpDetectionLastRefreshAt = "automaticPumpDetectionLastRefreshAt"
     // Single "last event" background-detection diagnostic snapshot — see
-    // BackgroundDetectionDiagnosticSnapshot / PumpDetectionDiagnosticsView. Never a history.
+    // BackgroundDetectionDiagnosticSnapshot. Never a history.
     static let automaticPumpDetectionLastBackgroundDiagnostic = "automaticPumpDetectionLastBackgroundDiagnostic"
 }
 

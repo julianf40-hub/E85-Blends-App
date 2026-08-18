@@ -35,12 +35,6 @@ struct StationsView: View {
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
     @State private var locationDeniedAlert = false
-    /// Presented by the small "Pump Detection Diagnostics" row inside the Automatic Pump
-    /// Detection card — see pumpDetectionDiagnosticsEntryButton. (An earlier ~2s long-press
-    /// entry point proved unreliable on real devices and was removed in favor of this
-    /// explicit, directly tappable button.) See PumpDetectionDiagnosticsView for why it must
-    /// exist in every build configuration, including production Release.
-    @State private var isShowingPumpDiagnostics = false
     @State private var liveStations: [LiveFuelStation] = []
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
@@ -280,9 +274,6 @@ struct StationsView: View {
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice)
         }
-        .sheet(isPresented: $isShowingPumpDiagnostics) {
-            PumpDetectionDiagnosticsView(savedStations: stations)
-        }
         .alert("Delete Station?", isPresented: deleteAlertBinding) {
             Button("Delete", role: .destructive) {
                 confirmDeletion()
@@ -349,11 +340,6 @@ struct StationsView: View {
                     .font(.caption2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Divider()
-                    .overlay(AppTheme.Colors.border)
-
-                pumpDetectionDiagnosticsEntryButton
             }
             .padding(14)
             .background(AppTheme.Colors.surface)
@@ -363,39 +349,6 @@ struct StationsView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-    }
-
-    /// Small, explicit, always-tappable diagnostics entry point — replaces an earlier
-    /// ~2s long-press on the section header above, which real-device testing showed was
-    /// unreliable and is now removed entirely rather than kept as unverified dead code.
-    /// Deliberately styled as a subordinate, secondary row (caption-sized, muted color, no
-    /// icon badge/background) so it doesn't read as a core end-user feature next to the
-    /// Toggle/status row above it — but it is a real, directly tappable Button, not a hidden
-    /// gesture, so it reliably opens PumpDetectionDiagnosticsView every time. Present in
-    /// every build configuration, including production Release (see
-    /// PumpDetectionDiagnosticsView's own doc comment for why), and unconditionally part of
-    /// automaticPumpDetectionSection, which already renders in both Simple and Normal Mode.
-    private var pumpDetectionDiagnosticsEntryButton: some View {
-        Button {
-            AppHaptics.selection()
-            isShowingPumpDiagnostics = true
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "wrench.and.screwdriver")
-                    .font(.caption2)
-                Text("Pump Detection Diagnostics")
-                    .font(.caption2.weight(.semibold))
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(AppTheme.Colors.textMuted)
-            .contentShape(Rectangle())
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Pump Detection Diagnostics")
-        .accessibilityHint("Shows current automatic pump detection status.")
     }
 
     private var automaticPumpDetectionToggleBinding: Binding<Bool> {

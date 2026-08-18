@@ -95,19 +95,9 @@ final class AutomaticPumpDetectionService: NSObject {
     /// Plain-language reason the feature isn't fully active, for Settings UI to display.
     private(set) var lastEnableFailureReason: String?
     /// Single "what happened last" snapshot of the background arrival pipeline — region
-    /// events, Stage B outcomes, notification scheduling — for PumpDetectionDiagnosticsView.
-    /// Never a history; always overwritten. See `recordBackgroundDiagnostic(...)`.
+    /// events, Stage B outcomes, notification scheduling. Never a history; always
+    /// overwritten. See `recordBackgroundDiagnostic(...)`.
     private(set) var lastBackgroundDiagnostic: BackgroundDetectionDiagnosticSnapshot?
-
-    /// Read-only mirror of CalculatorView's live foreground state, published purely so
-    /// Stations' hidden diagnostics sheet (a different view/tab) can observe it — see
-    /// PumpDetectionDiagnosticsView. CalculatorView remains the sole owner of the real
-    /// decision logic; these properties are written by it (via the two methods in the
-    /// "Foreground diagnostics mirror" section below) and never read by any pump-detection
-    /// or prompt-suppression code path, so they can never influence behavior.
-    private(set) var isForegroundRefreshActive = false
-    private(set) var foregroundHasNearbyStation = false
-    private(set) var foregroundHasPromptedForCurrentVisit = false
 
     var status: Status {
         guard isEnabled else { return .disabled }
@@ -233,28 +223,6 @@ final class AutomaticPumpDetectionService: NSObject {
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastRefreshAt)
         UserDefaults.standard.removeObject(forKey: AppPreferenceKey.automaticPumpDetectionLastBackgroundDiagnostic)
         debugLog("Disabled — all station monitors removed, persisted metadata cleared.")
-    }
-
-    // MARK: - Foreground diagnostics mirror (read-only signal for Stations' diagnostics sheet)
-    //
-    // Both methods below are called only from CalculatorView (see runPeriodicPumpLocationRefresh()
-    // and the locationManager.latestCoordinate/onAppear wiring) and only ever WRITE these
-    // mirror properties — nothing in this file, or in CalculatorView's own actual
-    // detection/suppression logic, ever reads them back. That one-way flow is what keeps this
-    // diagnostics-only: it cannot change when a notification fires, when the in-app prompt
-    // fires, or how suppression behaves.
-
-    /// Whether CalculatorView's periodic foreground location-refresh loop is currently
-    /// running (i.e. the app is foregrounded and Calculator is in the view hierarchy).
-    func updateForegroundRefreshActive(_ isActive: Bool) {
-        isForegroundRefreshActive = isActive
-    }
-
-    /// Snapshot of CalculatorView's live "At the Pump?" visit state after a
-    /// refreshPumpModeStation()/evaluateAutoPromptPumpMode() pass.
-    func updateForegroundVisitState(hasNearbyStation: Bool, hasPromptedForCurrentVisit: Bool) {
-        foregroundHasNearbyStation = hasNearbyStation
-        foregroundHasPromptedForCurrentVisit = hasPromptedForCurrentVisit
     }
 
     // MARK: - Monitor refresh
@@ -644,10 +612,10 @@ final class AutomaticPumpDetectionService: NSObject {
     // MARK: - Diagnostics
 
     /// Production-accessible (unlike `debugLog` below): overwrites the single "last event"
-    /// snapshot PumpDetectionDiagnosticsView reads, so a real-device test that produced no
-    /// notification can be traced to exactly one of: no region event, a Stage B rejection/no
-    /// fix, a suppressed notification, or a scheduling failure — see the branch report. Never
-    /// passed a coordinate; `detail` is limited to reasons, error descriptions, and distances.
+    /// snapshot so a real-device test that produced no notification can be traced to exactly
+    /// one of: no region event, a Stage B rejection/no fix, a suppressed notification, or a
+    /// scheduling failure — see the branch report. Never passed a coordinate; `detail` is
+    /// limited to reasons, error descriptions, and distances.
     private func recordBackgroundDiagnostic(
         kind: BackgroundDetectionDiagnosticSnapshot.EventKind,
         stationName: String?,

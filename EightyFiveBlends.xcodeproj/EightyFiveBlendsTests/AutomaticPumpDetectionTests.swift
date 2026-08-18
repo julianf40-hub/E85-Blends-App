@@ -272,7 +272,7 @@ struct AutomaticPumpDetectionDiagnosticsTests {
         #expect(decoded == original)
     }
 
-    @Test("Every EventKind has a non-empty, distinct display label — PumpDetectionDiagnosticsView never shows a blank/ambiguous event")
+    @Test("Every EventKind has a non-empty, distinct display label for on-device troubleshooting")
     func everyEventKindHasADistinctDisplayLabel() {
         let allKinds: [BackgroundDetectionDiagnosticSnapshot.EventKind] = [
             .regionEntered, .regionExited, .regionMonitoringFailed, .regionAlreadyInside,

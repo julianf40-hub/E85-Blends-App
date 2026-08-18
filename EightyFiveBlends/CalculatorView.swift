@@ -274,7 +274,6 @@ struct CalculatorView: View {
             loadRememberedFuelPreferencesIfNeeded()
             requestPumpModeLocationIfNeeded()
             resolvePendingDetectedStationIfNeeded()
-            publishForegroundVisitDiagnostics()
         }
         // StationLocationManager's requestUserLocation() is a ONE-SHOT fix, not continuous
         // updates (this app never calls startUpdatingLocation()) — without this loop, the
@@ -312,7 +311,6 @@ struct CalculatorView: View {
             refreshPumpModeStation()
             evaluateAutoPromptPumpMode()
             refreshPumpDetectionMonitoredStations(reason: "Location updated")
-            publishForegroundVisitDiagnostics()
         }
         .onChange(of: pumpDetectionService.pendingDetectedStation) { _, _ in
             resolvePendingDetectedStationIfNeeded()
@@ -470,25 +468,10 @@ struct CalculatorView: View {
     /// `.requestLocation()`, never `.requestWhenInUseAuthorization()`). 20s balances catching a
     /// good fix promptly against not polling GPS so fast it wastes battery.
     private func runPeriodicPumpLocationRefresh() async {
-        pumpDetectionService.updateForegroundRefreshActive(true)
-        defer { pumpDetectionService.updateForegroundRefreshActive(false) }
         while Task.isCancelled == false {
             requestPumpModeLocationIfNeeded()
             try? await Task.sleep(nanoseconds: 20_000_000_000)
         }
-    }
-
-    /// Mirrors this view's current pump-mode/prompt-suppression @State onto the shared
-    /// AutomaticPumpDetectionService purely so Stations' hidden diagnostics sheet — a
-    /// different view entirely — can display it (see
-    /// AutomaticPumpDetectionService.updateForegroundVisitState). Read-only, one-way,
-    /// diagnostics-only: called after refreshPumpModeStation()/evaluateAutoPromptPumpMode()
-    /// have already finished, so it never influences their outcome.
-    private func publishForegroundVisitDiagnostics() {
-        pumpDetectionService.updateForegroundVisitState(
-            hasNearbyStation: pumpModeStation != nil,
-            hasPromptedForCurrentVisit: hasPromptedForCurrentPumpVisit
-        )
     }
 
     private func handleAuthorizationChange(_ status: CLAuthorizationStatus) {

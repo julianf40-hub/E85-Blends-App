@@ -201,10 +201,9 @@ enum ArrivalConfirmation {
 }
 
 /// A single "what happened last" snapshot of the background arrival-detection pipeline, for
-/// on-device troubleshooting (see PumpDetectionDiagnosticsView). Deliberately just the ONE most
-/// recent event — never a history/log — and never raw coordinates, matching this feature's
-/// existing privacy posture (see AutomaticPumpDetectionService's persistence section and
-/// PumpDetectionDiagnosticsView's own doc comment). Overwritten every time a new
+/// on-device troubleshooting. Deliberately just the ONE most recent event — never a
+/// history/log — and never raw coordinates, matching this feature's existing privacy posture
+/// (see AutomaticPumpDetectionService's persistence section). Overwritten every time a new
 /// background-relevant event occurs.
 struct BackgroundDetectionDiagnosticSnapshot: Codable, Equatable {
     enum EventKind: String, Codable {
@@ -220,7 +219,7 @@ struct BackgroundDetectionDiagnosticSnapshot: Codable, Equatable {
         case notificationScheduled
         case notificationSchedulingFailed
 
-        /// Short, human-readable label for PumpDetectionDiagnosticsView — never shown without
+        /// Short, human-readable label for on-device troubleshooting — never shown without
         /// its accompanying station name/detail/timestamp, so this stays terse.
         var displayLabel: String {
             switch self {
