@@ -136,8 +136,8 @@ struct AddEditReminderView: View {
                     title: "Mileage Schedule",
                     subtitle: "Use the active vehicle odometer to flag overdue maintenance."
                 )
-                ReminderIntField(title: "Due Mileage", value: $draft.dueMileage)
-                ReminderIntField(title: "Repeat Mileage Interval", value: $draft.repeatMileageInterval)
+                ReminderIntField(title: "Due Mileage", value: $draft.dueMileage, placeholder: "Enter mileage")
+                ReminderRepeatMileageField(value: $draft.repeatMileageInterval)
             }
 
             ReminderToggleRow(title: "Track by Date", isOn: $draft.dateEnabled)
@@ -238,10 +238,9 @@ struct AddEditReminderView: View {
 
             ForEach($draft.purchaseLinks) { $link in
                 ReminderPurchaseLinkRow(link: $link) {
+                    // Deleting the last row returns to zero rows + "+ Add Link" above — it no
+                    // longer re-seeds a fresh empty row (see ReminderDraft.init).
                     draft.purchaseLinks.removeAll { $0.id == link.id }
-                    if draft.purchaseLinks.isEmpty {
-                        draft.purchaseLinks.append(ReminderPurchaseLink())
-                    }
                 }
             }
         }
@@ -286,8 +285,11 @@ struct ReminderDraft {
         dueDate = reminder?.dueDate ?? .now
         repeatDateIntervalDays = reminder?.repeatDateIntervalDays ?? 0
         notes = reminder?.notes ?? ""
-        let links = reminder?.purchaseLinks ?? []
-        purchaseLinks = links.isEmpty ? [ReminderPurchaseLink()] : links
+        // 2.3.0 UI polish pass: a brand-new reminder (and one with no saved links) now starts
+        // with zero rows + "+ Add Link" — no longer auto-seeded with one empty editor row the
+        // user has to notice and either fill in or delete. Existing saved links still display
+        // exactly as saved.
+        purchaseLinks = reminder?.purchaseLinks ?? []
     }
 
     mutating func normalizeForSave() {
@@ -386,9 +388,28 @@ private struct ReminderStringField: View {
     }
 }
 
+// A blank-when-zero Int<->String binding shared by ReminderIntField and
+// ReminderRepeatMileageField — 0 means "not entered" for every mileage/interval field in this
+// form (mirrors VehicleDraft.tankSizeGallons' 0-is-unset convention), so it's never shown as a
+// literal "0" that could read as an intentional value.
+private func blankWhenZeroIntBinding(_ value: Binding<Int>) -> Binding<String> {
+    Binding(
+        get: { value.wrappedValue > 0 ? String(value.wrappedValue) : "" },
+        set: { newText in
+            let trimmed = newText.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                value.wrappedValue = 0
+            } else if let parsed = Int(trimmed) {
+                value.wrappedValue = parsed
+            }
+        }
+    )
+}
+
 private struct ReminderIntField: View {
     let title: String
     @Binding var value: Int
+    var placeholder: String = "Optional"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -396,7 +417,7 @@ private struct ReminderIntField: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
-            TextField(title, value: $value, format: .number)
+            TextField(placeholder, text: blankWhenZeroIntBinding($value))
                 .keyboardType(.numberPad)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .padding(.horizontal, 14)
@@ -407,6 +428,40 @@ private struct ReminderIntField: View {
                         .stroke(AppTheme.Colors.border, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+}
+
+// "Repeat every [ ] mi" — 2.3.0 UI polish pass: replaces the generic "Repeat Mileage Interval"
+// label-above-field layout for this one field, so it reads immediately as the recurrence
+// interval after completion rather than a second due-mileage-like number. Same underlying
+// draft.repeatMileageInterval field/logic — presentation only.
+private struct ReminderRepeatMileageField: View {
+    @Binding var value: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Repeat every")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            HStack(spacing: 8) {
+                TextField("Optional", text: blankWhenZeroIntBinding($value))
+                    .keyboardType(.numberPad)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 14)
+                    .background(AppTheme.Colors.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                Text("mi")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
         }
     }
 }

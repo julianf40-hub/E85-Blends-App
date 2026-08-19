@@ -1111,7 +1111,7 @@ private struct ReminderRowCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(info.reminder.title.isEmpty ? "Untitled Reminder" : info.reminder.title)
                         .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary.opacity(info.group == .completed ? 0.7 : 1))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
 
                     Text(info.reminder.vehicleName.isEmpty ? "Unassigned" : info.reminder.vehicleName)
                         .font(.subheadline)
@@ -1162,7 +1162,7 @@ private struct ReminderRowCard: View {
             if info.reminder.notes.isEmpty == false {
                 Text(info.reminder.notes)
                     .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary.opacity(info.group == .completed ? 0.8 : 1))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
             }
 
             if purchaseLinks.isEmpty == false {
@@ -1240,7 +1240,11 @@ private struct ReminderRowCard: View {
                 .stroke(cardBorder, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .opacity(info.group == .completed ? 0.72 : 1)
+        // Single opacity source for the whole card (was also separately compounded on the
+        // title/notes text above, which multiplied to a much-too-faint ~0.5 effective opacity
+        // in light mode — 2.3.0 UI polish pass). 0.85 keeps completed cards visually secondary
+        // to Upcoming/Overdue while keeping title/vehicle/dates/category/buttons all readable.
+        .opacity(info.group == .completed ? 0.85 : 1)
         .sheet(isPresented: $isShowingPurchaseLinks) {
             ReminderPurchaseLinksSheet(
                 title: reminderTitle,
@@ -1571,6 +1575,7 @@ private struct ReminderCompletionRecordCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Delete completed reminder: \(record.reminderTitle.isEmpty ? "Untitled Reminder" : record.reminderTitle)")
             }
 
             Text("Completed \(record.completedAt.formatted(date: .abbreviated, time: .omitted))")

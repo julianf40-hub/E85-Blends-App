@@ -180,7 +180,12 @@ struct FuelLogView: View {
                 }
                 entriesSection
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            // Extra bottom clearance beyond the tab bar's own safe-area reservation, so the
+            // last history card scrolls fully clear of the tab bar instead of feeling flush
+            // against it (2.3.0 UI polish pass — local content margin, not a TabView change).
+            .padding(.bottom, 32)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .navigationTitle("Fuel Log")
@@ -486,7 +491,7 @@ struct FuelLogView: View {
     }
 
     private var insightsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Insights",
                 subtitle: "Quick highlights from your fill-up history."
@@ -535,7 +540,7 @@ struct FuelLogView: View {
                 )
             }
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.Colors.surfaceElevated)
         .overlay(
@@ -559,13 +564,13 @@ struct FuelLogView: View {
     }
 
     private var trendsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Recent Trends",
                 subtitle: "Based on your most recent fill-ups."
             )
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 trendMetric(
                     title: "This Month",
                     value: thisMonthFillUps > 0 ? String(format: "$%.2f", thisMonthSpend) : "--",
@@ -580,7 +585,7 @@ struct FuelLogView: View {
                 )
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 trendMetric(
                     title: "Recent MPG",
                     value: recentMPG.map { String(format: "%.1f", $0) } ?? "--",
@@ -617,7 +622,7 @@ struct FuelLogView: View {
                 )
             }
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.Colors.surfaceElevated)
         .overlay(
@@ -646,7 +651,7 @@ struct FuelLogView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(10)
         .background(AppTheme.Colors.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -864,11 +869,12 @@ private struct FuelLogRowCard: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
 
+            // Blend already appears in the top-right badge above — not repeated here (2.3.0
+            // UI polish pass).
             HStack(spacing: 18) {
-                metric(title: "Blend", value: "E\(String(format: "%.1f", entry.finalBlendPercent))")
                 metric(title: "Gallons", value: String(format: "%.2f", entry.gallonsAdded))
                 metric(title: "MPG", value: entry.mpg > 0 ? String(format: "%.1f", entry.mpg) : "--")
-                metric(title: "ODO", value: "\(entry.odometer)")
+                metric(title: "ODO", value: "\(entry.odometer.formatted(.number.grouping(.automatic))) mi")
             }
 
             if entry.notes.isEmpty == false {
@@ -882,8 +888,8 @@ private struct FuelLogRowCard: View {
                     Text("Edit")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.vertical, 10)
                         .background(AppTheme.Colors.surface)
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -896,8 +902,8 @@ private struct FuelLogRowCard: View {
                     Text("Delete")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Color(red: 0.95, green: 0.47, blue: 0.44))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.vertical, 10)
                         .background(AppTheme.Colors.surface)
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
