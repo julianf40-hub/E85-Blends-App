@@ -126,20 +126,11 @@ struct GarageView: View {
         }
     }
 
+    // UIKit-backed — see UIKitAddVehicleButton's doc comment below for why. Preserves the
+    // exact same single action this SwiftUI Button used to perform directly.
     private var addVehicleButton: some View {
-        Button {
+        UIKitAddVehicleButton {
             sheetContext = .add
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                Text("Add Vehicle")
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(AppTheme.Colors.accentGreen)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 
@@ -392,6 +383,112 @@ struct GarageView: View {
 #Preview {
     GarageView()
         .modelContainer(for: VehicleProfile.self, inMemory: true)
+}
+
+// One-off UIKit workaround for Garage's Add Vehicle control only — Add Reminder and every
+// other button in the app remain plain SwiftUI. Real-device investigation (three separate
+// SwiftUI Button implementations, then a full runtime geometry study, then a read-only UIKit
+// hit-test-ownership study, all committed to source history) established that this specific
+// SwiftUI Button's painted chrome and its actual tap-responsive region did not reliably match
+// in this exact header position — while an architecturally identical SwiftUI button (Reminders'
+// Add Reminder) worked correctly, and ordinary UIKit view/gesture ownership showed no
+// difference between the working and non-working regions. No SwiftUI-level or ordinary-UIKit
+// explanation was found. Making the real UIButton the interactive surface — rather than a
+// SwiftUI Button whose hit region apparently doesn't reliably match its painted bounds here —
+// sidesteps that unexplained behavior directly: makeUIView returns the UIButton itself, not a
+// wrapping container, so the UIButton's own `bounds` are exactly this representable's bounds,
+// and nothing else can own or shrink the interactive region.
+//
+// Visual values are mirrored intentionally from the SwiftUI Button this replaces: HStack(spacing:
+// 8) { Image("plus"); Text("Add Vehicle") } .font(.subheadline.weight(.semibold))
+// .foregroundStyle(AppTheme.Colors.textPrimary) .padding(.horizontal, 14).padding(.vertical, 10)
+// .background(AppTheme.Colors.accentGreen) .clipShape(RoundedRectangle(cornerRadius: 14, style:
+// .continuous)) — see configure(_:) below for the exact mapping.
+private struct UIKitAddVehicleButton: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped), for: .touchUpInside)
+        configure(button)
+        return button
+    }
+
+    func updateUIView(_ uiView: UIButton, context: Context) {
+        // Keeps the Coordinator's closure current (avoids invoking a stale `action` captured
+        // back at makeUIView time) and re-applies configuration so any theme/appearance change
+        // SwiftUI detects is reflected here too.
+        context.coordinator.action = action
+        configure(uiView)
+    }
+
+    // Lets SwiftUI size this the same way it sized the original SwiftUI Button: hugging its
+    // content (title + image + padding), never stretching to fill. systemLayoutSizeFitting is
+    // the standard public Auto Layout API for "what size does this view naturally want to be."
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
+        uiView.systemLayoutSizeFitting(
+            UIView.layoutFittingCompressedSize,
+            withHorizontalFittingPriority: .fittingSizeLevel,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+    }
+
+    private func configure(_ button: UIButton) {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "Add Vehicle"
+        configuration.image = UIImage(
+            systemName: "plus",
+            withConfiguration: UIImage.SymbolConfiguration(textStyle: .subheadline)
+                .applying(UIImage.SymbolConfiguration(weight: .semibold))
+        )
+        configuration.imagePadding = 8
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 14, bottom: 10, trailing: 14)
+        configuration.cornerStyle = .fixed
+        configuration.background.cornerRadius = 14
+        configuration.baseBackgroundColor = UIColor(AppTheme.Colors.accentGreen)
+        configuration.baseForegroundColor = UIColor(AppTheme.Colors.textPrimary)
+        configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = Self.semiboldSubheadlineFont()
+            return outgoing
+        }
+
+        button.configuration = configuration
+        // .continuous matches SwiftUI's RoundedRectangle(..., style: .continuous) corner curve
+        // exactly; UIButton.Configuration's own cornerRadius alone only gives a circular curve.
+        button.layer.cornerCurve = .continuous
+        button.accessibilityLabel = "Add Vehicle"
+    }
+
+    // Built from UIFontDescriptor.preferredFontDescriptor(withTextStyle:), so this always
+    // reflects the CURRENT Dynamic Type content size category when called — matching
+    // .font(.subheadline.weight(.semibold))'s own automatic scaling. UIButton.Configuration
+    // re-invokes titleTextAttributesTransformer automatically on trait changes, so this needs
+    // no separate trait-change observation of its own.
+    private static func semiboldSubheadlineFont() -> UIFont {
+        let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .subheadline)
+            .addingAttributes([.traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.semibold]])
+        return UIFont(descriptor: descriptor, size: 0)
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        // The only thing this UIKit control does on a real tap: call the one closure Garage
+        // supplied. It never touches sheetContext, VehicleSheetContext, or any presentation —
+        // Garage retains full ownership of that state, exactly as before.
+        @objc func tapped() {
+            action()
+        }
+    }
 }
 
 private struct ActiveVehicleCard: View {
