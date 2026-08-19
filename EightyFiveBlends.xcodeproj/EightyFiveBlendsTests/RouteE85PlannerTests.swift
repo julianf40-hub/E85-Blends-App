@@ -524,4 +524,133 @@ struct RouteE85PlannerTests {
         let context = validContext(mpg: .nan)
         #expect(context.isValid == false)
     }
+
+    // MARK: - 2.3.0 Trip Planner clarity pass: arrival-reserve semantics + fill-to-full
+
+    // Regression for the reported Phoenix, AZ → Los Angeles, CA contradiction: Trip Summary
+    // showed "Estimated arrival buffer — Unreachable" while the same plan's Fuel Plan card
+    // showed a healthy destination reserve (~87%). Root cause was a LABELING issue, not a
+    // calculation bug — TripPlannerView's "Estimated arrival buffer" row read
+    // noStopReserveFraction (the reserve with NO stop at all), not destinationReserveFraction
+    // (the reserve after following the generated stop plan). This test proves the planner
+    // itself computes both values correctly and that they can legitimately diverge this way:
+    // deeply negative with no stop, healthy after the real 3-stop plan. 18.5 gal tank, 12
+    // MPG, 50% starting fuel, 20% arrival buffer, gas backup allowed — same inputs as the
+    // reported device case; station placement is a controlled equivalent (not the real
+    // corridor's exact geocoded distances, which aren't available to this test) chosen so
+    // the greedy walk's station-by-station math is fully hand-verifiable below.
+    @Test("A negative no-stop baseline can coexist with a healthy planned destination reserve — not a contradiction")
+    func noStopBaseline_canBeNegative_whilePlannedRouteSucceeds() {
+        let stations = [
+            station(name: "Stop 1 Station", distanceAlongRouteMiles: 60),
+            station(name: "Stop 2 Station", distanceAlongRouteMiles: 160),
+            station(name: "Stop 3 Station", distanceAlongRouteMiles: 310),
+        ]
+        let context = RouteFuelContext(
+            tankSizeGallons: 18.5,
+            mpg: 12,
+            currentFuelPercent: 50,
+            targetArrivalReservePercent: 20,
+            fuelBackupMode: .gasBackupAllowed
+        )
+
+        let result = planner.recommendStops(stations: stations, totalMiles: 372, context: context)
+
+        // The no-stop baseline is genuinely, deeply negative — driving 372 mi on a 111 mi
+        // starting range (50% of a 222 mi full-tank range) without ever stopping.
+        #expect(abs(result.noStopDestinationReserveFraction - (-1.1757)) < 0.001)
+
+        // But the actual generated plan (3 stops, each filled to full) DOES reach the
+        // destination with a healthy reserve — this is the number a "planned arrival
+        // reserve" / "expected destination reserve" UI field must show, never the baseline
+        // above.
+        #expect(result.planComplete)
+        #expect(result.planSatisfiesTarget)
+        #expect(result.stops.count == 3)
+        let destReserve = try? #require(result.destinationReserveFraction)
+        #expect(abs((destReserve ?? 0) - 0.7207) < 0.001)
+
+        // The outcome the UI keys its banner off of — a stop was required to make an
+        // otherwise-unreachable trip work, exactly the "E85 Stop Required" case the reported
+        // contradiction was about.
+        #expect(result.outcome == .e85StopRequired)
+    }
+
+    // Same scenario as above, verifying the fill-to-full identity at each of the 3 stops:
+    // arrivalGallons + suggestedFillGallons == tankSizeGallons (within floating-point
+    // tolerance) — i.e. every recommended stop tops the tank all the way back up, never a
+    // partial/minimum-needed fill. Exact per-stop numbers hand-verified against the greedy
+    // walk's arithmetic (see this test's sibling above for the shared scenario setup).
+    @Test("Every E85 recommended stop fills to full: arrival + suggested fill == tank size")
+    func recommendedStops_fillToFull() {
+        let stations = [
+            station(name: "Stop 1 Station", distanceAlongRouteMiles: 60),
+            station(name: "Stop 2 Station", distanceAlongRouteMiles: 160),
+            station(name: "Stop 3 Station", distanceAlongRouteMiles: 310),
+        ]
+        let context = RouteFuelContext(
+            tankSizeGallons: 18.5,
+            mpg: 12,
+            currentFuelPercent: 50,
+            targetArrivalReservePercent: 20,
+            fuelBackupMode: .gasBackupAllowed
+        )
+
+        let result = planner.recommendStops(stations: stations, totalMiles: 372, context: context)
+        #expect(result.stops.count == 3)
+
+        let tank = 18.5
+        for stop in result.stops {
+            let arrivalGallons = stop.arrivalReserveFraction * tank
+            // The fill-to-full identity itself: never a partial fill, never negative,
+            // never over capacity.
+            #expect(abs((arrivalGallons + stop.suggestedFillGallons) - tank) < 0.01)
+            #expect(stop.suggestedFillGallons >= 0)
+            #expect(arrivalGallons + stop.suggestedFillGallons <= tank + 0.01)
+        }
+
+        // Explicit per-stop numbers (hand-verified), mirroring the shape of the real device
+        // report (arrive at a partial tank, add fuel back to exactly a full tank each time).
+        #expect(abs(result.stops[0].arrivalReserveFraction * tank - 4.25) < 0.01)
+        #expect(abs(result.stops[0].suggestedFillGallons - 14.25) < 0.01)
+
+        #expect(abs(result.stops[1].arrivalReserveFraction * tank - 10.1667) < 0.01)
+        #expect(abs(result.stops[1].suggestedFillGallons - 8.3333) < 0.01)
+
+        #expect(abs(result.stops[2].arrivalReserveFraction * tank - 6.0) < 0.01)
+        #expect(abs(result.stops[2].suggestedFillGallons - 12.5) < 0.01)
+    }
+
+    // Fill-to-full applies identically to a verified gasoline-backup route — both E85 stops
+    // and gas-fallback stops are produced by the same walkGreedyStops walk, so the same
+    // identity must hold for GasFallbackStop as for RecommendedStop. Reuses the Kingman
+    // gas-fallback scenario already established above (phoenixToLasVegas_e30_gasFallbackSucceeds)
+    // rather than a new hand-derived scenario, since that plan's single stop is already
+    // verified reachable and correct.
+    @Test("Gas-backup fallback stops also fill to full, same as E85 stops")
+    func gasFallbackStops_fillToFull() {
+        let context = RouteFuelContext(
+            tankSizeGallons: 18.5,
+            mpg: 12,
+            currentFuelPercent: 100,
+            targetArrivalReservePercent: 20,
+            fuelBackupMode: .gasBackupAllowed
+        )
+        let gasStations = [
+            gasStation(name: "Gas Stop 30mi", distanceAlongRouteMiles: 30),
+            gasStation(name: "Gas Stop 60mi", distanceAlongRouteMiles: 60),
+            gasStation(name: "Gas Stop 90mi", distanceAlongRouteMiles: 90),
+            gasStation(name: "Gas Stop 120mi", distanceAlongRouteMiles: 120),
+            gasStation(name: "Kingman Gas Stop", distanceAlongRouteMiles: 150),
+        ]
+        let fallback = planner.evaluateGasFallback(gasStations: gasStations, totalMiles: 284, context: context)
+        #expect(fallback.succeeds)
+        #expect(fallback.stops.count == 1)
+
+        let tank = 18.5
+        let stop = fallback.stops[0]
+        let arrivalGallons = stop.arrivalReserveFraction * tank
+        #expect(abs((arrivalGallons + stop.suggestedFillGallons) - tank) < 0.01)
+        #expect(stop.suggestedFillGallons >= 0)
+    }
 }

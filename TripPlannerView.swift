@@ -1180,7 +1180,11 @@ struct TripPlannerView: View {
                         messageOverride: "Your selected \(targetBlendLabel) plan cannot meet the arrival buffer because no useful E85 stop is available. The planner switched to gasoline backup to complete the trip safely."
                     )
                 } else {
-                    outcomeBanner(analysis.outcome)
+                    outcomeBanner(
+                        analysis.outcome,
+                        labelOverride: e85StopRequiredLabelOverride(analysis),
+                        messageOverride: e85StopRequiredMessageOverride(analysis)
+                    )
                 }
             } else {
                 reachabilityRow(plan)
@@ -1235,9 +1239,31 @@ struct TripPlannerView: View {
                     // clearly labeled as such rather than looking like the active route's
                     // numbers (requirement: don't mix active gas-backup metrics with failed
                     // E85-only metrics under ambiguous labels).
-                    label: isFallbackActive ? "E85-only arrival buffer" : "Estimated arrival buffer",
+                    //
+                    // For the ordinary (non-fallback) case, this row is deliberately labeled
+                    // "Without refueling" rather than a generic "Estimated arrival buffer" —
+                    // arrivalReserveText reports the reserve if the driver does NOT stop at
+                    // all, which can legitimately read "Unreachable" for a trip a generated
+                    // stop plan completes just fine. See plannedArrivalReserveText below for
+                    // the actual planned result, shown as its own row right after this one.
+                    label: arrivalBufferRowLabel,
                     value: arrivalReserveText
                 )
+                // The reserve the driver actually arrives with after following the generated
+                // stop plan — the number that answers "can I make this trip." Kept as its own
+                // row, never merged into the no-refuel row's wording above, so a successful
+                // plan can never be represented only by its no-refuel baseline. Not shown for
+                // Gas Only (arrivalReserveText already IS the planned value there — see
+                // arrivalBufferRowLabel) or while a gas-backup fallback is active (that case
+                // already has its own "Gas backup arrival buffer" row above).
+                if isFallbackActive == false, isGasolineOnly == false {
+                    summaryDivider
+                    summaryRow(
+                        icon: "checkmark.seal.fill",
+                        label: "Planned arrival reserve",
+                        value: plannedArrivalReserveText
+                    )
+                }
                 // "Estimated E85/gas stops" duplicates the "E85 stops" row already shown
                 // above in fallback mode — skip it there to avoid showing the same count twice.
                 if isFallbackActive == false {
@@ -1349,8 +1375,23 @@ struct TripPlannerView: View {
         Divider().overlay(AppTheme.Colors.borderColor)
     }
 
+    // Gas Only's arrivalReserveText already reads gasOnlyDestinationReserveFraction — the
+    // reserve AFTER following the Gas Only plan, not a no-refuel baseline (Gas Only has no
+    // separately-tracked no-stop figure) — so its row is labeled for what it actually is.
+    // The non-Gas-Only, non-fallback row instead reads noStopReserveFraction (see
+    // arrivalReserveText below), a genuine no-refuel baseline that can read "Unreachable"
+    // even when the generated stop plan succeeds — labeled accordingly so the two can never
+    // be mistaken for each other.
+    private var arrivalBufferRowLabel: String {
+        if isFallbackActive { return "E85-only arrival buffer" }
+        if isGasolineOnly { return "Planned arrival reserve" }
+        return "Without refueling"
+    }
+
     // The arrival reserve the driver would have WITHOUT stopping — this is the figure the
-    // reserve target is compared against (it's what motivates a recommended stop).
+    // reserve target is compared against (it's what motivates a recommended stop). For Gas
+    // Only, no separate no-stop figure is tracked, so this reads the actual planned result
+    // instead — see arrivalBufferRowLabel, which labels this row accordingly in that case.
     private var arrivalReserveText: String {
         if isGasolineOnly {
             guard let fraction = gasOnlyDestinationReserveFraction else {
@@ -1360,6 +1401,18 @@ struct TripPlannerView: View {
             return "\(Int((fraction * 100).rounded()))%"
         }
         guard let fraction = analysis?.noStopReserveFraction else {
+            return isDiscoveringStations ? "…" : "—"
+        }
+        if fraction < 0 { return "Unreachable" }
+        return "\(Int((fraction * 100).rounded()))%"
+    }
+
+    // The reserve actually reached at the destination after following the generated E85
+    // stop plan (fill-to-full at each stop) — the SAME value the Fuel Plan card's own
+    // destination line reads (see buildFuelPlanItems' finalArrivalFraction default), so Trip
+    // Summary and Fuel Plan can never disagree about whether the plan itself gets you there.
+    private var plannedArrivalReserveText: String {
+        guard let fraction = analysis?.destinationReserveFraction else {
             return isDiscoveringStations ? "…" : "—"
         }
         if fraction < 0 { return "Unreachable" }
@@ -1426,6 +1479,37 @@ struct TripPlannerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(outcome.tint.opacity(0.35), lineWidth: 1)
         )
+    }
+
+    // Pluralizes "E85 Stop Required" once a real stop count is known. Falls back to nil
+    // (RouteOutcome's own static label) whenever the outcome isn't actually e85StopRequired
+    // or there are no stops to count — never invents a number.
+    private func e85StopRequiredLabelOverride(_ analysis: RouteE85Analysis) -> String? {
+        guard analysis.outcome == .e85StopRequired else { return nil }
+        let count = analysis.recommendedStops.count
+        guard count > 0 else { return nil }
+        return count == 1 ? "E85 Stop Required" : "E85 Stops Required"
+    }
+
+    // Once the plan is known to actually reach the destination, replaces RouteOutcome's
+    // open-ended static message ("Destination isn't reachable without refueling...") with
+    // one naming the real stop count and planned arrival reserve, so a successful multi-stop
+    // plan reads as successful rather than as an unresolved warning. Falls back to nil
+    // (RouteOutcome's own static message) whenever destinationReserveFraction isn't a real,
+    // non-negative number yet — never invents a reserve figure. See plannedArrivalReserveText
+    // above for the equivalent Trip Summary row, which reads the same underlying field.
+    private func e85StopRequiredMessageOverride(_ analysis: RouteE85Analysis) -> String? {
+        guard analysis.outcome == .e85StopRequired else { return nil }
+        let count = analysis.recommendedStops.count
+        guard count > 0,
+              let reserve = analysis.destinationReserveFraction,
+              reserve.isFinite, reserve >= 0
+        else {
+            return nil
+        }
+        let stopWord = count == 1 ? "stop" : "stops"
+        let pct = Int((reserve * 100).rounded())
+        return "This trip requires refueling. Your plan includes \(count) E85 \(stopWord) and is expected to reach the destination with about \(pct)% reserve."
     }
 
     private func reachabilityRow(_ plan: TripPlan) -> some View {
@@ -2044,7 +2128,11 @@ struct TripPlannerView: View {
                 stopMetric(
                     icon: "fuelpump.fill",
                     value: String(format: "%.1f gal", stop.suggestedFillGallons),
-                    label: "Suggested fill"
+                    // "Fill to full" (not "Suggested fill") because this planner fills every
+                    // recommended stop to a full tank — see refuelStrategyCaption in
+                    // buildFuelPlanItems. Gas Only's equivalent card below intentionally keeps
+                    // "Suggested fill": that mode sizes to the minimum needed, not to full.
+                    label: "Fill to full"
                 )
             }
 
@@ -2500,9 +2588,10 @@ struct TripPlannerView: View {
         }
 
         // Explains, in plain language, what this stop's suggested purchase accomplishes —
-        // shown as a subtle secondary line beneath "Add approximately X gallons" so the
-        // user never has to work out on their own why a stop is needed despite a
-        // comfortable-looking arrival percentage. Deliberately never mentions the
+        // shown as a subtle secondary line beneath the fill-amount row (E85/fallback:
+        // "Fill to full — add approximately X gallons"; Gas Only: "Add approximately X
+        // gallons") so the user never has to work out on their own why a stop is needed
+        // despite a comfortable-looking arrival percentage. Deliberately never mentions the
         // planner's internal terms (no "optimization," no "algorithm").
         //
         // The user's selected reserve is a DESTINATION target — it never applies to an
@@ -2515,6 +2604,14 @@ struct TripPlannerView: View {
                 ? "Covers the remaining \(miles) to your destination while keeping your selected reserve."
                 : "Covers the next \(miles) to your next stop while maintaining a safe fuel margin."
         }
+
+        // Shown once, near the top of the E85/gas-backup plan, so the fill-to-full strategy
+        // behind every stop's "Fill to full — add approximately X gallons" line is stated
+        // up front rather than only implied by each stop's own wording. This card is
+        // deliberately NOT shown for Gas Only mode below — Gas Only sizes each fill to the
+        // minimum needed for the next leg (see GasOnlyPlanner.minimalFillStops), not to a
+        // full tank, so this copy would be inaccurate there.
+        let refuelStrategyCaption = "At each recommended fuel stop below, the plan assumes you refill the tank to full before continuing — the fill amount shown at each stop reflects that."
 
         let startPct = Int(currentFuelPercent.rounded())
         add("fuelpump.circle.fill", "Start: \(startPct)% tank", AppTheme.Colors.primaryGreen, headline: true)
@@ -2556,6 +2653,14 @@ struct TripPlannerView: View {
             // route, so show it as the plan instead of the (replaced) E85 attempt.
             // Requirement 6: the required backup stop(s) belong directly in the main plan.
             let totalFallbackStops = fallback.stops.count
+            if totalFallbackStops > 0 {
+                add(
+                    "arrow.triangle.2.circlepath",
+                    "Refuel strategy: Fill to Full",
+                    AppTheme.Colors.textSecondary,
+                    caption: refuelStrategyCaption
+                )
+            }
             for (i, stop) in fallback.stops.enumerated() {
                 let stopLabel = "Stop \(i + 1)"
                 addLeg(stop.station.distanceAlongRouteMiles - prevMiles, destination: stopLabel)
@@ -2571,7 +2676,7 @@ struct TripPlannerView: View {
                     : fallback.stops[i + 1].station.distanceAlongRouteMiles - stop.station.distanceAlongRouteMiles
                 add(
                     "plus.circle.fill",
-                    "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
+                    "Fill to full — add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
                     AppTheme.Colors.gasOrange,
                     primary: true,
                     caption: fillReasonCaption(nextLegMiles: nextLegMiles, isFinalLeg: isFinalStop)
@@ -2588,6 +2693,14 @@ struct TripPlannerView: View {
         } else if isGasolineOnly == false {
             let stops = analysis?.recommendedStops ?? []
             let totalStops = stops.count
+            if totalStops > 0 {
+                add(
+                    "arrow.triangle.2.circlepath",
+                    "Refuel strategy: Fill to Full",
+                    AppTheme.Colors.textSecondary,
+                    caption: refuelStrategyCaption
+                )
+            }
             for (i, stop) in stops.enumerated() {
                 let stopLabel = "Stop \(i + 1)"
                 addLeg(stop.station.distanceAlongRouteMiles - prevMiles, destination: stopLabel)
@@ -2613,7 +2726,7 @@ struct TripPlannerView: View {
                 }
                 add(
                     "plus.circle.fill",
-                    "Add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
+                    "Fill to full — add approximately \(String(format: "%.1f", stop.suggestedFillGallons)) gallons",
                     AppTheme.Colors.gasOrange,
                     primary: true,
                     caption: fillCaption

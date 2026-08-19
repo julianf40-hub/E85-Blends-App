@@ -470,4 +470,40 @@ struct GasOnlyPlannerTests {
         #expect(fills == fills.sorted(), "higher selected reserve must never produce a smaller suggested fill")
         #expect(fills[0] < fills[1] && fills[1] < fills[2], "each higher reserve setting must strictly increase the fill")
     }
+
+    // MARK: - 2.3.0 Trip Planner clarity pass: Gas Only intentionally does NOT fill to full
+
+    // Documents, explicitly, the deliberate difference from RouteE85Planner's E85/gas-backup
+    // fill formula (arrival + fill == tank, every stop). Gas Only's minimalFillStops instead
+    // sizes each purchase to the minimum needed for the onward leg (see this file's header
+    // comment and GasOnlyPlanner.minimalFillStops) — this test locks that difference in with
+    // a real, hand-verified number, so Trip Planner's "Fill to Full" copy (added for E85 and
+    // gas-backup stops only) can never silently get applied to Gas Only's stop cards without
+    // this test failing first. 18.5 gal tank, 18 MPG, 100% starting fuel, single stop at 250
+    // mi, 350 mi total, 10% arrival buffer.
+    @Test("Gas Only's suggested fill is the minimum needed for the leg, not a fill-to-full amount")
+    func gasOnly_doesNotFillToFull() {
+        let stations = [gasStation(name: "Minimal Fill Stop", distanceAlongRouteMiles: 250)]
+        let result = GasOnlyPlanner.plan(
+            stations: stations,
+            distanceMiles: 350,
+            context: context(mpg: 18, fuelPercent: 100, reservePercent: 10)
+        )
+
+        #expect(result.stops.count == 1)
+        let stop = result.stops[0]
+        let tank = 18.5
+        let arrivalGallons = stop.arrivalReserveFraction * tank
+
+        // Hand-verified: arrival ≈ 4.611 gal, minimum-needed fill ≈ 2.795 gal (departure
+        // fuel ≈ 7.406 gal — exactly enough for the 100 mi remaining leg plus the 10%
+        // destination reserve). A fill-to-full amount here would be ≈ 13.889 gal instead.
+        #expect(abs(arrivalGallons - 4.611) < 0.01)
+        #expect(abs(stop.suggestedFillGallons - 2.795) < 0.01)
+
+        // The actual identity check: this mode's fill leaves real, unused tank capacity —
+        // the opposite of E85/gas-backup's arrival + fill == tank identity.
+        #expect(arrivalGallons + stop.suggestedFillGallons < tank - 5.0,
+                "Gas Only must NOT fill to full — a fill-to-full amount here would be ≈13.9 gal, far more than the minimum-needed ≈2.8 gal")
+    }
 }
