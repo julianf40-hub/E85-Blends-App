@@ -361,24 +361,38 @@ struct CostCalculatorView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
+    // "TANK COST" label makes explicit that this message is about fill cost specifically —
+    // the counterpart to breakEvenCard's "COST PER MILE" label just below it. The two can
+    // legitimately disagree (E85 cheaper per fill, gasoline cheaper per mile, once the MPG
+    // benchmark is applied) and previously read as contradictory without these labels. The
+    // underlying `saves` determination is untouched — only the label and wording changed.
     private func savingsMessageView(_ result: BlendCostResult) -> some View {
         let saves = result.savingsVsGasOnly > 0
         let amount = abs(result.savingsVsGasOnly)
 
-        return Text(saves
-             ? "\(result.label) costs about \(String(format: "$%.2f", amount)) less than filling with gasoline only."
-             : "\(result.label) costs about \(String(format: "$%.2f", amount)) more than filling with gasoline only.")
-            .font(.title3.weight(.bold))
-            .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(saves ? AppTheme.Colors.softGreenBackground.opacity(0.6) : AppTheme.Colors.warningRed.opacity(0.1))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(saves ? AppTheme.Colors.primaryGreen.opacity(0.5) : AppTheme.Colors.warningRed.opacity(0.4), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("TANK COST")
+                .font(.caption.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+
+            Text(saves
+                 ? "\(result.label) saves about \(String(format: "$%.2f", amount)) per fill."
+                 : "Gasoline saves about \(String(format: "$%.2f", amount)) per fill.")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(saves ? AppTheme.Colors.softGreenBackground.opacity(0.6) : AppTheme.Colors.warningRed.opacity(0.1))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(saves ? AppTheme.Colors.primaryGreen.opacity(0.5) : AppTheme.Colors.warningRed.opacity(0.4), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        // Reads as one VoiceOver swipe: "Tank cost. E85 saves about $21.28 per fill."
+        .accessibilityElement(children: .combine)
     }
 
     private var impossibleBlendCard: some View {
@@ -388,7 +402,8 @@ struct CostCalculatorView: View {
         )
     }
 
-    // MARK: - Break-Even Card
+    // MARK: - Cost Per Mile Card (internal name "breakEven" kept — same break-even math,
+    // only the user-facing section label changed to "COST PER MILE")
 
     // Answers the headline question this feature adds: "how expensive can E85 get before
     // gasoline is the better cost-per-mile value?" — plus, right below it, how much MPG the
@@ -396,6 +411,11 @@ struct CostCalculatorView: View {
     // Color/heading are driven entirely by breakEvenVerdict (E85 price vs. e85PriceCeiling),
     // never by the selected blend's own numbers, so this card stays a stable answer to "is
     // E85 worth it right now" no matter which blend is being compared above it.
+    //
+    // Labeled "COST PER MILE" (not "Break-Even") so it reads as the explicit counterpart to
+    // savingsMessageView's "TANK COST" label above it — the two sections can legitimately
+    // disagree (see savingsMessageView's comment) and previously read as contradictory
+    // without this pairing.
     private func breakEvenCard(
         ceiling: Double,
         verdict: FuelCostBreakEvenMath.Verdict,
@@ -405,12 +425,17 @@ struct CostCalculatorView: View {
         let mpgLossFraction = maxAffordableMPGLossFraction(selectedResult)
 
         return VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "Break-Even")
+            VStack(alignment: .leading, spacing: 4) {
+                SectionHeader(title: "Cost Per Mile")
 
-            Text(breakEvenHeadline(verdict))
-                .font(.headline.weight(.bold))
-                .foregroundStyle(accent)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(breakEvenHeadline(verdict))
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Reads as one VoiceOver swipe: "Cost per mile. Gasoline is the better value at
+            // current prices." — pairs with savingsMessageView's "Tank cost. ..." swipe.
+            .accessibilityElement(children: .combine)
 
             VStack(spacing: 0) {
                 breakEvenRow(label: "E85 price ceiling", value: formattedPricePerGallon(ceiling))
@@ -573,9 +598,12 @@ struct CostCalculatorView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
 
+            // "per fill" (not "than gas-only") to match savingsMessageView's tank-cost
+            // wording — this is a fill-cost comparison, distinct from the break-even line
+            // just below it.
             Text(saves
-                 ? String(format: "$%.2f less than gas-only", abs(result.savingsVsGasOnly))
-                 : String(format: "$%.2f more than gas-only", abs(result.savingsVsGasOnly)))
+                 ? String(format: "$%.2f less per fill", abs(result.savingsVsGasOnly))
+                 : String(format: "$%.2f more per fill", abs(result.savingsVsGasOnly)))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
                 .lineLimit(1)
