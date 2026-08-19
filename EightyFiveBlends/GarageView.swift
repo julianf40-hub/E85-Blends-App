@@ -482,7 +482,6 @@ private struct GarageDeleteConfirmationOverlay: View {
         }
         .transition(.opacity.combined(with: .scale(scale: 0.96)))
         .zIndex(1)
-        .onExitCommand(perform: cancelAction) // hardware Escape (external keyboard) maps to Cancel
     }
 }
 
