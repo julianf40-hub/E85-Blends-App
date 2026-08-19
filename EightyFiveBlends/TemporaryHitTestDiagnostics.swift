@@ -17,8 +17,19 @@
 //  DELETE THIS FILE, and the instrumentation that references it, once the investigation
 //  concludes.
 //
+//  PHASE 3 ADDITION — UIKit hit-test owner inspection. Public UIKit APIs only: UIView, UIWindow,
+//  UIViewRepresentable, UIView.hitTest(_:with:), UIView.convert(_:to:), UIView.superview,
+//  UIView.gestureRecognizers, and UIGestureRecognizer's public state/flag properties. No
+//  private APIs, no Objective-C runtime swizzling, no method replacement, no UIWindow
+//  subclassing, no recursiveDescription/_printHierarchy, no KVC into private internals, no
+//  synthetic touches. `window.hitTest(point, with: nil)` is called read-only, purely to
+//  inspect what a real touch at that point WOULD hit — it never overrides hitTest/
+//  point(inside:)/sendEvent, never intercepts a real event, and has zero effect on actual user
+//  taps. See HitTestWindowReader and UIKitHitTestInspector below.
+//
 
 import SwiftUI
+import UIKit
 
 /// Collects named view frames (in whatever `CoordinateSpace` the caller chose — `.global` by
 /// convention here) reported by `measureHitTestFrame(_:in:)` below, keyed by a caller-chosen
@@ -154,5 +165,205 @@ struct HitTestDiagnosticReadout: View {
         .padding(8)
         .background(Color.black.opacity(0.75))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+// MARK: - Phase 3: UIKit hit-test owner inspection
+
+/// Bridges to the real `UIWindow` hosting whatever SwiftUI view this is attached to (via
+/// `.background(...)`), reporting it through `onWindowChange`. That's its ONLY job: it draws
+/// nothing (`isOpaque = false`, clear background, no `draw(_:)` override) and
+/// `isUserInteractionEnabled = false`, so it can never receive or affect a touch — pair with
+/// `.allowsHitTesting(false)` at the SwiftUI call site as defense in depth. The window
+/// reference itself is ordinary transient `@State` in whichever view reads it (see
+/// GarageView/RemindersView) — not `weak`, because a `UIWindow` is already kept alive by UIKit
+/// for as long as it's on screen, and a value-type SwiftUI `View` holding a reference to it
+/// creates no retain cycle (the window never holds a reference back to the View struct).
+/// Nothing here is persisted, transmitted, or kept beyond the current view's lifetime.
+struct HitTestWindowReader: UIViewRepresentable {
+    let onWindowChange: (UIWindow?) -> Void
+
+    func makeUIView(context: Context) -> PassiveWindowProbeView {
+        let view = PassiveWindowProbeView()
+        view.onWindowChange = onWindowChange
+        return view
+    }
+
+    func updateUIView(_ uiView: PassiveWindowProbeView, context: Context) {
+        uiView.onWindowChange = onWindowChange
+        // Covers the case where the view is already attached to a window by the time SwiftUI
+        // next calls updateUIView — didMoveToWindow may already have fired once against a
+        // closure captured from an earlier render.
+        onWindowChange(uiView.window)
+    }
+
+    final class PassiveWindowProbeView: UIView {
+        var onWindowChange: ((UIWindow?) -> Void)?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            isOpaque = false
+            backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("HitTestWindowReader.PassiveWindowProbeView does not support Interface Builder")
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+}
+
+/// Read-only, compact summary of one `UIGestureRecognizer` — public properties only.
+struct HitTestGestureInfo {
+    let className: String
+    let isEnabled: Bool
+    let cancelsTouchesInView: Bool
+    let delaysTouchesBegan: Bool
+    let delaysTouchesEnded: Bool
+    let state: String
+}
+
+/// One level of the winning hit view's superview ancestry, walking from the hit view itself up
+/// toward its `UIWindow`.
+struct HitTestAncestorInfo {
+    let className: String
+    let frameInWindow: CGRect
+    let isUserInteractionEnabled: Bool
+    let isHidden: Bool
+    let alpha: CGFloat
+    let gestureRecognizers: [HitTestGestureInfo]
+}
+
+/// The result of one `window.hitTest(point, with: nil)` call, plus its bounded ancestry chain.
+/// `ancestry[0]` is the winning hit view itself; later elements are its `superview` chain, up
+/// to (and including) the `UIWindow` or `UIKitHitTestInspector.maxAncestryDepth`, whichever
+/// comes first. Empty `ancestry` means `hitTest` returned nil at that point (no view claims it
+/// — which itself would be notable).
+struct UIKitHitTestSnapshot {
+    let label: String
+    let windowPoint: CGPoint
+    let ancestry: [HitTestAncestorInfo]
+
+    var ownerClassName: String {
+        ancestry.first?.className ?? "no hit view"
+    }
+
+    var ownerFrame: CGRect? {
+        ancestry.first?.frameInWindow
+    }
+
+    var ownerFrameContainsPoint: Bool {
+        ownerFrame?.contains(windowPoint) ?? false
+    }
+
+    func shortChain(levels: Int = 3) -> String {
+        ancestry.prefix(levels).map { $0.className.hitTestTruncated(18) }.joined(separator: " > ")
+    }
+
+    /// Index of the first ancestry level whose class name differs from `other`'s corresponding
+    /// level, or nil if every compared level matches (up to the shorter chain's length — a
+    /// length mismatch alone, with all shared levels matching, is reported as the point right
+    /// after the shorter chain ends).
+    func firstDivergingAncestryIndex(comparedTo other: UIKitHitTestSnapshot) -> Int? {
+        let count = min(ancestry.count, other.ancestry.count)
+        for index in 0..<count where ancestry[index].className != other.ancestry[index].className {
+            return index
+        }
+        return ancestry.count == other.ancestry.count ? nil : count
+    }
+
+    func ancestryMatches(_ other: UIKitHitTestSnapshot) -> Bool {
+        firstDivergingAncestryIndex(comparedTo: other) == nil
+    }
+
+    /// Index of the first ancestry level whose gesture-recognizer CLASS SET differs from
+    /// `other`'s corresponding level (compared by class name only, ignoring instance identity
+    /// and order), or nil if every compared level's recognizer set matches.
+    func firstDivergingGestureIndex(comparedTo other: UIKitHitTestSnapshot) -> Int? {
+        let count = min(ancestry.count, other.ancestry.count)
+        for index in 0..<count {
+            let mine = Set(ancestry[index].gestureRecognizers.map(\.className))
+            let theirs = Set(other.ancestry[index].gestureRecognizers.map(\.className))
+            if mine != theirs { return index }
+        }
+        return nil
+    }
+
+    func gestureChainsMatch(_ other: UIKitHitTestSnapshot) -> Bool {
+        firstDivergingGestureIndex(comparedTo: other) == nil
+    }
+}
+
+/// Runs a read-only `UIView.hitTest(_:with:)` at a given window point and walks the winning
+/// view's superview ancestry. Never mutates any view, gesture recognizer, or window; never
+/// overrides hitTest/point(inside:)/sendEvent; never subclasses UIWindow. Bounded to
+/// `maxAncestryDepth` levels so a single sample stays cheap regardless of hierarchy depth.
+enum UIKitHitTestInspector {
+    static let maxAncestryDepth = 12
+
+    @MainActor
+    static func snapshot(label: String, at windowPoint: CGPoint, in window: UIWindow?) -> UIKitHitTestSnapshot? {
+        guard let window else { return nil }
+        guard let hitView = window.hitTest(windowPoint, with: nil) else {
+            return UIKitHitTestSnapshot(label: label, windowPoint: windowPoint, ancestry: [])
+        }
+
+        var ancestry: [HitTestAncestorInfo] = []
+        var current: UIView? = hitView
+        var depth = 0
+        while let view = current, depth < maxAncestryDepth {
+            ancestry.append(
+                HitTestAncestorInfo(
+                    className: String(describing: type(of: view)),
+                    frameInWindow: view.convert(view.bounds, to: window),
+                    isUserInteractionEnabled: view.isUserInteractionEnabled,
+                    isHidden: view.isHidden,
+                    alpha: view.alpha,
+                    gestureRecognizers: (view.gestureRecognizers ?? []).map { recognizer in
+                        HitTestGestureInfo(
+                            className: String(describing: type(of: recognizer)),
+                            isEnabled: recognizer.isEnabled,
+                            cancelsTouchesInView: recognizer.cancelsTouchesInView,
+                            delaysTouchesBegan: recognizer.delaysTouchesBegan,
+                            delaysTouchesEnded: recognizer.delaysTouchesEnded,
+                            state: describeGestureState(recognizer.state)
+                        )
+                    }
+                )
+            )
+            if view === window { break }
+            current = view.superview
+            depth += 1
+        }
+
+        return UIKitHitTestSnapshot(label: label, windowPoint: windowPoint, ancestry: ancestry)
+    }
+
+    private static func describeGestureState(_ state: UIGestureRecognizer.State) -> String {
+        switch state {
+        case .possible: return "possible"
+        case .began: return "began"
+        case .changed: return "changed"
+        case .ended: return "ended"
+        case .cancelled: return "cancelled"
+        case .failed: return "failed"
+        @unknown default: return "unknown"
+        }
+    }
+}
+
+extension String {
+    /// Truncates to `maxLength` characters for screenshot-readable class-name display —
+    /// SwiftUI's hosting-view class names can be very long (generic parameters encoding the
+    /// whole view-tree type). Display-only; never used to compare or identify a class.
+    func hitTestTruncated(_ maxLength: Int = 44) -> String {
+        guard count > maxLength else { return self }
+        return String(prefix(maxLength)) + "…"
     }
 }

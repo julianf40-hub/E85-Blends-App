@@ -7,6 +7,8 @@
 
 import SwiftUI
 import SwiftData
+// TEMPORARY — Phase 3 hit-test diagnostics need UIWindow. See TemporaryHitTestDiagnostics.swift.
+import UIKit
 
 @MainActor
 struct RemindersView: View {
@@ -41,6 +43,16 @@ struct RemindersView: View {
     @State private var headerSectionProbe = HitTestProbeState()
     @State private var scrollViewProbe = HitTestProbeState()
     @State private var navigationRootProbe = HitTestProbeState()
+
+    // TEMPORARY — Phase 3 UIKit hit-test owner state (control group). See
+    // TemporaryHitTestDiagnostics.swift. hostingWindow is ordinary @State (see
+    // HitTestWindowReader's doc comment for why this is safe — no retain cycle, the window is
+    // already kept alive by UIKit). The two "last actual tap" fields are captured once per real
+    // root-level tap (see the .onChange below) and reflect a genuinely past touch, not a
+    // live/current probe.
+    @State private var hostingWindow: UIWindow?
+    @State private var lastActualTapWindowPoint: CGPoint?
+    @State private var lastActualTapSnapshot: UIKitHitTestSnapshot?
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
@@ -189,6 +201,22 @@ struct RemindersView: View {
         .measureHitTestFrame("Reminders NavigationStack")
         .tapProbe { navigationRootProbe.record($0) }
         .onPreferenceChange(HitTestFramePreferenceKey.self) { hitTestFrames = $0 }
+        // TEMPORARY — Phase 3 (control group): reports the real hosting UIWindow, read-only,
+        // never hit-testable. See HitTestWindowReader's doc comment in
+        // TemporaryHitTestDiagnostics.swift.
+        .background(
+            HitTestWindowReader { hostingWindow = $0 }
+                .allowsHitTesting(false)
+        )
+        // TEMPORARY — Phase 3 (control group): whenever a new root-level tap is recorded,
+        // convert its LOCAL coordinate to a window/global point and run a read-only UIKit
+        // hitTest at that remembered point — see updateRemindersLastActualTapSnapshot().
+        // Deferred one run loop turn via Task, matching Garage's own instrumentation exactly.
+        .onChange(of: navigationRootProbe.count) { _, _ in
+            Task { @MainActor in
+                updateRemindersLastActualTapSnapshot()
+            }
+        }
         .overlay(alignment: .top) {
             if let reminderFeedbackMessage {
                 feedbackBanner(text: reminderFeedbackMessage)
@@ -272,6 +300,107 @@ struct RemindersView: View {
                 .padding(.bottom, 12)
                 .allowsHitTesting(false)
         }
+        // TEMPORARY — Phase 3 UIKit ownership readout (control group), kept as a SEPARATE
+        // panel (top-trailing) rather than folded into the Phase 1/2 panel above, mirroring
+        // Garage exactly. Same non-interactivity guarantee.
+        .overlay(alignment: .topTrailing) {
+            HitTestDiagnosticReadout(title: "REMINDERS UIKIT OWNERSHIP", rows: remindersUIKitRows)
+                .padding(.trailing, 12)
+                .padding(.top, 12)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // TEMPORARY — Phase 3 (control group): five reference points derived from already-measured
+    // .global frames, sampled live on every render, plus the captured "last actual tap"
+    // snapshot. See TemporaryHitTestDiagnostics.swift.
+    private var remindersPlusPoint: CGPoint? {
+        hitTestFrames["Reminders plus image"].map { CGPoint(x: $0.midX, y: $0.midY) }
+    }
+
+    private var remindersTextPoint: CGPoint? {
+        hitTestFrames["Reminders Add Reminder text"].map { CGPoint(x: $0.midX, y: $0.midY) }
+    }
+
+    private var remindersRightPoint: CGPoint? {
+        hitTestFrames["Add Reminder button"].map { CGPoint(x: $0.maxX - 8, y: $0.midY) }
+    }
+
+    private var remindersLeftPoint: CGPoint? {
+        hitTestFrames["Add Reminder button"].map { CGPoint(x: $0.minX + 8, y: $0.midY) }
+    }
+
+    // Reminders has no known-bad coordinate of its own — this mirrors Garage's G-DEAD formula
+    // exactly (same geometric definition, applied to Reminders' own measured frames) purely so
+    // both panels sample directly comparable semantic points.
+    private var remindersDeadEquivalentPoint: CGPoint? {
+        guard
+            let button = hitTestFrames["Add Reminder button"],
+            let rawLabel = hitTestFrames["Reminders label content"],
+            let plus = hitTestFrames["Reminders plus image"]
+        else { return nil }
+        let x = max(rawLabel.minX + 20, plus.maxX + 4)
+        return CGPoint(x: x, y: button.midY)
+    }
+
+    // TEMPORARY — mirrors Garage's updateGarageLastActualTapSnapshot() exactly. See
+    // TemporaryHitTestDiagnostics.swift.
+    private func updateRemindersLastActualTapSnapshot() {
+        guard
+            let localTap = navigationRootProbe.lastLocation,
+            let rootGlobalFrame = hitTestFrames["Reminders NavigationStack"]
+        else { return }
+        let windowPoint = CGPoint(x: rootGlobalFrame.minX + localTap.x, y: rootGlobalFrame.minY + localTap.y)
+        lastActualTapWindowPoint = windowPoint
+        lastActualTapSnapshot = UIKitHitTestInspector.snapshot(label: "Reminders Last Actual Tap", at: windowPoint, in: hostingWindow)
+    }
+
+    // TEMPORARY — feeds the UIKit ownership readout overlay above (control group). See
+    // TemporaryHitTestDiagnostics.swift. As with Garage, cross-screen comparison against
+    // Garage's own owner class names is NOT computed here as a live boolean — see Garage's
+    // matching comment for why, and the Phase 3 report for how to compare the two panels.
+    private var remindersUIKitRows: [String] {
+        let dead = remindersDeadEquivalentPoint.flatMap { UIKitHitTestInspector.snapshot(label: "Reminders Dead-equivalent", at: $0, in: hostingWindow) }
+        let right = remindersRightPoint.flatMap { UIKitHitTestInspector.snapshot(label: "Reminders Right", at: $0, in: hostingWindow) }
+        let plus = remindersPlusPoint.flatMap { UIKitHitTestInspector.snapshot(label: "Reminders Plus", at: $0, in: hostingWindow) }
+        let text = remindersTextPoint.flatMap { UIKitHitTestInspector.snapshot(label: "Reminders Text", at: $0, in: hostingWindow) }
+        let left = remindersLeftPoint.flatMap { UIKitHitTestInspector.snapshot(label: "Reminders Left", at: $0, in: hostingWindow) }
+
+        var rows: [String] = [
+            "Window: \(hostingWindow == nil ? "not yet available" : "attached")",
+            "Dead-eq owner: \(dead?.ownerClassName.hitTestTruncated() ?? "measuring…")",
+            "Dead-eq chain: \(dead?.shortChain() ?? "measuring…")",
+            "Right owner: \(right?.ownerClassName.hitTestTruncated() ?? "measuring…")",
+            "Right chain: \(right?.shortChain() ?? "measuring…")",
+            "Plus owner: \(plus?.ownerClassName.hitTestTruncated() ?? "measuring…")",
+            "Text owner: \(text?.ownerClassName.hitTestTruncated() ?? "measuring…")",
+            "Left owner: \(left?.ownerClassName.hitTestTruncated() ?? "measuring…")"
+        ]
+
+        if let dead, let right {
+            rows.append("Dead==Right owner: \(dead.ownerClassName == right.ownerClassName ? "YES" : "NO")")
+            if let divergeIndex = dead.firstDivergingAncestryIndex(comparedTo: right) {
+                rows.append("Dead==Right chain: NO (diverges @\(divergeIndex))")
+            } else {
+                rows.append("Dead==Right chain: YES")
+            }
+            if let gestureIndex = dead.firstDivergingGestureIndex(comparedTo: right) {
+                rows.append("Gesture chain same: NO (@\(gestureIndex))")
+            } else {
+                rows.append("Gesture chain same: YES")
+            }
+        } else {
+            rows.append("Dead==Right owner: measuring…")
+        }
+
+        rows.append("Dead-eq frame⊃pt: \(dead?.ownerFrameContainsPoint.hitTestYesNo ?? "?")")
+        rows.append("Right frame⊃pt: \(right?.ownerFrameContainsPoint.hitTestYesNo ?? "?")")
+
+        rows.append("Last tap local: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")")
+        rows.append("Last tap window: \(lastActualTapWindowPoint?.hitTestDescription ?? "—")")
+        rows.append("Last tap owner: \(lastActualTapSnapshot?.ownerClassName.hitTestTruncated() ?? "—")")
+
+        return rows
     }
 
     // TEMPORARY — feeds the diagnostic readout overlay above. See
