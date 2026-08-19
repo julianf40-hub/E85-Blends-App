@@ -154,6 +154,21 @@ struct ContentView: View {
         guard hasEvaluatedWhatsNewEligibility == false else { return }
         hasEvaluatedWhatsNewEligibility = true
 
+        // 85Blends 2.3.0 release-blocker fix: a brand-new user who just finished onboarding
+        // this launch has already been introduced to the current app (shouldPresent already
+        // suppresses What's New for them THIS launch via onboardingJustCompletedThisLaunch) —
+        // but without this, lastPresentedWhatsNewVersion stays empty, so launch #2 would
+        // incorrectly show What's New for the version they onboarded under. Record that version
+        // as already handled, at this same deterministic onboarding-completion transition,
+        // reusing the exact persistence semantics a normal dismissal already uses (see
+        // WhatsNewPresentation.versionToPersistOnDismiss). A future version upgrade remains
+        // eligible normally — this only ever records the CURRENT version.
+        if onboardingJustCompletedThisLaunch {
+            lastPresentedWhatsNewVersion = WhatsNewPresentation.versionToPersistOnDismiss(
+                currentAppVersion: ReleaseNotes.currentAppVersion
+            )
+        }
+
         isShowingWhatsNew = WhatsNewPresentation.shouldPresent(
             currentAppVersion: ReleaseNotes.currentAppVersion,
             lastPresentedVersion: lastPresentedWhatsNewVersion,
