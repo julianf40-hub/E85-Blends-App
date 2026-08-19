@@ -159,14 +159,15 @@ struct FuelLogView: View {
             VStack(alignment: .leading, spacing: 16) {
                 headerSection
                 summaryCard
-                // 85Blends 2.3.0 release-blocker fix: Advanced Fuel Analytics is a placeholder
-                // shell today (see AdvancedAnalyticsView) — title/description now say so
-                // plainly, matching what the shell itself already states once opened, so this
-                // entry point never implies purchasing Pro activates it today.
+                // Advanced Fuel Analytics is a placeholder shell today (see
+                // AdvancedAnalyticsView). .comingSoon availability means no "PRO" badge and no
+                // "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability) — never implies
+                // purchasing Pro activates it today.
                 ProFeatureGate(
                     icon: "chart.bar.fill",
-                    title: "Advanced Fuel Analytics (Coming Soon)",
-                    description: "Monthly spend, cost per mile, ethanol trends, and more. Arrives in an upcoming Pro update."
+                    title: "Advanced Fuel Analytics",
+                    description: "Monthly spend, cost per mile, ethanol trends, and more. Arrives in an upcoming Pro update.",
+                    availability: .comingSoon
                 ) {
                     AdvancedAnalyticsView()
                 }

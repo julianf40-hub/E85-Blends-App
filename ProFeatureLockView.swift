@@ -93,9 +93,20 @@ struct ProFeatureLockView: View {
 ///
 /// Must be hosted inside a `NavigationStack` so the unlocked card can push its destination.
 struct ProFeatureGate<Destination: View>: View {
+    /// Purely a presentation choice — never wired to entitlement logic. `.pro` is the default
+    /// and preserves every existing call site's exact prior behavior unchanged. `.comingSoon`
+    /// is for a feature that isn't built yet: no gold "PRO" badge (never implies a current Pro
+    /// subscription unlocks it today), no "Unlock 85Blends Pro" purchase CTA. See
+    /// EightyFiveBlends/MoreView.swift's Coming Soon section for the intended layout.
+    enum Availability {
+        case pro
+        case comingSoon
+    }
+
     let icon: String
     let title: String
     let description: String
+    var availability: Availability = .pro
     @ViewBuilder var destination: () -> Destination
 
     // Reading the observable singleton here means the gate flips automatically when
@@ -103,15 +114,34 @@ struct ProFeatureGate<Destination: View>: View {
     private var isUnlocked: Bool { SubscriptionManager.shared.isProUser }
 
     var body: some View {
-        if isUnlocked {
-            NavigationLink {
-                destination()
-            } label: {
-                unlockedCard
+        switch availability {
+        case .pro:
+            if isUnlocked {
+                NavigationLink {
+                    destination()
+                } label: {
+                    unlockedCard
+                }
+                .buttonStyle(.plain)
+            } else {
+                ProFeatureLockView(icon: icon, title: title, description: description)
             }
-            .buttonStyle(.plain)
-        } else {
-            ProFeatureLockView(icon: icon, title: title, description: description)
+        case .comingSoon:
+            // A Pro subscriber may still preview the placeholder shell — it already discloses
+            // "arrives in an upcoming Pro update" once opened, and it remains Pro-gated exactly
+            // as before (this enum never changes that). A free user sees the same informational,
+            // non-purchase row with nothing to tap, since the shell itself stays out of reach —
+            // never a "Coming Soon" feature routed into buying Pro as if that unlocks it today.
+            if isUnlocked {
+                NavigationLink {
+                    destination()
+                } label: {
+                    AppCard { ProShellRow(icon: icon, title: title, detail: description, showsChevron: true) }
+                }
+                .buttonStyle(.plain)
+            } else {
+                AppCard { ProShellRow(icon: icon, title: title, detail: description) }
+            }
         }
     }
 
@@ -178,6 +208,11 @@ struct ProShellRow: View {
     let title: String
     let detail: String
     var badge: String? = "Coming soon"
+    // Opt-in, defaults false — every existing call site (inside AdvancedAnalyticsView/
+    // StationAlertsView, purely informational rows) is unaffected. Set true only when this row
+    // is itself wrapped in a NavigationLink (see ProFeatureGate's .comingSoon case), so it gets
+    // the same trailing chevron affordance as ProFeatureGate's own unlockedCard.
+    var showsChevron: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -212,6 +247,12 @@ struct ProShellRow: View {
             }
 
             Spacer(minLength: 0)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)

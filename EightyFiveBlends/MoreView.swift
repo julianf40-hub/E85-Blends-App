@@ -144,6 +144,7 @@ struct MoreView: View {
                     // to Normal Mode sees this section again unchanged.
                     if appExperienceMode == .normal {
                         proPreviewSection
+                        comingSoonSection
                     }
                 }
                 .padding(16)
@@ -170,23 +171,36 @@ struct MoreView: View {
             ) {
                 TripPlannerView()
             }
+        }
+    }
 
-            // 85Blends 2.3.0 release-blocker fix: both entries below are placeholder shells today
-            // (see AdvancedAnalyticsView/StationAlertsView) — titles/descriptions now say so
-            // plainly, matching what the shells themselves already state once opened, so this
-            // entry point never implies purchasing Pro activates either feature today.
+    // 2.3.0 UI polish pass: split out of proPreviewSection above so "current Pro features" and
+    // "not built yet" are never visually adjacent under the same "Included with 85Blends Pro"
+    // header — device feedback found that juxtaposition read as if purchasing today unlocks
+    // these too. Both entries are placeholder shells (see AdvancedAnalyticsView/
+    // StationAlertsView) — .comingSoon availability means neither shows a "PRO" badge or an
+    // "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability).
+    private var comingSoonSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Coming Soon",
+                subtitle: "Features planned for a future update."
+            )
+
             ProFeatureGate(
                 icon: "chart.bar.fill",
-                title: "Advanced Fuel Analytics (Coming Soon)",
-                description: "Deeper insights into blend history, MPG, and spending trends. Arrives in an upcoming Pro update."
+                title: "Advanced Fuel Analytics",
+                description: "Deeper insights into blend history, MPG, and spending trends. Arrives in an upcoming Pro update.",
+                availability: .comingSoon
             ) {
                 AdvancedAnalyticsView()
             }
 
             ProFeatureGate(
                 icon: "bell.badge.fill",
-                title: "Station Price Alerts (Coming Soon)",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update."
+                title: "Station Price Alerts",
+                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
+                availability: .comingSoon
             ) {
                 StationAlertsView()
             }

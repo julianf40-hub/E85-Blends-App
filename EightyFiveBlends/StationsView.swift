@@ -195,6 +195,7 @@ struct StationsView: View {
                         // and community pricing below remain fully functional in both modes.
                         if appExperienceMode == .normal {
                             proFeaturesSection
+                            comingSoonSection
                         }
                         mapSection
                         findNearbyButton
@@ -321,7 +322,10 @@ struct StationsView: View {
     // saved stations below remain fully free.
     private var proFeaturesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "85Blends Pro", subtitle: "Smarter planning and price tracking.")
+            // "Smarter E85 route planning." (was "Smarter planning and price tracking.") —
+            // price tracking/alerts isn't available yet, so this section only describes what
+            // Trip Planner (the one feature actually in it now) delivers today.
+            SectionHeader(title: "85Blends Pro", subtitle: "Smarter E85 route planning.")
 
             ProFeatureGate(
                 icon: "map.fill",
@@ -330,15 +334,22 @@ struct StationsView: View {
             ) {
                 TripPlannerView()
             }
+        }
+    }
 
-            // 85Blends 2.3.0 release-blocker fix: Station Price Alerts is a placeholder shell
-            // today (see StationAlertsView) — title/description now say so plainly, matching
-            // what the shell itself already states once opened, so this entry point never
-            // implies purchasing Pro activates alerts today.
+    // 2.3.0 UI polish pass: split out of proFeaturesSection above — Station Price Alerts is a
+    // placeholder shell today (see StationAlertsView). .comingSoon availability means no "PRO"
+    // badge and no "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability), and it's no
+    // longer visually grouped under the "85Blends Pro" header as if it were current, paid value.
+    private var comingSoonSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Coming Soon", subtitle: "Features planned for a future update.")
+
             ProFeatureGate(
                 icon: "bell.badge.fill",
-                title: "Station Price Alerts (Coming Soon)",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update."
+                title: "Station Price Alerts",
+                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
+                availability: .comingSoon
             ) {
                 StationAlertsView()
             }
@@ -2391,51 +2402,35 @@ private struct LiveStationRowCard: View {
 
             communityPricePreview
 
-            HStack(spacing: 10) {
-                Button {
-                    directionsMessage = directionsAction()
-                } label: {
-                    Label("Directions", systemImage: "location.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(AppTheme.Colors.cardBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
+            HStack(spacing: 8) {
+                stationActionButton(
+                    title: "Directions",
+                    systemImage: "location.fill",
+                    foreground: AppTheme.Colors.textPrimary,
+                    background: AppTheme.Colors.cardBackground,
+                    borderColor: AppTheme.Colors.borderColor,
+                    action: { directionsMessage = directionsAction() }
+                )
                 .accessibilityLabel("Get directions to \(station.name)")
 
-                Button(action: reportPriceAction) {
-                    Label("Report Price", systemImage: "tag.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.charcoal)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(AppTheme.Colors.stationYellow)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                stationActionButton(
+                    title: "Report Price",
+                    systemImage: "tag.fill",
+                    foreground: AppTheme.Colors.charcoal,
+                    background: AppTheme.Colors.stationYellow,
+                    borderColor: nil,
+                    action: reportPriceAction
+                )
                 .accessibilityLabel("Report E85 price for \(station.name)")
 
-                Button(action: saveAction) {
-                    Label(isSaved ? "Saved" : "Save Station", systemImage: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isSaved ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(isSaved ? AppTheme.Colors.cardBackground : AppTheme.Colors.primaryGreen.opacity(0.20))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(isSaved ? AppTheme.Colors.borderColor : AppTheme.Colors.primaryGreen, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                stationActionButton(
+                    title: isSaved ? "Saved" : "Save Station",
+                    systemImage: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+                    foreground: isSaved ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary,
+                    background: isSaved ? AppTheme.Colors.cardBackground : AppTheme.Colors.primaryGreen.opacity(0.20),
+                    borderColor: isSaved ? AppTheme.Colors.borderColor : AppTheme.Colors.primaryGreen,
+                    action: saveAction
+                )
                 .disabled(isSaved)
                 .accessibilityLabel(isSaved ? "\(station.name) already saved" : "Save \(station.name)")
             }
@@ -2455,6 +2450,44 @@ private struct LiveStationRowCard: View {
         } message: {
             Text(directionsMessage ?? "")
         }
+    }
+
+    // Compact card-action button — 2.3.0 UI polish pass: the three actions below previously
+    // read as three full-size primary CTAs competing with the station info above them. Same
+    // behavior/labels/colors, just sized and spaced like card actions rather than pills:
+    // explicit 44pt minimum tap height, a smaller explicit icon size, tighter padding, and no
+    // lineLimit/truncation on the label — at large Dynamic Type or narrow widths, the label
+    // wraps to a second line instead of clipping "Report Price"/"Save Station" into ambiguity.
+    private func stationActionButton(
+        title: String,
+        systemImage: String,
+        foreground: Color,
+        background: Color,
+        borderColor: Color?,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .multilineTextAlignment(.center)
+            }
+            .foregroundStyle(foreground)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 9)
+            .background(background)
+            .overlay {
+                if let borderColor {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(borderColor, lineWidth: 1)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private var locationLine: String {
