@@ -1303,7 +1303,12 @@ struct TripPlannerView: View {
                             .foregroundStyle(outcome.foreground)
                             .multilineTextAlignment(.trailing)
                     } else if isDiscoveringStations == false, let outcome = effectiveOutcome {
-                        Text(outcome.label)
+                        // Reuses the exact same plural-aware override the outcome banner
+                        // reads (e85StopRequiredLabelOverride), so this row and the banner
+                        // can never disagree — a 3-stop plan must say "E85 Stops Required"
+                        // in both places, not "E85 Stops Required" in the banner while this
+                        // row still shows the singular "E85 Stop Required".
+                        Text(tripSummaryOutcomeLabel(outcome))
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(outcome.foreground)
                             .multilineTextAlignment(.trailing)
@@ -1479,6 +1484,18 @@ struct TripPlannerView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(outcome.tint.opacity(0.35), lineWidth: 1)
         )
+    }
+
+    // Trip Summary's "Route outcome" value — reuses e85StopRequiredLabelOverride so this
+    // row and the outcome banner above are always the exact same string for the exact same
+    // plan, never independently singular/plural. `outcome` here is effectiveOutcome, which
+    // can be .gasolineFallbackRoute (a view-level combination, never analysis.outcome
+    // itself) — e85StopRequiredLabelOverride already guards on analysis.outcome ==
+    // .e85StopRequired internally, so passing a mismatched outcome+analysis pair safely
+    // falls through to outcome.label rather than misapplying the override.
+    private func tripSummaryOutcomeLabel(_ outcome: RouteOutcome) -> String {
+        guard let analysis else { return outcome.label }
+        return e85StopRequiredLabelOverride(analysis) ?? outcome.label
     }
 
     // Pluralizes "E85 Stop Required" once a real stop count is known. Falls back to nil
@@ -2010,7 +2027,11 @@ struct TripPlannerView: View {
         case .e85DetourAvoided:
             return "\(found) These low-detour E85 stops are recommended for the segments they cover. Use an on-route gas station for any remaining segments — detour stops were skipped."
         default:
-            return "\(found) Recommended stops maximize progress while keeping your arrival buffer at or above \(target)%."
+            // Not a guarantee the planner enforces — station spacing can force a lower-
+            // buffer leg even in a valid, recommended plan (e.g. a 13% Stop 3 arrival on a
+            // 20%-target route). This describes the selected reserve as the planning target
+            // it actually is, rather than an invariant every leg is kept above.
+            return "\(found) Recommended stops balance route progress with your selected \(target)% buffer. Some legs may fall below the target when station spacing requires it."
         }
     }
 
