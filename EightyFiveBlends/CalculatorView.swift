@@ -12,6 +12,11 @@ import CoreLocation
 struct CalculatorView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppPreferenceKey.defaultTargetBlend) private var preferredDefaultTargetBlend = BlendPreferenceOption.e30.rawValue
+    // 2.3.0 UI polish pass: read directly, matching MoreView/StationsView/OnboardingView's own
+    // pattern, rather than threading mode state through ContentView — Calculator had no
+    // Simple/Normal awareness before this and doesn't need one; this is purely presentational
+    // (visually demotes Fuel Assumptions in Simple Mode) and never mutates the mode itself.
+    @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
     // Unfiltered — needed so lastLoggedBlendForActiveVehicle can check whether the active
@@ -96,6 +101,21 @@ struct CalculatorView: View {
 
     private var activeVehicle: VehicleProfile? {
         activeVehicles.first
+    }
+
+    private var appExperienceMode: AppExperienceMode {
+        .resolved(from: appExperienceModeRaw)
+    }
+
+    // Dynamic collapsed-state summary for the Fuel Assumptions section — must reflect exactly
+    // what's on screen right now (these are the live @State strings the fields themselves are
+    // bound to), never a stale/remembered value. A field that's currently blank or non-numeric
+    // (mid-edit) shows "—" rather than a misleading blank/garbled fragment.
+    private var fuelAssumptionsSummary: String {
+        let e85 = e85Ethanol.isEmpty ? "—" : e85Ethanol
+        let gas = gasEthanol.isEmpty ? "—" : gasEthanol
+        let octane = gasOctane.isEmpty ? "—" : gasOctane
+        return "E85 \(e85)% • Gas E\(gas) • \(octane) octane"
     }
 
     private var pumpModeActiveVehicle: VehicleProfile? {
@@ -210,7 +230,7 @@ struct CalculatorView: View {
 
                     ExpandableSection(
                         title: "Blend Guide",
-                        subtitle: "Range vs Power",
+                        subtitle: "Range vs Performance Potential",
                         isExpanded: $isGuideExpanded
                     ) {
                         BlendGuideSection(
@@ -226,10 +246,18 @@ struct CalculatorView: View {
                         targetFuelEthanol: $targetFuelEthanol
                     )
 
+                    // "Fuel Assumptions" (renamed from "Show Advanced Settings" — 2.3.0 UI polish
+                    // pass): same controls, same defaults/remembered-value semantics, unchanged.
+                    // The dynamic subtitle reuses ExpandableSection's existing "Title — Subtitle"
+                    // header format (already used by Blend Guide above) rather than adding a new
+                    // summary slot. In Simple Mode this section is visually demoted (.subtle
+                    // emphasis) but never hidden or disabled — same component, same content,
+                    // tapping it opens the exact same controls either way.
                     ExpandableSection(
-                        title: "Show Advanced Settings",
-                        subtitle: nil,
-                        isExpanded: $isAdvancedExpanded
+                        title: "Fuel Assumptions",
+                        subtitle: fuelAssumptionsSummary,
+                        isExpanded: $isAdvancedExpanded,
+                        emphasis: appExperienceMode == .simple ? .subtle : .normal
                     ) {
                         AdvancedSettingsSection(
                             e85Ethanol: $e85Ethanol,
@@ -1192,7 +1220,7 @@ private struct BlendGuideSection: View {
         .init(
             range: "E20-E30",
             title: "Daily / Range",
-            octane: "91-94 oct",
+            octane: "~91–94 oct",
             description: "Best range with a modest ethanol bump.",
             rangeDots: 4,
             powerDots: 1
@@ -1200,7 +1228,7 @@ private struct BlendGuideSection: View {
         .init(
             range: "E40-E50",
             title: "Balanced",
-            octane: "95-98 oct",
+            octane: "~95–98 oct",
             description: "A strong middle ground for street use.",
             rangeDots: 3,
             powerDots: 3
@@ -1208,7 +1236,7 @@ private struct BlendGuideSection: View {
         .init(
             range: "E60-E70",
             title: "Performance",
-            octane: "99-102 oct",
+            octane: "~99–102 oct",
             description: "Higher ethanol for harder driving.",
             rangeDots: 2,
             powerDots: 4
@@ -1216,7 +1244,7 @@ private struct BlendGuideSection: View {
         .init(
             range: "E85",
             title: "Highest Blend",
-            octane: "105+ oct",
+            octane: "~105+ oct",
             description: "Highest common pump blend with the shortest range.",
             rangeDots: 1,
             powerDots: 5
@@ -1236,6 +1264,11 @@ private struct BlendGuideSection: View {
                     applyAction: { applyTier(tier) }
                 )
             }
+
+            Text("General estimates only. Actual octane, range, and performance depend on fuel quality, vehicle, and calibration.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .padding(.top, 4)
         }
     }
 
@@ -1257,10 +1290,12 @@ private struct BlendGuideRow: View {
     let applyAction: () -> Void
 
     private var activeCardBackground: Color {
-        // Light: white card so the accent border and Active badge carry the emphasis.
-        // Dark/OLED: keep the existing dark accent fill for clear contrast on dark surfaces.
+        // Light: a subtle green-tinted fill (softGreenBackground is exactly the token the
+        // rest of the app uses for selected chips/active states in light mode) so the active
+        // tier reads as active from the row itself, not just the Active badge — kept subtle,
+        // never a bright/solid green. Dark/OLED: keep the existing dark accent fill.
         colorScheme == .light
-            ? AppTheme.Colors.cardBackground
+            ? AppTheme.Colors.softGreenBackground
             : AppTheme.Colors.softGreenBackground.opacity(0.78)
     }
 
@@ -1302,11 +1337,11 @@ private struct BlendGuideRow: View {
 
                 HStack(spacing: 16) {
                     indicatorRow(title: "Range", filledDots: tier.rangeDots)
-                    indicatorRow(title: "Power", filledDots: tier.powerDots)
+                    indicatorRow(title: "Performance", filledDots: tier.powerDots)
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(isActive ? activeCardBackground : AppTheme.Colors.cardBackground)
             .overlay(
@@ -1544,10 +1579,26 @@ private struct BlendGuideTierButtonStyle: ButtonStyle {
 }
 
 private struct ExpandableSection<Content: View>: View {
+    // .subtle is a purely visual demotion (smaller/muted header) for Simple Mode's Fuel
+    // Assumptions — it changes nothing about tap target, expansion behavior, or content.
+    enum Emphasis {
+        case normal
+        case subtle
+    }
+
     let title: String
     let subtitle: String?
     @Binding var isExpanded: Bool
+    var emphasis: Emphasis = .normal
     @ViewBuilder let content: Content
+
+    private var headerFont: Font {
+        emphasis == .subtle ? .subheadline.weight(.medium) : .headline
+    }
+
+    private var headerColor: Color {
+        emphasis == .subtle ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary
+    }
 
     var body: some View {
         CalculatorCard {
@@ -1561,12 +1612,12 @@ private struct ExpandableSection<Content: View>: View {
                         VStack(alignment: .leading, spacing: 4) {
                             if let subtitle {
                                 Text("\(title) — \(subtitle)")
-                                    .font(.headline)
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .font(headerFont)
+                                    .foregroundStyle(headerColor)
                             } else {
                                 Text(title)
-                                    .font(.headline)
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .font(headerFont)
+                                    .foregroundStyle(headerColor)
                             }
                         }
 
