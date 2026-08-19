@@ -250,7 +250,7 @@ struct OnboardingView: View {
 
     private var vehicleSetupCard: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("STEP \(currentStep + 1)")
                     .font(.caption.weight(.bold))
                     .tracking(1.2)
@@ -281,14 +281,19 @@ struct OnboardingView: View {
                 OnboardingStringField(title: "Nickname", text: $draft.nickname)
                 OnboardingStringField(title: "Make", text: $draft.make)
                 OnboardingStringField(title: "Model", text: $draft.model)
-                OnboardingDoubleField(title: "Tank Size (gallons)", value: $draft.tankSizeGallons)
+                // Tank Size is optional — showsZeroAsBlank presents an unset (0) value as a
+                // blank field with an "Optional" placeholder rather than a literal "0", which
+                // previously read as an intentional zero-gallon tank. The persisted 0-is-unset
+                // representation (VehicleDraft.tankSizeGallons) is unchanged — this is display
+                // only. See OnboardingDoubleField below.
+                OnboardingDoubleField(title: "Tank Size (gallons)", value: $draft.tankSizeGallons, showsZeroAsBlank: true)
                 OnboardingToggleRow(title: "Flex Fuel Vehicle", isOn: $draft.isFlexFuel)
 
                 Text("All details can be edited later in Garage.")
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textMuted)
             }
-            .padding(24)
+            .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(AppTheme.Colors.surfaceElevated)
             .overlay(
@@ -297,6 +302,7 @@ struct OnboardingView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
     private var footerActions: some View {
@@ -393,14 +399,17 @@ struct OnboardingView: View {
                     handlePrimaryAction()
                 }
                 .font(.headline)
-                .foregroundStyle(AppTheme.Colors.textPrimary.opacity(continueButtonEnabled ? 1 : 0.6))
+                // Disabled state reads as clearly disabled (not washed out/broken): a visible,
+                // more-than-hairline border plus legible (not too-faint) label text — never the
+                // same green as enabled, so it's never mistaken for tappable-and-ready.
+                .foregroundStyle(AppTheme.Colors.textPrimary.opacity(continueButtonEnabled ? 1 : 0.7))
                 .padding(.horizontal, 22)
                 .padding(.vertical, 14)
                 .background(continueButtonEnabled ? AppTheme.Colors.accentGreen : AppTheme.Colors.surface)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(
-                            continueButtonEnabled ? AppTheme.Colors.accentGreen : AppTheme.Colors.border,
+                            continueButtonEnabled ? AppTheme.Colors.accentGreen : AppTheme.Colors.textMuted.opacity(0.5),
                             lineWidth: 1
                         )
                 )
@@ -554,7 +563,7 @@ struct OnboardingView: View {
 
     private var tabSelectionCard: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("STEP \(currentStep + 1)")
                     .font(.caption.weight(.bold))
                     .tracking(1.2)
@@ -604,7 +613,7 @@ struct OnboardingView: View {
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
             }
-            .padding(24)
+            .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(AppTheme.Colors.surfaceElevated)
             .overlay(
@@ -818,6 +827,27 @@ private struct OnboardingStringField: View {
 private struct OnboardingDoubleField: View {
     let title: String
     @Binding var value: Double
+    // When true, a value <= 0 displays as a blank field with `placeholder` rather than the
+    // literal digit "0" — for genuinely optional numeric fields (Tank Size) where 0 means "not
+    // entered," not a real, meaningful zero. Defaults to false so this preserves its prior
+    // behavior for any other numeric field. Mirrors AddEditVehicleView.swift's
+    // TankSizeInputField, which already solves this exact problem on the full Edit Vehicle form.
+    var showsZeroAsBlank: Bool = false
+    var placeholder: String = "Optional"
+
+    private var blankWhenZeroBinding: Binding<String> {
+        Binding(
+            get: { value > 0 ? formatted(value) : "" },
+            set: { newText in
+                let trimmed = newText.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    value = 0
+                } else if let parsed = Double(trimmed) {
+                    value = parsed
+                }
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -825,18 +855,28 @@ private struct OnboardingDoubleField: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
-            TextField(title, value: $value, format: .number)
-                .keyboardType(.decimalPad)
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
-                .background(AppTheme.Colors.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Group {
+                if showsZeroAsBlank {
+                    TextField(placeholder, text: blankWhenZeroBinding)
+                } else {
+                    TextField(title, value: $value, format: .number)
+                }
+            }
+            .keyboardType(.decimalPad)
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .background(AppTheme.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(value)) : String(format: "%.1f", value)
     }
 }
 
@@ -870,7 +910,7 @@ private extension OnboardingView {
             appExperienceModeRaw = mode.rawValue
             AppHaptics.selection()
         } label: {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 12) {
                     Text(mode.displayName)
                         .font(.headline)
@@ -911,7 +951,7 @@ private extension OnboardingView {
                 }
                 .accessibilityHidden(true)
             }
-            .padding(16)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 isSelected
@@ -969,7 +1009,7 @@ private extension OnboardingView {
         tint: Color,
         isOn: Binding<Bool>
     ) -> some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: systemImage)
                 .font(.title3)
                 .foregroundStyle(tint)
@@ -994,7 +1034,7 @@ private extension OnboardingView {
                 .labelsHidden()
                 .tint(AppTheme.Colors.accentGreen)
         }
-        .padding(16)
+        .padding(14)
         .background(AppTheme.Colors.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)

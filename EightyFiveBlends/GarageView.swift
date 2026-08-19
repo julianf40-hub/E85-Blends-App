@@ -27,77 +27,84 @@ struct GarageView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    headerSection
+        // ZStack (not a modifier chain) so the delete confirmation below can render as an
+        // app-owned overlay above everything, including the tab bar area within this screen —
+        // see GarageDeleteConfirmationOverlay's doc comment for why this replaced a native
+        // .alert here (2.3.0 UI polish pass, light-mode readability).
+        ZStack {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        headerSection
 
-                    if let activeVehicle {
-                        ActiveVehicleCard(
-                            vehicle: activeVehicle,
-                            editAction: { sheetContext = .edit(activeVehicle) },
-                            odometerAction: { beginOdometerUpdate(for: activeVehicle) }
-                        )
-                    } else {
-                        // Distinguish "no vehicles saved yet" from "vehicles exist but none is
-                        // flagged active" (e.g. restored/synced data) — the two need different
-                        // guidance, and the second must not tell the user to add a vehicle they
-                        // already have.
-                        EmptyGarageCard(hasSavedVehicles: vehicles.isEmpty == false)
+                        if let activeVehicle {
+                            ActiveVehicleCard(
+                                vehicle: activeVehicle,
+                                editAction: { sheetContext = .edit(activeVehicle) },
+                                odometerAction: { beginOdometerUpdate(for: activeVehicle) }
+                            )
+                        } else {
+                            // Distinguish "no vehicles saved yet" from "vehicles exist but none is
+                            // flagged active" (e.g. restored/synced data) — the two need different
+                            // guidance, and the second must not tell the user to add a vehicle they
+                            // already have.
+                            EmptyGarageCard(hasSavedVehicles: vehicles.isEmpty == false)
+                        }
+
+                        savedVehiclesSection
                     }
-
-                    savedVehiclesSection
+                    .padding(16)
                 }
-                .padding(16)
+                .background(AppTheme.Colors.charcoal)
+                .toolbar(.hidden, for: .navigationBar)
             }
-            .background(AppTheme.Colors.charcoal)
-            .toolbar(.hidden, for: .navigationBar)
-        }
-        .background(AppTheme.Colors.charcoal.ignoresSafeArea())
-        .sheet(item: $sheetContext) { context in
-            AddEditVehicleView(
-                vehicle: context.vehicle,
-                existingVehiclesCount: vehicles.count,
-                existingVehicles: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
-                // Lets the form explain, live, why turning "Active" off won't take effect —
-                // the actual guarantee is enforced in saveVehicle regardless of this hint.
-                isSoleActiveVehicle: context.vehicle.map { editingVehicle in
-                    editingVehicle.isActive && vehicles.filter(\.isActive).count == 1
-                } ?? false
-            ) { draft in
-                saveVehicle(from: draft, editing: context.vehicle)
+            .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+            .sheet(item: $sheetContext) { context in
+                AddEditVehicleView(
+                    vehicle: context.vehicle,
+                    existingVehiclesCount: vehicles.count,
+                    existingVehicles: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
+                    // Lets the form explain, live, why turning "Active" off won't take effect —
+                    // the actual guarantee is enforced in saveVehicle regardless of this hint.
+                    isSoleActiveVehicle: context.vehicle.map { editingVehicle in
+                        editingVehicle.isActive && vehicles.filter(\.isActive).count == 1
+                    } ?? false
+                ) { draft in
+                    saveVehicle(from: draft, editing: context.vehicle)
+                }
             }
-        }
-        .sheet(item: $odometerUpdateContext) { context in
-            ActiveOdometerUpdateSheet(
-                context: context,
-                odometerInput: $odometerInput,
-                validationMessage: $odometerValidationMessage,
-                saveAction: { saveOdometerUpdate(for: context) },
-                cancelAction: dismissOdometerSheet
-            )
-            .presentationDetents([.medium])
-            .presentationDragIndicator(.visible)
-        }
-        .alert("Delete Vehicle?", isPresented: deleteAlertBinding) {
-            Button("Delete", role: .destructive) {
-                confirmDeletion()
+            .sheet(item: $odometerUpdateContext) { context in
+                ActiveOdometerUpdateSheet(
+                    context: context,
+                    odometerInput: $odometerInput,
+                    validationMessage: $odometerValidationMessage,
+                    saveAction: { saveOdometerUpdate(for: context) },
+                    cancelAction: dismissOdometerSheet
+                )
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
+            .alert("Save Error", isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { if !$0 { saveErrorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) { saveErrorMessage = nil }
+            } message: {
+                Text(saveErrorMessage ?? "")
+            }
+            // Background content is inert/hidden to VoiceOver while the delete confirmation
+            // overlay is active — see GarageDeleteConfirmationOverlay's own .isModal trait below.
+            .accessibilityHidden(vehiclePendingDeletion != nil)
 
-            Button("Cancel", role: .cancel) {
-                vehiclePendingDeletion = nil
+            if vehiclePendingDeletion != nil {
+                GarageDeleteConfirmationOverlay(
+                    message: deletionMessage,
+                    cancelAction: { self.vehiclePendingDeletion = nil },
+                    deleteAction: confirmDeletion
+                )
             }
-        } message: {
-            Text(deletionMessage)
         }
-        .alert("Save Error", isPresented: Binding(
-            get: { saveErrorMessage != nil },
-            set: { if !$0 { saveErrorMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) { saveErrorMessage = nil }
-        } message: {
-            Text(saveErrorMessage ?? "")
-        }
+        .animation(.easeInOut(duration: 0.18), value: vehiclePendingDeletion != nil)
     }
 
     private var headerSection: some View {
@@ -178,17 +185,6 @@ struct GarageView: View {
             .background(AppTheme.Colors.accentGreen)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-    }
-
-    private var deleteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { vehiclePendingDeletion != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    vehiclePendingDeletion = nil
-                }
-            }
-        )
     }
 
     private func saveVehicle(from draft: VehicleDraft, editing vehicle: VehicleProfile?) {
@@ -405,6 +401,88 @@ struct GarageView: View {
             #endif
             saveErrorMessage = "Couldn't save odometer. Please try again."
         }
+    }
+}
+
+/// App-owned replacement for the native SwiftUI `.alert` previously used for vehicle deletion.
+/// 2.3.0 UI polish pass: in light mode, the system alert's translucent/vibrancy chrome let the
+/// green Add Vehicle button and vehicle cards behind it bleed through, making "Cancel"
+/// difficult to read (device-observed). SwiftUI's `.alert` styling isn't something the app can
+/// safely override, so this uses fully opaque AppTheme surface colors and a strong dimming
+/// backdrop instead — scoped narrowly to this one confirmation, not a general modal framework.
+/// Deletion semantics are unchanged: this only replaces presentation, never GarageView's
+/// promptDeletion(for:)/confirmDeletion() logic.
+private struct GarageDeleteConfirmationOverlay: View {
+    let message: String
+    let cancelAction: () -> Void
+    let deleteAction: () -> Void
+
+    var body: some View {
+        ZStack {
+            // Fully opaque dimming backdrop — guarantees nothing behind the dialog (the green
+            // Add Vehicle button, vehicle cards) can show through underneath it. Tapping the
+            // scrim cancels, mirroring a system alert's implicit dismiss-to-cancel.
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+                .onTapGesture(perform: cancelAction)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Delete Vehicle?")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .accessibilitySortPriority(3)
+
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilitySortPriority(2)
+
+                HStack(spacing: 10) {
+                    Button(action: cancelAction) {
+                        Text("Cancel")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(AppTheme.Colors.surface)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilitySortPriority(1)
+
+                    Button(role: .destructive, action: deleteAction) {
+                        Text("Delete")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(AppTheme.Colors.warningRed)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilitySortPriority(0)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 340)
+            .background(AppTheme.Colors.surfaceElevated) // fully opaque in light AND dark
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+            .padding(.horizontal, 32)
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isModal)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        .zIndex(1)
+        .onExitCommand(perform: cancelAction) // hardware Escape (external keyboard) maps to Cancel
     }
 }
 
