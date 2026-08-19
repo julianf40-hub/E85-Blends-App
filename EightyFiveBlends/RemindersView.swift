@@ -393,8 +393,8 @@ struct RemindersView: View {
             rows.append("Dead==Right owner: measuring…")
         }
 
-        rows.append("Dead-eq frame⊃pt: \(dead?.ownerFrameContainsPoint.hitTestYesNo ?? "?")")
-        rows.append("Right frame⊃pt: \(right?.ownerFrameContainsPoint.hitTestYesNo ?? "?")")
+        rows.append("Dead-eq frame⊃pt: \((dead?.ownerFrameContainsPoint).hitTestYesNo)")
+        rows.append("Right frame⊃pt: \((right?.ownerFrameContainsPoint).hitTestYesNo)")
 
         rows.append("Last tap local: \(navigationRootProbe.lastLocation?.hitTestDescription ?? "—")")
         rows.append("Last tap window: \(lastActualTapWindowPoint?.hitTestDescription ?? "—")")
