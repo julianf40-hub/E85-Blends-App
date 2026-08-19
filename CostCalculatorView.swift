@@ -91,6 +91,33 @@ struct CostCalculatorView: View {
 
     private var gasTankCost: Double { gallonsValue * gasPriceValue }
 
+    // MARK: - Break-even
+
+    // The maximum E85 pump price at which E85 still ties gasoline on cost-per-mile, using
+    // FuelCostBreakEvenMath.e85MPGLossBenchmark. Depends only on the entered gas price —
+    // never on the currently selected blend, so it stays a stable reference point as the
+    // user switches between E30/E50/E70/E85/Custom above.
+    private var e85PriceCeiling: Double? {
+        FuelCostBreakEvenMath.e85PriceCeiling(gasolinePricePerGallon: gasPriceValue)
+    }
+
+    // Whether E85, at its current entered price, or gasoline is the better cost-per-mile
+    // value right now. Always compares the entered E85 price against e85PriceCeiling — not
+    // the selected blend's own math (see FuelCostBreakEvenMath's header comment for why
+    // those two calculations must stay separate).
+    private var breakEvenVerdict: FuelCostBreakEvenMath.Verdict? {
+        guard let ceiling = e85PriceCeiling else { return nil }
+        return FuelCostBreakEvenMath.verdict(currentE85PricePerGallon: e85PriceValue, ceiling: ceiling)
+    }
+
+    // How much MPG the given blend (typically the currently selected one) could lose at
+    // today's entered prices before gasoline becomes cheaper per mile. Unlike
+    // e85PriceCeiling, this DOES change with the selected blend, since it's derived from
+    // that blend's own already-computed fill cost.
+    private func maxAffordableMPGLossFraction(_ result: BlendCostResult) -> Double? {
+        FuelCostBreakEvenMath.maxAffordableMPGLossFraction(blendFillCost: result.tankCost, gasOnlyFillCost: gasTankCost)
+    }
+
     private func blendResult(for ethanolPercent: Double, tierLabel: String) -> BlendCostResult? {
         guard let math = BlendCostMath.result(
             totalGallons: gallonsValue,
@@ -140,6 +167,10 @@ struct CostCalculatorView: View {
 
                     if let result = selectedBlendResult {
                         selectedResultCard(result)
+
+                        if let ceiling = e85PriceCeiling, let verdict = breakEvenVerdict {
+                            breakEvenCard(ceiling: ceiling, verdict: verdict, selectedResult: result)
+                        }
                     } else {
                         impossibleBlendCard
                     }
@@ -357,6 +388,136 @@ struct CostCalculatorView: View {
         )
     }
 
+    // MARK: - Break-Even Card
+
+    // Answers the headline question this feature adds: "how expensive can E85 get before
+    // gasoline is the better cost-per-mile value?" — plus, right below it, how much MPG the
+    // currently selected blend could lose at today's prices before the same thing happens.
+    // Color/heading are driven entirely by breakEvenVerdict (E85 price vs. e85PriceCeiling),
+    // never by the selected blend's own numbers, so this card stays a stable answer to "is
+    // E85 worth it right now" no matter which blend is being compared above it.
+    private func breakEvenCard(
+        ceiling: Double,
+        verdict: FuelCostBreakEvenMath.Verdict,
+        selectedResult: BlendCostResult
+    ) -> some View {
+        let accent = breakEvenAccentColor(verdict)
+        let mpgLossFraction = maxAffordableMPGLossFraction(selectedResult)
+
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Break-Even")
+
+            Text(breakEvenHeadline(verdict))
+                .font(.headline.weight(.bold))
+                .foregroundStyle(accent)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                breakEvenRow(label: "E85 price ceiling", value: formattedPricePerGallon(ceiling))
+                breakEvenRowDivider
+                breakEvenRow(label: "Current E85", value: formattedPricePerGallon(e85PriceValue))
+                breakEvenRowDivider
+                breakEvenRow(label: "MPG break-even", value: mpgBreakEvenText(mpgLossFraction))
+            }
+            .padding(.horizontal, 14)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+            )
+
+            Text(breakEvenHelperText(verdict, ceiling: ceiling))
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(breakEvenCardBackground(verdict))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(accent.opacity(verdict == .approximatelyEqual ? 0.35 : 0.5), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    // Combines label + value into one VoiceOver swipe ("E85 price ceiling, three dollars
+    // and ninety cents per gallon") instead of two disconnected ones. The verdict itself is
+    // always stated in words in breakEvenHeadline (a separate, normally-read Text above),
+    // never communicated by color alone.
+    private func breakEvenRow(label: String, value: String) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer()
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .monospacedDigit()
+        }
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var breakEvenRowDivider: some View {
+        Divider().overlay(AppTheme.Colors.borderColor)
+    }
+
+    private func breakEvenAccentColor(_ verdict: FuelCostBreakEvenMath.Verdict) -> Color {
+        switch verdict {
+        case .e85Better: return AppTheme.Colors.primaryGreen
+        case .approximatelyEqual: return AppTheme.Colors.textPrimary
+        case .gasolineBetter: return AppTheme.Colors.gasOrange
+        }
+    }
+
+    private func breakEvenCardBackground(_ verdict: FuelCostBreakEvenMath.Verdict) -> Color {
+        switch verdict {
+        case .e85Better: return AppTheme.Colors.softGreenBackground.opacity(0.6)
+        case .approximatelyEqual: return AppTheme.Colors.surfaceElevated
+        case .gasolineBetter: return AppTheme.Colors.gasOrange.opacity(0.1)
+        }
+    }
+
+    private func breakEvenHeadline(_ verdict: FuelCostBreakEvenMath.Verdict) -> String {
+        switch verdict {
+        case .e85Better: return "E85 is the better value at current prices."
+        case .approximatelyEqual: return "About break-even per mile."
+        case .gasolineBetter: return "Gasoline is the better value at current prices."
+        }
+    }
+
+    private func breakEvenHelperText(_ verdict: FuelCostBreakEvenMath.Verdict, ceiling: Double) -> String {
+        switch verdict {
+        case .e85Better, .approximatelyEqual:
+            return "Above \(formattedPricePerGallon(ceiling)), gasoline becomes the better cost-per-mile value using a \(Int((FuelCostBreakEvenMath.e85MPGLossBenchmark * 100).rounded()))% MPG-loss benchmark."
+        case .gasolineBetter:
+            return "E85 would need to be \(formattedPricePerGallon(ceiling)) or less to beat gasoline using a \(Int((FuelCostBreakEvenMath.e85MPGLossBenchmark * 100).rounded()))% MPG-loss benchmark."
+        }
+    }
+
+    // Presentation only — the pure fraction comes from FuelCostBreakEvenMath, kept free of
+    // display formatting. A negative fraction means the blend's fill already costs more than
+    // gas-only at equal MPG, so there's no "loss allowance" to state (section 16: never
+    // render a negative percentage as if it were one).
+    private func mpgBreakEvenText(_ fraction: Double?) -> String {
+        guard let fraction else { return "—" }
+        if fraction >= 0 {
+            return "≤\(formattedPercent(fraction)) loss"
+        }
+        return "Gas cheaper at equal MPG"
+    }
+
+    private func formattedPricePerGallon(_ value: Double) -> String {
+        String(format: "$%.2f/gal", value)
+    }
+
+    private func formattedPercent(_ fraction: Double) -> String {
+        String(format: "%.1f%%", fraction * 100)
+    }
+
     // MARK: - Comparison Section
 
     private var comparisonSection: some View {
@@ -419,6 +580,15 @@ struct CostCalculatorView: View {
                 .foregroundStyle(saves ? AppTheme.Colors.primaryGreen : AppTheme.Colors.warningRed)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+
+            // Current-price MPG break-even for THIS blend specifically (not the global E85
+            // price ceiling shown above in breakEvenCard) — how much MPG this blend could
+            // lose at today's prices before gasoline wins per mile.
+            Text("Break-even: \(mpgBreakEvenText(FuelCostBreakEvenMath.maxAffordableMPGLossFraction(blendFillCost: result.tankCost, gasOnlyFillCost: gasTankCost)))")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -453,7 +623,7 @@ struct CostCalculatorView: View {
     private var disclaimerCard: some View {
         WarningCard(
             title: "Estimates Only",
-            message: "Actual cost depends on real pump prices, ethanol content, and tank fill amount."
+            message: "Actual cost per mile depends on pump prices, ethanol content, your vehicle's fuel economy, and actual fill amount. The E85 price ceiling above uses a general MPG-loss benchmark, not your vehicle's measured fuel economy."
         )
     }
 
