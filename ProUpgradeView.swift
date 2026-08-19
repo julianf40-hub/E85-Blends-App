@@ -26,14 +26,16 @@ struct ProUpgradeView: View {
 
     private var manager: SubscriptionManager { SubscriptionManager.shared }
 
-    // Benefit list — copy matches the v2.1.2 product spec. SF Symbols scale with Dynamic Type.
+    // Benefit list — 85Blends 2.3.0 release-blocker fix: previously included Advanced Fuel
+    // Analytics, Station Price Alerts, Unlimited Vehicles, and Cloud Sync Ready, none of which
+    // are accurate today (Analytics/Alerts are unbuilt placeholders; free users already have
+    // unlimited vehicles; Cloud Sync is unconditional for every user, not Pro-exclusive — see
+    // SubscriptionManager.swift and GarageView.swift). Removed rather than replaced — accuracy
+    // over bullet count. Only Trip Planner remains: it is genuinely implemented today and
+    // genuinely gated behind isProUser (see ProFeatureGate/TripPlannerView).
     private let benefits: [(icon: String, title: String, detail: String)] = [
         ("map.fill",        "Intelligent E85 Trip Planning", "Plan smarter routes built around ethanol availability."),
         ("arrow.triangle.turn.up.right.diamond.fill", "Route-Based Fuel Stops", "See the best E85 stops along the way, not just nearby."),
-        ("chart.bar.fill",  "Advanced Fuel Analytics",       "Go deeper on blend history, MPG, and spending trends."),
-        ("bell.badge.fill", "Station Price Alerts",          "Get notified when E85 prices move at your stations."),
-        ("car.2.fill",      "Unlimited Vehicles",            "Track your whole garage with no vehicle limit."),
-        ("icloud.fill",     "Cloud Sync Ready",              "Built to keep your data in sync across devices."),
     ]
 
     var body: some View {

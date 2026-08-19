@@ -331,10 +331,14 @@ struct StationsView: View {
                 TripPlannerView()
             }
 
+            // 85Blends 2.3.0 release-blocker fix: Station Price Alerts is a placeholder shell
+            // today (see StationAlertsView) — title/description now say so plainly, matching
+            // what the shell itself already states once opened, so this entry point never
+            // implies purchasing Pro activates alerts today.
             ProFeatureGate(
                 icon: "bell.badge.fill",
-                title: "Station Price Alerts",
-                description: "Get notified when E85 prices drop at your saved stations."
+                title: "Station Price Alerts (Coming Soon)",
+                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update."
             ) {
                 StationAlertsView()
             }

@@ -77,17 +77,18 @@ struct OnboardingView: View {
             title: "Ready to Blend?",
             subtitle: "Track fuel, find stations, manage your build, and make every fill-up smarter."
         ),
-        // 5: 85Blends Pro intro (proStepIndex) — informational only, no paywall or purchase flow
+        // 5: 85Blends Pro intro (proStepIndex) — informational only, no paywall or purchase flow.
+        // 85Blends 2.3.0 release-blocker fix: this list previously repeated ProUpgradeView's
+        // same inaccurate claims (Advanced Fuel Analytics, Station Price Alerts, Unlimited
+        // Vehicles, Cloud Sync Ready are not genuinely delivered-and-Pro-exclusive today — see
+        // ProUpgradeView.swift). Trimmed to the one benefit that's actually true; not replaced
+        // with invented substitutes.
         .init(
             emoji: "👑",
             title: "Unlock 85Blends Pro",
             subtitle: "Take your E85 experience even further.",
             bulletPoints: [
-                "Intelligent Trip Planning",
-                "Advanced Fuel Analytics",
-                "Station Price Alerts",
-                "Unlimited Vehicles",
-                "Cloud Sync Ready"
+                "Intelligent Trip Planning"
             ]
         )
     ]

@@ -139,15 +139,12 @@ struct GarageView: View {
             // was moved into an already-working interaction area instead.
             addVehicleManagementButton
 
-            // Persistent Pro entry point for the Garage — visible to every free user, not just
-            // once they hit the soft limit, so the upgrade path is always discoverable here.
-            if !SubscriptionManager.shared.isProUser {
-                ProFeatureLockView(
-                    icon: "car.2.fill",
-                    title: "Unlimited Vehicles",
-                    description: "Manage your entire garage with 85Blends Pro."
-                )
-            }
+            // 85Blends 2.3.0 release-blocker fix: free users can already add an unlimited
+            // number of vehicles (SubscriptionManager.freeVehicleLimit is defined but never
+            // enforced — see SubscriptionManager.swift), so a "Unlimited Vehicles" Pro upsell
+            // card here was misleading and has been removed. No vehicle-count gating was
+            // introduced to make that card true; a future release can revisit vehicle-count
+            // monetization deliberately.
 
             if vehicles.isEmpty {
                 EmptySavedVehiclesCard()

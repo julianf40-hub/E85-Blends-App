@@ -171,18 +171,22 @@ struct MoreView: View {
                 TripPlannerView()
             }
 
+            // 85Blends 2.3.0 release-blocker fix: both entries below are placeholder shells today
+            // (see AdvancedAnalyticsView/StationAlertsView) — titles/descriptions now say so
+            // plainly, matching what the shells themselves already state once opened, so this
+            // entry point never implies purchasing Pro activates either feature today.
             ProFeatureGate(
                 icon: "chart.bar.fill",
-                title: "Advanced Fuel Analytics",
-                description: "Deeper insights into blend history, MPG, and spending trends."
+                title: "Advanced Fuel Analytics (Coming Soon)",
+                description: "Deeper insights into blend history, MPG, and spending trends. Arrives in an upcoming Pro update."
             ) {
                 AdvancedAnalyticsView()
             }
 
             ProFeatureGate(
                 icon: "bell.badge.fill",
-                title: "Station Price Alerts",
-                description: "Get notified when E85 prices drop at your saved stations."
+                title: "Station Price Alerts (Coming Soon)",
+                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update."
             ) {
                 StationAlertsView()
             }
