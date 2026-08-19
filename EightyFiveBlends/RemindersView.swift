@@ -207,28 +207,35 @@ struct RemindersView: View {
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
-        .alert("Delete Reminder?", isPresented: deleteAlertBinding) {
-            Button("Delete", role: .destructive) {
-                confirmDeletion()
+        // Background content is inert/hidden to VoiceOver while either destructive confirmation
+        // below is active — see DestructiveConfirmationOverlay's own .isModal trait.
+        .accessibilityHidden(reminderPendingDeletion != nil || completionRecordDeletionContext != nil)
+        .overlay {
+            // At most one destructive confirmation renders at a time. reminderPendingDeletion
+            // (delete an active/upcoming reminder) and completionRecordDeletionContext (undo or
+            // delete a completed-history entry) are set from disjoint UI actions and are never
+            // both driven by the same tap, but this ordering makes the precedence deterministic
+            // if that ever changed — never both, never simultaneous.
+            if reminderPendingDeletion != nil {
+                DestructiveConfirmationOverlay(
+                    title: "Delete Reminder?",
+                    message: "This reminder will be removed from your maintenance schedule.",
+                    destructiveActionTitle: "Delete",
+                    cancelAction: { reminderPendingDeletion = nil },
+                    destructiveAction: confirmDeletion
+                )
+            } else if completionRecordDeletionContext != nil {
+                // Title/message/action label reuse the exact same classification-driven computed
+                // properties the native alert used — Undo Latest Completion? / Delete History
+                // Entry? and their matching messages/action labels are untouched.
+                DestructiveConfirmationOverlay(
+                    title: completionRecordDeletionAlertTitle,
+                    message: completionRecordDeletionMessage,
+                    destructiveActionTitle: completionRecordDeletionActionLabel,
+                    cancelAction: { completionRecordDeletionContext = nil },
+                    destructiveAction: confirmCompletionRecordDeletion
+                )
             }
-            Button("Cancel", role: .cancel) {
-                reminderPendingDeletion = nil
-            }
-        } message: {
-            Text("This reminder will be removed from your maintenance schedule.")
-        }
-        .alert(
-            completionRecordDeletionAlertTitle,
-            isPresented: completionRecordDeleteAlertBinding
-        ) {
-            Button(completionRecordDeletionActionLabel, role: .destructive) {
-                confirmCompletionRecordDeletion()
-            }
-            Button("Cancel", role: .cancel) {
-                completionRecordDeletionContext = nil
-            }
-        } message: {
-            Text(completionRecordDeletionMessage)
         }
         .alert("Save Error", isPresented: Binding(
             get: { saveErrorMessage != nil },
@@ -416,28 +423,6 @@ struct RemindersView: View {
                 }
             }
         }
-    }
-
-    private var deleteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { reminderPendingDeletion != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    reminderPendingDeletion = nil
-                }
-            }
-        )
-    }
-
-    private var completionRecordDeleteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { completionRecordDeletionContext != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    completionRecordDeletionContext = nil
-                }
-            }
-        )
     }
 
     private var completionRecordDeletionAlertTitle: String {

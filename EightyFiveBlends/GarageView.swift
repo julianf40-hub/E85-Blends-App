@@ -29,7 +29,7 @@ struct GarageView: View {
     var body: some View {
         // ZStack (not a modifier chain) so the delete confirmation below can render as an
         // app-owned overlay above everything, including the tab bar area within this screen —
-        // see GarageDeleteConfirmationOverlay's doc comment for why this replaced a native
+        // see DestructiveConfirmationOverlay.swift's doc comment for why this replaced a native
         // .alert here (2.3.0 UI polish pass, light-mode readability).
         ZStack {
             NavigationStack {
@@ -93,14 +93,16 @@ struct GarageView: View {
                 Text(saveErrorMessage ?? "")
             }
             // Background content is inert/hidden to VoiceOver while the delete confirmation
-            // overlay is active — see GarageDeleteConfirmationOverlay's own .isModal trait below.
+            // overlay is active — see DestructiveConfirmationOverlay's own .isModal trait.
             .accessibilityHidden(vehiclePendingDeletion != nil)
 
             if vehiclePendingDeletion != nil {
-                GarageDeleteConfirmationOverlay(
+                DestructiveConfirmationOverlay(
+                    title: "Delete Vehicle?",
                     message: deletionMessage,
+                    destructiveActionTitle: "Delete",
                     cancelAction: { self.vehiclePendingDeletion = nil },
-                    deleteAction: confirmDeletion
+                    destructiveAction: confirmDeletion
                 )
             }
         }
@@ -401,87 +403,6 @@ struct GarageView: View {
             #endif
             saveErrorMessage = "Couldn't save odometer. Please try again."
         }
-    }
-}
-
-/// App-owned replacement for the native SwiftUI `.alert` previously used for vehicle deletion.
-/// 2.3.0 UI polish pass: in light mode, the system alert's translucent/vibrancy chrome let the
-/// green Add Vehicle button and vehicle cards behind it bleed through, making "Cancel"
-/// difficult to read (device-observed). SwiftUI's `.alert` styling isn't something the app can
-/// safely override, so this uses fully opaque AppTheme surface colors and a strong dimming
-/// backdrop instead — scoped narrowly to this one confirmation, not a general modal framework.
-/// Deletion semantics are unchanged: this only replaces presentation, never GarageView's
-/// promptDeletion(for:)/confirmDeletion() logic.
-private struct GarageDeleteConfirmationOverlay: View {
-    let message: String
-    let cancelAction: () -> Void
-    let deleteAction: () -> Void
-
-    var body: some View {
-        ZStack {
-            // Fully opaque dimming backdrop — guarantees nothing behind the dialog (the green
-            // Add Vehicle button, vehicle cards) can show through underneath it. Tapping the
-            // scrim cancels, mirroring a system alert's implicit dismiss-to-cancel.
-            Color.black.opacity(0.55)
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
-                .onTapGesture(perform: cancelAction)
-
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Delete Vehicle?")
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .accessibilitySortPriority(3)
-
-                Text(message)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilitySortPriority(2)
-
-                HStack(spacing: 10) {
-                    Button(action: cancelAction) {
-                        Text("Cancel")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .background(AppTheme.Colors.surface)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilitySortPriority(1)
-
-                    Button(role: .destructive, action: deleteAction) {
-                        Text("Delete")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .background(AppTheme.Colors.warningRed)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilitySortPriority(0)
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: 340)
-            .background(AppTheme.Colors.surfaceElevated) // fully opaque in light AND dark
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
-            .padding(.horizontal, 32)
-            .accessibilityElement(children: .contain)
-            .accessibilityAddTraits(.isModal)
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-        .zIndex(1)
     }
 }
 

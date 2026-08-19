@@ -211,15 +211,19 @@ struct FuelLogView: View {
                 sheetContext = .add(initialDraft)
             }
         }
-        .alert("Delete Fill-Up?", isPresented: deleteAlertBinding) {
-            Button("Delete", role: .destructive) {
-                confirmDeletion()
+        // Background content is inert/hidden to VoiceOver while the delete confirmation below
+        // is active — see DestructiveConfirmationOverlay's own .isModal trait.
+        .accessibilityHidden(entryPendingDeletion != nil)
+        .overlay {
+            if entryPendingDeletion != nil {
+                DestructiveConfirmationOverlay(
+                    title: "Delete Fill-Up?",
+                    message: "This fill-up entry will be removed from your log history.",
+                    destructiveActionTitle: "Delete",
+                    cancelAction: { entryPendingDeletion = nil },
+                    destructiveAction: confirmDeletion
+                )
             }
-            Button("Cancel", role: .cancel) {
-                entryPendingDeletion = nil
-            }
-        } message: {
-            Text("This fill-up entry will be removed from your log history.")
         }
         .alert(communityReportAlertTitle, isPresented: communityReportMessageBinding) {
             Button("OK", role: .cancel) {
@@ -338,17 +342,6 @@ struct FuelLogView: View {
             title: "No Fill-Ups Yet",
             message: "Log your first fill-up to start tracking ethanol prices, blend history, and mileage over time.",
             systemImage: "fuelpump"
-        )
-    }
-
-    private var deleteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { entryPendingDeletion != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    entryPendingDeletion = nil
-                }
-            }
         )
     }
 

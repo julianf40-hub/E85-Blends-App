@@ -274,16 +274,6 @@ struct StationsView: View {
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice)
         }
-        .alert("Delete Station?", isPresented: deleteAlertBinding) {
-            Button("Delete", role: .destructive) {
-                confirmDeletion()
-            }
-            Button("Cancel", role: .cancel) {
-                stationPendingDeletion = nil
-            }
-        } message: {
-            Text("This saved station will be removed from your local list.")
-        }
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -295,6 +285,20 @@ struct StationsView: View {
             }
         } message: {
             Text(infoMessage ?? "")
+        }
+        // Background content is inert/hidden to VoiceOver while the delete confirmation below
+        // is active — see DestructiveConfirmationOverlay's own .isModal trait.
+        .accessibilityHidden(stationPendingDeletion != nil)
+        .overlay {
+            if stationPendingDeletion != nil {
+                DestructiveConfirmationOverlay(
+                    title: "Delete Station?",
+                    message: "This saved station will be removed from your local list.",
+                    destructiveActionTitle: "Delete",
+                    cancelAction: { stationPendingDeletion = nil },
+                    destructiveAction: confirmDeletion
+                )
+            }
         }
         .overlay {
             // Presentation-only: never touches Community Price persistence, local price-save
@@ -1111,17 +1115,6 @@ struct StationsView: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
         .padding(.horizontal, 2)
-    }
-
-    private var deleteAlertBinding: Binding<Bool> {
-        Binding(
-            get: { stationPendingDeletion != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    stationPendingDeletion = nil
-                }
-            }
-        )
     }
 
     @ViewBuilder
