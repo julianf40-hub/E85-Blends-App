@@ -33,7 +33,7 @@ enum FuelLogStore {
 
         let gallonsAdded = round(draft.computedGallonsAdded, places: 2)
         let totalCost = round(draft.computedTotalCost, places: 2)
-        let mpg = calculateMPG(for: draft, gallonsAdded: gallonsAdded, editing: entry, entries: entries)
+        let mpg = calculateMPG(for: draft, gallonsAdded: gallonsAdded, editing: entry, entries: entries, modelContext: modelContext)
 
         if let entry {
             entry.date = draft.date
@@ -148,9 +148,22 @@ enum FuelLogStore {
         for draft: FuelLogDraft,
         gallonsAdded: Double,
         editing entry: FuelLogEntry?,
-        entries: [FuelLogEntry]
+        entries: [FuelLogEntry],
+        modelContext: ModelContext
     ) -> Double {
         guard gallonsAdded > 0 else { return 0 }
+
+        // 85Blends 2.3.0 release-blocker fix: fail safe rather than deriving MPG from another
+        // vehicle's fill-up history. A non-blank vehicleName that currently matches more than
+        // one saved vehicle (legacy duplicate-nickname data) can't safely identify which
+        // vehicle's previous fill this entry continues from, so no MPG is derived — see
+        // VehicleNicknamePolicy/VehicleNicknameResolution. A blank vehicleName (no vehicle
+        // assigned) is unaffected — that's a pre-existing, unrelated case.
+        let allVehicles = (try? modelContext.fetch(FetchDescriptor<VehicleProfile>())) ?? []
+        if VehicleNicknamePolicy.isBlank(draft.vehicleName) == false,
+           VehicleNicknameResolution.isAmbiguous(nickname: draft.vehicleName, among: allVehicles) {
+            return 0
+        }
 
         let previousEntry = entries
             .filter {

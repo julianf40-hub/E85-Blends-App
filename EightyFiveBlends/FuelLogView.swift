@@ -14,6 +14,11 @@ struct FuelLogView: View {
     private var entries: [FuelLogEntry]
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
+    // Every saved vehicle — used only to detect a vehicleName that currently matches more than
+    // one vehicle (legacy duplicate-nickname data), so totalMilesDriven can fail safe rather
+    // than merging two different vehicles' odometer history. See VehicleNicknameResolution.
+    @Query(sort: \VehicleProfile.createdAt, order: .forward)
+    private var allVehicles: [VehicleProfile]
     @Query(sort: \FuelStation.updatedAt, order: .reverse)
     private var stations: [FuelStation]
 
@@ -60,7 +65,16 @@ struct FuelLogView: View {
     private var totalMilesDriven: Int {
         let vehicleGroups = Dictionary(grouping: entries.filter { $0.odometer > 0 }, by: \.vehicleName)
         var totalMiles = 0
-        for (_, vehicleEntries) in vehicleGroups {
+        for (name, vehicleEntries) in vehicleGroups {
+            // Fail safe rather than merging two different vehicles' odometer history: a
+            // vehicleName that currently matches more than one saved vehicle (legacy
+            // duplicate-nickname data) is excluded from the total instead of guessed at. A
+            // blank name or a uniquely-identified name is unaffected — see
+            // VehicleNicknamePolicy/VehicleNicknameResolution.
+            if VehicleNicknamePolicy.isBlank(name) == false,
+               VehicleNicknameResolution.isAmbiguous(nickname: name, among: allVehicles) {
+                continue
+            }
             let odometers = vehicleEntries.map(\.odometer)
             if let maxOdo = odometers.max(), let minOdo = odometers.min(), maxOdo > minOdo {
                 totalMiles += maxOdo - minOdo

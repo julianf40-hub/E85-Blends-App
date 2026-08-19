@@ -467,12 +467,18 @@ struct RemindersView: View {
     // The VehicleProfile a reminder is assigned to — not necessarily the globally active
     // vehicle. Completion logic must read and update this vehicle's odometer, never the
     // active vehicle's, when a reminder belongs to a different one.
+    //
+    // 85Blends 2.3.0 release-blocker fix: existing users may already have duplicate vehicle
+    // nicknames saved from before VehicleNicknamePolicy prevented new ones. Resolution now fails
+    // closed (nil) whenever reminder.vehicleName currently matches more than one saved vehicle,
+    // instead of arbitrarily returning the first match — see VehicleNicknameResolution. A
+    // zero-match name (no vehicle currently has this name) already returned nil before this
+    // change and still does; only the ambiguous, 2+-match case is new. This affects both this
+    // function's write-path caller (completeReminder's odometer advance) and its read-path
+    // callers (odometer(for:) display) identically — a wrong-vehicle write and a wrong-vehicle
+    // display are the same underlying risk.
     private func vehicleProfile(for reminder: MaintenanceReminder) -> VehicleProfile? {
-        if reminder.vehicleName == activeVehicle?.nickname {
-            return activeVehicle
-        }
-
-        return vehicles.first(where: { $0.nickname == reminder.vehicleName })
+        VehicleNicknameResolution.uniqueMatch(nickname: reminder.vehicleName, among: vehicles)
     }
 
     private func odometer(for reminder: MaintenanceReminder) -> Int? {
@@ -595,6 +601,20 @@ struct RemindersView: View {
     }
 
     private func confirmCompletion(using context: ReminderCompletionContext) {
+        // Fail closed BEFORE any mutation (odometer write, completion record insertion,
+        // recurring-reminder advancement) when this completion would need to advance a uniquely
+        // identified vehicle's odometer but the reminder's vehicle name currently matches more
+        // than one saved vehicle — see VehicleNicknameResolution and Phase 11/12 of the
+        // 2.3.0 release-blocker fix. A date-only reminder (mileageEnabled == false) never
+        // attempts an odometer write, so an ambiguous nickname never blocks it — this check is
+        // for AMBIGUOUS identification specifically, not every reminder with a missing vehicle.
+        if context.reminder.mileageEnabled,
+           VehicleNicknameResolution.isAmbiguous(nickname: context.reminder.vehicleName, among: vehicles) {
+            completionMileageError = "More than one vehicle is named \u{201C}\(context.reminder.vehicleName).\u{201D} Rename one in Garage before completing this reminder."
+            AppHaptics.warning()
+            return
+        }
+
         let completionMileage = context.reminder.mileageEnabled ? validatedCompletionMileage(for: context) : nil
         guard context.reminder.mileageEnabled == false || completionMileage != nil else {
             AppHaptics.warning()

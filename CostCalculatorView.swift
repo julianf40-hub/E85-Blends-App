@@ -60,6 +60,12 @@ private struct BlendCostResult {
 struct CostCalculatorView: View {
     @Query(filter: #Predicate<VehicleProfile> { $0.isActive == true })
     private var activeVehicles: [VehicleProfile]
+    // Every saved vehicle — used only by VehicleFuelLogIdentityResolution.safeFuelLogVehicleName
+    // in prefillFromActiveVehicleAndFuelLog, to detect a nickname that currently matches more
+    // than one vehicle (legacy duplicate-nickname data) before trusting it as a Fuel Log lookup
+    // key.
+    @Query(sort: \VehicleProfile.createdAt, order: .forward)
+    private var allVehicles: [VehicleProfile]
     @Query(sort: \FuelLogEntry.date, order: .reverse)
     private var fuelLogEntries: [FuelLogEntry]
 
@@ -209,7 +215,16 @@ struct CostCalculatorView: View {
             gallons = formatInput(vehicle.tankSizeGallons)
         }
 
-        guard let vehicleName = activeVehicle?.nickname, vehicleName.isEmpty == false else { return }
+        // 85Blends 2.3.0 release-blocker fix: only prefill Fuel Log-derived prices when the
+        // active vehicle's nickname unambiguously identifies its Fuel Log history — a blank or
+        // duplicate nickname (legacy data; see VehicleNicknamePolicy) means there is no safe way
+        // to know which vehicle's fill-ups these prices actually belong to, so nothing is
+        // prefilled rather than guessing from another vehicle's records. Tank size above is
+        // unaffected — it reads the vehicle's own stored value directly, not via a Fuel Log name
+        // match.
+        guard let activeVehicle,
+              let vehicleName = VehicleFuelLogIdentityResolution.safeFuelLogVehicleName(for: activeVehicle, among: allVehicles)
+        else { return }
 
         if e85Price.isEmpty,
            let price = FuelPriceLookup.mostRecentValidPrice(

@@ -58,6 +58,7 @@ struct GarageView: View {
             AddEditVehicleView(
                 vehicle: context.vehicle,
                 existingVehiclesCount: vehicles.count,
+                existingVehicles: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
                 // Lets the form explain, live, why turning "Active" off won't take effect —
                 // the actual guarantee is enforced in saveVehicle regardless of this hint.
                 isSoleActiveVehicle: context.vehicle.map { editingVehicle in
@@ -191,6 +192,20 @@ struct GarageView: View {
     }
 
     private func saveVehicle(from draft: VehicleDraft, editing vehicle: VehicleProfile?) {
+        // Defensive second guard: AddEditVehicleView already disables Save while the nickname is
+        // blank or conflicts with another vehicle, but this is the actual persistence-boundary
+        // guarantee that must hold even if that UI check is ever bypassed or stale — see
+        // VehicleNicknamePolicy. Checked first, before ANY mutation (including the active-flag
+        // clearing below), so a rejected save never touches persisted data.
+        if let nicknameError = VehicleNicknamePolicy.validationError(
+            for: draft.nickname,
+            excluding: vehicle?.persistentModelID,
+            among: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) }
+        ) {
+            saveErrorMessage = nicknameError
+            return
+        }
+
         var shouldBeActive = vehicle == nil ? (vehicles.isEmpty || draft.isActive) : draft.isActive
 
         // Never let a normal edit leave every vehicle inactive: if this is the only currently

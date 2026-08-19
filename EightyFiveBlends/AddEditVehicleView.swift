@@ -7,6 +7,7 @@
 
 import SwiftUI
 import PhotosUI
+import SwiftData
 import UIKit
 
 struct AddEditVehicleView: View {
@@ -15,6 +16,10 @@ struct AddEditVehicleView: View {
 
     let vehicle: VehicleProfile?
     let existingVehiclesCount: Int
+    // Every saved vehicle's (id, nickname) — including `vehicle` itself when editing — used only
+    // to detect a nickname conflict via VehicleNicknamePolicy. `vehicle`'s own id is excluded
+    // from the conflict check inside nicknameValidationMessage, not by pre-filtering this list.
+    let existingVehicles: [(id: PersistentIdentifier, nickname: String)]
     // True when `vehicle` is currently the only active vehicle. Used only to explain, live,
     // why turning "Active" off won't take effect — saveVehicle enforces the actual guarantee
     // regardless of this hint, so a stale value here can never let the invariant slip.
@@ -28,14 +33,27 @@ struct AddEditVehicleView: View {
     init(
         vehicle: VehicleProfile?,
         existingVehiclesCount: Int,
+        existingVehicles: [(id: PersistentIdentifier, nickname: String)],
         isSoleActiveVehicle: Bool = false,
         onSave: @escaping (VehicleDraft) -> Void
     ) {
         self.vehicle = vehicle
         self.existingVehiclesCount = existingVehiclesCount
+        self.existingVehicles = existingVehicles
         self.isSoleActiveVehicle = isSoleActiveVehicle
         self.onSave = onSave
         _draft = State(initialValue: VehicleDraft(vehicle: vehicle, existingVehiclesCount: existingVehiclesCount))
+    }
+
+    // Actionable, non-technical validation message for the current nickname, or nil when it's
+    // safe to save — see VehicleNicknamePolicy. Recomputed live as the user types, mirroring
+    // isOdometerRegression/odometerRegressionMessage's pattern below.
+    private var nicknameValidationMessage: String? {
+        VehicleNicknamePolicy.validationError(
+            for: draft.nickname,
+            excluding: vehicle?.persistentModelID,
+            among: existingVehicles
+        )
     }
 
     // True when saving right now would leave zero active vehicles — i.e. this is the sole
@@ -86,8 +104,9 @@ struct AddEditVehicleView: View {
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
                     // Routine editing must never lower the odometer — see saveVehicle for the
-                    // authoritative guarantee this mirrors.
-                    .disabled(isOdometerRegression)
+                    // authoritative guarantee this mirrors. A blank/conflicting nickname is
+                    // blocked the same way — see GarageView.saveVehicle's defensive second guard.
+                    .disabled(isOdometerRegression || nicknameValidationMessage != nil)
                 }
             }
         }
@@ -109,7 +128,17 @@ struct AddEditVehicleView: View {
                 subtitle: "Save a profile for calculator defaults, fuel logs, and reminders."
             )
 
-            StringInputField(title: "Nickname", text: $draft.nickname)
+            StringInputField(title: "Nickname", text: $draft.nickname, isInvalid: nicknameValidationMessage != nil)
+
+            // Actionable feedback for a blank or conflicting nickname — see
+            // VehicleNicknamePolicy. Save stays disabled above while this is non-nil; the sheet
+            // is never dismissed with an invalid nickname.
+            if let nicknameValidationMessage {
+                Text(nicknameValidationMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            }
+
             vehiclePhotoSection
             identityFields
             metricsFields
@@ -423,6 +452,12 @@ struct VehicleDraft {
     }
 
     mutating func normalizeForSave() {
+        // See VehicleNicknamePolicy — the persisted nickname is trimmed of leading/trailing
+        // whitespace/newlines, never otherwise altered (no case folding, no internal whitespace
+        // collapsing). AddEditVehicleView's Save button is already disabled while the nickname
+        // is blank or conflicts with another vehicle, so this trim never turns a valid nickname
+        // into an invalid one — it only removes whitespace the user didn't mean to save.
+        nickname = VehicleNicknamePolicy.normalizedForSave(nickname)
         tankSizeGallons = max(tankSizeGallons, 0)
         currentOdometer = max(currentOdometer, 0)
         requiredOctane = max(requiredOctane, 0)
@@ -436,6 +471,7 @@ private struct StringInputField: View {
     let title: String
     @Binding var text: String
     var keyboard: UIKeyboardType = .default
+    var isInvalid: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -451,7 +487,7 @@ private struct StringInputField: View {
                 .background(AppTheme.Colors.surface)
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                        .stroke(isInvalid ? AppTheme.Colors.warningRed : AppTheme.Colors.border, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
