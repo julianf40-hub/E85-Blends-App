@@ -101,7 +101,6 @@ final class SubscriptionManager {
     var canAccessAdvancedAnalytics: Bool { isPro }
     var canAccessStationAlerts: Bool     { isPro }
     var canAccessUnlimitedVehicles: Bool { isPro }
-    var canAccessCloudSync: Bool         { isPro }
 
     /// The 85Blends Pro monthly product once loaded from StoreKit, if available.
     var monthlyProduct: Product? {

@@ -16,6 +16,15 @@ Project quick facts:
 - **Never archive or upload production** — the `EightyFiveBlends` scheme, `Release` configuration, or `com.e85blends.app.ios` — unless Julian explicitly says **"prepare production release."** A merged fix, a green build, or an urgent-sounding bug is not permission; the exact phrase is.
 - Simulator smoke builds of either scheme are always fine — the rule is about archiving and uploading.
 
+## Product Policy: Cloud Sync Is Free, Not Pro
+
+CloudKit/SwiftData sync is a **core 85Blends capability available to every user, Free and Pro** — not a Pro subscription benefit. This was verified end-to-end (code, entitlements, and real-device testing) by the 2.3.0 CloudKit/SwiftData audit: `EightyFiveBlendsApp.swift` configures `cloudKitDatabase: .automatic` unconditionally, with no reference to `isPro`/`isProUser` anywhere in the `ModelContainer` construction path. Keep it that way:
+
+- Never gate the `ModelContainer`, CloudKit initialization, or CloudKit import/export behind `isPro`/`isProUser` or any other subscription check.
+- Never advertise Cloud Sync as a Pro/Premium benefit in paywall, onboarding, or marketing copy, and never add it to the Pro feature list.
+- Never create separate Free/Pro persistence containers or a parallel Cloud Sync entitlement abstraction.
+- Pro stays scoped to actual premium functionality (Trip Planning, route-based fuel stops, advanced tools/limits/analytics/alerts) — not to whether a user's data syncs.
+
 ## Xcode Cloud Workflows
 
 Two separate workflows in App Store Connect keep Internal and Production builds from crossing over. The trigger/branch rules live in ASC, not this repo — this table is the source of truth for what each workflow must be set to.

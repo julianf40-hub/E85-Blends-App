@@ -14,9 +14,11 @@
 
 All five `@Model` classes (`VehicleProfile`, `FuelLogEntry`, `FuelStation`, `MaintenanceReminder`, `ReminderCompletionRecord`) use bare `@Model` with no `VersionedSchema`, `SchemaMigrationPlan`, or migration steps. The `ModelContainer` in `EightyFiveBlendsApp.swift` uses an implicit schema.
 
-If any property is added, removed, renamed, or has its type changed in a future update, SwiftData will fail to open the existing store. The current fallback chain (`EightyFiveBlendsApp.swift:30-75`) attempts to delete and recreate the store on failure — meaning **all user data is silently destroyed** on a schema mismatch.
+If a future property change isn't something SwiftData's lightweight migration can absorb, SwiftData may fail to open the existing store.
 
-This is safe for v1/2.0 launch only if the schema has never shipped to users before. If any prior build with these models has been distributed (TestFlight or App Store), a schema change without a migration plan will wipe user data.
+**Correction (2026-08-20, verified against current code during the 2.3.0 CloudKit/SwiftData audit):** the claim in the original paragraph above — that the fallback chain deletes and recreates the store on failure — is stale and does not match the current implementation. `EightyFiveBlendsApp.swift:60-125` falls through CloudKit-backed disk store → local-only disk store → in-memory-only, and explicitly documents why the store file is never deleted (`EightyFiveBlendsApp.swift:91-96`): *"Do NOT delete the store file; it may be recoverable after a restart and deleting it would cause permanent, unrecoverable data loss."* A schema-open failure today degrades to local-only or in-memory operation — surfaced to the user only in the in-memory case, via the "Storage unavailable" banner — rather than destroying existing data.
+
+The underlying risk is still real, just less catastrophic than originally described here: with no migration plan, an incompatible (non-additive) schema change — a property removal, rename, retype, or a new required field without a safe default — still has no tested recovery path beyond falling back to local-only or in-memory mode. Worth addressing before such a change is needed; not a 2.3.0 blocker on its own.
 
 **Files:** `EightyFiveBlendsApp.swift`, all five `@Model` files.
 
@@ -62,15 +64,15 @@ The app registers `remote-notification` as a background mode (`Info.plist:23-25`
 
 **Files:** `FuelLogEntry.swift:13`, `MaintenanceReminder.swift:13`, `ReminderCompletionRecord.swift:14`, `GarageView.swift` (edit vehicle flow), `FuelLogStore.swift`.
 
-### B2. Silent Data Save Failures
+### B2. Silent Data Save Failures — RESOLVED
 
-**Risk:** User data silently lost.
+**Correction (2026-08-20, verified against current code during the 2.3.0 CloudKit/SwiftData audit):** this finding is stale and no longer matches the implementation. `FuelLogStore.swift:81-86` now uses `do { try modelContext.save() } catch { AppHaptics.warning(); throw FuelLogStoreError.saveFailed }` — the error is no longer silently discarded. The caller, `AddEditFuelLogView.swift:67-69`, catches the thrown error and surfaces it via `.alert("Couldn't Save Fill-Up", ...)` (`AddEditFuelLogView.swift:103-109`). A local save failure is now both propagated and shown to the user, matching this section's original **Fix** recommendation.
 
-`FuelLogStore.swift:68` uses `try? modelContext.save()` which silently ignores save errors. If the persistent store is full, corrupted, or CloudKit sync fails, the user gets a success haptic (`AppHaptics.success()` on line 69) but their data is not actually persisted.
+**Scope note — do not read this as "all save failures are now visible":** this covers the *local* `modelContext.save()` call only — i.e., whether the write reached the on-disk store. It does not cover the asynchronous CloudKit import/export SwiftData performs afterward; that path has no error observation anywhere in the app (no `CKError`/`NSPersistentCloudKitContainer` event handling exists), so a CloudKit sync failure after a successful local save remains invisible to the user. That is a separate, still-open architectural gap, not something this correction claims to have fixed.
 
-**Fix:** Propagate the error or show a user-facing alert on save failure.
+**Original finding (historical, no longer accurate):** ~~`FuelLogStore.swift:68` uses `try? modelContext.save()` which silently ignores save errors. If the persistent store is full, corrupted, or CloudKit sync fails, the user gets a success haptic (`AppHaptics.success()` on line 69) but their data is not actually persisted.~~
 
-**Files:** `FuelLogStore.swift:68-69`.
+**Files:** `FuelLogStore.swift:81-86`, `AddEditFuelLogView.swift:67-69,103-109`.
 
 ### B3. Location Usage Description Mismatch
 
@@ -211,7 +213,7 @@ This order minimizes risk and avoids cascading changes:
 3. **B6** — Move misplaced files into source subfolder (file move + pbxproj update).
 4. **B4** — Add notes length limit in community price report (one guard clause).
 5. **B5** — Add URLSession timeout configuration (small init change).
-6. **B2** — Surface save errors to the user (add error propagation to FuelLogStore).
+6. ~~**B2** — Surface save errors to the user (add error propagation to FuelLogStore).~~ **Resolved** — see the correction note under B2 above (2026-08-20).
 7. **A2** — Evaluate NLR API key risk and decide on mitigation.
 8. **C2** — Extract shared sponsor card component (safe refactor).
 9. **C3** — Decide on gas grade picker behavior (UI decision).
