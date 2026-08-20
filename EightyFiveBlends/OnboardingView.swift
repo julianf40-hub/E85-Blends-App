@@ -422,45 +422,63 @@ struct OnboardingView: View {
         guard canFinishOnboarding else { return }
 
         if shouldCreateVehicle {
-            if vehicles.isEmpty == false {
-                for vehicle in vehicles {
-                    vehicle.isActive = false
-                    vehicle.updatedAt = .now
-                }
-            }
-
-            // Onboarding's simplified vehicle card never shows Preferred Ethanol Target, so
-            // draft.preferredEthanolTargetPercent is always nil here — no hidden E30 (or any
-            // other) vehicle-specific target is silently created just because VehicleDraft used
-            // to default this to E30 pre-2.3.0. Legacy default*/gasEthanolPercent fields are
-            // intentionally omitted — they take VehicleProfile's own persistence-compatible
-            // defaults and are never read as a preference for a new-semantics vehicle.
-            let vehicle = VehicleProfile(
-                nickname: draft.nickname,
-                year: draft.year,
-                make: draft.make,
-                model: draft.model,
-                trim: draft.trim,
-                tankSizeGallons: draft.tankSizeGallons,
-                currentOdometer: draft.currentOdometer,
-                requiredOctane: draft.requiredOctane,
-                isFlexFuel: draft.isFlexFuel,
-                isActive: true,
-                createdAt: .now,
-                updatedAt: .now,
-                preferredEthanolTargetPercent: draft.preferredEthanolTargetPercent,
-                calculatorPreferenceSemanticsVersion: VehiclePreferenceSemantics.current
+            // 85Blends 2.3.0: Unlimited Vehicles is a real, enforced Pro entitlement now (see
+            // VehicleCreationPolicy) — normally moot here, since onboarding only runs once
+            // before any vehicle exists, but `vehicles` can already be non-empty in a real edge
+            // case: a fresh install (hasCompletedOnboarding is a local, unsynced flag, so it
+            // resets on reinstall) whose CloudKit sync brings in an existing vehicle from a
+            // previous install/device before or during this screen. Silently skip creating a
+            // redundant vehicle from the onboarding draft rather than interrupting first-run
+            // onboarding with a paywall prompt — the synced vehicle(s) stay untouched and
+            // visible, and the user can still add another later via Garage, where the standard
+            // upgrade prompt applies.
+            let canCreate = VehicleCreationPolicy.canAddVehicle(
+                currentCount: vehicles.count,
+                freeLimit: SubscriptionManager.freeVehicleLimit,
+                canAccessUnlimitedVehicles: SubscriptionManager.shared.canAccessUnlimitedVehicles
             )
 
-            modelContext.insert(vehicle)
-            do {
-                try modelContext.save()
-            } catch {
-                #if DEBUG
-                print("[85Blends] OnboardingView: vehicle save failed:", error)
-                #endif
-                vehicleSaveErrorMessage = "Couldn't save your vehicle. Please try again."
-                return
+            if canCreate {
+                if vehicles.isEmpty == false {
+                    for vehicle in vehicles {
+                        vehicle.isActive = false
+                        vehicle.updatedAt = .now
+                    }
+                }
+
+                // Onboarding's simplified vehicle card never shows Preferred Ethanol Target, so
+                // draft.preferredEthanolTargetPercent is always nil here — no hidden E30 (or any
+                // other) vehicle-specific target is silently created just because VehicleDraft used
+                // to default this to E30 pre-2.3.0. Legacy default*/gasEthanolPercent fields are
+                // intentionally omitted — they take VehicleProfile's own persistence-compatible
+                // defaults and are never read as a preference for a new-semantics vehicle.
+                let vehicle = VehicleProfile(
+                    nickname: draft.nickname,
+                    year: draft.year,
+                    make: draft.make,
+                    model: draft.model,
+                    trim: draft.trim,
+                    tankSizeGallons: draft.tankSizeGallons,
+                    currentOdometer: draft.currentOdometer,
+                    requiredOctane: draft.requiredOctane,
+                    isFlexFuel: draft.isFlexFuel,
+                    isActive: true,
+                    createdAt: .now,
+                    updatedAt: .now,
+                    preferredEthanolTargetPercent: draft.preferredEthanolTargetPercent,
+                    calculatorPreferenceSemanticsVersion: VehiclePreferenceSemantics.current
+                )
+
+                modelContext.insert(vehicle)
+                do {
+                    try modelContext.save()
+                } catch {
+                    #if DEBUG
+                    print("[85Blends] OnboardingView: vehicle save failed:", error)
+                    #endif
+                    vehicleSaveErrorMessage = "Couldn't save your vehicle. Please try again."
+                    return
+                }
             }
         }
 

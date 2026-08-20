@@ -21,6 +21,12 @@ struct GarageView: View {
     @State private var odometerInput = ""
     @State private var odometerValidationMessage: String?
     @State private var saveErrorMessage: String?
+    // Free-tier vehicle-creation limit prompt (85Blends 2.3.0 — Unlimited Vehicles is now a real
+    // Pro entitlement, see VehicleCreationPolicy). Two-step, matching ProLimitBannerView's
+    // existing pattern elsewhere in the app: a lightweight explanation first, then the single
+    // 85Blends Pro paywall only if the user actually taps through.
+    @State private var isShowingVehicleLimitPrompt = false
+    @State private var isShowingVehicleLimitPaywall = false
 
     private var activeVehicle: VehicleProfile? {
         vehicles.first(where: { $0.isActive })
@@ -92,6 +98,22 @@ struct GarageView: View {
             } message: {
                 Text(saveErrorMessage ?? "")
             }
+            .alert("Add More Vehicles with Pro", isPresented: $isShowingVehicleLimitPrompt) {
+                Button("Upgrade to Pro") {
+                    isShowingVehicleLimitPaywall = true
+                }
+                Button("Not Now", role: .cancel) {}
+            } message: {
+                Text("The Free version includes 1 vehicle. Upgrade to 85Blends Pro to add and manage unlimited vehicles.")
+            }
+            .sheet(isPresented: $isShowingVehicleLimitPaywall) {
+                // Reuses the app's single existing paywall — no separate purchase flow, no
+                // duplicated StoreKit logic. Matches ProLimitBannerView/ProFeatureLockView's
+                // exact presentation pattern elsewhere in the app.
+                NavigationStack {
+                    ProUpgradeView(presentationMode: .modal)
+                }
+            }
             // Background content is inert/hidden to VoiceOver while the delete confirmation
             // overlay is active — see DestructiveConfirmationOverlay's own .isModal trait.
             .accessibilityHidden(vehiclePendingDeletion != nil)
@@ -149,12 +171,12 @@ struct GarageView: View {
             // was moved into an already-working interaction area instead.
             addVehicleManagementButton
 
-            // 85Blends 2.3.0 release-blocker fix: free users can already add an unlimited
-            // number of vehicles (SubscriptionManager.freeVehicleLimit is defined but never
-            // enforced — see SubscriptionManager.swift), so a "Unlimited Vehicles" Pro upsell
-            // card here was misleading and has been removed. No vehicle-count gating was
-            // introduced to make that card true; a future release can revisit vehicle-count
-            // monetization deliberately.
+            // 85Blends 2.3.0: Unlimited Vehicles is now a real, enforced Pro entitlement — see
+            // VehicleCreationPolicy and addVehicleManagementButton below. Free users may create
+            // 1 vehicle (SubscriptionManager.freeVehicleLimit); creating another presents the
+            // "Add More Vehicles with Pro" prompt instead of opening the form. This never
+            // touches vehicles a user already has — reading, editing, and deleting every saved
+            // vehicle below remains fully available regardless of count or Pro status.
 
             if vehicles.isEmpty {
                 EmptySavedVehiclesCard()
@@ -173,7 +195,22 @@ struct GarageView: View {
 
     private var addVehicleManagementButton: some View {
         Button {
-            sheetContext = .add
+            // Checked before the form opens, per the intended UX: a Free user already at the
+            // limit sees the upgrade explanation immediately, rather than filling out the whole
+            // form and only discovering the restriction at Save. Re-checked again at the actual
+            // save boundary below (defense-in-depth) using the live count at that moment, since
+            // this closure's `vehicles.count` could be stale by the time Save is tapped (e.g. a
+            // CloudKit sync brought in another vehicle while the sheet was open).
+            if VehicleCreationPolicy.canAddVehicle(
+                currentCount: vehicles.count,
+                freeLimit: SubscriptionManager.freeVehicleLimit,
+                canAccessUnlimitedVehicles: SubscriptionManager.shared.canAccessUnlimitedVehicles
+            ) {
+                sheetContext = .add
+            } else {
+                AppHaptics.selection()
+                isShowingVehicleLimitPrompt = true
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
@@ -202,6 +239,23 @@ struct GarageView: View {
         ) {
             saveErrorMessage = nicknameError
             return
+        }
+
+        // Defense-in-depth: the Add Vehicle button already checks this before the form ever
+        // opens, but re-check here, against the live count, before ANY mutation (including the
+        // active-flag clearing below) — the same "checked first" guarantee as the nickname guard
+        // above. Catches a stale sheet: entitlement or count could have changed (CloudKit sync,
+        // downgrade) while the form was open. Only ever runs for a NEW vehicle (`vehicle == nil`)
+        // — editing an existing vehicle is never subject to this check.
+        if vehicle == nil {
+            guard VehicleCreationPolicy.canAddVehicle(
+                currentCount: vehicles.count,
+                freeLimit: SubscriptionManager.freeVehicleLimit,
+                canAccessUnlimitedVehicles: SubscriptionManager.shared.canAccessUnlimitedVehicles
+            ) else {
+                isShowingVehicleLimitPrompt = true
+                return
+            }
         }
 
         var shouldBeActive = vehicle == nil ? (vehicles.isEmpty || draft.isActive) : draft.isActive

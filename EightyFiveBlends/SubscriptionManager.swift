@@ -27,8 +27,16 @@ final class SubscriptionManager {
     /// StoreKit configuration). Once the product loads we always prefer its localized price.
     static let fallbackDisplayPrice = "$3.99"
 
+    // MARK: - Free-tier creation limit (blocking)
+    /// Vehicles a Free user may create. Pro is unlimited — see `canAccessUnlimitedVehicles`
+    /// below. Unlike the soft limits directly below, this one is actually enforced at every
+    /// vehicle-creation entry point (see VehicleCreationPolicy) — it blocks creating another
+    /// vehicle once reached, though it never touches vehicles a user already has (grandfathered
+    /// vehicles above this count — e.g. from a downgrade, or synced in via CloudKit from a
+    /// formerly-Pro device — remain fully visible, editable, and usable; only new creation stops).
+    static let freeVehicleLimit = 1
+
     // MARK: - Free-tier soft limits (non-blocking nudges only — they never block free features)
-    static let freeVehicleLimit      = 2
     static let freeFuelLogLimit      = 25
     static let freeSavedStationLimit = 10
 
