@@ -22,9 +22,10 @@ struct GarageView: View {
     @State private var odometerValidationMessage: String?
     @State private var saveErrorMessage: String?
     // Free-tier vehicle-creation limit prompt (85Blends 2.3.0 — Unlimited Vehicles is now a real
-    // Pro entitlement, see VehicleCreationPolicy). Two-step, matching ProLimitBannerView's
-    // existing pattern elsewhere in the app: a lightweight explanation first, then the single
-    // 85Blends Pro paywall only if the user actually taps through.
+    // Pro entitlement, see VehicleCreationPolicy). Two-step: a compact, purpose-built explanation
+    // sheet first (VehicleLimitUpsellView — a plain system .alert was replaced here for
+    // readability, see its header comment), then the single 85Blends Pro paywall only if the
+    // user actually taps through.
     @State private var isShowingVehicleLimitPrompt = false
     @State private var isShowingVehicleLimitPaywall = false
 
@@ -98,13 +99,14 @@ struct GarageView: View {
             } message: {
                 Text(saveErrorMessage ?? "")
             }
-            .alert("Add More Vehicles with Pro", isPresented: $isShowingVehicleLimitPrompt) {
-                Button("Upgrade to Pro") {
-                    isShowingVehicleLimitPaywall = true
-                }
-                Button("Not Now", role: .cancel) {}
-            } message: {
-                Text("The Free version includes 1 vehicle. Upgrade to 85Blends Pro to add and manage unlimited vehicles.")
+            .sheet(isPresented: $isShowingVehicleLimitPrompt) {
+                // Purpose-built, compact sheet — replaces a plain system .alert whose glass/
+                // translucency made it harder to read than the rest of the app. See
+                // VehicleLimitUpsellView's own header for the full rationale.
+                VehicleLimitUpsellView(
+                    freeLimit: SubscriptionManager.freeVehicleLimit,
+                    onUpgrade: { isShowingVehicleLimitPaywall = true }
+                )
             }
             .sheet(isPresented: $isShowingVehicleLimitPaywall) {
                 // Reuses the app's single existing paywall — no separate purchase flow, no

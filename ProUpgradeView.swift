@@ -26,16 +26,28 @@ struct ProUpgradeView: View {
 
     private var manager: SubscriptionManager { SubscriptionManager.shared }
 
-    // Benefit list — 85Blends 2.3.0 release-blocker fix: previously included Advanced Fuel
-    // Analytics, Station Price Alerts, Unlimited Vehicles, and Cloud Sync Ready, none of which
-    // are accurate today (Analytics/Alerts are unbuilt placeholders; free users already have
-    // unlimited vehicles; Cloud Sync is unconditional for every user, not Pro-exclusive — see
-    // SubscriptionManager.swift and GarageView.swift). Removed rather than replaced — accuracy
-    // over bullet count. Only Trip Planner remains: it is genuinely implemented today and
-    // genuinely gated behind isProUser (see ProFeatureGate/TripPlannerView).
-    private let benefits: [(icon: String, title: String, detail: String)] = [
-        ("map.fill",        "Intelligent E85 Trip Planning", "Plan smarter routes built around ethanol availability."),
-        ("arrow.triangle.turn.up.right.diamond.fill", "Route-Based Fuel Stops", "See the best E85 stops along the way, not just nearby."),
+    // Benefit list — 85Blends 2.3.0 paywall content refresh. Split into two tiers so a quick
+    // scan reads "headline value" vs "everything else included," rather than one flat list of
+    // equally-weighted bullets:
+    //   - majorBenefits get full visual treatment (icon badge, headline-weight title). Trip
+    //     Planning is genuinely implemented today and gated behind isProUser (see
+    //     ProFeatureGate/TripPlannerView). Unlimited Vehicles is genuinely implemented and
+    //     validated as of 2.3.0 (see VehicleCreationPolicy/SubscriptionManager.
+    //     canAccessUnlimitedVehicles) — no longer a Coming Soon item.
+    //   - supportingBenefits render compactly underneath. Save & Revisit Routes intentionally
+    //     never says "sync," "backed up," or "available across devices" — Saved Trips
+    //     (SavedTripStore) are device-local today, not CloudKit-synced.
+    // Cloud Sync itself is never listed here — it's unconditional for every user, Free and Pro
+    // alike (see SubscriptionManager.swift, GarageView.swift, and CLAUDE.md's Cloud Sync
+    // product-policy note), so it is not Pro benefit content.
+    private let majorBenefits: [(icon: String, title: String, detail: String)] = [
+        ("map.fill", "Intelligent E85 Trip Planning", "Plan complete routes around E85 availability, reserve targets, and backup fuel options."),
+        ("car.fill", "Unlimited Vehicles", "Add and manage your entire garage with 85Blends Pro."),
+    ]
+
+    private let supportingBenefits: [(icon: String, title: String, detail: String)] = [
+        ("arrow.triangle.turn.up.right.diamond.fill", "E85 Stops Along Your Route", "Find ethanol stops that make sense for your actual trip, not just what's nearby."),
+        ("bookmark.fill", "Save & Revisit Routes", "Save useful trips and quickly plan them again later."),
     ]
 
     var body: some View {
@@ -44,6 +56,16 @@ struct ProUpgradeView: View {
                 headerSection
                 priceCard
                 benefitsCard
+                comingSoonCard
+
+                // Mutually exclusive with activeProRow inside actionsSection below: a Pro
+                // subscriber already sees a thank-you/support card there, so showing this too
+                // would be a redundant second "support us" message. A free user sees exactly
+                // one of the two, never both.
+                if !manager.isProUser {
+                    supportCard
+                }
+
                 actionsSection
                 footerNote
             }
@@ -132,30 +154,22 @@ struct ProUpgradeView: View {
     // MARK: - Benefits
 
     private var benefitsCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SectionHeader(title: "What's included")
+        VStack(alignment: .leading, spacing: 18) {
+            SectionHeader(title: "What's Included", subtitle: "Available now with 85Blends Pro.")
 
-            ForEach(benefits, id: \.title) { benefit in
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: benefit.icon)
-                        .font(.body)
-                        .foregroundStyle(AppTheme.Colors.stationYellow)
-                        .frame(width: 24)
-                        .accessibilityHidden(true)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(benefit.title)
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                        Text(benefit.detail)
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(majorBenefits, id: \.title) { benefit in
+                    majorBenefitRow(benefit)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
+            }
+
+            Divider()
+                .background(AppTheme.Colors.border)
+
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(supportingBenefits, id: \.title) { benefit in
+                    supportingBenefitRow(benefit)
+                }
             }
         }
         .padding(18)
@@ -166,6 +180,138 @@ struct ProUpgradeView: View {
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    /// Full visual treatment — icon badge, headline-weight title — for the two headline
+    /// benefits (Trip Planning, Unlimited Vehicles).
+    private func majorBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.Colors.stationYellow.opacity(0.16))
+                    .frame(width: 40, height: 40)
+
+                Image(systemName: benefit.icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+            }
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(benefit.title)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text(benefit.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Compact treatment — small inline icon, no badge — for supporting benefits that round
+    /// out the headline value above without competing with it for attention.
+    private func supportingBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: benefit.icon)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(benefit.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text(benefit.detail)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Coming soon
+
+    // A separate, visually secondary card so a quick scan never mistakes a roadmap item for a
+    // current entitlement. Reuses ProShellRow — the same muted "Coming soon" capsule already
+    // shipped in StationsView's and MoreView's Coming Soon sections for these exact two
+    // features — rather than inventing a new visual language for the same concept. No CTA
+    // button (there is nothing to unlock yet) and no date/version promise, per product policy;
+    // "Planned for future 85Blends updates." is deliberately non-committal.
+    private var comingSoonCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(title: "Coming Soon to Pro", subtitle: "Planned for future 85Blends updates.")
+
+            VStack(alignment: .leading, spacing: 14) {
+                ProShellRow(
+                    icon: "chart.bar.fill",
+                    title: "Advanced Fuel Analytics",
+                    detail: "Deeper insights into fuel economy, costs, and trends."
+                )
+
+                Divider()
+                    .background(AppTheme.Colors.border)
+
+                ProShellRow(
+                    icon: "bell.badge.fill",
+                    title: "Station Price Alerts",
+                    detail: "Keep track of fuel prices at stations you care about."
+                )
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // One elevation step flatter than benefitsCard (surface vs. surfaceElevated) — a
+        // deliberate, subtle visual demotion so this card reads as secondary to What's
+        // Included even before either section header is read.
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    // MARK: - Support 85Blends
+
+    /// Compact, visually distinct funding note for Free users — not a feature bullet, so it
+    /// uses a smaller corner radius and a plain single-line layout instead of the icon-badge +
+    /// title/detail structure benefitsCard uses for actual entitlements. Pro subscribers never
+    /// see this; they see the equivalent message folded into activeProRow instead (see the
+    /// mutual-exclusivity comment at this view's only call site, in `body`).
+    private var supportCard: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "heart.fill")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.stationYellow)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+
+            Text("Your Pro subscription helps support continued development, new features, and ongoing improvements to 85Blends.")
+                .font(.footnote)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Actions
@@ -290,16 +436,26 @@ struct ProUpgradeView: View {
     }
 
     private var activeProRow: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.title3)
                 .foregroundStyle(AppTheme.Colors.primaryGreen)
                 .accessibilityHidden(true)
 
-            Text("You have 85Blends Pro. Thanks for your support!")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("You have 85Blends Pro. Thanks for your support!")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                // The Free-user equivalent of this line lives in supportCard — the two are
+                // mutually exclusive (see body), so this is the only "supports development"
+                // message a subscriber sees.
+                Text("Your subscription helps fund continued development and new features.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Spacer(minLength: 0)
         }
@@ -311,6 +467,7 @@ struct ProUpgradeView: View {
                 .stroke(AppTheme.Colors.primaryGreen.opacity(0.4), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

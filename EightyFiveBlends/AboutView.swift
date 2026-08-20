@@ -67,7 +67,7 @@ struct AboutView: View {
                         "Added Trip Planner for Pro users with route distance, fuel range, arrival buffer, and stop planning.",
                         "Added Saved Trips so planned routes can be reopened later.",
                         "Improved station discovery, saved stations, favorites, and map handoff to Apple Maps, Google Maps, and Waze.",
-                        "Added 85Blends Pro with premium planning, analytics, and station features.",
+                        "Added 85Blends Pro with premium E85 trip planning, with more Pro features in development.",
                         "Improved At the Pump mode for faster blend guidance while fueling.",
                     ]
                 )
