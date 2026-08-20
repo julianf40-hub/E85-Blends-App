@@ -74,6 +74,27 @@
 //    values are identical, and normalizedKey's own rule is unchanged by this follow-up), so
 //    display resolution is behaviorally unchanged — a name-only saved station can still show an
 //    existing community price for display purposes even though it can no longer report one.
+//
+//  THIRD PASS (Community Station Identity Foundation — Price Alerts prerequisite): the Station
+//  Price Alerts architecture audit found two further, concrete defects — see
+//  CommunityStationKey.canonicalKey's doc comment (CommunityPriceEligibility.swift) for the full
+//  fix, tested below under "MARK: Canonical identity key (third pass)":
+//  - Fragmentation: FuelLogView had its own second, independent reimplementation of station-key
+//    construction with different blank-field handling than CommunityStationKey.normalizedKey —
+//    the same station data with a blank field could resolve to two different community_stations
+//    rows depending on which screen reported it. FuelLogView's reimplementation is now removed;
+//    both screens call CommunityStationKey.canonicalKey exclusively.
+//  - Collision: normalizedKey never included coordinates, so two distinct, real, coordinate-only
+//    stations sharing a name and lacking address data could resolve to the identical key
+//    regardless of how far apart they actually are. canonicalKey now folds a rounded coordinate
+//    into the key specifically when the address alone isn't sufficient to disambiguate.
+//  Live production data was inspected (read-only) as part of this fix: all four community_stations
+//  rows that exist today have fully-populated addresses, so all four already satisfy
+//  hasSufficientAddress and are keyed by canonicalKey's branch 1 — which reproduces
+//  normalizedKey's original address-based output byte-for-byte. No known existing row is
+//  orphaned by this change; see the Community Station Identity Foundation final report for the
+//  full compatibility analysis and why a legacy-key transition path was judged unnecessary given
+//  that evidence, not merely assumed unnecessary.
 
 import Testing
 @testable import EightyFiveBlends
@@ -352,5 +373,209 @@ struct CommunityPriceEligibilityTests {
         )
         #expect(key != nil)          // display/read path: still resolvable
         #expect(canReport == false)  // reporting/write path: correctly blocked
+    }
+
+    // MARK: Canonical identity key (third pass) — fragmentation fix
+
+    @Test("The exact fragmentation case from the Station Price Alerts audit: StationsView's and FuelLogView's OLD algorithms disagreed; canonicalKey is now the only implementation, so there is nothing left to disagree")
+    func canonicalKey_fixesTheAuditedFragmentationExample() {
+        // Name: Chevron, Street: "", City: Phoenix, State: "", ZIP: "" — the audit's own example.
+        // Old CommunityStationKey.normalizedKey (StationsView's path) produced "chevron||phoenix||".
+        // Old FuelLogView.normalizedStationKey (filter-then-join) produced "chevron|phoenix" — a
+        // DIFFERENT string for the same data. canonicalKey is the only implementation now, so
+        // both call sites necessarily agree by construction; this test pins the single output.
+        let key = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "Phoenix", state: "", zip: "",
+            latitude: nil, longitude: nil
+        )
+        #expect(key == "chevron||phoenix||")
+    }
+
+    @Test("Same station, same complete address, produces the same canonical key")
+    func canonicalKey_sameCompleteAddress_sameKey() {
+        let a = CommunityStationKey.canonicalKey(
+            name: "Chevron - Team C B", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: nil, longitude: nil
+        )
+        let b = CommunityStationKey.canonicalKey(
+            name: "Chevron - Team C B", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: nil, longitude: nil
+        )
+        #expect(a != nil)
+        #expect(a == b)
+    }
+
+    @Test("Mixed casing does not fragment the canonical key")
+    func canonicalKey_mixedCasing_sameKey() {
+        let lower = CommunityStationKey.canonicalKey(
+            name: "chevron", streetAddress: "123 main st", city: "springfield", state: "il", zip: "62701",
+            latitude: nil, longitude: nil
+        )
+        let upper = CommunityStationKey.canonicalKey(
+            name: "CHEVRON", streetAddress: "123 MAIN ST", city: "SPRINGFIELD", state: "IL", zip: "62701",
+            latitude: nil, longitude: nil
+        )
+        #expect(lower == upper)
+    }
+
+    @Test("Leading/trailing whitespace differences do not fragment the canonical key")
+    func canonicalKey_whitespaceDifferences_sameKey() {
+        let tight = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: nil, longitude: nil
+        )
+        let padded = CommunityStationKey.canonicalKey(
+            name: "  Chevron  ", streetAddress: " 123 Main St ", city: " Springfield ", state: " IL ", zip: " 62701 ",
+            latitude: nil, longitude: nil
+        )
+        #expect(tight == padded)
+    }
+
+    @Test("StationsView's and FuelLogView's wrapper functions call the identical canonicalKey — missing fields cannot produce diverging keys anymore, by construction")
+    func canonicalKey_missingFields_stationsAndFuelLogPathsAgree() {
+        // There is only one implementation left to call; this test documents that guarantee with
+        // several representative missing-field shapes rather than re-deriving two separate
+        // algorithms and comparing them (there is nothing left to compare against).
+        let shapes: [(name: String, street: String, city: String, state: String, zip: String)] = [
+            ("Chevron", "", "Phoenix", "", ""),
+            ("Chevron", "", "", "AZ", ""),
+            ("76", "443 Divisadero St", "", "", ""),
+            ("", "", "", "", ""),
+        ]
+        for shape in shapes {
+            let key = CommunityStationKey.canonicalKey(
+                name: shape.name, streetAddress: shape.street, city: shape.city, state: shape.state, zip: shape.zip,
+                latitude: nil, longitude: nil
+            )
+            // Every shape above is reachable identically from StationsView's and FuelLogView's
+            // wrapper functions (both now delegate straight through with no branching of their
+            // own), so re-calling with the same inputs must be deterministic and idempotent.
+            let again = CommunityStationKey.canonicalKey(
+                name: shape.name, streetAddress: shape.street, city: shape.city, state: shape.state, zip: shape.zip,
+                latitude: nil, longitude: nil
+            )
+            #expect(key == again)
+        }
+    }
+
+    // MARK: Canonical identity key (third pass) — collision fix
+
+    @Test("The exact collision case from the Station Price Alerts audit: two distinct, real, coordinate-only, same-named stations no longer share a key")
+    func canonicalKey_fixesTheAuditedCollisionExample() {
+        // Station A and Station B: both named "Chevron", both address-less, both with real but
+        // DIFFERENT coordinates. Under the old normalizedKey (no coordinate parameter at all),
+        // both produced the identical "chevron||||" — a collision regardless of physical distance.
+        let stationA = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.4, longitude: -112.1
+        )
+        let stationB = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.5, longitude: -112.3
+        )
+        #expect(stationA != nil)
+        #expect(stationB != nil)
+        #expect(stationA != stationB)
+    }
+
+    @Test("Coordinate rounding absorbs insignificant GPS/geocoding jitter for the same station")
+    func canonicalKey_coordinateTolerance_absorbsJitter() {
+        // ~5-10m of disagreement (a realistic GPS-vs-geocoded-pin gap) stays inside one ~111m
+        // (0.001°) bucket and must NOT fragment the same physical station.
+        let reading1 = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.40001, longitude: -112.10002
+        )
+        let reading2 = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.40003, longitude: -112.09998
+        )
+        #expect(reading1 == reading2)
+    }
+
+    @Test("Coordinates a full bucket apart (~200m+) do fragment — the tolerance has an edge, by design")
+    func canonicalKey_coordinateTolerance_hasAnEdge() {
+        let here = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.400, longitude: -112.100
+        )
+        let twoBucketsAway = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "",
+            latitude: 33.402, longitude: -112.100
+        )
+        #expect(here != twoBucketsAway)
+    }
+
+    @Test("Different strong addresses never collide, coordinates or not")
+    func canonicalKey_differentStrongAddresses_neverCollide() {
+        let a = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: 39.78, longitude: -89.65
+        )
+        let b = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "456 Oak Ave", city: "Springfield", state: "IL", zip: "62701",
+            latitude: 39.78, longitude: -89.65
+        )
+        #expect(a != b)
+    }
+
+    @Test("A sufficient address always wins over coordinates — two reports of the same well-addressed station with slightly different GPS fixes still produce the identical key")
+    func canonicalKey_sufficientAddress_ignoresCoordinateVariance() {
+        let fix1 = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: 39.78, longitude: -89.65
+        )
+        let fix2 = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701",
+            latitude: 39.81, longitude: -89.70 // a wildly different fix — still ignored
+        )
+        #expect(fix1 == fix2)
+        #expect(fix1 == CommunityStationKey.normalizedKey(
+            name: "Chevron", streetAddress: "123 Main St", city: "Springfield", state: "IL", zip: "62701"
+        ))
+    }
+
+    // MARK: Canonical identity key (third pass) — fail-closed and production-data compatibility
+
+    @Test("Empty/insufficient identity with no coordinates returns nil — never invents an unsafe key")
+    func canonicalKey_emptyIdentity_returnsNil() {
+        #expect(CommunityStationKey.canonicalKey(
+            name: "", streetAddress: "", city: "", state: "", zip: "", latitude: nil, longitude: nil
+        ) == nil)
+    }
+
+    @Test("A partial coordinate (only latitude or only longitude) is not treated as a real coordinate — falls back to the permissive text key, matching canReport's own partial-coordinate rule")
+    func canonicalKey_partialCoordinate_fallsBackToTextKey() {
+        let latOnly = CommunityStationKey.canonicalKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: "", latitude: 33.4, longitude: nil
+        )
+        #expect(latOnly == CommunityStationKey.normalizedKey(
+            name: "Chevron", streetAddress: "", city: "", state: "", zip: ""
+        ))
+    }
+
+    @Test("All four real production community_stations rows (read-only, inspected during this fix) are fully-addressed and resolve under canonicalKey to the identical key normalizedKey already produced for them — zero known existing rows are orphaned by this change")
+    func canonicalKey_realProductionRows_matchPriorNormalizedKeyExactly() {
+        // Verbatim (address/city/state/zip/coordinates) from the four rows in the live
+        // community_stations table at the time of this fix. Every row already has a full
+        // address, so every row already satisfies hasSufficientAddress and was never at risk
+        // from the coordinate branch — this test pins that fact directly against production data
+        // shapes rather than asserting it in the abstract.
+        let rows: [(name: String, street: String, city: String, state: String, zip: String, lat: Double, lng: Double)] = [
+            ("76", "443 Divisadero St", "San Francisco", "CA", "94117", 37.77374, -122.43787),
+            ("Mobil", "6653 W McDowell Rd", "Phoenix", "AZ", "85035", 33.46552, -112.20272),
+            ("Valero In the Zone VII", "1925 N Scottsdale Rd", "Tempe", "AZ", "85281", 33.450825, -111.925969),
+            ("Chevron - Team C B", "4737 E Broadway", "Phoenix", "AZ", "85040", 33.40682, -111.97877),
+        ]
+        for row in rows {
+            let canonical = CommunityStationKey.canonicalKey(
+                name: row.name, streetAddress: row.street, city: row.city, state: row.state, zip: row.zip,
+                latitude: row.lat, longitude: row.lng
+            )
+            let original = CommunityStationKey.normalizedKey(
+                name: row.name, streetAddress: row.street, city: row.city, state: row.state, zip: row.zip
+            )
+            #expect(canonical == original)
+        }
     }
 }

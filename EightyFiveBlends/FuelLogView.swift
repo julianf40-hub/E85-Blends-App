@@ -379,6 +379,29 @@ struct FuelLogView: View {
     private func submitCommunityPriceReport(for context: FuelLogCommunityReportContext) {
         guard isSubmittingCommunityPrice == false else { return }
 
+        // Community Station Identity Foundation: FuelLogSaveOutcome.shouldOfferCommunityPriceReport
+        // (FuelLogStore.swift) only checks that a station name, price, and gallons were entered —
+        // it has no location-sufficiency concept, so this sheet can appear for a bare-name station
+        // (e.g. one FuelLogStore.updateStationIfNeeded just created from nothing but a typed name)
+        // that CommunityPriceEligibility.canReport would refuse to let StationsView report. Gating
+        // the actual submission here — not the sheet's appearance — keeps the low-stakes "want to
+        // report this?" prompt exactly as before (do not unnecessarily remove useful Fuel Log
+        // reporting) while never sending a write the shared eligibility rule would reject; mirrors
+        // StationsView.savePriceUpdate's identical guard/message pattern for the same rule.
+        guard CommunityPriceEligibility.canReport(
+            name: context.stationName,
+            streetAddress: context.streetAddress,
+            city: context.city,
+            state: context.state,
+            zip: context.zipCode,
+            latitude: context.latitude,
+            longitude: context.longitude
+        ) else {
+            communityReportContext = nil
+            communityReportMessage = "This station doesn't have enough location information to report to the community yet. Your fill-up was saved locally."
+            return
+        }
+
         isSubmittingCommunityPrice = true
 
         Task {
@@ -429,23 +452,26 @@ struct FuelLogView: View {
         }
     }
 
+    // Community Station Identity Foundation: this used to be its own independent
+    // reimplementation (filter-then-join) of what CommunityStationKey.normalizedKey already did
+    // (fixed-position join) in StationsView — the same station data with any field blank could
+    // resolve to two different community_stations rows depending on which screen reported it.
+    // Now delegates to the single canonical identity function every Community Pricing call site
+    // shares — see CommunityStationKey.canonicalKey's doc comment (CommunityPriceEligibility.swift).
     private func normalizedStationKey(for context: FuelLogCommunityReportContext) -> String {
-        let components = [
-            normalizedStationText(context.stationName),
-            normalizedStationText(context.streetAddress),
-            normalizedStationText(context.city),
-            normalizedStationText(context.state),
-            normalizedStationText(context.zipCode)
-        ]
-        .filter { $0.isEmpty == false }
-
-        return components.joined(separator: "|")
+        CommunityStationKey.canonicalKey(
+            name: context.stationName,
+            streetAddress: context.streetAddress,
+            city: context.city,
+            state: context.state,
+            zip: context.zipCode,
+            latitude: context.latitude,
+            longitude: context.longitude
+        ) ?? normalizedStationText(context.stationName)
     }
 
     private func normalizedStationText(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        CommunityStationKey.normalizedText(value)
     }
 
     private func confirmDeletion() {

@@ -1499,33 +1499,48 @@ struct StationsView: View {
             streetAddress: station.address,
             city: station.city,
             state: station.state,
-            zip: station.zipCode
+            zip: station.zipCode,
+            latitude: station.latitude,
+            longitude: station.longitude
         )
     }
 
     private func normalizedStationKey(for station: LiveFuelStation) -> String? {
+        // Zero here means "no coordinate" (LiveFuelStation.init(from:) defaults to 0/0 when NREL
+        // supplies none) — mirrors StationPriceUpdateContext.live(_:)'s existing 0→nil
+        // normalization so canonicalKey never mistakes NREL's missing-coordinate sentinel for a
+        // real Null Island location.
         normalizedStationKey(
             name: station.name,
             streetAddress: station.address,
             city: station.city,
             state: station.state,
-            zip: station.zip
+            zip: station.zip,
+            latitude: station.latitude == 0 ? nil : station.latitude,
+            longitude: station.longitude == 0 ? nil : station.longitude
         )
     }
 
+    /// Every Community Pricing read AND write path in this view funnels through here — see
+    /// CommunityStationKey.canonicalKey's own doc comment (CommunityPriceEligibility.swift) for
+    /// the full address-vs-coordinate identity rule this now applies uniformly.
     private func normalizedStationKey(
         name: String,
         streetAddress: String,
         city: String,
         state: String,
-        zip: String
+        zip: String,
+        latitude: Double?,
+        longitude: Double?
     ) -> String? {
-        CommunityStationKey.normalizedKey(
+        CommunityStationKey.canonicalKey(
             name: name,
             streetAddress: streetAddress,
             city: city,
             state: state,
-            zip: zip
+            zip: zip,
+            latitude: latitude,
+            longitude: longitude
         )
     }
 
@@ -1860,7 +1875,9 @@ struct StationsView: View {
             streetAddress: context.address,
             city: context.city,
             state: context.state,
-            zip: context.zipCode
+            zip: context.zipCode,
+            latitude: context.latitude,
+            longitude: context.longitude
         ) ?? normalizedStationText(context.stationName)
     }
 }
