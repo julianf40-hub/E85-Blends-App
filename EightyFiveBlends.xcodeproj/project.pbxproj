@@ -19,6 +19,7 @@
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
+		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -63,6 +64,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,6 +119,7 @@
 			);
 			name = EightyFiveBlends;
 			packageProductDependencies = (
+				1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */,
 			);
 			productName = EightyFiveBlends;
 			productReference = 44A9BC202FA0865900A9920E /* EightyFiveBlends.app */;
@@ -146,6 +149,9 @@
 			);
 			mainGroup = 44A9BC172FA0865900A9920E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 44A9BC212FA0865900A9920E /* Products */;
 			projectDirPath = "";
@@ -528,6 +534,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCat;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 44A9BC182FA0865900A9920E /* Project object */;
 }

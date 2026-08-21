@@ -140,6 +140,18 @@ struct EightyFiveBlendsApp: App {
                 }
                 .task {
                     await SubscriptionManager.shared.refreshEntitlements()
+
+                    // 85Blends 2.3.0 — RevenueCat Phase 1 (shadow only, see
+                    // RevenueCatShadowService.swift's header for the full safety contract).
+                    // Configuration + the one-time historical-subscriber sync attempt both
+                    // happen here, once per launch — never on every scenePhase return, unlike
+                    // refreshEntitlements() above, which intentionally keeps re-running there.
+                    // isProStoreKit (not isPro) is passed so a Developer Force Pro/Force Free
+                    // override can never trigger or suppress a real sync attempt.
+                    await RevenueCatShadowService.shared.configureIfNeeded()
+                    await RevenueCatShadowService.shared.attemptHistoricalSyncIfEligible(
+                        realStoreKitIsPro: SubscriptionManager.shared.isProStoreKit
+                    )
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,

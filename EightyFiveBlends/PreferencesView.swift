@@ -39,6 +39,10 @@ struct PreferencesView: View {
                 settingsCard
                 AutomaticPumpDetectionPreferenceCard()
                 proStatusCard
+
+                #if DEBUG || INTERNAL_BUILD
+                revenueCatDiagnosticsCard
+                #endif
             }
             .padding(16)
         }
@@ -245,6 +249,115 @@ struct PreferencesView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+    }
+    #endif
+
+    // MARK: - RevenueCat migration diagnostics (85Blends 2.3.0 Phase 1 — shadow only)
+    //
+    // Internal/Debug only, exactly like debugOverrideRow above. Compares the REAL verified
+    // StoreKit entitlement (SubscriptionManager.isProStoreKit) against RevenueCat's shadow
+    // state — deliberately NOT effective isPro, so a Force Pro/Force Free override never
+    // masks a genuine StoreKit/RevenueCat disagreement here. Purely informational: nothing on
+    // this card can change Pro access. See RevenueCatShadowService.swift's header for the full
+    // safety contract this screen exists to make visible during migration testing.
+    #if DEBUG || INTERNAL_BUILD
+    private var revenueCatDiagnosticsCard: some View {
+        let manager = SubscriptionManager.shared
+        let rc = RevenueCatShadowService.shared
+
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "RevenueCat Migration",
+                subtitle: "Shadow-only diagnostics. RevenueCat has no effect on Pro access yet."
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                diagnosticRow(label: "SDK", value: rc.isConfigured ? "Configured" : "Not configured")
+                diagnosticRow(label: "StoreKit", value: manager.isProStoreKit ? "PRO" : "FREE")
+                diagnosticRow(label: "RevenueCat", value: rc.revenueCatIsPro ? "PRO" : "FREE")
+                diagnosticRow(label: "Agreement", value: revenueCatAgreementLabel(manager: manager, rc: rc))
+                diagnosticRow(label: "Override", value: manager.debugProOverride.rawValue)
+                diagnosticRow(label: "Effective", value: manager.isPro ? "PRO" : "FREE")
+                diagnosticRow(label: "Historical Sync", value: revenueCatHistoricalSyncLabel(rc.historicalSyncState))
+                diagnosticRow(label: "Customer Info", value: revenueCatCustomerInfoLabel(rc.customerInfoLastUpdatedAt))
+                diagnosticRow(label: "App User ID", value: rc.maskedAppUserID ?? "—")
+
+                if let lastError = rc.lastErrorDescription {
+                    diagnosticRow(label: "Last Error", value: lastError)
+                }
+            }
+
+            // Re-fetches CustomerInfo only — never syncPurchases()/restorePurchases()/a
+            // purchase call. See RevenueCatShadowService.refreshCustomerInfoNow()'s own
+            // doc comment for why this specific action is safe to expose here.
+            Button {
+                Task { await RevenueCatShadowService.shared.refreshCustomerInfoNow() }
+                AppHaptics.selection()
+            } label: {
+                HStack {
+                    Text("Refresh RevenueCat Status")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .disabled(rc.isConfigured == false)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func diagnosticRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    /// Text-only signal, never color-only — MATCH/MISMATCH is legible without relying on any
+    /// color cue (matches this codebase's established accessibility convention elsewhere, e.g.
+    /// VehicleLimitUpsellView's FREE/PRO tiles).
+    private func revenueCatAgreementLabel(manager: SubscriptionManager, rc: RevenueCatShadowService) -> String {
+        guard rc.isConfigured else { return "N/A — not configured" }
+        return manager.isProStoreKit == rc.revenueCatIsPro ? "MATCH" : "MISMATCH"
+    }
+
+    private func revenueCatHistoricalSyncLabel(_ state: RevenueCatShadowService.HistoricalSyncState) -> String {
+        switch state {
+        case .notNeeded: return "Not needed (Free)"
+        case .notAttempted: return "Not attempted yet"
+        case .inProgress: return "In progress…"
+        case .succeeded: return "Succeeded"
+        case .retryPending(let nextEligibleAt):
+            return "Retry pending (\(nextEligibleAt.formatted(date: .abbreviated, time: .shortened)))"
+        case .failed(let reason): return "Failed: \(reason)"
+        }
+    }
+
+    private func revenueCatCustomerInfoLabel(_ lastUpdatedAt: Date?) -> String {
+        guard let lastUpdatedAt else { return "Never" }
+        return lastUpdatedAt.formatted(.relative(presentation: .named))
     }
     #endif
 }

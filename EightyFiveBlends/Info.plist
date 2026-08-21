@@ -9,6 +9,10 @@
 	</array>
 	<key>NLR_API_KEY</key>
 	<string>oZqG4yF2uqSegQ8BIJtrUFq6DbtPQjB1XG6OPrck</string>
+	<key>REVENUECAT_PUBLIC_SDK_KEY_INTERNAL</key>
+	<string></string>
+	<key>REVENUECAT_PUBLIC_SDK_KEY_PRODUCTION</key>
+	<string></string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InplZmtidHNjaWVva2tkZW52bmtnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2MjkzMDIsImV4cCI6MjA5MzIwNTMwMn0.LodTN0rF5HIkYr_TrxzsqaBrWrbF-0sFoIqD26Xgpwo</string>
 	<key>SUPABASE_URL</key>
