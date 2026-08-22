@@ -139,26 +139,19 @@ struct EightyFiveBlendsApp: App {
                     // not here — see that comment for why.
                 }
                 .task {
-                    await SubscriptionManager.shared.refreshEntitlements()
-
-                    // 85Blends 2.3.0 — RevenueCat Phase 1 (shadow only, see
-                    // RevenueCatShadowService.swift's header for the full safety contract).
-                    // Configuration + the one-time historical-subscriber sync attempt both
-                    // happen here, once per launch — never on every scenePhase return, unlike
-                    // refreshEntitlements() above, which intentionally keeps re-running there.
-                    // isProStoreKit (not isPro) is passed so a Developer Force Pro/Force Free
-                    // override can never trigger or suppress a real sync attempt.
-                    await RevenueCatShadowService.shared.configureIfNeeded()
-                    await RevenueCatShadowService.shared.attemptHistoricalSyncIfEligible(
-                        realStoreKitIsPro: SubscriptionManager.shared.isProStoreKit
-                    )
+                    // 85Blends 2.3.0 — RevenueCat authoritative cutover. RevenueCat is configured
+                    // exactly once here, at app startup; it owns the subscription lifecycle from
+                    // this point on (see RevenueCatSubscriptionService.swift's header). This also
+                    // kicks off the initial CustomerInfo fetch and offering/package load.
+                    await RevenueCatSubscriptionService.shared.configureIfNeeded()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,
-                    // expiration, Family Sharing, etc.). refreshEntitlements() guards against
-                    // overlapping runs, so this is safe alongside the launch .task above.
+                    // expiration, Family Sharing, refunds, etc.). refreshCustomerInfoNow() is a
+                    // no-op if RevenueCat isn't configured yet, so this is safe alongside the
+                    // launch .task above.
                     if newPhase == .active {
-                        Task { await SubscriptionManager.shared.refreshEntitlements() }
+                        Task { await RevenueCatSubscriptionService.shared.refreshCustomerInfoNow() }
                     }
                 }
                 .onChange(of: themePreference) { _, _ in

@@ -3,8 +3,8 @@
 //  EightyFiveBlends
 //
 
-import StoreKit
 import Observation
+import RevenueCat
 
 /// Single source of truth for 85Blends Pro entitlement state.
 ///
@@ -14,17 +14,24 @@ import Observation
 /// Every Pro gate in the app reads the `isProUser` / `canAccess…` properties below,
 /// all of which route through `isPro` — so there is exactly one place that decides
 /// whether a user has Pro.
+///
+/// As of the 85Blends 2.3.0 RevenueCat cutover, `isPro` is derived from
+/// `RevenueCatSubscriptionService.shared.revenueCatIsPro` — RevenueCat's own authoritative
+/// `CustomerInfo.entitlements["pro"]?.isActive` — not from any direct StoreKit entitlement check.
+/// Internal/Debug builds may still layer the Developer Pro Override on top; see `isPro` below.
 @Observable
 final class SubscriptionManager {
     static let shared = SubscriptionManager()
 
     // MARK: - Product identifier
-    /// The one and only 85Blends Pro offering.
+    /// The one and only 85Blends Pro offering. This is the Apple App Store product ID — RevenueCat
+    /// maps it to the `pro` entitlement via the `default` offering's `$rc_monthly` package. See
+    /// RevenueCatSubscriptionService.resolvePackage(...), which refuses to purchase anything that
+    /// doesn't resolve to this exact ID.
     static let monthlyID = "com.85blends.subscription.monthly"
-    static let allProductIDs: Set<String> = [monthlyID]
 
-    /// Marketing price shown before StoreKit products load (or in builds without a
-    /// StoreKit configuration). Once the product loads we always prefer its localized price.
+    /// Marketing price shown before the RevenueCat package loads (or if it never does). Once the
+    /// package loads we always prefer its localized price.
     static let fallbackDisplayPrice = "$3.99"
 
     // MARK: - Free-tier creation limit (blocking)
@@ -64,7 +71,7 @@ final class SubscriptionManager {
 
     /// Human-readable entitlement breakdown for internal diagnostics.
     var debugEntitlementStatus: String {
-        "StoreKit=\(isProStoreKit) | override=\(debugProOverride.rawValue) | effectivePro=\(isPro)"
+        "RevenueCat=\(RevenueCatSubscriptionService.shared.revenueCatIsPro) | override=\(debugProOverride.rawValue) | effectivePro=\(isPro)"
     }
 
     private func logEntitlementState(_ context: String) {
@@ -72,34 +79,38 @@ final class SubscriptionManager {
     }
     #endif
 
-    // MARK: - Observable state
-
-    /// Raw StoreKit-verified Pro status. Use `isPro` / `isProUser` / the `canAccess…` flags for UI logic.
-    private(set) var isProStoreKit: Bool = false
-    private(set) var availableProducts: [Product] = []
-    private(set) var isLoadingProducts: Bool = false
-    /// Set to `true` after the first `loadProducts()` call completes (success or failure).
-    /// The paywall uses this to distinguish "still loading" from "load failed" so it never
-    /// shows the error message before any fetch has actually been attempted.
-    private(set) var hasAttemptedProductLoad: Bool = false
-
     // MARK: - Entitlement (single source of truth)
 
     /// Whether the user currently has 85Blends Pro.
-    /// Defaults to `false` in production and only becomes `true` via a verified StoreKit
-    /// entitlement. The debug override is the only other path, and it is compiled out of
-    /// App Store release builds entirely.
+    ///
+    /// Production: derived exclusively from RevenueCat's authoritative CustomerInfo entitlement
+    /// (`RevenueCatSubscriptionService.shared.revenueCatIsPro`). Internal/Debug builds may
+    /// additionally force this via the Developer Pro Override, which is compiled out of App
+    /// Store release builds entirely — see `effectivePro(override:revenueCatIsPro:)` below for
+    /// the actual (unit-tested) precedence rule.
     var isPro: Bool {
         #if DEBUG || INTERNAL_BUILD
-        switch debugProOverride {
-        case .forcePro:  return true
-        case .forceFree: return false
-        case .off:       return isProStoreKit
-        }
+        Self.effectivePro(override: debugProOverride, revenueCatIsPro: RevenueCatSubscriptionService.shared.revenueCatIsPro)
         #else
-        return isProStoreKit
+        RevenueCatSubscriptionService.shared.revenueCatIsPro
         #endif
     }
+
+    #if DEBUG || INTERNAL_BUILD
+    /// Pure override-precedence rule: Force Pro always wins, Force Free always wins, Off follows
+    /// RevenueCat exactly. Extracted out of `isPro` so this precedence can be unit-tested with
+    /// plain values instead of mutating the live RevenueCatSubscriptionService singleton — see
+    /// SubscriptionManagerTests.swift. This entire function is compiled out of App Store Release
+    /// builds along with the rest of the Developer Override (`#if DEBUG || INTERNAL_BUILD`), so
+    /// it can never affect production semantics.
+    static func effectivePro(override: DebugProOverride, revenueCatIsPro: Bool) -> Bool {
+        switch override {
+        case .forcePro:  return true
+        case .forceFree: return false
+        case .off:       return revenueCatIsPro
+        }
+    }
+    #endif
 
     /// Public-facing alias used by feature code and views.
     var isProUser: Bool { isPro }
@@ -110,22 +121,42 @@ final class SubscriptionManager {
     var canAccessStationAlerts: Bool     { isPro }
     var canAccessUnlimitedVehicles: Bool { isPro }
 
-    /// The 85Blends Pro monthly product once loaded from StoreKit, if available.
-    var monthlyProduct: Product? {
-        availableProducts.first { $0.id == Self.monthlyID }
+    // MARK: - Package / price (sourced from RevenueCat — see RevenueCatSubscriptionService)
+
+    /// The RevenueCat-resolved, validated monthly package's underlying store product, once
+    /// loaded. `nil` while loading, on failure, or if RevenueCat's mapping didn't match
+    /// `Self.monthlyID` (see RevenueCatSubscriptionService.resolvePackage).
+    var monthlyStoreProduct: StoreProduct? {
+        RevenueCatSubscriptionService.shared.monthlyPackage?.storeProduct
     }
 
-    /// Localized price for display, falling back to the marketing price before products load.
+    /// Localized price for display, falling back to the marketing price before the package loads.
     var displayPrice: String {
-        monthlyProduct?.displayPrice ?? Self.fallbackDisplayPrice
+        monthlyStoreProduct?.localizedPriceString ?? Self.fallbackDisplayPrice
     }
 
-    /// Whether a real StoreKit product is loaded and can actually be purchased.
-    /// The paywall's primary CTA stays disabled while this is `false`, so there is no
-    /// dead button when products haven't loaded (no internet / StoreKit unavailable /
-    /// product not yet configured in App Store Connect).
+    /// Whether a real, validated RevenueCat package is loaded and can actually be purchased.
+    /// The paywall's primary CTA stays disabled while this is `false`, so there is no dead
+    /// button when nothing has loaded (no internet / RevenueCat unavailable / offering
+    /// misconfigured).
     var canPurchase: Bool {
-        monthlyProduct != nil
+        monthlyStoreProduct != nil
+    }
+
+    /// Mirrors RevenueCatSubscriptionService.packageAvailability's `.loading` state.
+    var isLoadingProducts: Bool {
+        RevenueCatSubscriptionService.shared.packageAvailability == .loading
+    }
+
+    /// `true` once the first `loadProducts()` has completed (success or failure) — i.e. package
+    /// availability is no longer `.notLoaded`/`.loading`. The paywall uses this to distinguish
+    /// "still loading" from "load failed" so it never shows the error message before any fetch
+    /// has actually been attempted.
+    var hasAttemptedProductLoad: Bool {
+        switch RevenueCatSubscriptionService.shared.packageAvailability {
+        case .notLoaded, .loading: return false
+        default: return true
+        }
     }
 
     enum PurchaseState: Equatable {
@@ -138,10 +169,6 @@ final class SubscriptionManager {
     }
     private(set) var purchaseState: PurchaseState = .idle
 
-    // MARK: - Private
-    private var transactionListenerTask: Task<Void, Error>?
-    private var isRefreshing = false
-
     private init() {
         #if DEBUG || INTERNAL_BUILD
         // Restore any persisted internal/dev override before entitlement refresh runs, so a
@@ -152,185 +179,96 @@ final class SubscriptionManager {
             debugProOverride = saved
         }
         #endif
-        transactionListenerTask = Task.detached(priority: .background) { [weak self] in
-            for await result in Transaction.updates {
-                await self?.handle(result)
-            }
-        }
-        Task { [weak self] in
-            await self?.refreshEntitlements()
-            await self?.loadProducts()
-        }
-    }
-
-    deinit {
-        transactionListenerTask?.cancel()
+        // RevenueCat configuration + the initial CustomerInfo/offerings load happen once from
+        // app startup (see EightyFiveBlendsApp.swift's launch `.task`), not here — see Phase 15
+        // of the RevenueCat cutover task for why an explicit app-lifecycle hook is preferred over
+        // a side effect in this singleton's lazy init.
     }
 
     // MARK: - Public API
 
-    @MainActor
-    func refreshEntitlements() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-        var hasPro = false
-        for await result in Transaction.currentEntitlements {
-            if case .verified(let tx) = result,
-               Self.allProductIDs.contains(tx.productID) {
-                hasPro = true
-            }
-        }
-        isProStoreKit = hasPro
-        // Always-on (not #if DEBUG-gated) — this is a critical commerce path and silent
-        // failures are what caused the App Review rejection on iPad. No receipt/transaction
-        // payload is logged.
-        print("[85Blends][StoreKit] Entitlement refreshed: isPro=\(hasPro)")
-    }
-
+    /// Loads (or re-fetches, for freshness) the RevenueCat offering/package used by the paywall.
     @MainActor
     func loadProducts() async {
-        guard !isLoadingProducts else { return }
-        isLoadingProducts = true
-        defer {
-            isLoadingProducts = false
-            hasAttemptedProductLoad = true
-        }
-        print("[85Blends][StoreKit] Loading products… requested IDs: \(Self.allProductIDs)")
-        do {
-            let products = try await Product.products(for: Self.allProductIDs)
-            availableProducts = products
-            print("[85Blends][StoreKit] Products returned: \(products.count)")
-            if products.isEmpty {
-                // Empty result with no error means the product IDs returned nothing from
-                // App Store Connect. Most common causes: the product ID in code doesn't
-                // exactly match what's configured in App Store Connect, or the product
-                // is not yet in "Ready to Submit" / approved status.
-                print("[85Blends][StoreKit] loadProducts: 0 products returned for IDs: \(Self.allProductIDs). Verify the product IDs exactly match App Store Connect and the product status is Ready to Submit or approved.")
-            } else {
-                for product in products {
-                    print("[85Blends][StoreKit] Loaded product: \(product.id) — \(product.displayName) — \(product.displayPrice)")
-                }
-            }
-        } catch {
-            availableProducts = []
-            // Log the real error in all builds — this is a critical commerce path and
-            // silent failures are what caused the App Review rejection on iPad.
-            print("[85Blends][StoreKit] loadProducts failed: \(error.localizedDescription) (code: \(error)). Possible causes: network issue, StoreKit sandbox misconfiguration, missing In-App Purchase entitlement, or product not yet approved in App Store Connect.")
-        }
+        await RevenueCatSubscriptionService.shared.loadOfferings()
     }
 
     /// Convenience entry point for the paywall's primary CTA.
-    /// Purchases the live `com.85blends.subscription.monthly` product via StoreKit.
+    /// Purchases the live `com.85blends.subscription.monthly` product via RevenueCat.
     @MainActor
     func purchasePro() async {
-        guard let product = monthlyProduct else {
+        guard let package = RevenueCatSubscriptionService.shared.monthlyPackage else {
             // The paywall's unlockButton is already disabled whenever canPurchase is false, so
             // this guard should be unreachable from a real tap — but log it in case it's ever
             // hit anyway (e.g. a future call site that doesn't check canPurchase first), so a
             // "tap did nothing" report is never a total dead end in the console.
-            print("[85Blends][StoreKit] Purchase requested but no product is loaded — ignoring tap (canPurchase=false).")
+            print("[85Blends][RevenueCat] Purchase requested but no package is loaded — ignoring tap (canPurchase=false).")
             return
         }
-        await purchase(product)
+        await purchase(package)
     }
 
     @MainActor
-    func purchase(_ product: Product) async {
+    func purchase(_ package: Package) async {
         // Ignore repeat taps while a purchase or restore is already in flight.
         guard purchaseState != .purchasing, purchaseState != .restoring else { return }
         purchaseState = .purchasing
-        print("[85Blends][StoreKit] Purchase requested: \(product.id)")
-        do {
-            switch try await product.purchase() {
-            case .success(let verification):
-                print("[85Blends][StoreKit] Purchase result: success")
-                if await handle(verification) {
-                    purchaseState = .succeeded
-                } else {
-                    // The purchase completed but the transaction failed verification — this
-                    // must never be reported as success (handle() already refused to grant
-                    // entitlement in this case).
-                    purchaseState = .failed("We couldn't verify your purchase. Please try again or contact support.")
-                }
-            case .userCancelled:
-                print("[85Blends][StoreKit] Purchase result: userCancelled")
-                purchaseState = .idle
-            case .pending:
-                print("[85Blends][StoreKit] Purchase result: pending")
-                purchaseState = .idle
-            @unknown default:
-                print("[85Blends][StoreKit] Purchase result: unrecognized result case")
-                purchaseState = .idle
-            }
-        } catch {
-            // Log the real error in all builds — this is a critical commerce path and silent
-            // failures are what caused the App Review rejection on iPad.
-            let description = errorDiagnosticDescription(error)
-            print("[85Blends][StoreKit] Purchase error: \(description)")
-            purchaseState = .failed(error.localizedDescription)
-        }
+        print("[85Blends][RevenueCat] Purchase requested: \(package.storeProduct.productIdentifier)")
+
+        let outcome = await RevenueCatSubscriptionService.shared.purchase(package)
+        print("[85Blends][RevenueCat] Purchase outcome: \(outcome)")
+        purchaseState = Self.purchaseState(for: outcome)
     }
 
     @MainActor
     func restorePurchases() async {
         // Guard against rapid repeat taps kicking off overlapping restores.
         guard purchaseState != .restoring, purchaseState != .purchasing else { return }
-        let wasProBefore = isProStoreKit
+        // The raw RevenueCat entitlement, not `isPro` — a Developer Force Pro/Force Free override
+        // must never distort restore messaging (e.g. reporting "restored" when Force Pro was
+        // already masking a Free RevenueCat account).
+        let wasProBefore = RevenueCatSubscriptionService.shared.revenueCatIsPro
         purchaseState = .restoring
-        print("[85Blends][StoreKit] Restore requested")
-        do {
-            try await AppStore.sync()
-            await refreshEntitlements()
-            // AppStore.sync() succeeding doesn't mean the user owns Pro — distinguish a fresh
-            // restore from "already active" and from "nothing to restore" so the UI is honest.
-            if isProStoreKit {
-                purchaseState = wasProBefore ? .info("85Blends Pro is active.") : .restored
-                print("[85Blends][StoreKit] Restore result: \(wasProBefore ? "already active" : "restored")")
+        print("[85Blends][RevenueCat] Restore requested")
+
+        let result = await RevenueCatSubscriptionService.shared.restore()
+        print("[85Blends][RevenueCat] Restore result: \(result)")
+        purchaseState = Self.purchaseState(forRestoreResult: result, wasProBefore: wasProBefore)
+    }
+
+    // MARK: - Pure state-transition logic (unit-testable — see SubscriptionManagerTests.swift)
+
+    /// Maps a RevenueCat purchase outcome to the user-visible `PurchaseState`. Extracted out of
+    /// `purchase(_:)` so Phase 25's purchase-outcome test cases can run without driving a real
+    /// RevenueCat purchase call. `.notEntitled` (purchase didn't throw, but CustomerInfo shows no
+    /// active `pro`) is deliberately mapped to `.failed`, never `.succeeded` — a non-throwing
+    /// result must never be conflated with granting Pro.
+    static func purchaseState(for outcome: RevenueCatSubscriptionService.PurchaseOutcome) -> PurchaseState {
+        switch outcome {
+        case .proActivated:
+            return .succeeded
+        case .notEntitled:
+            return .failed("We couldn't verify your purchase. Please try again or contact support.")
+        case .cancelled:
+            return .idle
+        case .failed(let message):
+            return .failed(message)
+        }
+    }
+
+    /// Maps a RevenueCat restore result to the user-visible `PurchaseState`, distinguishing a
+    /// fresh restore from "already active" and from "nothing to restore" so the UI is honest —
+    /// see Phase 25's restore test cases.
+    static func purchaseState(forRestoreResult result: Result<Bool, String>, wasProBefore: Bool) -> PurchaseState {
+        switch result {
+        case .success(let isProNow):
+            if isProNow {
+                return wasProBefore ? .info("85Blends Pro is active.") : .restored
             } else {
-                purchaseState = .info("No active subscription found.")
-                print("[85Blends][StoreKit] Restore result: no active subscription found")
+                return .info("No active subscription found.")
             }
-        } catch {
-            print("[85Blends][StoreKit] Restore failed: \(error.localizedDescription)")
-            purchaseState = .failed("We couldn't restore your purchases. Please try again.")
+        case .failure:
+            return .failed("We couldn't restore your purchases. Please try again.")
         }
-    }
-
-    // MARK: - Private helpers
-
-    /// Compile-safe error categorization for diagnostics only — never throws, never guesses at
-    /// enum cases that may not exist in this SDK. Tries StoreKit's two documented `purchase()`
-    /// error types (`StoreKitError`, `Product.PurchaseError`) for a readable case name via
-    /// `String(describing:)` (which works regardless of the exact case set, so this can't fail
-    /// to compile or crash if a future/unlisted case is returned); falls back to the error's own
-    /// type name + description for anything else. Deliberately contains no receipt, transaction,
-    /// JWS, or Apple ID data — only case names, descriptions, and localized messages.
-    private func errorDiagnosticDescription(_ error: Error) -> String {
-        if let storeKitError = error as? StoreKitError {
-            return "StoreKitError.\(String(describing: storeKitError))"
-        }
-        if let purchaseError = error as? Product.PurchaseError {
-            return "PurchaseError.\(String(describing: purchaseError))"
-        }
-        return "\(type(of: error)): \(error.localizedDescription)"
-    }
-
-    /// Returns whether the transaction was verified (and, if so, finished + entitlements
-    /// refreshed). An unverified transaction must never grant entitlement or be reported as a
-    /// successful purchase — callers (see `purchase(_:)`) use the return value to enforce that;
-    /// the background `Transaction.updates` listener in `init` ignores it (`@discardableResult`)
-    /// since it has no UI state to update.
-    @MainActor
-    @discardableResult
-    private func handle(_ result: VerificationResult<Transaction>) async -> Bool {
-        guard case .verified(let tx) = result else {
-            print("[85Blends][StoreKit] Transaction verification failed — ignoring unverified transaction.")
-            return false
-        }
-        print("[85Blends][StoreKit] Transaction verified: \(tx.productID)")
-        await tx.finish()
-        await refreshEntitlements()
-        return true
     }
 }

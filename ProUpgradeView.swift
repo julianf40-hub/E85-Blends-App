@@ -8,7 +8,7 @@
 //
 
 import SwiftUI
-import StoreKit
+import RevenueCat
 
 enum ProPresentationMode {
     case pushed
@@ -87,10 +87,11 @@ struct ProUpgradeView: View {
             }
         }
         .task {
-            // Wait for any in-progress startup product fetch to settle before we try.
-            // Without this yield + loop, our call hits the isLoadingProducts guard and
-            // silently no-ops when SubscriptionManager.init()'s Task is still in flight —
-            // leaving the paywall permanently on the error state if that startup load fails.
+            // Wait for any in-progress startup offering fetch to settle before we try.
+            // Without this yield + loop, our call hits the loadOfferings() in-flight guard and
+            // silently no-ops while EightyFiveBlendsApp's launch `.task` (RevenueCatSubscription
+            // Service.configureIfNeeded()) is still loading — leaving the paywall permanently on
+            // the error state if that startup load fails.
             await Task.yield()
             while manager.isLoadingProducts {
                 try? await Task.sleep(for: .milliseconds(100))
@@ -324,7 +325,7 @@ struct ProUpgradeView: View {
             if manager.isProUser {
                 activeProRow
             } else {
-                // The CTA is disabled until a real StoreKit product is loaded, so it never
+                // The CTA is disabled until a real RevenueCat package is loaded, so it never
                 // looks tappable when there's nothing to buy (offline / product missing).
                 unlockButton(disabled: isWorking || !manager.canPurchase)
 
@@ -385,10 +386,10 @@ struct ProUpgradeView: View {
                 Text("Unlock 85Blends Pro")
                     .font(.headline)
                     .foregroundStyle(.black)
-                // Show subscription title, duration, and price once the product is loaded
+                // Show subscription title, duration, and price once the package is loaded
                 // so the user knows exactly what they're buying before tapping.
-                if let product = manager.monthlyProduct {
-                    Text("\(product.displayName) · \(subscriptionPeriodLabel(for: product)) · \(product.displayPrice)")
+                if let product = manager.monthlyStoreProduct {
+                    Text("\(product.localizedTitle) · \(subscriptionPeriodLabel(for: product)) · \(product.localizedPriceString)")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.black.opacity(0.7))
                 }
@@ -403,8 +404,8 @@ struct ProUpgradeView: View {
         .disabled(disabled)
     }
 
-    private func subscriptionPeriodLabel(for product: Product) -> String {
-        guard let period = product.subscription?.subscriptionPeriod else { return "Monthly" }
+    private func subscriptionPeriodLabel(for product: StoreProduct) -> String {
+        guard let period = product.subscriptionPeriod else { return "Monthly" }
         switch period.unit {
         case .month: return period.value == 1 ? "Monthly" : "\(period.value)-Month"
         case .year:  return period.value == 1 ? "Yearly"  : "\(period.value)-Year"

@@ -41,7 +41,7 @@ struct PreferencesView: View {
                 proStatusCard
 
                 #if DEBUG || INTERNAL_BUILD
-                revenueCatDiagnosticsCard
+                subscriptionDiagnosticsCard
                 #endif
             }
             .padding(16)
@@ -184,7 +184,7 @@ struct PreferencesView: View {
                 return ("Loading…", "arrow.triangle.2.circlepath", AppTheme.Colors.textMuted)
             } else if manager.isPro {
                 return ("Pro", "crown.fill", AppTheme.Colors.stationYellow)
-            } else if !manager.isProStoreKit && manager.availableProducts.isEmpty && !manager.isLoadingProducts {
+            } else if !manager.canPurchase {
                 return ("Free · plans unavailable", "person.circle", AppTheme.Colors.textMuted)
             } else {
                 return ("Free", "person.circle", AppTheme.Colors.textSecondary)
@@ -252,46 +252,44 @@ struct PreferencesView: View {
     }
     #endif
 
-    // MARK: - RevenueCat migration diagnostics (85Blends 2.3.0 Phase 1 — shadow only)
+    // MARK: - RevenueCat subscription diagnostics (85Blends 2.3.0 — RevenueCat is authoritative)
     //
-    // Internal/Debug only, exactly like debugOverrideRow above. Compares the REAL verified
-    // StoreKit entitlement (SubscriptionManager.isProStoreKit) against RevenueCat's shadow
-    // state — deliberately NOT effective isPro, so a Force Pro/Force Free override never
-    // masks a genuine StoreKit/RevenueCat disagreement here. Purely informational: nothing on
-    // this card can change Pro access. See RevenueCatShadowService.swift's header for the full
-    // safety contract this screen exists to make visible during migration testing.
+    // Internal/Debug only, exactly like debugOverrideRow above. RevenueCat is the real
+    // subscription entitlement source for this build — this card surfaces exactly what it
+    // reports so a developer can see it without changing Pro access; nothing on this card
+    // grants or revokes Pro itself (Refresh below only re-fetches CustomerInfo).
     #if DEBUG || INTERNAL_BUILD
-    private var revenueCatDiagnosticsCard: some View {
+    private var subscriptionDiagnosticsCard: some View {
         let manager = SubscriptionManager.shared
-        let rc = RevenueCatShadowService.shared
+        let rc = RevenueCatSubscriptionService.shared
 
         return VStack(alignment: .leading, spacing: 14) {
             SectionHeader(
-                title: "RevenueCat Migration",
-                subtitle: "Shadow-only diagnostics. RevenueCat has no effect on Pro access yet."
+                title: "RevenueCat Subscription",
+                subtitle: "RevenueCat is the authoritative subscription entitlement source for this build."
             )
 
             VStack(alignment: .leading, spacing: 10) {
                 diagnosticRow(label: "SDK", value: rc.isConfigured ? "Configured" : "Not configured")
-                diagnosticRow(label: "StoreKit", value: manager.isProStoreKit ? "PRO" : "FREE")
-                diagnosticRow(label: "RevenueCat", value: rc.revenueCatIsPro ? "PRO" : "FREE")
-                diagnosticRow(label: "Agreement", value: revenueCatAgreementLabel(manager: manager, rc: rc))
-                diagnosticRow(label: "Override", value: manager.debugProOverride.rawValue)
+                diagnosticRow(label: "Entitlement", value: rc.revenueCatIsPro ? "PRO" : "FREE")
                 diagnosticRow(label: "Effective", value: manager.isPro ? "PRO" : "FREE")
-                diagnosticRow(label: "Historical Sync", value: revenueCatHistoricalSyncLabel(rc.historicalSyncState))
+                diagnosticRow(label: "Override", value: manager.debugProOverride.rawValue)
                 diagnosticRow(label: "Customer Info", value: revenueCatCustomerInfoLabel(rc.customerInfoLastUpdatedAt))
                 diagnosticRow(label: "App User ID", value: rc.maskedAppUserID ?? "—")
+                diagnosticRow(label: "Offering", value: revenueCatOfferingLabel(rc.packageAvailability))
+                diagnosticRow(label: "Monthly Package", value: revenueCatMonthlyPackageLabel(rc.packageAvailability))
+                diagnosticRow(label: "Product", value: SubscriptionManager.monthlyID)
+                diagnosticRow(label: "Environment", value: revenueCatEnvironmentLabel(rc.isSandboxEnvironment))
 
                 if let lastError = rc.lastErrorDescription {
                     diagnosticRow(label: "Last Error", value: lastError)
                 }
             }
 
-            // Re-fetches CustomerInfo only — never syncPurchases()/restorePurchases()/a
-            // purchase call. See RevenueCatShadowService.refreshCustomerInfoNow()'s own
-            // doc comment for why this specific action is safe to expose here.
+            // Re-fetches CustomerInfo only — never a purchase or restore call. See
+            // RevenueCatSubscriptionService.refreshCustomerInfoNow()'s own doc comment.
             Button {
-                Task { await RevenueCatShadowService.shared.refreshCustomerInfoNow() }
+                Task { await RevenueCatSubscriptionService.shared.refreshCustomerInfoNow() }
                 AppHaptics.selection()
             } label: {
                 HStack {
@@ -335,29 +333,37 @@ struct PreferencesView: View {
         }
     }
 
-    /// Text-only signal, never color-only — MATCH/MISMATCH is legible without relying on any
-    /// color cue (matches this codebase's established accessibility convention elsewhere, e.g.
-    /// VehicleLimitUpsellView's FREE/PRO tiles).
-    private func revenueCatAgreementLabel(manager: SubscriptionManager, rc: RevenueCatShadowService) -> String {
-        guard rc.isConfigured else { return "N/A — not configured" }
-        return manager.isProStoreKit == rc.revenueCatIsPro ? "MATCH" : "MISMATCH"
-    }
-
-    private func revenueCatHistoricalSyncLabel(_ state: RevenueCatShadowService.HistoricalSyncState) -> String {
-        switch state {
-        case .notNeeded: return "Not needed (Free)"
-        case .notAttempted: return "Not attempted yet"
-        case .inProgress: return "In progress…"
-        case .succeeded: return "Succeeded"
-        case .retryPending(let nextEligibleAt):
-            return "Retry pending (\(nextEligibleAt.formatted(date: .abbreviated, time: .shortened)))"
-        case .failed(let reason): return "Failed: \(reason)"
-        }
-    }
-
     private func revenueCatCustomerInfoLabel(_ lastUpdatedAt: Date?) -> String {
         guard let lastUpdatedAt else { return "Never" }
         return lastUpdatedAt.formatted(.relative(presentation: .named))
+    }
+
+    private func revenueCatOfferingLabel(_ availability: RevenueCatSubscriptionService.PackageAvailability) -> String {
+        switch availability {
+        case .notLoaded: return "Not loaded"
+        case .loading: return "Loading…"
+        case .offeringUnavailable: return "Unavailable"
+        case .ready, .packageUnavailable, .unexpectedProduct: return "Available"
+        }
+    }
+
+    private func revenueCatMonthlyPackageLabel(_ availability: RevenueCatSubscriptionService.PackageAvailability) -> String {
+        switch availability {
+        case .notLoaded: return "Not loaded"
+        case .loading: return "Loading…"
+        case .offeringUnavailable: return "N/A — offering unavailable"
+        case .packageUnavailable: return "Unavailable"
+        case .ready: return "Available"
+        case .unexpectedProduct(let productID): return "Unexpected product: \(productID)"
+        }
+    }
+
+    private func revenueCatEnvironmentLabel(_ isSandbox: Bool?) -> String {
+        switch isSandbox {
+        case .some(true): return "Sandbox"
+        case .some(false): return "Production"
+        case .none: return "Unknown"
+        }
     }
     #endif
 }
