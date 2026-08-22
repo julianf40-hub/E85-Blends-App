@@ -100,23 +100,25 @@ struct SubscriptionManagerTests {
     }
 
     // MARK: C. Purchase outcome → UI state (items 10-13)
-    // SubscriptionManager.purchaseState(for:) — the exact rule `purchase(_:)` calls.
+    // SubscriptionManager.state(forPurchaseOutcome:) — the exact rule `purchase(_:)` calls. Named
+    // `state(for...:)`, not `purchaseState(for...:)`, to avoid colliding with the `purchaseState`
+    // instance property on the same type (see SubscriptionManager.swift's MARK comment there).
 
     @Test("Purchase succeeds with active pro entitlement → effective Pro immediately (succeeded)")
     func purchase_proActivated_succeeds() {
-        #expect(SubscriptionManager.purchaseState(for: .proActivated) == .succeeded)
+        #expect(SubscriptionManager.state(forPurchaseOutcome: .proActivated) == .succeeded)
     }
 
     @Test("Purchase call doesn't throw but CustomerInfo shows no active pro → never falsely unlocks")
     func purchase_notEntitled_neverUnlocks() {
-        let state = SubscriptionManager.purchaseState(for: .notEntitled)
+        let state = SubscriptionManager.state(forPurchaseOutcome: .notEntitled)
         #expect(state != .succeeded)
         #expect(state == .failed("We couldn't verify your purchase. Please try again or contact support."))
     }
 
     @Test("Purchase cancellation → does not unlock, and is handled non-destructively (idle, not an error)")
     func purchase_cancelled_isNonDestructive() {
-        let state = SubscriptionManager.purchaseState(for: .cancelled)
+        let state = SubscriptionManager.state(forPurchaseOutcome: .cancelled)
         #expect(state != .succeeded)
         #expect(state == .idle)
         if case .failed = state { Issue.record("Cancellation must never surface as an error state") }
@@ -124,7 +126,7 @@ struct SubscriptionManagerTests {
 
     @Test("Purchase error → does not falsely unlock")
     func purchase_error_neverUnlocks() {
-        let state = SubscriptionManager.purchaseState(for: .failed("network error"))
+        let state = SubscriptionManager.state(forPurchaseOutcome: .failed("network error"))
         #expect(state != .succeeded)
         #expect(state == .failed("network error"))
         // Note (item 13, code-inspection fact — see this file's header): the only way
@@ -133,28 +135,38 @@ struct SubscriptionManagerTests {
         // thrown purchase error, independent of this state-mapping test.
     }
 
-    // MARK: D. Restore outcome → UI state (items 14-15)
-    // SubscriptionManager.purchaseState(forRestoreResult:wasProBefore:) — the exact rule
-    // `restorePurchases()` calls.
+    // MARK: D. Restore outcome → UI state (items 14-15, plus a restore-failure case)
+    // SubscriptionManager.state(forRestoreOutcome:wasProBefore:) — the exact rule
+    // `restorePurchases()` calls. Takes RevenueCatSubscriptionService.RestoreOutcome, a typed
+    // enum — not `Result<Bool, String>`, which doesn't compile (`Swift.Result` requires
+    // `Failure: Error`, and a bare `String` doesn't conform).
 
     @Test("Restore returns active pro, was Free before → restored")
     func restore_activePro_freshRestore() {
-        #expect(SubscriptionManager.purchaseState(forRestoreResult: .success(true), wasProBefore: false) == .restored)
+        #expect(SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: false) == .restored)
     }
 
     @Test("Restore returns active pro, was already Pro → informational, not a duplicate purchase")
     func restore_activePro_alreadyActive() {
         #expect(
-            SubscriptionManager.purchaseState(forRestoreResult: .success(true), wasProBefore: true)
+            SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: true)
                 == .info("85Blends Pro is active.")
         )
     }
 
     @Test("Restore returns no active pro → remains Free, honest \"nothing to restore\" message")
     func restore_noActivePro_remainsFree() {
-        let state = SubscriptionManager.purchaseState(forRestoreResult: .success(false), wasProBefore: false)
+        let state = SubscriptionManager.state(forRestoreOutcome: .noActivePro, wasProBefore: false)
         #expect(state != .restored)
         #expect(state == .info("No active subscription found."))
+    }
+
+    @Test("Restore fails (e.g. network error) → friendly failure message, never falsely unlocks")
+    func restore_failure_neverUnlocks() {
+        let state = SubscriptionManager.state(forRestoreOutcome: .failed("network error"), wasProBefore: false)
+        #expect(state != .restored)
+        #expect(state != .succeeded)
+        #expect(state == .failed("We couldn't restore your purchases. Please try again."))
     }
 
     // MARK: E. Offering / package resolution (items 16-18)

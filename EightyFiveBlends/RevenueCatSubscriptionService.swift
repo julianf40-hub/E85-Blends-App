@@ -77,7 +77,7 @@ struct LiveRevenueCatClient: RevenueCatClient {
 @MainActor
 @Observable
 final class RevenueCatSubscriptionService {
-    static let shared = RevenueCatSubscriptionService()
+    static let shared = RevenueCatSubscriptionService(client: LiveRevenueCatClient())
 
     /// The RevenueCat entitlement identifier this app's Pro gate reads. A short, duration-free
     /// name (not e.g. "pro_monthly") so a future 3-month/annual product could attach to the same
@@ -141,6 +141,15 @@ final class RevenueCatSubscriptionService {
         case failed(String)
     }
 
+    /// A typed alternative to `Result<Bool, String>` (which does not compile — `Swift.Result`
+    /// requires `Failure: Error`, and a bare `String` doesn't conform). `pro` is derived strictly
+    /// from the returned CustomerInfo, exactly like `PurchaseOutcome` above.
+    enum RestoreOutcome: Equatable {
+        case proActive
+        case noActivePro
+        case failed(String)
+    }
+
     // MARK: - Observable state (now authoritative — see this type's header)
 
     private(set) var configurationState: ConfigurationState = .notConfigured
@@ -171,9 +180,14 @@ final class RevenueCatSubscriptionService {
     private let client: RevenueCatClient
     private var customerInfoObservationTask: Task<Void, Never>?
 
-    /// `client` is injectable for testing (see this type's header); production code always uses
-    /// the default `LiveRevenueCatClient()` via `.shared`.
-    init(client: RevenueCatClient = LiveRevenueCatClient()) {
+    /// `client` is injectable for testing (see this type's header). Deliberately NOT a default
+    /// parameter value — `LiveRevenueCatClient()` is instead constructed explicitly at `.shared`'s
+    /// declaration below. A default argument expression is not guaranteed to inherit this
+    /// initializer's `@MainActor` isolation, which is what produced Xcode's "Call to main
+    /// actor-isolated initializer in a synchronous nonisolated context" warning on the previous
+    /// `init(client: RevenueCatClient = LiveRevenueCatClient())` form. Requiring an explicit
+    /// argument at every call site (both `.shared` and tests) avoids that ambiguity entirely.
+    init(client: RevenueCatClient) {
         self.client = client
     }
 
@@ -216,17 +230,15 @@ final class RevenueCatSubscriptionService {
 
     /// Reactive entitlement updates (Phase 16): renewals, expirations, refunds/revocations, and
     /// restores observed elsewhere all flow through this stream without requiring a relaunch.
+    /// `Purchases.shared.customerInfoStream` is non-throwing (`AsyncStream<CustomerInfo>` in
+    /// RevenueCat 5.85.0) — no do/catch here, since one around a non-throwing sequence is dead
+    /// code (Xcode flagged the previous `for try await` form as an unreachable catch block).
     private func startObservingCustomerInfo() {
         customerInfoObservationTask?.cancel()
         customerInfoObservationTask = Task { [weak self] in
-            do {
-                for try await customerInfo in Purchases.shared.customerInfoStream {
-                    guard let self, Task.isCancelled == false else { return }
-                    self.apply(customerInfo)
-                }
-            } catch {
+            for await customerInfo in Purchases.shared.customerInfoStream {
                 guard let self, Task.isCancelled == false else { return }
-                self.lastErrorDescription = "CustomerInfo observation stopped: \(error.localizedDescription)"
+                self.apply(customerInfo)
             }
         }
     }
@@ -321,14 +333,14 @@ final class RevenueCatSubscriptionService {
 
     /// Restores purchases via RevenueCat. Returns whether `pro` is active in the returned
     /// CustomerInfo — never assumed true just because the call didn't throw.
-    func restore() async -> Result<Bool, String> {
+    func restore() async -> RestoreOutcome {
         do {
             let customerInfo = try await client.restorePurchases()
             apply(customerInfo)
-            return .success(revenueCatIsPro)
+            return revenueCatIsPro ? .proActive : .noActivePro
         } catch {
             lastErrorDescription = error.localizedDescription
-            return .failure(error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
     }
 

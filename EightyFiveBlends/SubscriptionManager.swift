@@ -3,6 +3,7 @@
 //  EightyFiveBlends
 //
 
+import Foundation
 import Observation
 import RevenueCat
 
@@ -217,7 +218,7 @@ final class SubscriptionManager {
 
         let outcome = await RevenueCatSubscriptionService.shared.purchase(package)
         print("[85Blends][RevenueCat] Purchase outcome: \(outcome)")
-        purchaseState = Self.purchaseState(for: outcome)
+        purchaseState = Self.state(forPurchaseOutcome: outcome)
     }
 
     @MainActor
@@ -231,19 +232,24 @@ final class SubscriptionManager {
         purchaseState = .restoring
         print("[85Blends][RevenueCat] Restore requested")
 
-        let result = await RevenueCatSubscriptionService.shared.restore()
-        print("[85Blends][RevenueCat] Restore result: \(result)")
-        purchaseState = Self.purchaseState(forRestoreResult: result, wasProBefore: wasProBefore)
+        let outcome = await RevenueCatSubscriptionService.shared.restore()
+        print("[85Blends][RevenueCat] Restore outcome: \(outcome)")
+        purchaseState = Self.state(forRestoreOutcome: outcome, wasProBefore: wasProBefore)
     }
 
     // MARK: - Pure state-transition logic (unit-testable — see SubscriptionManagerTests.swift)
+    //
+    // Named `state(for...:)`, not `purchaseState(for...:)` — these are `static func`s on the same
+    // type as the `purchaseState` instance property above, and a same-named static function
+    // caused Xcode to resolve `Self.purchaseState(...)` against the instance property instead of
+    // the function ("Cannot call value of non-function type 'SubscriptionManager.PurchaseState'").
 
     /// Maps a RevenueCat purchase outcome to the user-visible `PurchaseState`. Extracted out of
     /// `purchase(_:)` so Phase 25's purchase-outcome test cases can run without driving a real
     /// RevenueCat purchase call. `.notEntitled` (purchase didn't throw, but CustomerInfo shows no
     /// active `pro`) is deliberately mapped to `.failed`, never `.succeeded` — a non-throwing
     /// result must never be conflated with granting Pro.
-    static func purchaseState(for outcome: RevenueCatSubscriptionService.PurchaseOutcome) -> PurchaseState {
+    static func state(forPurchaseOutcome outcome: RevenueCatSubscriptionService.PurchaseOutcome) -> PurchaseState {
         switch outcome {
         case .proActivated:
             return .succeeded
@@ -256,18 +262,16 @@ final class SubscriptionManager {
         }
     }
 
-    /// Maps a RevenueCat restore result to the user-visible `PurchaseState`, distinguishing a
+    /// Maps a RevenueCat restore outcome to the user-visible `PurchaseState`, distinguishing a
     /// fresh restore from "already active" and from "nothing to restore" so the UI is honest —
     /// see Phase 25's restore test cases.
-    static func purchaseState(forRestoreResult result: Result<Bool, String>, wasProBefore: Bool) -> PurchaseState {
-        switch result {
-        case .success(let isProNow):
-            if isProNow {
-                return wasProBefore ? .info("85Blends Pro is active.") : .restored
-            } else {
-                return .info("No active subscription found.")
-            }
-        case .failure:
+    static func state(forRestoreOutcome outcome: RevenueCatSubscriptionService.RestoreOutcome, wasProBefore: Bool) -> PurchaseState {
+        switch outcome {
+        case .proActive:
+            return wasProBefore ? .info("85Blends Pro is active.") : .restored
+        case .noActivePro:
+            return .info("No active subscription found.")
+        case .failed:
             return .failed("We couldn't restore your purchases. Please try again.")
         }
     }
