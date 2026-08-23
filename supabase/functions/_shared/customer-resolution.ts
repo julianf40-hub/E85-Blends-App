@@ -77,3 +77,40 @@ export function planAliasUpserts(
   }
   return { kind: "plan", toInsert };
 }
+
+export type AliasVerificationResult =
+  | { kind: "ok" }
+  /** At least one alias in the set does not map to the expected customer after the insert —
+   *  either a concurrent transaction claimed it for a different customer between our initial read
+   *  and our insert (Phase B1 review "Concurrency Hardening 2"), or it's unexpectedly still
+   *  missing entirely. Either way, never proceed — the caller must roll back. */
+  | { kind: "conflict"; problemAppUserIds: string[] };
+
+/**
+ * Re-verifies, AFTER the planned `ON CONFLICT DO NOTHING` alias inserts have run inside the same
+ * transaction, that every ID in `aliasSet` now actually maps to `customerId`. `rowsAfterInsert`
+ * must be a FRESH re-read of private.revenuecat_aliases for exactly these IDs/this environment,
+ * taken inside that same transaction after the inserts (see database.ts's applyIdentityRefresh) —
+ * under Postgres's normal READ COMMITTED behavior, a concurrent transaction that already committed
+ * a conflicting mapping for one of these IDs will be visible to this fresh read, even though it
+ * wasn't visible to the read that fed `resolveCanonicalCustomer`/`planAliasUpserts` earlier in
+ * this same transaction. This is the second, independent check that closes the race those two
+ * functions alone cannot: they only ever see a snapshot from BEFORE this transaction's own insert.
+ */
+export function verifyAliasesAfterInsert(
+  aliasSet: string[],
+  customerId: string,
+  rowsAfterInsert: MatchedAliasRow[],
+): AliasVerificationResult {
+  const customerIdByAppUserId = new Map(rowsAfterInsert.map((row) => [row.appUserId, row.customerId]));
+
+  const problems: string[] = [];
+  for (const appUserId of aliasSet) {
+    const mappedCustomerId = customerIdByAppUserId.get(appUserId);
+    if (mappedCustomerId === undefined || mappedCustomerId !== customerId) {
+      problems.push(appUserId);
+    }
+  }
+
+  return problems.length > 0 ? { kind: "conflict", problemAppUserIds: problems } : { kind: "ok" };
+}

@@ -33,11 +33,12 @@ function givesAccess(subscription: RevenueCatSubscription): boolean {
 }
 
 /**
- * Parses a RevenueCat API timestamp field defensively: RevenueCat's v2 API documentation was not
- * re-verified live in this environment (see supabase/README.md's Phase B1 limitations note), so
- * this accepts either an ISO 8601 string or an epoch-milliseconds number rather than assuming one
- * shape. Returns `null` for anything else, including `undefined`/`null`/malformed strings — never
- * throws, and never silently produces an invalid Date.
+ * Parses a RevenueCat API timestamp field. RevenueCat's v2 API documents these fields as integer
+ * epoch milliseconds — that is the primary, expected shape. An ISO 8601 string is also accepted
+ * as a harmless defensive fallback (not because the millisecond shape is in doubt, but because
+ * accepting a well-formed alternative costs nothing and only ever helps). Returns `null` for
+ * anything else, including `undefined`/`null`/malformed strings — never throws, and never
+ * silently produces an invalid Date.
  */
 export function parseRevenueCatTimestamp(value: unknown): Date | null {
   if (typeof value === "number" && Number.isFinite(value)) {

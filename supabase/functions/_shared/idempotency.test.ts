@@ -26,10 +26,21 @@ test("decideIdempotency: existing row, same hash, status error -> duplicate_retr
 test("decideIdempotency: existing row, different hash -> hash_mismatch regardless of status", () => {
   assert.deepEqual(
     decideIdempotency({ payloadHash: "hash_a", processingStatus: "processed" }, "hash_b"),
-    { kind: "hash_mismatch" },
+    { kind: "hash_mismatch", previousStatus: "processed" },
   );
   assert.deepEqual(
     decideIdempotency({ payloadHash: "hash_a", processingStatus: "received" }, "hash_b"),
-    { kind: "hash_mismatch" },
+    { kind: "hash_mismatch", previousStatus: "received" },
   );
+});
+
+test("decideIdempotency: hash_mismatch carries the previous status so a processed row is never regressed", () => {
+  // Regression test for the Phase B1 review's "hash-mismatch ledger hardening": the caller
+  // (database.ts's markLedgerHashMismatch) relies on exactly this field to decide whether it may
+  // write processing_status = 'error' — a 'processed' row must never be downgraded.
+  const result = decideIdempotency({ payloadHash: "hash_a", processingStatus: "processed" }, "hash_b");
+  assert.equal(result.kind, "hash_mismatch");
+  if (result.kind === "hash_mismatch") {
+    assert.equal(result.previousStatus, "processed");
+  }
 });

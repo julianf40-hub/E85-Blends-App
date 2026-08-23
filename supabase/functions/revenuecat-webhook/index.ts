@@ -23,13 +23,14 @@ import { calculatePro } from "../_shared/entitlement.ts";
 import { toApiEnvironment, type RevenueCatWebhookEnvironment } from "../_shared/revenuecat-types.ts";
 import { fetchCustomerSubscriptions } from "../_shared/revenuecat-api.ts";
 import {
+  applyRefreshPlansAndMarkProcessed,
   claimLedgerEvent,
   createDatabaseClient,
   markLedgerError,
   markLedgerHashMismatch,
   markLedgerProcessed,
-  refreshIdentityGroup,
   type LedgerEventInput,
+  type RefreshPlan,
   type Sql,
 } from "../_shared/database.ts";
 import { logWebhookEvent, maskIdentifier } from "../_shared/logging.ts";
@@ -59,59 +60,92 @@ function ledgerIdentityFields(
   }
 }
 
+/**
+ * Fetches RevenueCat's canonical subscriptions for one identity group + environment and turns the
+ * result into a `RefreshPlan`, or an error string on failure. Performs no database work — safe to
+ * call any number of times before any transaction opens (Phase 11 / Phase B1 review Finding 4).
+ */
+async function buildRefreshPlan(
+  env: WebhookEnvConfig,
+  params: {
+    aliasSet: string[];
+    environment: RevenueCatWebhookEnvironment;
+    preferredAnchor: string;
+    triggerEventId: string;
+    queryAppUserId: string;
+  },
+): Promise<{ kind: "ok"; plan: RefreshPlan } | { kind: "error"; detail: string }> {
+  const apiEnvironment = toApiEnvironment(params.environment);
+  if (!apiEnvironment) {
+    // Unreachable in practice — every caller already validated `environment` before getting here
+    // — but never assume away a defensive check on a security-relevant path.
+    return { kind: "error", detail: "internal: unmappable environment" };
+  }
+
+  const apiResult = await fetchCustomerSubscriptions(
+    { projectId: env.revenueCatProjectId, secretApiKey: env.revenueCatV2SecretApiKey },
+    params.queryAppUserId,
+    apiEnvironment,
+  );
+
+  if (apiResult.kind === "retryable_error" || apiResult.kind === "config_error") {
+    logWebhookEvent("error", "RevenueCat API call failed — entitlement state left unchanged", {
+      environment: params.environment,
+      statusCategory: apiResult.statusCategory,
+      kind: apiResult.kind,
+    });
+    return { kind: "error", detail: `RevenueCat API ${apiResult.kind}: ${apiResult.statusCategory}` };
+  }
+
+  const entitlement = calculatePro(apiResult.subscriptions);
+
+  return {
+    kind: "ok",
+    plan: {
+      aliasSet: params.aliasSet,
+      environment: params.environment,
+      preferredAnchor: params.preferredAnchor,
+      entitlement,
+      triggerEventId: params.triggerEventId,
+    },
+  };
+}
+
 async function handleNormalEvent(
   sql: Sql,
   env: WebhookEnvConfig,
   parsed: Extract<ParsedWebhookEvent, { kind: "normal" }>,
 ): Promise<Response> {
-  const apiEnvironment = toApiEnvironment(parsed.environment);
-  if (!apiEnvironment) {
-    // Unreachable in practice — the parser already validated `environment` before classifying an
-    // event as "normal" — but never assume away a defensive check on a security-relevant path.
-    await markLedgerError(sql, parsed.core.id, "internal: normal event had an unmappable environment");
-    return jsonResponse(500, { error: "internal_error" });
-  }
-
   const queryAppUserId = parsed.appUserId ?? parsed.originalAppUserId ?? parsed.aliasSet[0];
-  const apiResult = await fetchCustomerSubscriptions(
-    { projectId: env.revenueCatProjectId, secretApiKey: env.revenueCatV2SecretApiKey },
-    queryAppUserId,
-    apiEnvironment,
-  );
-
-  if (apiResult.kind === "retryable_error" || apiResult.kind === "config_error") {
-    await markLedgerError(sql, parsed.core.id, `RevenueCat API ${apiResult.kind}: ${apiResult.statusCategory}`);
-    logWebhookEvent("error", "RevenueCat API call failed — entitlement state left unchanged", {
-      eventId: maskIdentifier(parsed.core.id),
-      statusCategory: apiResult.statusCategory,
-      kind: apiResult.kind,
-    });
-    return jsonResponse(500, { error: "revenuecat_api_failure" });
-  }
-
-  const subscriptions = apiResult.kind === "ok" ? apiResult.subscriptions : [];
-  const entitlement = calculatePro(subscriptions);
   const preferredAnchor = parsed.originalAppUserId ?? parsed.appUserId ?? parsed.aliasSet[0];
 
-  const outcome = await refreshIdentityGroup(sql, {
+  const built = await buildRefreshPlan(env, {
     aliasSet: parsed.aliasSet,
     environment: parsed.environment,
     preferredAnchor,
-    entitlement,
     triggerEventId: parsed.core.id,
+    queryAppUserId,
   });
+
+  if (built.kind === "error") {
+    await markLedgerError(sql, parsed.core.id, built.detail);
+    return jsonResponse(500, { error: "revenuecat_api_failure" });
+  }
+
+  // ONE transaction: resolve/insert-or-update the customer, verify/insert aliases, and mark the
+  // ledger row processed, all atomically (Phase B1 review Finding 4).
+  const outcome = await applyRefreshPlansAndMarkProcessed(sql, parsed.core.id, [built.plan]);
 
   if (outcome.kind === "conflict") {
     await markLedgerError(sql, parsed.core.id, `identity conflict: ${outcome.detail}`);
     return jsonResponse(500, { error: "identity_conflict" });
   }
 
-  await markLedgerProcessed(sql, parsed.core.id);
   logWebhookEvent("info", "normal event processed", {
     eventId: maskIdentifier(parsed.core.id),
     type: parsed.core.type,
     environment: parsed.environment,
-    proIsActive: entitlement.proIsActive,
+    proIsActive: built.plan.entitlement.proIsActive,
   });
   return jsonResponse(200, { status: "processed" });
 }
@@ -119,14 +153,19 @@ async function handleNormalEvent(
 /**
  * TRANSFER events carry `transferred_from[]`/`transferred_to[]` instead of a single identity —
  * per Phase 20, source and destination are refreshed as two INDEPENDENT identity groups, never
- * merged. Each group's own alias set is resolved/upserted exactly like a normal event's would be;
- * the only difference is which IDs feed that resolution. If `environment` is absent from the
- * event, both groups are refreshed for BOTH SANDBOX and PRODUCTION (up to 4 refreshes total) since
- * there is no way to know which environment(s) the transfer actually affects. Design choice, not
- * mandated by the task spec: the RevenueCat API is queried using the FIRST id in each group — any
- * ID in the group should resolve to the same underlying RevenueCat customer, and
- * `refreshIdentityGroup`'s own alias resolution (see customer-resolution.ts) is what actually
- * determines the canonical Supabase customer row, not which ID happened to be queried.
+ * merged. If `environment` is absent from the event, both groups are refreshed for BOTH SANDBOX
+ * and PRODUCTION (up to 4 plans total) since there is no way to know which environment(s) the
+ * transfer actually affects. Design choice, not mandated by the task spec: the RevenueCat API is
+ * queried using the FIRST id in each group — any ID in the group should resolve to the same
+ * underlying RevenueCat customer, and the write transaction's own alias resolution (see
+ * customer-resolution.ts) is what actually determines the canonical Supabase customer row, not
+ * which ID happened to be queried.
+ *
+ * Per Phase B1 review Finding 4: ALL group/environment RevenueCat API calls happen first, with no
+ * open transaction; only once every one of them has succeeded does ONE write transaction apply
+ * every resulting plan and mark the ledger row processed. If any API call fails partway through,
+ * NOTHING has been written to revenuecat_customers/aliases for this event yet — there is nothing
+ * to roll back, only the ledger error to record.
  */
 async function handleTransferEvent(
   sql: Sql,
@@ -146,58 +185,42 @@ async function handleTransferEvent(
     ? [parsed.environment]
     : ["SANDBOX", "PRODUCTION"];
 
+  const plans: RefreshPlan[] = [];
   for (const group of groups) {
     for (const environment of environments) {
-      const apiEnvironment = toApiEnvironment(environment)!; // environments[] only ever holds valid values
-      const apiResult = await fetchCustomerSubscriptions(
-        { projectId: env.revenueCatProjectId, secretApiKey: env.revenueCatV2SecretApiKey },
-        group.ids[0],
-        apiEnvironment,
-      );
-
-      if (apiResult.kind === "retryable_error" || apiResult.kind === "config_error") {
-        await markLedgerError(
-          sql,
-          parsed.core.id,
-          `RevenueCat API ${apiResult.kind} refreshing TRANSFER ${group.label} group (${environment})`,
-        );
-        logWebhookEvent("error", "RevenueCat API call failed refreshing a TRANSFER group", {
-          eventId: maskIdentifier(parsed.core.id),
-          group: group.label,
-          environment,
-          statusCategory: apiResult.statusCategory,
-        });
-        return jsonResponse(500, { error: "revenuecat_api_failure" });
-      }
-
-      const subscriptions = apiResult.kind === "ok" ? apiResult.subscriptions : [];
-      const entitlement = calculatePro(subscriptions);
-
-      const outcome = await refreshIdentityGroup(sql, {
+      const built = await buildRefreshPlan(env, {
         aliasSet: group.ids,
         environment,
         preferredAnchor: group.ids[0],
-        entitlement,
         triggerEventId: parsed.core.id,
+        queryAppUserId: group.ids[0],
       });
 
-      if (outcome.kind === "conflict") {
+      if (built.kind === "error") {
         await markLedgerError(
           sql,
           parsed.core.id,
-          `identity conflict refreshing TRANSFER ${group.label} group (${environment}): ${outcome.detail}`,
+          `${built.detail} refreshing TRANSFER ${group.label} group (${environment})`,
         );
-        return jsonResponse(500, { error: "identity_conflict" });
+        return jsonResponse(500, { error: "revenuecat_api_failure" });
       }
+      plans.push(built.plan);
     }
   }
 
-  await markLedgerProcessed(sql, parsed.core.id);
+  const outcome = await applyRefreshPlansAndMarkProcessed(sql, parsed.core.id, plans);
+
+  if (outcome.kind === "conflict") {
+    await markLedgerError(sql, parsed.core.id, `identity conflict applying TRANSFER plans: ${outcome.detail}`);
+    return jsonResponse(500, { error: "identity_conflict" });
+  }
+
   logWebhookEvent("info", "transfer event processed", {
     eventId: maskIdentifier(parsed.core.id),
     sourceCount: parsed.transferredFrom.length,
     destinationCount: parsed.transferredTo.length,
     environmentKnown: parsed.environment !== null,
+    planCount: plans.length,
   });
   return jsonResponse(200, { status: "processed" });
 }
@@ -271,9 +294,13 @@ Deno.serve(async (req) => {
       return jsonResponse(200, { status: "duplicate_processed" });
     }
     if (decision.kind === "hash_mismatch") {
-      await markLedgerHashMismatch(sql, parsed.core.id);
+      // A row that already reached "processed" must never be regressed by a later mismatched
+      // delivery — markLedgerHashMismatch itself enforces this from `previousStatus`, but the log
+      // line below reflects it too so an operator reading logs isn't misled either.
+      await markLedgerHashMismatch(sql, parsed.core.id, decision.previousStatus);
       logWebhookEvent("error", "event_id redelivered with a different payload_hash", {
         eventId: maskIdentifier(parsed.core.id),
+        previousStatus: decision.previousStatus,
       });
       return jsonResponse(409, { error: "payload_mismatch" });
     }

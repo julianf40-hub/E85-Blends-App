@@ -101,7 +101,14 @@ export interface VerifyWebhookSignatureParams {
   signatureHeaderValue: string | null;
   /** Injected for testability — defaults to `Date.now() / 1000` at the real call site. */
   nowUnixSeconds: number;
-  /** RevenueCat retries reuse the original timestamp; 300s (5 minutes) per Phase 5. */
+  /**
+   * 300s (5 minutes) per Phase 5. RevenueCat RECOMPUTES the `t`/`v1` signature header for every
+   * delivery attempt, including retries — it does NOT reuse the first delivery's timestamp or
+   * signature. (What retries DO reuse is `event.id` and `event.event_timestamp_ms` inside the
+   * JSON body itself — see idempotency.ts — which is a completely separate mechanism from this
+   * header.) This tolerance exists to allow for ordinary clock skew and network/processing delay
+   * on each individual delivery's own fresh timestamp, not to accommodate a stale reused one.
+   */
   toleranceSeconds?: number;
 }
 

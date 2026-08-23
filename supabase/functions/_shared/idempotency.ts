@@ -25,8 +25,10 @@ export type IdempotencyDecision =
   /** Same event_id, but the recorded payload_hash differs — never seen for a genuine RevenueCat
    *  retry (Phase 10 note: RevenueCat retries reuse event.id AND event_timestamp_ms, so the body
    *  — and therefore its hash — should be stable across retries of the same delivery). Treated as
-   *  suspicious; never mutates entitlement state. */
-  | { kind: "hash_mismatch" };
+   *  suspicious; never mutates entitlement state. Carries the existing row's `processingStatus` so
+   *  the caller can decide whether it's safe to mark the row `error` — see
+   *  database.ts's markLedgerHashMismatch and the "hash-mismatch ledger hardening" note below. */
+  | { kind: "hash_mismatch"; previousStatus: string };
 
 export function decideIdempotency(
   existingRow: ExistingLedgerRow | null,
@@ -35,7 +37,12 @@ export function decideIdempotency(
   if (!existingRow) return { kind: "new" };
 
   if (existingRow.payloadHash !== incomingPayloadHash) {
-    return { kind: "hash_mismatch" };
+    // A mismatch must never regress a row that already reached "processed" — that state is
+    // durable and reflects a successful, complete canonical refresh. The mismatched delivery is
+    // reported to the caller either way (so it can log/return 409), but only a NOT-YET-processed
+    // row may actually be marked `error` — see database.ts's markLedgerHashMismatch, which checks
+    // `previousStatus` before writing anything.
+    return { kind: "hash_mismatch", previousStatus: existingRow.processingStatus };
   }
 
   return existingRow.processingStatus === "processed"
