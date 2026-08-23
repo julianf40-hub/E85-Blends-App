@@ -1,0 +1,62 @@
+# Supabase CLI local development configuration for 85Blends.
+#
+# This file configures the LOCAL Docker-based Supabase stack only (`supabase start`). It does
+# NOT link this repository to the live project (ref `zefkbtscieokkdenvnkg`) — no `supabase link`
+# has been run, and no live project credentials, access tokens, or connection strings live here
+# or anywhere else in this repo. See supabase/README.md for the live-project baseline strategy.
+#
+# `project_id` below is only a local-Docker-container namespace label (so multiple local Supabase
+# stacks on one machine don't collide) — it is not, and must never be treated as, the live
+# project ref.
+project_id = "eightyfiveblends"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Matches the live project's verified Postgres version (see supabase/README.md).
+major_version = 17
+
+[db.pooler]
+enabled = false
+port = 54329
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[studio]
+enabled = true
+port = 54323
+api_url = "http://127.0.0.1"
+
+[inbucket]
+enabled = true
+port = 54324
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = []
+jwt_expiry = 3600
+enable_signup = false
+
+[realtime]
+enabled = true
+
+[edge_runtime]
+enabled = true
+policy = "oneshot"
+inspector_port = 8083
+
+[analytics]
+enabled = false

@@ -1,0 +1,4 @@
+# Local Supabase CLI runtime state — never source, never commit.
+.branches
+.temp
+.env
