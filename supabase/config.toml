@@ -60,3 +60,13 @@ inspector_port = 8083
 
 [analytics]
 enabled = false
+
+# 85Blends 2.3.0 — Phase B1. RevenueCat does not send a Supabase user JWT on webhook delivery, so
+# Supabase's default per-function JWT gate would reject every real RevenueCat request outright.
+# `verify_jwt = false` is intentional and scoped to this one function only — the function itself
+# performs its own strict authentication instead (a configured Authorization header value AND a
+# valid RevenueCat HMAC signature, both required — see supabase/functions/revenuecat-webhook).
+# Do not disable verify_jwt for any other function without the same kind of independent
+# authentication replacing it.
+[functions.revenuecat-webhook]
+verify_jwt = false

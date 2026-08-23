@@ -1,4 +1,13 @@
 # Local Supabase CLI runtime state — never source, never commit.
 .branches
 .temp
+
+# Real secret values for any Edge Function (e.g. supabase/functions/revenuecat-webhook/.env used
+# with `supabase functions serve --env-file`) — never source, never commit. Patterns with no
+# leading slash apply at every depth under this directory, so this also covers
+# supabase/functions/revenuecat-webhook/.env and any sibling function's .env. `.env.*` additionally
+# covers .env.local/.env.production/etc. `.env.example` is explicitly un-ignored below — it must
+# only ever contain placeholder values (see supabase/README.md), never real secrets.
 .env
+.env.*
+!.env.example

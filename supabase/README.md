@@ -98,16 +98,103 @@ Every migration here is meant to be reviewed as a diff before it is ever applied
 project. None of the migrations in this repository have been applied to the live project by any
 automated process — applying them is a deliberate, separate, manual step.
 
-## What comes next (Phase B and later)
+## Phase A schema status
 
-This directory currently provides schema only. Still to come, in later, separately-scoped tasks:
+`20260823055527_revenuecat_entitlement_foundation.sql` has been reviewed AND applied to the live
+project (`private.revenuecat_customers`, `private.revenuecat_aliases`,
+`private.revenuecat_webhook_events`, `private.set_updated_at()` all exist live, RLS enabled, zero
+client policies, zero `anon`/`authenticated` privileges). A second, additive migration,
+`20260823062025_revenuecat_webhook_ledger_nullable_identity.sql`, relaxes the ledger's
+`app_user_id`/`environment` columns to nullable (see that migration file's own header for why —
+short version: `TRANSFER` and `TEMPORARY_ENTITLEMENT_GRANT` events don't carry those fields the
+same way a normal purchase/renewal/expiration event does, and the ledger must not fabricate values
+to satisfy a constraint that assumed every event looks like the latter). **That second migration
+has NOT been applied to the live project as of Phase B1** — see the Phase B1 final report for
+confirmation.
 
-1. **Phase B** — the RevenueCat webhook Edge Function itself: signed-request validation,
-   idempotent event claiming against `private.revenuecat_webhook_events`, a canonical
-   RevenueCat-server-API refresh, and the normalized write into `private.revenuecat_customers` /
-   `private.revenuecat_aliases`. The exact transactional contract (and whether a
-   `SECURITY DEFINER` RPC function is introduced for it) is intentionally undesigned here.
-2. **Phase C** — webhook secret provisioning + RevenueCat dashboard configuration.
-3. **Phase D** — sandbox webhook validation against the deployed function.
-4. Installation identity, push-device registration, and Station Price Alerts backend/UI — all
-   later, all depending on Phase B–D being green first.
+## Phase B1 — RevenueCat webhook Edge Function (source only, NOT deployed)
+
+`supabase/functions/revenuecat-webhook/` and `supabase/functions/_shared/` contain a complete,
+reviewed, but **undeployed** implementation of the webhook receiver described below. Nothing in
+this section has been run against the live project, a live RevenueCat webhook, or a live Deno
+runtime — see the Phase B1 final report for exactly what validation was and wasn't possible in
+that implementation environment.
+
+**Why `verify_jwt = false` for this one function** (`supabase/config.toml`): RevenueCat cannot
+send a Supabase user JWT on webhook delivery, so Supabase's default per-function JWT gate would
+reject every real request. This function replaces that gate with its own strictly-required,
+defense-in-depth authentication instead of skipping authentication — see the next point.
+
+**Authentication — BOTH required, always, no exceptions:**
+1. A configured `Authorization` header value, compared in constant time.
+2. A valid RevenueCat webhook HMAC-SHA256 signature (`X-RevenueCat-Webhook-Signature: t=...,v1=...`),
+   verified against the raw request body bytes with a 5-minute timestamp tolerance, also compared
+   in constant time.
+
+Either check failing alone produces the exact same generic `401 {"error":"unauthorized"}` — the
+response never reveals which check failed.
+
+**Required runtime environment variables (names only — see "Never commit secrets" above; none of
+these values exist anywhere in this repository):**
+
+- `REVENUECAT_PROJECT_ID`
+- `REVENUECAT_V2_SECRET_API_KEY` — needs at least `customer_information:subscriptions:read`
+- `REVENUECAT_WEBHOOK_AUTH_HEADER` — the entire expected header value, not just a shared token
+- `REVENUECAT_WEBHOOK_HMAC_SECRET`
+- `SUPABASE_DB_URL` — Supabase provides this to every Edge Function; used for a direct Postgres
+  connection (`npm:postgres`, `prepare: false`) so the function can reach the `private` schema
+  without ever adding `private` to `[api].schemas`
+
+If any of the five is missing at request time, the function returns `503` and logs only the
+missing variable *names* — never falls back to the RevenueCat `appl_` public SDK key, the
+Supabase anon key, or anything else client-facing.
+
+**Canonical-state design — the core decision this whole function exists to get right:** the
+webhook is treated purely as "RevenueCat says something changed," never as the entitlement
+decision itself. On every event that carries a resolvable identity + environment, the function
+calls RevenueCat's REST API v2
+(`GET /v2/projects/{project_id}/customers/{app_user_id}/subscriptions?environment=sandbox|production`)
+and computes `pro_is_active` from the fresh response: a subscription counts only if
+`gives_access === true` AND it carries an entitlement with `lookup_key === "pro"`. `status` is
+never consulted directly — `gives_access` alone is what RevenueCat defines as the access signal,
+and using it (rather than the webhook event's own type) is what makes trials/grace
+periods/billing retry/still-paid-through-cancellation all correct without special-casing. The
+environment filter is what keeps SANDBOX and PRODUCTION from ever cross-contaminating, even though
+Internal and Production iOS builds currently share this one Supabase project (see above).
+
+**Private tables stay non-exposed:** this function is the intended access path Phase A always
+described — a direct Postgres connection via `SUPABASE_DB_URL`, not a workaround for `private`
+being unreachable through PostgREST. `private` is still not, and must not become, part of
+`[api].schemas`.
+
+**Architecture:** every piece of logic with a real decision to get right (HMAC/auth verification,
+event parsing/classification, idempotent event-claim decisions, canonical-customer/alias
+resolution, Pro calculation, RevenueCat API pagination/error classification) lives in
+`supabase/functions/_shared/*.ts` as small, pure, dependency-injectable modules — each has a
+co-located `*.test.ts` runnable under Node (`node --test supabase/functions/_shared/*.test.ts`),
+independent of Deno, a live Postgres connection, or a live RevenueCat API. Only
+`supabase/functions/_shared/database.ts` (Postgres access) and
+`supabase/functions/revenuecat-webhook/index.ts` (the `Deno.serve` entry point) are
+Deno-runtime-specific glue, deliberately kept thin, and were validated by static
+review/type-checking only — see the Phase B1 final report for exactly how.
+
+**Known limitations to close before Phase C deployment:**
+- The exact RevenueCat API v2 response shape (`gives_access`, `entitlements.items[].lookup_key`,
+  `ends_at`/`current_period_ends_at` field formats, pagination via `next_page`) was implemented
+  from the task spec's description, not verified against a live API response or live
+  documentation fetch (no internet access in the implementation environment) — re-verify before
+  relying on it in production.
+- `supabase/migrations/20260823062025_revenuecat_webhook_ledger_nullable_identity.sql` has not
+  been applied to the live project.
+
+## What comes next (Phase C and later)
+
+1. **Phase C** — apply the Phase B1 migration to the live project; provision the four RevenueCat
+   webhook secrets in Supabase's own secret management (`supabase secrets set`, never in this
+   repo); deploy the Edge Function (`supabase functions deploy revenuecat-webhook`); configure the
+   webhook URL + Authorization header value in the RevenueCat dashboard.
+2. **Phase D** — sandbox webhook validation against the deployed function: purchase → active,
+   expiration → inactive, renewal → active, plus a RevenueCat-dashboard-triggered `TEST` event to
+   confirm auth/HMAC/delivery independent of any real customer data.
+3. Installation identity, push-device registration, and Station Price Alerts backend/UI — all
+   later, all depending on Phase C–D being green first.
