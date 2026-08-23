@@ -19,11 +19,14 @@
 import Foundation
 
 enum RevenueCatConfiguration {
-    /// The Info.plist key this build reads. Both keys are checked into the repo as empty-string
-    /// placeholders (see Info.plist) — real values are supplied at build/config time, never
-    /// invented here. An empty or missing value is treated identically to "not configured" (see
-    /// `publicSDKKey` below), which is what keeps a missing key safe: nothing in this app throws
-    /// or crashes when this returns `nil` — RevenueCat simply never configures, and
+    /// The Info.plist key this build reads. Both keys are already checked into the repo with
+    /// their real, populated public SDK key values (see Info.plist) — RevenueCat public keys are
+    /// client-safe by design (same trust model as SUPABASE_ANON_KEY in SupabaseConfig.swift), so
+    /// committing them is intentional, not a placeholder awaiting a later fill-in. The blank/
+    /// missing-is-nil handling below exists as a defensive fallback regardless — if a key were
+    /// ever blank or missing, that is treated identically to "not configured" (see `publicSDKKey`
+    /// below), which is what keeps a missing key safe: nothing in this app throws or crashes when
+    /// this returns `nil` — RevenueCat simply never configures, and
     /// `RevenueCatSubscriptionService.revenueCatIsPro` stays at its safe default of `false`
     /// (Free) rather than any code guessing at entitlement.
     private static var infoPlistKeyName: String {
