@@ -239,4 +239,61 @@ struct SubscriptionManagerTests {
     // code inspection (see the final cutover report), not something a unit test running in a
     // Debug test target can independently observe — a test binary that could see the override
     // would, by definition, not be a Release build.
+
+    // MARK: H. Internal Pro Override reset / stale-state safety (items 21-22)
+    //
+    // resetDebugProOverride() and isDebugProOverrideActive are themselves #if DEBUG ||
+    // INTERNAL_BUILD-only (see SubscriptionManager.swift), same as everything in section G — a
+    // test binary that can see these symbols at all is, by construction, compiled with one of
+    // those flags active. These tests exercise the reset mechanism itself (added after a stale
+    // .forcePro override was found still active against a fresh, entitlement-free RevenueCat
+    // sandbox customer); item 20 above already covers why the Release `#else` path can't leak an
+    // override in the first place.
+    //
+    // These two touch the live `SubscriptionManager.shared` singleton (unlike sections A-F, which
+    // test pure static functions with plain values) because resetDebugProOverride() and
+    // isDebugProOverrideActive are themselves trivial state accessors, not decision logic to
+    // extract — there is nothing to meaningfully isolate into a pure function here. Each restores
+    // the singleton's original override value via `defer` so it doesn't leak state into whichever
+    // test runs next.
+
+    @Test("resetDebugProOverride() returns the override to .off from any prior state")
+    func resetDebugProOverride_returnsToOff() {
+        let manager = SubscriptionManager.shared
+        let originalOverride = manager.debugProOverride
+        defer { manager.debugProOverride = originalOverride }
+
+        manager.debugProOverride = .forcePro
+        #expect(manager.isDebugProOverrideActive)
+
+        manager.resetDebugProOverride()
+
+        #expect(manager.debugProOverride == .off)
+        #expect(manager.isDebugProOverrideActive == false)
+    }
+
+    @Test("isDebugProOverrideActive is true for Force Pro and Force Free, false only for Off")
+    func isDebugProOverrideActive_matchesNonOffCases() {
+        let manager = SubscriptionManager.shared
+        let originalOverride = manager.debugProOverride
+        defer { manager.debugProOverride = originalOverride }
+
+        manager.debugProOverride = .off
+        #expect(manager.isDebugProOverrideActive == false)
+
+        manager.debugProOverride = .forcePro
+        #expect(manager.isDebugProOverrideActive)
+
+        manager.debugProOverride = .forceFree
+        #expect(manager.isDebugProOverrideActive)
+    }
+
+    // Item 22 — "production path remains RevenueCat-only" is a compile-time fact, not something a
+    // Debug-compiled test binary can independently observe (identical reasoning to item 20).
+    // `isPro`'s `#else` branch (SubscriptionManager.swift) is the ONLY code compiled into an App
+    // Store Release build, and it reads `RevenueCatSubscriptionService.shared.revenueCatIsPro`
+    // directly — `debugProOverride`, `resetDebugProOverride()`, and `isDebugProOverrideActive` do
+    // not exist in that build at all, so there is no override path left to reset, leak, or
+    // otherwise affect production semantics. Verified by code inspection (see this file's header
+    // and the accompanying verification report), not a runtime assertion.
 }

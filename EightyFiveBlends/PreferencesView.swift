@@ -214,23 +214,44 @@ struct PreferencesView: View {
     }
 
     #if DEBUG || INTERNAL_BUILD
+    // Visually reacts to isDebugProOverrideActive (SubscriptionManager.swift) so a lingering
+    // Force Pro/Force Free from an earlier test session is impossible to miss the moment
+    // Preferences is opened — this was the actual cause of a fresh, entitlement-free RevenueCat
+    // sandbox customer still showing "You have 85Blends Pro" in the app. The Picker's binding and
+    // options are unchanged from before; only the surrounding header/subtitle react to state, and
+    // a "Reset Override" action appears when there's something to reset.
     private var debugOverrideRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Developer Pro Override")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.warningRed)
+        let manager = SubscriptionManager.shared
+        let isActive = manager.isDebugProOverrideActive
 
-                Text("Developer/Internal builds — compiled out in App Store release.")
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
+        return VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    if isActive {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.warningRed)
+                            .accessibilityHidden(true)
+                    }
+                    Text(isActive ? "Developer Pro Override — ACTIVE" : "Developer Pro Override")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.warningRed)
+                }
+
+                Text(
+                    isActive
+                        ? "Overriding real entitlement with \"\(manager.debugProOverride.rawValue)\" — reset before testing real purchases, restores, or a fresh sandbox account."
+                        : "Developer/Internal builds — compiled out in App Store release."
+                )
+                .font(.caption2)
+                .foregroundStyle(isActive ? AppTheme.Colors.warningRed : AppTheme.Colors.textMuted)
             }
 
             Picker(
                 "Developer Pro Override",
                 selection: Binding(
-                    get: { SubscriptionManager.shared.debugProOverride },
-                    set: { SubscriptionManager.shared.debugProOverride = $0 }
+                    get: { manager.debugProOverride },
+                    set: { manager.debugProOverride = $0 }
                 )
             ) {
                 ForEach(SubscriptionManager.DebugProOverride.allCases, id: \.rawValue) { option in
@@ -248,6 +269,32 @@ struct PreferencesView: View {
                     .stroke(AppTheme.Colors.warningRed.opacity(0.5), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            if isActive {
+                Button {
+                    manager.resetDebugProOverride()
+                    AppHaptics.selection()
+                } label: {
+                    HStack {
+                        Text("Reset Override")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.Colors.warningRed)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(AppTheme.Colors.warningRed.opacity(0.12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(AppTheme.Colors.warningRed.opacity(0.4), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
     #endif

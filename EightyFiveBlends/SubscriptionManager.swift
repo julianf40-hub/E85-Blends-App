@@ -78,6 +78,26 @@ final class SubscriptionManager {
     private func logEntitlementState(_ context: String) {
         print("[85Blends][entitlement] \(context): \(debugEntitlementStatus)")
     }
+
+    /// Whether a Developer Pro Override is currently forcing state away from RevenueCat's real
+    /// entitlement (`.forcePro` or `.forceFree`) — `false` only when the override is `.off`.
+    /// Exists so call sites (PreferencesView's stale-override warning/reset UI) don't need to
+    /// compare against `.off` inline, and so "is an override active right now" reads as one
+    /// intentional question rather than an ad-hoc comparison repeated at each call site.
+    var isDebugProOverrideActive: Bool { debugProOverride != .off }
+
+    /// Clears the Developer Pro Override back to `.off`, so `isPro` immediately falls back to
+    /// RevenueCat's real entitlement. Reuses `debugProOverride`'s existing `didSet` (UserDefaults
+    /// persistence + `logEntitlementState` diagnostic log) — no new storage path, no change to
+    /// `effectivePro(override:revenueCatIsPro:)`'s precedence rule. This is the "safe reset"
+    /// entry point: a lingering `.forcePro`/`.forceFree` from an earlier test session survives
+    /// force-quit/relaunch and even switching to a different RevenueCat sandbox account (it's
+    /// local device state, not tied to any RevenueCat identity) — this gives internal testers an
+    /// explicit, one-call way to clear it rather than relying on remembering to flip the Picker
+    /// back to "Off" themselves.
+    func resetDebugProOverride() {
+        debugProOverride = .off
+    }
     #endif
 
     // MARK: - Entitlement (single source of truth)
