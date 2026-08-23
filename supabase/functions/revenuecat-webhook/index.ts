@@ -42,21 +42,32 @@ function jsonResponse(status: number, body: Record<string, unknown>): Response {
   });
 }
 
-/** What to record in the ledger's nullable app_user_id/environment columns for each event kind. */
+/** What to record in the ledger's nullable app_user_id/original_app_user_id/environment columns
+ *  for each event kind. `originalAppUserId` here is ledger-completeness only — a faithful record
+ *  of what RevenueCat's payload provided, never fabricated/derived from other identity fields
+ *  (e.g. never falls back to aliasSet[0] the way `appUserId` does above it) and never read by any
+ *  entitlement/identity-resolution code path (see buildRefreshPlan/handleNormalEvent/
+ *  handleTransferEvent below, which all derive their own aliasSet/preferredAnchor directly from
+ *  `parsed`, not from the ledger row this produces). Stays null wherever RevenueCat's payload
+ *  didn't provide it — never inferred to satisfy this column. */
 function ledgerIdentityFields(
   parsed: Exclude<ParsedWebhookEvent, { kind: "malformed" }>,
-): { appUserId: string | null; environment: RevenueCatWebhookEnvironment | null } {
+): { appUserId: string | null; originalAppUserId: string | null; environment: RevenueCatWebhookEnvironment | null } {
   switch (parsed.kind) {
     case "test":
-      return { appUserId: null, environment: null };
+      return { appUserId: null, originalAppUserId: null, environment: null };
     case "transfer":
-      return { appUserId: null, environment: parsed.environment };
+      return { appUserId: null, originalAppUserId: parsed.originalAppUserId, environment: parsed.environment };
     case "temporary_entitlement_grant":
-      return { appUserId: parsed.appUserId, environment: parsed.environment };
+      return { appUserId: parsed.appUserId, originalAppUserId: null, environment: parsed.environment };
     case "normal":
-      return { appUserId: parsed.appUserId ?? parsed.originalAppUserId ?? parsed.aliasSet[0], environment: parsed.environment };
+      return {
+        appUserId: parsed.appUserId ?? parsed.originalAppUserId ?? parsed.aliasSet[0],
+        originalAppUserId: parsed.originalAppUserId,
+        environment: parsed.environment,
+      };
     case "insufficient":
-      return { appUserId: null, environment: null };
+      return { appUserId: null, originalAppUserId: null, environment: null };
   }
 }
 
@@ -276,6 +287,7 @@ Deno.serve(async (req) => {
     eventId: parsed.core.id,
     eventType: parsed.core.type,
     appUserId: identity.appUserId,
+    originalAppUserId: identity.originalAppUserId,
     environment: identity.environment,
     eventTimestampMs: parsed.core.event_timestamp_ms,
     payloadHash,

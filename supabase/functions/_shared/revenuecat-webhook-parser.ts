@@ -28,6 +28,12 @@ export type ParsedWebhookEvent =
       transferredFrom: string[];
       transferredTo: string[];
       environment: RevenueCatWebhookEnvironment | null;
+      /** RevenueCat's `original_app_user_id` field, when the TRANSFER event happens to carry it —
+       *  ledger-completeness only (see database.ts's LedgerEventInput); never null-coalesced with
+       *  transferred_from[]/transferred_to[], which are a distinct kind of identity information.
+       *  Null whenever RevenueCat's payload omits it, same as every other optional field on this
+       *  event shape. */
+      originalAppUserId: string | null;
     }
   | {
       kind: "temporary_entitlement_grant";
@@ -125,6 +131,7 @@ export function parseWebhookEvent(envelope: unknown): ParsedWebhookEvent {
       transferredFrom,
       transferredTo,
       environment: extractEnvironment(eventRecord),
+      originalAppUserId: asNonEmptyTrimmedString(eventRecord.original_app_user_id),
     };
   }
 

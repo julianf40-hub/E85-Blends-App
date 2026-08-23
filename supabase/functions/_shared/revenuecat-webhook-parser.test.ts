@@ -27,6 +27,28 @@ test("parseWebhookEvent: normal purchase event", () => {
   }
 });
 
+test("parseWebhookEvent: normal event missing original_app_user_id -> stays null, never fabricated", () => {
+  // Ledger-completeness fix regression test (requirement 2: missing values remain NULL). A normal
+  // event is still classifiable from app_user_id alone; originalAppUserId must not be backfilled
+  // from app_user_id or aliasSet — those are separate fields entirely, see
+  // supabase/functions/revenuecat-webhook/index.ts's ledgerIdentityFields().
+  const result = parseWebhookEvent({
+    event: {
+      id: "evt_no_original",
+      type: "RENEWAL",
+      event_timestamp_ms: 1700000000000,
+      app_user_id: "user_only",
+      environment: "PRODUCTION",
+      // original_app_user_id intentionally absent
+    },
+  });
+  assert.equal(result.kind, "normal");
+  if (result.kind === "normal") {
+    assert.equal(result.appUserId, "user_only");
+    assert.equal(result.originalAppUserId, null);
+  }
+});
+
 test("parseWebhookEvent: aliases are deduplicated across app_user_id/original_app_user_id/aliases[]", () => {
   const result = parseWebhookEvent({
     event: {
@@ -71,6 +93,9 @@ test("parseWebhookEvent: TRANSFER shape", () => {
     assert.deepEqual(result.transferredFrom, ["anon_old"]);
     assert.deepEqual(result.transferredTo, ["anon_new"]);
     assert.equal(result.environment, "PRODUCTION");
+    // Ledger-completeness fix: absent from this payload -> stays null, never fabricated from
+    // transferred_from/transferred_to (a different kind of identity information).
+    assert.equal(result.originalAppUserId, null);
   }
 });
 
@@ -87,6 +112,28 @@ test("parseWebhookEvent: TRANSFER with no environment field", () => {
   assert.equal(result.kind, "transfer");
   if (result.kind === "transfer") {
     assert.equal(result.environment, null);
+    assert.equal(result.originalAppUserId, null);
+  }
+});
+
+test("parseWebhookEvent: TRANSFER carrying original_app_user_id -> captured for ledger completeness", () => {
+  // Ledger-completeness fix: RevenueCat's TRANSFER payload doesn't always carry a top-level
+  // original_app_user_id, but when it does, the ledger should record it — see
+  // supabase/functions/revenuecat-webhook/index.ts's ledgerIdentityFields().
+  const result = parseWebhookEvent({
+    event: {
+      id: "evt_transfer_3",
+      type: "TRANSFER",
+      event_timestamp_ms: 1700000000000,
+      transferred_from: ["anon_old"],
+      transferred_to: ["anon_new"],
+      environment: "SANDBOX",
+      original_app_user_id: "canonical_user_z",
+    },
+  });
+  assert.equal(result.kind, "transfer");
+  if (result.kind === "transfer") {
+    assert.equal(result.originalAppUserId, "canonical_user_z");
   }
 });
 

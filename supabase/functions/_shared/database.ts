@@ -64,6 +64,12 @@ export interface LedgerEventInput {
   eventId: string;
   eventType: string;
   appUserId: string | null;
+  /** RevenueCat's `original_app_user_id`, when the event provides one — ledger-completeness only
+   *  (see this file's `claimLedgerEvent`). Purely a record of what RevenueCat sent; never read by
+   *  any entitlement/identity-resolution code path — those all operate on
+   *  private.revenuecat_customers/revenuecat_aliases via the caller's own aliasSet/preferredAnchor
+   *  (see index.ts), never via this ledger column. */
+  originalAppUserId: string | null;
   environment: "SANDBOX" | "PRODUCTION" | null;
   eventTimestampMs: number;
   payloadHash: string;
@@ -92,10 +98,10 @@ async function getExistingLedgerRow(sql: Sql, eventId: string): Promise<Existing
 export async function claimLedgerEvent(sql: Sql, input: LedgerEventInput): Promise<IdempotencyDecision> {
   const inserted = await sql<{ payload_hash: string; processing_status: string }[]>`
     insert into private.revenuecat_webhook_events (
-      event_id, event_type, app_user_id, environment, event_timestamp,
+      event_id, event_type, app_user_id, original_app_user_id, environment, event_timestamp,
       payload_hash, raw_payload, processing_status
     ) values (
-      ${input.eventId}, ${input.eventType}, ${input.appUserId}, ${input.environment},
+      ${input.eventId}, ${input.eventType}, ${input.appUserId}, ${input.originalAppUserId}, ${input.environment},
       to_timestamp(${input.eventTimestampMs}::double precision / 1000.0),
       ${input.payloadHash}, ${sql.json(input.rawPayload as object)}, 'received'
     )
