@@ -51,6 +51,22 @@
 import Foundation
 import Observation
 import GoogleMobileAds
+import os
+
+// TEMPORARY — production/TestFlight diagnostics for the "native ads not appearing"
+// investigation. Every use of this logger below is marked TEMPORARY and must be removed,
+// alongside this declaration, once the root cause is confirmed and fixed — see the matching,
+// more detailed comment on Components/NativeAdView.swift's own diagnostics logger (same
+// os.Logger-not-print, `privacy: .public`, and `#if !DEBUG` (Internal + Release, not local
+// Debug) reasoning applies here). Declared separately from NativeAdView.swift's instance,
+// deliberately, so either file's diagnostics block can be deleted independently without a
+// cross-file dependency to worry about.
+#if !DEBUG
+private let admobDiagnosticsLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.e85blends.app.ios",
+    category: "AdMobDiagnostics"
+)
+#endif
 
 @MainActor
 @Observable
@@ -119,6 +135,12 @@ final class AdManager {
         guard configurationState == .notConfigured else { return }
         configurationState = .configuring
 
+        // TEMPORARY — see the diagnostics-logger declaration at the top of this file. Remove
+        // this block once the root cause is confirmed and fixed.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("configureIfNeeded() starting")
+        #endif
+
         // GADApplicationIdentifier is read from Info.plist by the SDK itself at start(); this
         // app doesn't need to read or pass it explicitly (see RevenueCatConfiguration.swift for
         // why RevenueCat's public key needs manual Info.plist plumbing — the Mobile Ads SDK's
@@ -150,6 +172,19 @@ final class AdManager {
 
         #if DEBUG || INTERNAL_BUILD
         print("[85Blends][AdMob] Configured. \(lastErrorDescription ?? "All adapters ready.")")
+        #endif
+
+        // TEMPORARY — see the diagnostics-logger declaration at the top of this file. Separate
+        // from the pre-existing print() line directly above (that one is permanent, ordinary
+        // debug logging predating this investigation — left untouched). Logs completion plus
+        // any adapter-initialization errors, so a TestFlight capture shows definitively whether
+        // AdMob's SDK finished configuring at all, and when, relative to the first ad request.
+        #if !DEBUG
+        if let lastErrorDescription {
+            admobDiagnosticsLogger.error("configureIfNeeded() completed with issues — \(lastErrorDescription, privacy: .public)")
+        } else {
+            admobDiagnosticsLogger.log("configureIfNeeded() completed — all adapters ready")
+        }
         #endif
     }
 
