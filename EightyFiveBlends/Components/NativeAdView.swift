@@ -362,6 +362,34 @@ private struct NativeAdContainer: UIViewRepresentable {
         context.coordinator.lastPopulatedNativeAd = nativeAd
     }
 
+    // FIX (AdMob validator: "Advertiser assets outside native ad view"): adView (built in
+    // buildNativeAdView() below, unchanged) never had an explicit width/height of its own —
+    // only stack's edges were pinned to it, which makes stack's size equal adView's, not the
+    // other way around. Without this override, SwiftUI's default UIViewRepresentable sizing
+    // for a plain UIView with no intrinsicContentSize (GoogleMobileAds.NativeAdView doesn't
+    // provide one) is implementation-defined, so adView's frame at the point Google's SDK
+    // validates the ad was never guaranteed to be correct — producing degenerate/zero-sized
+    // asset frames that the validator reports as "outside" the native ad view, even though the
+    // view HIERARCHY (see buildNativeAdView()) is correct. This makes adView's size
+    // deterministic: derived from its own Auto Layout constraint graph (stack's arrangedSubviews
+    // — sponsoredLabel, headerRow, mediaView, bodyLabel, callToActionButton — already produce a
+    // well-defined intrinsic height; see buildNativeAdView(), untouched), evaluated at SwiftUI's
+    // proposed width. No fixed/placeholder size — the proposed width comes from the real layout
+    // pass (AppCard's frame(maxWidth: .infinity)), and height still comes entirely from the ad's
+    // actual content via systemLayoutSizeFitting, exactly as it always should have.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: GoogleMobileAds.NativeAdView,
+        context: Context
+    ) -> CGSize? {
+        let targetWidth = proposal.width ?? UIView.layoutFittingCompressedSize.width
+        return uiView.systemLayoutSizeFitting(
+            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+    }
+
     private func buildNativeAdView() -> GoogleMobileAds.NativeAdView {
         let adView = GoogleMobileAds.NativeAdView()
         adView.backgroundColor = .clear
