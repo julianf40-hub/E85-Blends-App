@@ -401,6 +401,71 @@ private struct NativeAdContainer: UIViewRepresentable {
                 """)
         }
         #endif
+
+        // TEMPORARY — deeper diagnostics for the same "Advertiser assets outside native ad
+        // view" validator investigation. The per-asset frame log above shows every REGISTERED
+        // asset view's own frame inside uiView's bounds, yet Ad Inspector still reports an
+        // asset outside the native ad view — which points at something the per-asset log
+        // can't see: content Google's SDK composes *inside* one of those registered views,
+        // on a subview this code never registered or sized itself. mediaView is the prime
+        // suspect (Google privately manages the real media creative as mediaView's own
+        // subview(s)), so this recursively dumps mediaView's entire UIView subtree — class,
+        // frame (converted into uiView's coordinate space, same basis as the log above),
+        // bounds, clipsToBounds, and hidden state for every descendant — plus
+        // intrinsicContentSize for headlineView/advertiserView, since a label's laid-out frame
+        // can be correct while its intrinsic content still exceeds it. Reuses the
+        // setNeedsLayout()/layoutIfNeeded() already forced above; no second layout pass.
+        // Remove alongside every other TEMPORARY block in this file.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            mediaView.clipsToBounds (updateUIView, post-populate) — \
+            \(uiView.mediaView != nil ? String(describing: uiView.mediaView!.clipsToBounds) : "mediaView not registered", privacy: .public)
+            """)
+
+        func dumpMediaViewSubtree(_ view: UIView, depth: Int) {
+            let indent = String(repeating: "  ", count: depth)
+            let frameInAdView = view.convert(view.bounds, to: uiView)
+            admobDiagnosticsLogger.log("""
+                mediaView subtree (updateUIView, post-populate) — \
+                \(indent, privacy: .public)class=\(String(describing: type(of: view)), privacy: .public), \
+                frame=\(String(describing: frameInAdView), privacy: .public), \
+                bounds=\(String(describing: view.bounds), privacy: .public), \
+                clipsToBounds=\(view.clipsToBounds, privacy: .public), \
+                hidden=\(view.isHidden, privacy: .public)
+                """)
+            for subview in view.subviews {
+                dumpMediaViewSubtree(subview, depth: depth + 1)
+            }
+        }
+
+        if let mediaView = uiView.mediaView {
+            dumpMediaViewSubtree(mediaView, depth: 0)
+        } else {
+            admobDiagnosticsLogger.log("mediaView subtree (updateUIView, post-populate) — mediaView not registered")
+        }
+
+        if let advertiserView = uiView.advertiserView {
+            let frameInAdView = advertiserView.convert(advertiserView.bounds, to: uiView)
+            admobDiagnosticsLogger.log("""
+                advertiserView (updateUIView, post-populate) — \
+                frame=\(String(describing: frameInAdView), privacy: .public), \
+                intrinsicContentSize=\(String(describing: advertiserView.intrinsicContentSize), privacy: .public)
+                """)
+        } else {
+            admobDiagnosticsLogger.log("advertiserView (updateUIView, post-populate) — not registered")
+        }
+
+        if let headlineView = uiView.headlineView {
+            let frameInAdView = headlineView.convert(headlineView.bounds, to: uiView)
+            admobDiagnosticsLogger.log("""
+                headlineView (updateUIView, post-populate) — \
+                frame=\(String(describing: frameInAdView), privacy: .public), \
+                intrinsicContentSize=\(String(describing: headlineView.intrinsicContentSize), privacy: .public)
+                """)
+        } else {
+            admobDiagnosticsLogger.log("headlineView (updateUIView, post-populate) — not registered")
+        }
+        #endif
     }
 
     // FIX (AdMob validator: "Advertiser assets outside native ad view"): adView (built in
