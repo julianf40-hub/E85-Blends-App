@@ -102,12 +102,45 @@ struct NativeAdView: View {
             }
         }
         .task {
+            // TEMPORARY — logs the instant this .task actually starts running (as opposed to
+            // NativeAdView merely being constructed — see init's own TEMPORARY log above,
+            // which fires unconditionally on construction and does NOT prove .task ever runs).
+            // Remove alongside every other TEMPORARY block in this file.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                NativeAdView .task started — \
+                placement=\(String(describing: placement), privacy: .public)
+                """)
+            #endif
+
             // Defense-in-depth Pro check — see this file's header. Every real call site already
             // gates on SubscriptionManager.shared.isProUser before constructing this view at
             // all, so this is a second, cheap read of the exact same property, never a new
             // entitlement decision.
             guard AdManager.shared.isAdsEnabled else { return }
+
+            // TEMPORARY — immediately before calling loadIfNeeded().
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                NativeAdView .task calling loadIfNeeded() — \
+                placement=\(String(describing: placement), privacy: .public), \
+                loaderState=\(loader.diagnosticsStateDescription, privacy: .public)
+                """)
+            #endif
+
             loader.loadIfNeeded()
+
+            // TEMPORARY — immediately after loadIfNeeded() returns. loadIfNeeded() itself is
+            // synchronous (it only kicks off the SDK's callback-based load and returns; there is
+            // no async work inside it to await — see NativeAdLoader.loadIfNeeded()), so this
+            // confirms control actually returned to .task, not that the network load finished.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                NativeAdView .task loadIfNeeded() returned — \
+                placement=\(String(describing: placement), privacy: .public), \
+                loaderState=\(loader.diagnosticsStateDescription, privacy: .public)
+                """)
+            #endif
         }
     }
 }
@@ -132,6 +165,13 @@ final class NativeAdLoader: NSObject {
     private let diagnosticsPlacement: AdManager.NativePlacement
     private var adLoader: AdLoader?
 
+    // TEMPORARY — diagnostics only, exposes the private LoadState as a plain string so
+    // NativeAdView's .task can log "loader current state" without exposing LoadState itself.
+    // Remove alongside every other TEMPORARY block in this file.
+    #if !DEBUG
+    var diagnosticsStateDescription: String { String(describing: state) }
+    #endif
+
     init(adUnitID: String, diagnosticsPlacement: AdManager.NativePlacement) {
         self.adUnitID = adUnitID
         self.diagnosticsPlacement = diagnosticsPlacement
@@ -142,7 +182,29 @@ final class NativeAdLoader: NSObject {
     /// nothing in this app can trigger more than one simultaneous or repeated request per
     /// placement instance (Performance Requirements: "one ad request per placement").
     func loadIfNeeded() {
-        guard state == .idle else { return }
+        // TEMPORARY — the very first line of this function, logged unconditionally before the
+        // idle-state guard below, so a TestFlight capture proves whether loadIfNeeded() is
+        // reached at all, regardless of what the guard below then does with it.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            loadIfNeeded() entered — \
+            placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
+            state=\(String(describing: self.state), privacy: .public), \
+            adMobConfigured=\(AdManager.shared.isConfigured, privacy: .public)
+            """)
+        #endif
+
+        guard state == .idle else {
+            // TEMPORARY — explains exactly why the request was skipped.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                loadIfNeeded() skipped — state is not idle \
+                (\(String(describing: self.state), privacy: .public)), \
+                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public)
+                """)
+            #endif
+            return
+        }
         state = .loading
 
         // rootViewController is nil: native ads render inline (no full-screen presentation is
