@@ -445,6 +445,18 @@ private struct NativeAdContainer: UIViewRepresentable {
         callToActionButton.backgroundColor = UIColor(AppTheme.Colors.primaryGreen)
         callToActionButton.layer.cornerRadius = 12
         callToActionButton.isUserInteractionEnabled = false
+        // FIX (AdMob validator: "Advertiser assets outside native ad view"): the button's width
+        // comes from the stack's fill alignment, but nothing previously stopped a long
+        // advertiser-supplied CTA string's intrinsic content width from winning that fight and
+        // pushing the button wider than the stack (and therefore adView) — see the layout audit.
+        // .required compression resistance guarantees the fill constraint always wins instead,
+        // truncating the title (single line, tail-truncated) rather than growing the button.
+        // .defaultLow hugging keeps the button from being forced any wider than its content
+        // needs within that same fill width.
+        callToActionButton.titleLabel?.numberOfLines = 1
+        callToActionButton.titleLabel?.lineBreakMode = .byTruncatingTail
+        callToActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        callToActionButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let headerTextStack = UIStackView(arrangedSubviews: [headlineLabel, advertiserLabel])
         headerTextStack.axis = .vertical
