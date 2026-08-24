@@ -427,6 +427,13 @@ private struct NativeAdContainer: UIViewRepresentable {
         let mediaView = MediaView()
         mediaView.translatesAutoresizingMaskIntoConstraints = false
         mediaView.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        // FIX (AdMob validator: "Advertiser assets outside native ad view"): mediaView's own
+        // frame is correctly constrained (height fixed above, width via the stack's fill
+        // alignment — see the layout audit), but the media creative Google renders inside it
+        // has its own native aspect ratio, unrelated to that fixed box. Without clipping,
+        // content that doesn't match the constrained frame can paint outside mediaView's laid-
+        // out bounds even though the view's frame itself is correct.
+        mediaView.clipsToBounds = true
 
         // isUserInteractionEnabled = false: Google's native ad view intercepts taps on the
         // call-to-action itself to attribute the click correctly — a button-owned tap target
