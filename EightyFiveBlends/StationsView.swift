@@ -500,9 +500,29 @@ struct StationsView: View {
             } else if filteredUnifiedItems.isEmpty {
                 emptyStateForCurrentFilter
             } else {
-                ForEach(filteredUnifiedItems) { item in
-                    unifiedStationCard(for: item)
-                }
+                stationRowsWithNativeAd
+            }
+        }
+    }
+
+    // AdMob Phase 2 — 85Blends Stations Native placement. Inserted once, after the 3rd station
+    // card, only when a 4th card exists to follow it ("Do not show if fewer than 4 stations
+    // exist"). This is one more row alongside unifiedStationCard in the same ForEach — never a
+    // wrapper around the existing cards — so it can't interfere with a station card's own tap
+    // target, swipe action, or navigation. Free users only; Pro users never see showsNativeAd
+    // evaluate true, since isProUser is checked before NativeAdView is ever constructed.
+    @ViewBuilder
+    private var stationRowsWithNativeAd: some View {
+        let items = filteredUnifiedItems
+        let nativeAdInsertionIndex = 2 // 0-indexed — after items[0], [1], [2] (the 3rd card)
+        let showsNativeAd = SubscriptionManager.shared.isProUser == false
+            && items.count > nativeAdInsertionIndex + 1 // at least a 4th card to follow it
+
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            unifiedStationCard(for: item)
+
+            if showsNativeAd, index == nativeAdInsertionIndex {
+                NativeAdView(placement: .stations)
             }
         }
     }

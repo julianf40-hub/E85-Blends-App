@@ -2,12 +2,13 @@
 //  AdManager.swift
 //  EightyFiveBlends
 //
-//  AdMob Phase 1 — foundation only. This file initializes the Google Mobile Ads SDK and tracks
-//  that initialization's state. It deliberately does NOT load, preload, or present any ad —
-//  no ad unit ID exists anywhere in this file. Native ad views embedded in existing scrolling
-//  content are separate, later work; this is SDK bootstrap only, mirroring how
-//  RevenueCatSubscriptionService.swift is scoped to "configure the SDK and expose its state,"
-//  not to any one paywall screen.
+//  AdMob Phase 1 added SDK bootstrap only — initialization and state tracking, no ad unit ID,
+//  no ad request. AdMob Phase 2 (below, `NativePlacement`) adds the ad unit ID configuration for
+//  85Blends' two native placements; the actual loading/rendering code lives in
+//  Components/NativeAdView.swift, which reads `NativePlacement.adUnitID` from here rather than
+//  hardcoding an ad unit ID at either call site — this file stays the one place both the SDK
+//  config and the ad unit ID config live, mirroring how RevenueCatSubscriptionService.swift is
+//  scoped to "configure the SDK and expose its state," not to any one paywall screen.
 //
 //  NO INTERRUPTIVE ADVERTISING — standing product/UX decision, not a Phase 1 scoping choice:
 //  85Blends will not show interstitial, full-screen, timed, forced-dismiss, or app-open ads,
@@ -33,10 +34,11 @@
 //  RevenueCat already uses rather than adding a second reason to slow down cold launch. See
 //  EightyFiveBlendsApp.swift's own header/init() comment for the full reasoning.
 //
-//  TEST CONFIGURATION ONLY (Phase 1): Info.plist's GADApplicationIdentifier is Google's public
-//  sample App ID (`ca-app-pub-3940256099942544~1458002511`), documented by Google for exactly
-//  this purpose — SDK bring-up and testing before a real AdMob app is wired in. No production ad
-//  unit ID appears anywhere in this app yet.
+//  TEST CONFIGURATION ONLY: Info.plist's GADApplicationIdentifier is Google's public sample App
+//  ID (`ca-app-pub-3940256099942544~1458002511`, from Phase 1), and `NativePlacement.adUnitID`
+//  below always resolves to Google's public sample Native Advanced ad unit ID, never the real
+//  85Blends ad unit IDs — see `NativePlacement` for why both real IDs are recorded but neither is
+//  requested yet.
 //
 //  PRO AWARENESS (foundation only): `isAdsEnabled` below reads SubscriptionManager.shared
 //  directly — the same single entitlement source every other Pro gate in this app reads (see
@@ -164,5 +166,43 @@ final class AdManager {
             .sorted()
         guard notReady.isEmpty == false else { return nil }
         return "Adapter(s) not ready: \(notReady.joined(separator: ", "))"
+    }
+
+    // MARK: - Native ad placements (Phase 2)
+
+    /// 85Blends' two approved native ad locations — see this file's header on why there are
+    /// exactly two and why nothing else (an interstitial placement, an app-open placement) may
+    /// be added here. Each case is where Components/NativeAdView.swift resolves the ad unit ID
+    /// it requests; call sites (CalculatorView.swift, StationsView.swift) pass a case, never a
+    /// raw ad unit ID string.
+    enum NativePlacement {
+        /// CalculatorView's bottom-of-scroll placement — 85Blends' default/first tab.
+        case calculatorHome
+        /// StationsView's inline placement, after the 3rd station card.
+        case stations
+
+        /// Google's public sample Native Advanced ad unit ID for iOS — documented by Google for
+        /// exactly this purpose, identical in shape to `RevenueCatConfiguration`'s
+        /// test-vs-production key split, and to Phase 1's GADApplicationIdentifier choice. Every
+        /// placement uses this one ID; there is nothing placement-specific about a test ID.
+        private static let testAdUnitID = "ca-app-pub-3940256099942544/3986624511"
+
+        /// The real 85Blends AdMob Native Advanced ad unit ID for this placement, as configured
+        /// in Julian's AdMob account. Recorded here now so going live is a one-line change to
+        /// `adUnitID` below — but nothing in this app reads `productionAdUnitID` yet.
+        var productionAdUnitID: String {
+            switch self {
+            case .calculatorHome: return "ca-app-pub-2011940670640942/1588596562"
+            case .stations: return "ca-app-pub-2011940670640942/3192437795"
+            }
+        }
+
+        /// The ad unit ID this app actually requests. Always `testAdUnitID` for now — Testing
+        /// Requirements for this phase are explicit: test ads only, regardless of build
+        /// configuration. Flipping this to `productionAdUnitID` (gated the same
+        /// `#if INTERNAL_BUILD`/Release way RevenueCatConfiguration already splits its keys) is
+        /// deliberately deferred to a later, explicit "go live" change — not bundled into this
+        /// phase.
+        var adUnitID: String { Self.testAdUnitID }
     }
 }
