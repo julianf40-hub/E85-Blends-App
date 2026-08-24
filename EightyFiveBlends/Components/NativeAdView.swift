@@ -44,6 +44,32 @@
 
 import SwiftUI
 import GoogleMobileAds
+import os
+
+// TEMPORARY — production/TestFlight diagnostics for the "native ads not appearing"
+// investigation. Every use of this logger below is marked TEMPORARY and must be removed,
+// alongside this declaration, once the root cause is confirmed and fixed — see the matching
+// comment on AdManager.swift's own diagnostics logger.
+//
+// os.Logger, not print(): 85Blends is validated through TestFlight on the Release/production
+// configuration (per this pass's own context) — print() output is not retrievable from a
+// TestFlight-installed, non-debugger-attached process, while os.Logger's unified-logging
+// entries are (via Console.app / `log collect` with the device connected). Every interpolated
+// value below is explicitly marked `privacy: .public` — os.Logger redacts interpolated values
+// as `<private>` by default in release-signed builds, and everything logged here (an enum
+// case, a Bool, a short technical string) is non-sensitive, so redaction would defeat the
+// entire point of this pass.
+//
+// Gated `#if !DEBUG` — true for both Internal and Release (neither defines the DEBUG
+// compilation condition; only the Debug configuration does), so this covers both
+// configurations actually used for TestFlight validation while staying silent in local Xcode
+// Debug runs.
+#if !DEBUG
+private let admobDiagnosticsLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.e85blends.app.ios",
+    category: "AdMobDiagnostics"
+)
+#endif
 
 struct NativeAdView: View {
     let placement: AdManager.NativePlacement
@@ -52,12 +78,15 @@ struct NativeAdView: View {
 
     init(placement: AdManager.NativePlacement) {
         self.placement = placement
-        _loader = State(initialValue: NativeAdLoader(adUnitID: placement.adUnitID))
-        // TEMPORARY — TestFlight (Internal-build only) diagnostics for the "native ads not
-        // appearing" investigation. Not user-facing, no UI, console-only. Remove once the root
-        // cause is confirmed and fixed.
-        #if INTERNAL_BUILD
-        print("[85Blends][AdMob][diagnostics] NativeAdView created — placement=\(placement), isProUser=\(SubscriptionManager.shared.isProUser)")
+        _loader = State(initialValue: NativeAdLoader(adUnitID: placement.adUnitID, diagnosticsPlacement: placement))
+        // TEMPORARY — see the diagnostics-logger declaration above this type for the full
+        // rationale. Remove this block once the root cause is confirmed and fixed.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            NativeAdView created — \
+            placement=\(String(describing: placement), privacy: .public), \
+            isProUser=\(SubscriptionManager.shared.isProUser, privacy: .public)
+            """)
         #endif
     }
 
@@ -96,10 +125,16 @@ final class NativeAdLoader: NSObject {
     private enum LoadState: Equatable { case idle, loading, loaded, failed }
     private var state: LoadState = .idle
     private let adUnitID: String
+    // TEMPORARY — diagnostics only, carried alongside adUnitID purely so load-start/success/
+    // failure logging below can report which placement they belong to. Remove this property
+    // and the `diagnosticsPlacement:` init parameter together with every other TEMPORARY block
+    // in this file once the root cause is confirmed and fixed.
+    private let diagnosticsPlacement: AdManager.NativePlacement
     private var adLoader: AdLoader?
 
-    init(adUnitID: String) {
+    init(adUnitID: String, diagnosticsPlacement: AdManager.NativePlacement) {
         self.adUnitID = adUnitID
+        self.diagnosticsPlacement = diagnosticsPlacement
         super.init()
     }
 
@@ -121,12 +156,18 @@ final class NativeAdLoader: NSObject {
         )
         loader.delegate = self
         adLoader = loader
-        // TEMPORARY — TestFlight (Internal-build only) diagnostics, see NativeAdView.init's own
-        // comment. Logged right before AdLoader.load() so its timing can be compared against
-        // AdManager's "[85Blends][AdMob] Configured." line in the same console — the two lines'
-        // relative order is exactly what confirms or rules out an SDK-init race.
-        #if INTERNAL_BUILD
-        print("[85Blends][AdMob][diagnostics] AdLoader.load() starting — adUnitID=\(adUnitID)")
+        // TEMPORARY — see the diagnostics-logger declaration near the top of this file. Logged
+        // right before AdLoader.load(), including whether AdMob's SDK init has actually
+        // completed yet (AdManager.shared.isConfigured) — this is the direct test for the
+        // suspected SDK-init race: if this ever logs `adMobConfigured=false`, the ad request is
+        // firing before MobileAds.shared.start(completionHandler:) has completed.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            AdLoader.load() starting — \
+            placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
+            adUnitID=\(self.adUnitID, privacy: .public), \
+            adMobConfigured=\(AdManager.shared.isConfigured, privacy: .public)
+            """)
         #endif
         loader.load(Request())
     }
@@ -134,31 +175,45 @@ final class NativeAdLoader: NSObject {
 
 extension NativeAdLoader: NativeAdLoaderDelegate {
     nonisolated func adLoader(_ adLoader: AdLoader, didReceive nativeAd: NativeAd) {
-        // TEMPORARY — TestFlight (Internal-build only) diagnostics, see NativeAdView.init's own
-        // comment.
-        #if INTERNAL_BUILD
-        print("[85Blends][AdMob][diagnostics] Native ad received successfully — headline=\(nativeAd.headline ?? "nil")")
-        #endif
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.nativeAd = nativeAd
             self.state = .loaded
+            // TEMPORARY — see the diagnostics-logger declaration near the top of this file.
+            // Logged here, inside the @MainActor hop, so it can safely read
+            // self.diagnosticsPlacement (this delegate callback itself is nonisolated, since
+            // Google's SDK may invoke it off the main thread).
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                Native ad received — \
+                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
+                headline=\(nativeAd.headline ?? "nil", privacy: .public)
+                """)
+            #endif
         }
     }
 
     // Fail silently to the USER, always — no internet, SDK unavailable, and no-fill all land
     // here and are handled identically as far as the UI is concerned: state flips to .failed,
     // NativeAdView renders EmptyView(), and nothing is ever shown to the user. See this file's
-    // header. The console-only diagnostic below (Internal builds only) is not user-facing and
-    // does not change that contract — it exists purely so TestFlight testing can distinguish
-    // *why* a load failed without adding any UI.
+    // header. The console-only diagnostic below is not user-facing and does not change that
+    // contract — it exists purely so TestFlight testing can distinguish *why* a load failed
+    // without adding any UI.
     nonisolated func adLoader(_ adLoader: AdLoader, didFailToReceiveAdWithError error: Error) {
-        #if INTERNAL_BUILD
-        let nsError = error as NSError
-        print("[85Blends][AdMob][diagnostics] Native ad failed to load — domain=\(nsError.domain), code=\(nsError.code), message=\(nsError.localizedDescription)")
-        #endif
         Task { @MainActor [weak self] in
-            self?.state = .failed
+            guard let self else { return }
+            self.state = .failed
+            // TEMPORARY — see the diagnostics-logger declaration near the top of this file.
+            #if !DEBUG
+            let nsError = error as NSError
+            admobDiagnosticsLogger.error("""
+                Native ad failed — \
+                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
+                domain=\(nsError.domain, privacy: .public), \
+                code=\(nsError.code, privacy: .public), \
+                message=\(nsError.localizedDescription, privacy: .public)
+                """)
+            #endif
         }
     }
 }
