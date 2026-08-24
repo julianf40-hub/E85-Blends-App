@@ -520,7 +520,11 @@ private struct NativeAdContainer: UIViewRepresentable {
         let bodyLabel = UILabel()
         bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
         bodyLabel.textColor = UIColor(AppTheme.Colors.textSecondary)
-        bodyLabel.numberOfLines = 3
+        // Visual sizing pass: 3 → 2 lines — trims card height toward the ~250-320pt compact-card
+        // target (see the sizing audit). Body copy isn't the ad's primary hook (the headline
+        // above still gets its full 2 lines), so 2 lines stays plenty for typical native-ad
+        // description text.
+        bodyLabel.numberOfLines = 2
 
         let iconImageView = UIImageView()
         iconImageView.contentMode = .scaleAspectFit
@@ -532,7 +536,11 @@ private struct NativeAdContainer: UIViewRepresentable {
 
         let mediaView = MediaView()
         mediaView.translatesAutoresizingMaskIntoConstraints = false
-        mediaView.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        // Visual sizing pass: 120 → 110pt — a modest trim toward the compact-card target.
+        // Deliberately not smaller: Google's Native Ads policy expects the media asset to stay
+        // visually prominent, and this file has already fixed two separate asset-prominence/
+        // validator issues — no further reduction here to avoid reintroducing that risk.
+        mediaView.heightAnchor.constraint(equalToConstant: 110).isActive = true
         // FIX (AdMob validator: "Advertiser assets outside native ad view"): mediaView's own
         // frame is correctly constrained (height fixed above, width via the stack's fill
         // alignment — see the layout audit), but the media creative Google renders inside it
@@ -551,6 +559,17 @@ private struct NativeAdContainer: UIViewRepresentable {
         callToActionButton.backgroundColor = UIColor(AppTheme.Colors.primaryGreen)
         callToActionButton.layer.cornerRadius = 12
         callToActionButton.isUserInteractionEnabled = false
+        callToActionButton.translatesAutoresizingMaskIntoConstraints = false
+        // Visual sizing pass: previously had no explicit height at all, relying purely on
+        // intrinsic content size (title height only) — undetermined and inconsistent with every
+        // other fixed-size asset in this stack (iconImageView 40x40, mediaView's own height
+        // constraint below). >= rather than == so a larger system font (e.g. Dynamic Type) can
+        // still grow the button instead of clipping its title.
+        callToActionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
+        // Horizontal breathing room around the title so it doesn't run edge-to-edge on longer
+        // advertiser-supplied CTA strings — contentEdgeInsets (not UIButton.Configuration) to
+        // match this button's existing pre-Configuration API usage above/below.
+        callToActionButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 16, bottom: 0, right: 16)
         // FIX (AdMob validator: "Advertiser assets outside native ad view"): the button's width
         // comes from the stack's fill alignment, but nothing previously stopped a long
         // advertiser-supplied CTA string's intrinsic content width from winning that fight and
@@ -575,7 +594,9 @@ private struct NativeAdContainer: UIViewRepresentable {
 
         let stack = UIStackView(arrangedSubviews: [sponsoredLabel, headerRow, mediaView, bodyLabel, callToActionButton])
         stack.axis = .vertical
-        stack.spacing = 8
+        // Visual sizing pass: 8 → 6pt — trims card height toward the compact-card target while
+        // keeping comfortable breathing room between elements.
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         adView.addSubview(stack)
