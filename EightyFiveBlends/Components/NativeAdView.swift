@@ -91,14 +91,21 @@ struct NativeAdView: View {
     }
 
     var body: some View {
-        Group {
+        // LIFECYCLE FIX: was `Group { if ... else { EmptyView() } }`. Group is a purely
+        // structural, identity-less wrapper — it has no view presence of its own, so
+        // Group{EmptyView()} (which is what this resolves to for every render before an ad has
+        // loaded) gave .task below no stable, genuinely-mounted node to attach to. That's why
+        // "NativeAdView .task started" never logged for either placement despite init running
+        // normally — see the lifecycle audit this fix implements. ZStack is a real SwiftUI
+        // primitive with its own independent presence regardless of whether its children
+        // currently render anything, so .task now has something concrete to mount on from the
+        // very first render. The explicit `else { EmptyView() }` branch is dropped — omitting
+        // the else already means "nothing," and ZStack itself supplies the presence .task
+        // needs; behavior otherwise unchanged (idle/loading/failed all still render nothing
+        // visible — see this file's header).
+        ZStack {
             if let nativeAd = loader.nativeAd {
                 NativeAdCard(nativeAd: nativeAd)
-            } else {
-                // Covers idle, loading, and failed alike — see this file's header. No spinner,
-                // no placeholder box, no error text; scrolling content simply doesn't include
-                // this card until (and unless) a real ad is ready to show.
-                EmptyView()
             }
         }
         .task {
