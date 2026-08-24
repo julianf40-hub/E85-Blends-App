@@ -132,13 +132,36 @@ final class AdManager {
     /// `lastInitializationStatus` for diagnostics only, never surfaced to the user and never
     /// allowed to block app launch or any other feature.
     func configureIfNeeded() async {
-        guard configurationState == .notConfigured else { return }
+        // TEMPORARY — the very first line of this function, logged unconditionally on every
+        // call (including a redundant second call that the guard below then skips), so a
+        // TestFlight capture proves whether configureIfNeeded() is ever actually invoked from
+        // EightyFiveBlendsApp's launch .task at all. Remove alongside every other TEMPORARY
+        // block in this file.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            configureIfNeeded() called — \
+            stateOnEntry=\(String(describing: self.configurationState), privacy: .public)
+            """)
+        #endif
+
+        guard configurationState == .notConfigured else {
+            // TEMPORARY — explains exactly why this call was skipped.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                configureIfNeeded() skipped — state is not notConfigured \
+                (\(String(describing: self.configurationState), privacy: .public))
+                """)
+            #endif
+            return
+        }
         configurationState = .configuring
 
-        // TEMPORARY — see the diagnostics-logger declaration at the top of this file. Remove
-        // this block once the root cause is confirmed and fixed.
+        // TEMPORARY — see the diagnostics-logger declaration at the top of this file.
         #if !DEBUG
-        admobDiagnosticsLogger.log("configureIfNeeded() starting")
+        admobDiagnosticsLogger.log("""
+            configureIfNeeded() starting — \
+            state=\(String(describing: self.configurationState), privacy: .public)
+            """)
         #endif
 
         // GADApplicationIdentifier is read from Info.plist by the SDK itself at start(); this
@@ -150,8 +173,20 @@ final class AdManager {
         // its signature has been stable across many SDK majors and is what every current Google
         // quickstart documents — wrapped once here in withCheckedContinuation so the rest of
         // this file, and every future caller of configureIfNeeded(), stays plain async/await.
+        //
+        // TEMPORARY — logged immediately before MobileAds.shared.start() is called.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("MobileAds.shared.start() about to be called")
+        #endif
         let status = await withCheckedContinuation { (continuation: CheckedContinuation<InitializationStatus, Never>) in
             MobileAds.shared.start { status in
+                // TEMPORARY — logs the instant the SDK's own completion handler fires, before
+                // this continuation resumes — the direct test for whether MobileAds.shared.start
+                // ever calls back at all. os.Logger is documented Sendable/thread-safe, so this
+                // is safe to call regardless of what thread the SDK invokes this closure on.
+                #if !DEBUG
+                admobDiagnosticsLogger.log("MobileAds.shared.start() completion handler fired")
+                #endif
                 continuation.resume(returning: status)
             }
         }
@@ -181,9 +216,15 @@ final class AdManager {
         // AdMob's SDK finished configuring at all, and when, relative to the first ad request.
         #if !DEBUG
         if let lastErrorDescription {
-            admobDiagnosticsLogger.error("configureIfNeeded() completed with issues — \(lastErrorDescription, privacy: .public)")
+            admobDiagnosticsLogger.error("""
+                configureIfNeeded() completed with issues — \(lastErrorDescription, privacy: .public), \
+                finalState=\(String(describing: self.configurationState), privacy: .public)
+                """)
         } else {
-            admobDiagnosticsLogger.log("configureIfNeeded() completed — all adapters ready")
+            admobDiagnosticsLogger.log("""
+                configureIfNeeded() completed — all adapters ready, \
+                finalState=\(String(describing: self.configurationState), privacy: .public)
+                """)
         }
         #endif
     }
