@@ -39,6 +39,11 @@ struct StationsView: View {
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
     @State private var pendingLiveSearch = false
+    // Auto-nearby-search cooldown tracking — see shouldPerformAutomaticNearbySearch() and
+    // Self.autoNearbySearchCooldown below. Plain @State, matching every other transient
+    // per-appearance flag on this view (isSearchingLive, pendingLiveSearch, etc.) — no new
+    // persistence layer, since this only needs to survive tab switches within one app session.
+    @State private var lastNearbySearchDate: Date?
     @State private var liveSearchTask: Task<Void, Never>?
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @State private var priceInput = ""
@@ -69,6 +74,14 @@ struct StationsView: View {
     @FocusState private var isTripPlannerFieldFocused: Bool
 
     private let radiusOptions = ["10 mi", "25 mi", "50 mi", "100 mi"]
+
+    /// Minimum time between automatic (tab-open-triggered) nearby searches — see
+    /// shouldPerformAutomaticNearbySearch(). The manual "Find Nearby E85"/header-refresh
+    /// buttons and pull-to-refresh never check this cooldown themselves (they always search
+    /// immediately); they do update lastNearbySearchDate like any other current-location
+    /// search, which just means a later automatic trigger won't immediately re-fetch right
+    /// behind them.
+    private static let autoNearbySearchCooldown: TimeInterval = 5 * 60
 
     private var appVersionString: String? {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
@@ -210,6 +223,11 @@ struct StationsView: View {
                     .frame(width: proxy.size.width, alignment: .leading)
                 }
                 .scrollIndicators(.visible, axes: .vertical)
+                // Pull-to-refresh — forces an immediate nearby search regardless of the
+                // auto-search cooldown below (see performPullToRefresh()).
+                .refreshable {
+                    await performPullToRefresh()
+                }
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
                 .background(AppTheme.Colors.charcoal)
@@ -222,6 +240,12 @@ struct StationsView: View {
         .onAppear {
             recenterMap()
             refreshCommunityPricePreviews()
+            // UX improvement — auto-populate the Nearby E85 feed on tab open instead of
+            // requiring a manual "Find Nearby E85" tap every time. See
+            // performAutomaticNearbySearchIfNeeded()'s own header for the cooldown/denied-
+            // permission handling that keeps this from spamming requests or interrupting the
+            // user with an unprompted alert.
+            performAutomaticNearbySearchIfNeeded()
         }
         .onDisappear {
             liveSearchTask?.cancel()
@@ -495,12 +519,26 @@ struct StationsView: View {
                 .padding(.horizontal, 2)
             }
 
-            if isSearchingLive {
-                liveSearchLoadingCard
-            } else if filteredUnifiedItems.isEmpty {
-                emptyStateForCurrentFilter
+            // UX fix: previously `isSearchingLive` fully replaced this section with just
+            // liveSearchLoadingCard, hiding any already-loaded saved stations for the whole
+            // duration of a search. Now that a search can also start automatically on tab
+            // open (see performAutomaticNearbySearchIfNeeded()), that would mean saved
+            // stations disappearing every single time the tab is opened — so the existing
+            // list now stays visible, with the loading card appended below it instead of
+            // replacing it. Only the true empty case (nothing saved or nearby yet) still
+            // shows the loading card alone.
+            if filteredUnifiedItems.isEmpty {
+                if isSearchingLive {
+                    liveSearchLoadingCard
+                } else {
+                    emptyStateForCurrentFilter
+                }
             } else {
                 stationRowsWithNativeAd
+
+                if isSearchingLive {
+                    liveSearchLoadingCard
+                }
             }
         }
     }
@@ -572,6 +610,12 @@ struct StationsView: View {
             return "Favorites pinned first, then recently updated."
         case .nearby:
             if liveStations.isEmpty {
+                // Loading-state polish: a search (automatic or manual) may already be in
+                // flight the first time this filter is visible — "Tap Find Nearby E85" would
+                // be stale/confusing in that moment.
+                if isSearchingLive {
+                    return "Searching nearby E85 stations…"
+                }
                 return "Tap Find Nearby E85 or search an area above."
             }
             return "\(liveStations.count) results near \(stationSearchSource.displayName) within \(selectedRadius)."
@@ -1382,6 +1426,63 @@ struct StationsView: View {
         }
     }
 
+    /// Whether the tab-open auto-trigger (see performAutomaticNearbySearchIfNeeded()) should
+    /// perform a nearby search right now. False whenever an explicit typed-location Trip
+    /// Planner search is active (that's deliberate user intent this trigger must never
+    /// override), a search is already in flight or pending, or the last current-location
+    /// search happened within `autoNearbySearchCooldown`.
+    private func shouldPerformAutomaticNearbySearch() -> Bool {
+        guard stationSearchSource == .currentLocation else { return false }
+        guard isSearchingLive == false, pendingLiveSearch == false else { return false }
+        if let lastNearbySearchDate,
+           Date.now.timeIntervalSince(lastNearbySearchDate) < Self.autoNearbySearchCooldown {
+            return false
+        }
+        return true
+    }
+
+    /// UX improvement — automatically populates the Nearby E85 feed when the Stations tab
+    /// becomes active, instead of requiring a manual "Find Nearby E85" tap every time. Mirrors
+    /// searchNearbyStations()'s own location-availability branching (already-available
+    /// coordinate vs. request-then-wait-for-the-.onChange-handler vs. denied), with the
+    /// differences an automatic, non-user-initiated trigger needs:
+    ///   1. Denied/restricted authorization silently no-ops instead of presenting
+    ///      locationDeniedAlert — an alert popping up on every tab open, with no tap to
+    ///      explain it, is exactly the kind of disruptive behavior this feature must avoid.
+    ///      The existing "Find Nearby E85" button (and its alert, when tapped) is unchanged.
+    ///   2. Gated by shouldPerformAutomaticNearbySearch()'s cooldown, so switching tabs
+    ///      repeatedly reuses the existing results instead of re-fetching every time.
+    private func performAutomaticNearbySearchIfNeeded() {
+        guard shouldPerformAutomaticNearbySearch() else { return }
+
+        if let coordinate = locationManager.latestCoordinate {
+            let userCoordinate = coordinate.clCoordinate
+            guard isValidCoordinate(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude) else {
+                return
+            }
+            centerMap(on: userCoordinate)
+            fetchLiveStations(at: userCoordinate)
+            refreshPumpDetectionMonitoredStations(reason: "Stations tab opened")
+        } else if locationManager.authorizationDenied == false {
+            pendingLiveSearch = true
+            locationManager.requestUserLocation()
+        }
+        // authorizationDenied == true: intentionally silent — see header comment above.
+    }
+
+    /// Pull-to-refresh — see the `.refreshable` modifier in `stationsContent`.
+    /// searchNearbyStations() already always searches immediately regardless of
+    /// lastNearbySearchDate (only shouldPerformAutomaticNearbySearch() ever consults that
+    /// cooldown), so this needs no separate bypass to satisfy "pull-to-refresh always forces a
+    /// refresh."
+    private func performPullToRefresh() async {
+        searchNearbyStations()
+        // .refreshable's own spinner only needs to bridge the moment until the existing
+        // liveSearchLoadingCard takes over as the ongoing indicator — kept short so the two
+        // never visibly stack into "repeated spinners."
+        try? await Task.sleep(nanoseconds: 400_000_000)
+    }
+
     /// Feeds the current saved-station list into Automatic Pump Detection's monitor
     /// refresh — the service itself decides (via movement/authorization gates) whether a
     /// real rebuild is warranted, so this is safe to call from every location update.
@@ -1427,6 +1528,15 @@ struct StationsView: View {
         pendingLiveSearch = false
         isSearchingLive = true
         liveSearchError = nil
+
+        // Auto-search cooldown stamp — only for current-location searches (manual tap, header
+        // refresh, pull-to-refresh, or the automatic tab-open trigger all funnel through here
+        // with stationSearchSource == .currentLocation). An explicit Trip Planner search
+        // targets a different place entirely and must never suppress a later current-location
+        // auto-search — see shouldPerformAutomaticNearbySearch().
+        if stationSearchSource == .currentLocation {
+            lastNearbySearchDate = .now
+        }
 
         let radiusValue = Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
         let service = NLRStationService()
