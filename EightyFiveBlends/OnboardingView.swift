@@ -38,7 +38,7 @@ struct OnboardingView: View {
         .init(
             emoji: "🚗",
             title: "Welcome to 85Blends",
-            subtitle: "Calculate blends, find E85 stations, and keep your ethanol fueling organized.",
+            subtitle: "E85 = up to 85% ethanol. Calculate blends, find E85 stations, and keep your ethanol fueling organized.",
             bulletPoints: [
                 "Blend Calculator & At the Pump mode",
                 "Nearby E85 Stations & community pricing",
@@ -49,7 +49,7 @@ struct OnboardingView: View {
         // 1: Vehicle setup (optional form — body routes here via currentStep == 1)
         .init(
             emoji: "🔧",
-            title: "Manage Your Build",
+            title: "Add Your Vehicle",
             subtitle: "Optional — add your vehicle to personalize blend defaults. You can skip this and add it later in Garage."
         ),
         // 2: Feature overview
@@ -75,7 +75,7 @@ struct OnboardingView: View {
         .init(
             emoji: "🔥",
             title: "Ready to Blend?",
-            subtitle: "Track fuel, find stations, manage your build, and make every fill-up smarter."
+            subtitle: "Track fuel, find stations, add your vehicle, and make every fill-up smarter."
         ),
         // 5: 85Blends Pro intro (proStepIndex) — informational only, no paywall or purchase flow.
         // 85Blends 2.3.0 release-blocker fix: this list previously repeated ProUpgradeView's
@@ -88,7 +88,7 @@ struct OnboardingView: View {
             title: "Unlock 85Blends Pro",
             subtitle: "Take your E85 experience even further.",
             bulletPoints: [
-                "Intelligent Trip Planning"
+                "Intelligent Trip Planning — plan E85 routes with fuel stops along the way"
             ]
         )
     ]
