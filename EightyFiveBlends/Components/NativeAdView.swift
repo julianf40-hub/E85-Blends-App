@@ -53,6 +53,12 @@ struct NativeAdView: View {
     init(placement: AdManager.NativePlacement) {
         self.placement = placement
         _loader = State(initialValue: NativeAdLoader(adUnitID: placement.adUnitID))
+        // TEMPORARY — TestFlight (Internal-build only) diagnostics for the "native ads not
+        // appearing" investigation. Not user-facing, no UI, console-only. Remove once the root
+        // cause is confirmed and fixed.
+        #if INTERNAL_BUILD
+        print("[85Blends][AdMob][diagnostics] NativeAdView created — placement=\(placement), isProUser=\(SubscriptionManager.shared.isProUser)")
+        #endif
     }
 
     var body: some View {
@@ -115,12 +121,24 @@ final class NativeAdLoader: NSObject {
         )
         loader.delegate = self
         adLoader = loader
+        // TEMPORARY — TestFlight (Internal-build only) diagnostics, see NativeAdView.init's own
+        // comment. Logged right before AdLoader.load() so its timing can be compared against
+        // AdManager's "[85Blends][AdMob] Configured." line in the same console — the two lines'
+        // relative order is exactly what confirms or rules out an SDK-init race.
+        #if INTERNAL_BUILD
+        print("[85Blends][AdMob][diagnostics] AdLoader.load() starting — adUnitID=\(adUnitID)")
+        #endif
         loader.load(Request())
     }
 }
 
 extension NativeAdLoader: NativeAdLoaderDelegate {
     nonisolated func adLoader(_ adLoader: AdLoader, didReceive nativeAd: NativeAd) {
+        // TEMPORARY — TestFlight (Internal-build only) diagnostics, see NativeAdView.init's own
+        // comment.
+        #if INTERNAL_BUILD
+        print("[85Blends][AdMob][diagnostics] Native ad received successfully — headline=\(nativeAd.headline ?? "nil")")
+        #endif
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.nativeAd = nativeAd
@@ -128,10 +146,17 @@ extension NativeAdLoader: NativeAdLoaderDelegate {
         }
     }
 
-    // Fail silently, always — no internet, SDK unavailable, and no-fill all land here and are
-    // handled identically: state flips to .failed, NativeAdView renders EmptyView(), and nothing
-    // is ever shown to the user. See this file's header.
+    // Fail silently to the USER, always — no internet, SDK unavailable, and no-fill all land
+    // here and are handled identically as far as the UI is concerned: state flips to .failed,
+    // NativeAdView renders EmptyView(), and nothing is ever shown to the user. See this file's
+    // header. The console-only diagnostic below (Internal builds only) is not user-facing and
+    // does not change that contract — it exists purely so TestFlight testing can distinguish
+    // *why* a load failed without adding any UI.
     nonisolated func adLoader(_ adLoader: AdLoader, didFailToReceiveAdWithError error: Error) {
+        #if INTERNAL_BUILD
+        let nsError = error as NSError
+        print("[85Blends][AdMob][diagnostics] Native ad failed to load — domain=\(nsError.domain), code=\(nsError.code), message=\(nsError.localizedDescription)")
+        #endif
         Task { @MainActor [weak self] in
             self?.state = .failed
         }
