@@ -505,24 +505,50 @@ struct StationsView: View {
         }
     }
 
-    // AdMob Phase 2 — 85Blends Stations Native placement. Inserted once, after the 3rd station
-    // card, only when a 4th card exists to follow it ("Do not show if fewer than 4 stations
-    // exist"). This is one more row alongside unifiedStationCard in the same ForEach — never a
-    // wrapper around the existing cards — so it can't interfere with a station card's own tap
-    // target, swipe action, or navigation. Free users only; Pro users never see showsNativeAd
-    // evaluate true, since isProUser is checked before NativeAdView is ever constructed.
+    // AdMob Phase 2 — 85Blends Stations Native placement, rendered as its own stable row
+    // between the first 3 station cards and the rest — never nested inside either ForEach, so
+    // its SwiftUI identity never depends on which station happens to occupy any particular
+    // position.
+    //
+    // FIX (validation audit): the original version emitted NativeAdView from inside a single
+    // enumerated ForEach's per-item closure (id: \.element.id), so the ad's identity was
+    // inherited from whichever station happened to sit at index 2. A filter toggle, a live
+    // search refresh, or a favorite/sort update could put a DIFFERENT station at that index,
+    // which SwiftUI reads as "new element, new closure invocation" — tearing down and
+    // recreating NativeAdLoader (and firing a fresh ad request) on every such reorder. Splitting
+    // into two ForEach blocks around one independently-identified NativeAdView removes that
+    // dependency entirely: leading/trailing station rows can reorder, refresh, or change count
+    // freely without ever touching the ad's identity. "Do not show if fewer than 4 stations
+    // exist" is preserved via the items.count check below. Free users only; Pro users never see
+    // showsNativeAd evaluate true, since isProUser is checked before NativeAdView is ever
+    // constructed.
     @ViewBuilder
     private var stationRowsWithNativeAd: some View {
         let items = filteredUnifiedItems
-        let nativeAdInsertionIndex = 2 // 0-indexed — after items[0], [1], [2] (the 3rd card)
+        let leadingStationCount = 3 // cards rendered before the ad — "after the third station card"
         let showsNativeAd = SubscriptionManager.shared.isProUser == false
-            && items.count > nativeAdInsertionIndex + 1 // at least a 4th card to follow it
+            && items.count > leadingStationCount // at least a 4th card to follow the ad
 
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-            unifiedStationCard(for: item)
+        if showsNativeAd {
+            let leadingItems = Array(items.prefix(leadingStationCount))
+            let trailingItems = Array(items.dropFirst(leadingStationCount))
 
-            if showsNativeAd, index == nativeAdInsertionIndex {
-                NativeAdView(placement: .stations)
+            ForEach(leadingItems) { item in
+                unifiedStationCard(for: item)
+            }
+
+            // Explicit, fixed identity — independent of every station's own id, so nothing
+            // about the lists above/below this line (reordering, refreshing, growing, shrinking)
+            // can ever cause this specific view to be torn down and recreated.
+            NativeAdView(placement: .stations)
+                .id("stations-native-ad-slot")
+
+            ForEach(trailingItems) { item in
+                unifiedStationCard(for: item)
+            }
+        } else {
+            ForEach(items) { item in
+                unifiedStationCard(for: item)
             }
         }
     }

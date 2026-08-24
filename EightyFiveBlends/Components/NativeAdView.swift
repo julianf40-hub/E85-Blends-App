@@ -183,12 +183,34 @@ private struct NativeAdCard: View {
 private struct NativeAdContainer: UIViewRepresentable {
     let nativeAd: NativeAd
 
+    // FIX (validation audit): SwiftUI calls updateUIView on most re-renders of the surrounding
+    // hierarchy (a Calculator input changing, a Stations search updating) — not only when this
+    // ad's own content changes. Without tracking what was last populated, every one of those
+    // redraws re-wrote every asset view's text/image and reassigned `.nativeAd`, even though the
+    // ad itself never changed. The Coordinator persists across updateUIView calls (unlike a
+    // local var in this struct, which is a fresh value every re-render), so it's the correct
+    // place to remember "this exact NativeAd instance is already displayed."
+    final class Coordinator {
+        var lastPopulatedNativeAd: NativeAd?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeUIView(context: Context) -> GoogleMobileAds.NativeAdView {
         buildNativeAdView()
     }
 
     func updateUIView(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
+        // Only repopulate when the underlying NativeAd instance actually changed. Reference
+        // identity (===/!==) is the right comparison here — NativeAd is a reference type, and
+        // NativeAdLoader only ever produces one instance per placement's displayed lifetime (see
+        // NativeAdLoader.loadIfNeeded()'s idle/loading/loaded/failed guard), so this reduces to
+        // "populate exactly once," not a per-property diff.
+        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
         populate(uiView, with: nativeAd)
+        context.coordinator.lastPopulatedNativeAd = nativeAd
     }
 
     private func buildNativeAdView() -> GoogleMobileAds.NativeAdView {
