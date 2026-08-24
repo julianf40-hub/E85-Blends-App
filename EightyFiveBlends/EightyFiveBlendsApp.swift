@@ -143,7 +143,16 @@ struct EightyFiveBlendsApp: App {
                     // exactly once here, at app startup; it owns the subscription lifecycle from
                     // this point on (see RevenueCatSubscriptionService.swift's header). This also
                     // kicks off the initial CustomerInfo fetch and offering/package load.
-                    await RevenueCatSubscriptionService.shared.configureIfNeeded()
+                    //
+                    // AdMob foundation (Phase 1, audit-only — no ad units, no ad UI yet): AdManager
+                    // runs its SDK init concurrently with RevenueCat's, not chained after it —
+                    // neither blocks the other, and neither blocks first frame. Same reasoning as
+                    // RevenueCat's own configureIfNeeded() running its CustomerInfo and offerings
+                    // loads as concurrent async lets rather than sequentially. See AdManager.swift's
+                    // header for why this lives here and never in init() above.
+                    async let revenueCatConfigure: Void = RevenueCatSubscriptionService.shared.configureIfNeeded()
+                    async let adMobConfigure: Void = AdManager.shared.configureIfNeeded()
+                    _ = await (revenueCatConfigure, adMobConfigure)
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,

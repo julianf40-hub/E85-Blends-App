@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */; };
+		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
 		44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */; };
 		44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */; };
 		44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0E2FE8E4C900304289 /* StationReportStore.swift */; };
@@ -19,7 +21,6 @@
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
-		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */,
+				11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -120,6 +122,7 @@
 			name = EightyFiveBlends;
 			packageProductDependencies = (
 				1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */,
+				B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */,
 			);
 			productName = EightyFiveBlends;
 			productReference = 44A9BC202FA0865900A9920E /* EightyFiveBlends.app */;
@@ -151,6 +154,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+				93E9BE949C322BEC89933383 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 44A9BC212FA0865900A9920E /* Products */;
@@ -260,7 +264,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlendsInternal.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 98;
+				CURRENT_PROJECT_VERSION = 99;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -280,7 +284,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.internal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -427,7 +431,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -447,7 +451,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -470,7 +474,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 41;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -490,7 +494,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -541,6 +545,14 @@
 				minimumVersion = 5.0.0;
 			};
 		};
+		93E9BE949C322BEC89933383 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleads/swift-package-manager-google-mobile-ads.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 13.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -548,6 +560,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
 			productName = RevenueCat;
+		};
+		B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 93E9BE949C322BEC89933383 /* XCRemoteSwiftPackageReference "swift-package-manager-google-mobile-ads" */;
+			productName = GoogleMobileAds;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -288,6 +288,16 @@ struct CalculatorView: View {
                     PrimaryButton(title: "+ Log This Fill-Up") {
                         calculatorFuelLogDraft = FuelLogStore.prefillDraft(from: calculation, vehicle: activeVehicle)
                     }
+
+                    // AdMob Phase 2 — 85Blends Home Native placement. Bottom of the scroll,
+                    // strictly after every functional control (never between inputs, never
+                    // before the blend result) — see NativeAdView.swift's header for the
+                    // non-interruptive design this follows. Free users only: Pro users never
+                    // construct NativeAdView at all, so there's no ad request, ad view, or
+                    // reserved placeholder for them.
+                    if SubscriptionManager.shared.isProUser == false {
+                        NativeAdView(placement: .calculatorHome)
+                    }
                 }
                 .padding(16)
             }
