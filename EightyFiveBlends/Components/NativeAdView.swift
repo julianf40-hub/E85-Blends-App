@@ -360,6 +360,47 @@ private struct NativeAdContainer: UIViewRepresentable {
         guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
         populate(uiView, with: nativeAd)
         context.coordinator.lastPopulatedNativeAd = nativeAd
+
+        // TEMPORARY — asset frame diagnostics for the "Advertiser assets outside native ad
+        // view" validator investigation. Moved here from buildNativeAdView() (see git history):
+        // at construction time nothing has yet given uiView a real external frame (SwiftUI's
+        // UIViewRepresentable machinery only lays it out afterward, via
+        // sizeThatFits(_:uiView:context:) below), so those captures were guaranteed to be
+        // .zero/degenerate. Here, after populate(_:with:) has assigned .nativeAd and a layout
+        // pass is forced immediately below, uiView has a real, resolved frame to log against.
+        // See the diagnostics-logger declaration near the top of this file for the os.Logger/
+        // privacy rationale. Remove alongside every other TEMPORARY block in this file.
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
+
+        #if !DEBUG
+        let assetViews: [(name: String, view: UIView?)] = [
+            ("headlineView", uiView.headlineView),
+            ("bodyView", uiView.bodyView),
+            ("iconView", uiView.iconView),
+            ("mediaView", uiView.mediaView),
+            ("advertiserView", uiView.advertiserView),
+            ("callToActionView", uiView.callToActionView),
+        ]
+        admobDiagnosticsLogger.log("""
+            Native ad asset frames (updateUIView, post-populate) — \
+            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
+            """)
+        for (name, assetView) in assetViews {
+            guard let assetView else {
+                admobDiagnosticsLogger.log("""
+                    Native ad asset frame (updateUIView, post-populate) — \
+                    \(name, privacy: .public)=not registered
+                    """)
+                continue
+            }
+            let frameInAdView = assetView.convert(assetView.bounds, to: uiView)
+            admobDiagnosticsLogger.log("""
+                Native ad asset frame (updateUIView, post-populate) — \
+                \(name, privacy: .public)=\(String(describing: frameInAdView), privacy: .public)
+                """)
+        }
+        #endif
     }
 
     // FIX (AdMob validator: "Advertiser assets outside native ad view"): adView (built in
