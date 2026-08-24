@@ -489,6 +489,53 @@ private struct NativeAdContainer: UIViewRepresentable {
         adView.callToActionView = callToActionButton
         adView.advertiserView = advertiserLabel
 
+        // TEMPORARY — asset frame diagnostics for the "Advertiser assets outside native ad
+        // view" validator investigation. Logs adView's own bounds plus every registered asset
+        // view's frame converted into adView's coordinate space, right here at the end of
+        // buildNativeAdView(), before the constructed view is handed back to makeUIView(). See
+        // the diagnostics-logger declaration near the top of this file for the os.Logger/
+        // privacy rationale. Remove alongside every other TEMPORARY block in this file.
+        //
+        // CAVEAT (read before drawing conclusions from a capture): at this exact point in
+        // makeUIView(), nothing has yet given adView a real external frame — that happens
+        // later, when SwiftUI's UIViewRepresentable machinery lays this view out (driven by
+        // sizeThatFits(_:uiView:context:) above and the surrounding AppCard/scroll layout
+        // pass). So adView.bounds, and every asset frame below derived from it, are expected to
+        // read as .zero (or otherwise degenerate) here — that alone would not indicate the
+        // asset-outside-bounds bug is unrelated to layout timing, only that this particular
+        // capture point is too early to observe it. If this capture confirms all-zero frames,
+        // the next diagnostic pass should move equivalent logging into
+        // updateUIView(_:context:), after populate(_:with:) and a forced layoutIfNeeded(), where
+        // a real resolved frame exists to compare against.
+        #if !DEBUG
+        let assetViews: [(name: String, view: UIView?)] = [
+            ("headlineView", adView.headlineView),
+            ("bodyView", adView.bodyView),
+            ("iconView", adView.iconView),
+            ("mediaView", adView.mediaView),
+            ("advertiserView", adView.advertiserView),
+            ("callToActionView", adView.callToActionView),
+        ]
+        admobDiagnosticsLogger.log("""
+            Native ad asset frames (buildNativeAdView, pre-return) — \
+            adView.bounds=\(String(describing: adView.bounds), privacy: .public)
+            """)
+        for (name, assetView) in assetViews {
+            guard let assetView else {
+                admobDiagnosticsLogger.log("""
+                    Native ad asset frame (buildNativeAdView, pre-return) — \
+                    \(name, privacy: .public)=not registered
+                    """)
+                continue
+            }
+            let frameInAdView = assetView.convert(assetView.bounds, to: adView)
+            admobDiagnosticsLogger.log("""
+                Native ad asset frame (buildNativeAdView, pre-return) — \
+                \(name, privacy: .public)=\(String(describing: frameInAdView), privacy: .public)
+                """)
+        }
+        #endif
+
         return adView
     }
 
