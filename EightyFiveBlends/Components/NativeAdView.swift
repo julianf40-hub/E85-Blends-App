@@ -44,32 +44,6 @@
 
 import SwiftUI
 import GoogleMobileAds
-import os
-
-// TEMPORARY — production/TestFlight diagnostics for the "native ads not appearing"
-// investigation. Every use of this logger below is marked TEMPORARY and must be removed,
-// alongside this declaration, once the root cause is confirmed and fixed — see the matching
-// comment on AdManager.swift's own diagnostics logger.
-//
-// os.Logger, not print(): 85Blends is validated through TestFlight on the Release/production
-// configuration (per this pass's own context) — print() output is not retrievable from a
-// TestFlight-installed, non-debugger-attached process, while os.Logger's unified-logging
-// entries are (via Console.app / `log collect` with the device connected). Every interpolated
-// value below is explicitly marked `privacy: .public` — os.Logger redacts interpolated values
-// as `<private>` by default in release-signed builds, and everything logged here (an enum
-// case, a Bool, a short technical string) is non-sensitive, so redaction would defeat the
-// entire point of this pass.
-//
-// Gated `#if !DEBUG` — true for both Internal and Release (neither defines the DEBUG
-// compilation condition; only the Debug configuration does), so this covers both
-// configurations actually used for TestFlight validation while staying silent in local Xcode
-// Debug runs.
-#if !DEBUG
-private let admobDiagnosticsLogger = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "com.e85blends.app.ios",
-    category: "AdMobDiagnostics"
-)
-#endif
 
 struct NativeAdView: View {
     let placement: AdManager.NativePlacement
@@ -78,16 +52,7 @@ struct NativeAdView: View {
 
     init(placement: AdManager.NativePlacement) {
         self.placement = placement
-        _loader = State(initialValue: NativeAdLoader(adUnitID: placement.adUnitID, diagnosticsPlacement: placement))
-        // TEMPORARY — see the diagnostics-logger declaration above this type for the full
-        // rationale. Remove this block once the root cause is confirmed and fixed.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            NativeAdView created — \
-            placement=\(String(describing: placement), privacy: .public), \
-            isProUser=\(SubscriptionManager.shared.isProUser, privacy: .public)
-            """)
-        #endif
+        _loader = State(initialValue: NativeAdLoader(adUnitID: placement.adUnitID))
     }
 
     var body: some View {
@@ -109,45 +74,13 @@ struct NativeAdView: View {
             }
         }
         .task {
-            // TEMPORARY — logs the instant this .task actually starts running (as opposed to
-            // NativeAdView merely being constructed — see init's own TEMPORARY log above,
-            // which fires unconditionally on construction and does NOT prove .task ever runs).
-            // Remove alongside every other TEMPORARY block in this file.
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                NativeAdView .task started — \
-                placement=\(String(describing: placement), privacy: .public)
-                """)
-            #endif
-
             // Defense-in-depth Pro check — see this file's header. Every real call site already
             // gates on SubscriptionManager.shared.isProUser before constructing this view at
             // all, so this is a second, cheap read of the exact same property, never a new
             // entitlement decision.
             guard AdManager.shared.isAdsEnabled else { return }
 
-            // TEMPORARY — immediately before calling loadIfNeeded().
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                NativeAdView .task calling loadIfNeeded() — \
-                placement=\(String(describing: placement), privacy: .public), \
-                loaderState=\(loader.diagnosticsStateDescription, privacy: .public)
-                """)
-            #endif
-
             loader.loadIfNeeded()
-
-            // TEMPORARY — immediately after loadIfNeeded() returns. loadIfNeeded() itself is
-            // synchronous (it only kicks off the SDK's callback-based load and returns; there is
-            // no async work inside it to await — see NativeAdLoader.loadIfNeeded()), so this
-            // confirms control actually returned to .task, not that the network load finished.
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                NativeAdView .task loadIfNeeded() returned — \
-                placement=\(String(describing: placement), privacy: .public), \
-                loaderState=\(loader.diagnosticsStateDescription, privacy: .public)
-                """)
-            #endif
         }
     }
 }
@@ -165,23 +98,10 @@ final class NativeAdLoader: NSObject {
     private enum LoadState: Equatable { case idle, loading, loaded, failed }
     private var state: LoadState = .idle
     private let adUnitID: String
-    // TEMPORARY — diagnostics only, carried alongside adUnitID purely so load-start/success/
-    // failure logging below can report which placement they belong to. Remove this property
-    // and the `diagnosticsPlacement:` init parameter together with every other TEMPORARY block
-    // in this file once the root cause is confirmed and fixed.
-    private let diagnosticsPlacement: AdManager.NativePlacement
     private var adLoader: AdLoader?
 
-    // TEMPORARY — diagnostics only, exposes the private LoadState as a plain string so
-    // NativeAdView's .task can log "loader current state" without exposing LoadState itself.
-    // Remove alongside every other TEMPORARY block in this file.
-    #if !DEBUG
-    var diagnosticsStateDescription: String { String(describing: state) }
-    #endif
-
-    init(adUnitID: String, diagnosticsPlacement: AdManager.NativePlacement) {
+    init(adUnitID: String) {
         self.adUnitID = adUnitID
-        self.diagnosticsPlacement = diagnosticsPlacement
         super.init()
     }
 
@@ -189,29 +109,7 @@ final class NativeAdLoader: NSObject {
     /// nothing in this app can trigger more than one simultaneous or repeated request per
     /// placement instance (Performance Requirements: "one ad request per placement").
     func loadIfNeeded() {
-        // TEMPORARY — the very first line of this function, logged unconditionally before the
-        // idle-state guard below, so a TestFlight capture proves whether loadIfNeeded() is
-        // reached at all, regardless of what the guard below then does with it.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            loadIfNeeded() entered — \
-            placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
-            state=\(String(describing: self.state), privacy: .public), \
-            adMobConfigured=\(AdManager.shared.isConfigured, privacy: .public)
-            """)
-        #endif
-
-        guard state == .idle else {
-            // TEMPORARY — explains exactly why the request was skipped.
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                loadIfNeeded() skipped — state is not idle \
-                (\(String(describing: self.state), privacy: .public)), \
-                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public)
-                """)
-            #endif
-            return
-        }
+        guard state == .idle else { return }
         state = .loading
 
         // rootViewController is nil: native ads render inline (no full-screen presentation is
@@ -225,19 +123,6 @@ final class NativeAdLoader: NSObject {
         )
         loader.delegate = self
         adLoader = loader
-        // TEMPORARY — see the diagnostics-logger declaration near the top of this file. Logged
-        // right before AdLoader.load(), including whether AdMob's SDK init has actually
-        // completed yet (AdManager.shared.isConfigured) — this is the direct test for the
-        // suspected SDK-init race: if this ever logs `adMobConfigured=false`, the ad request is
-        // firing before MobileAds.shared.start(completionHandler:) has completed.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            AdLoader.load() starting — \
-            placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
-            adUnitID=\(self.adUnitID, privacy: .public), \
-            adMobConfigured=\(AdManager.shared.isConfigured, privacy: .public)
-            """)
-        #endif
         loader.load(Request())
     }
 }
@@ -248,41 +133,17 @@ extension NativeAdLoader: NativeAdLoaderDelegate {
             guard let self else { return }
             self.nativeAd = nativeAd
             self.state = .loaded
-            // TEMPORARY — see the diagnostics-logger declaration near the top of this file.
-            // Logged here, inside the @MainActor hop, so it can safely read
-            // self.diagnosticsPlacement (this delegate callback itself is nonisolated, since
-            // Google's SDK may invoke it off the main thread).
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                Native ad received — \
-                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
-                headline=\(nativeAd.headline ?? "nil", privacy: .public)
-                """)
-            #endif
         }
     }
 
     // Fail silently to the USER, always — no internet, SDK unavailable, and no-fill all land
     // here and are handled identically as far as the UI is concerned: state flips to .failed,
     // NativeAdView renders EmptyView(), and nothing is ever shown to the user. See this file's
-    // header. The console-only diagnostic below is not user-facing and does not change that
-    // contract — it exists purely so TestFlight testing can distinguish *why* a load failed
-    // without adding any UI.
+    // header.
     nonisolated func adLoader(_ adLoader: AdLoader, didFailToReceiveAdWithError error: Error) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.state = .failed
-            // TEMPORARY — see the diagnostics-logger declaration near the top of this file.
-            #if !DEBUG
-            let nsError = error as NSError
-            admobDiagnosticsLogger.error("""
-                Native ad failed — \
-                placement=\(String(describing: self.diagnosticsPlacement), privacy: .public), \
-                domain=\(nsError.domain, privacy: .public), \
-                code=\(nsError.code, privacy: .public), \
-                message=\(nsError.localizedDescription, privacy: .public)
-                """)
-            #endif
         }
     }
 }
@@ -403,32 +264,6 @@ private struct NativeAdContainer: UIViewRepresentable {
         var heightConstraint: NSLayoutConstraint?
     }
 
-    // Shared identity string for the diagnostics below — ObjectIdentifier gives a stable,
-    // cheap-to-compute per-instance value so log lines can be correlated across calls without
-    // printing the ad's full content. NativeAd is a reference type (this file already relies on
-    // that via the !==/=== comparisons throughout), so ObjectIdentifier applies directly.
-    private static func identityDescription(_ nativeAd: NativeAd?) -> String {
-        guard let nativeAd else { return "nil" }
-        return String(describing: ObjectIdentifier(nativeAd))
-    }
-
-    // Shared compliance computation — the max bottom edge (in uiView's own coordinate space)
-    // across every VISIBLE registered asset. Hidden optional assets (isHidden == true, e.g. an
-    // advertiserView collapsed because nativeAd.advertiser == nil) are excluded — their frames
-    // aren't a meaningful containment signal once collapsed. Factored out here so
-    // establishSafeRootHeight's own diagnostics, sizeThatFits's, and populateIfNeeded's
-    // pre/post-assignment checks all compute this identically instead of drifting apart.
-    private func maxVisibleRegisteredAssetBottom(in uiView: GoogleMobileAds.NativeAdView) -> CGFloat {
-        let registeredAssetViews: [UIView?] = [
-            uiView.headlineView, uiView.bodyView, uiView.iconView,
-            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
-        ]
-        return registeredAssetViews.compactMap { view -> CGFloat? in
-            guard let view, view.isHidden == false else { return nil }
-            return view.convert(view.bounds, to: uiView).maxY
-        }.max() ?? 0
-    }
-
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -479,34 +314,12 @@ private struct NativeAdContainer: UIViewRepresentable {
     // `if let nativeAd = loader.nativeAd` gate) — deferring population defers nothing about the
     // network request, never triggers a second one, and never touches NativeAdLoader/AdLoader.
     func updateUIView(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
-        // TEMPORARY — regression diagnostics (PR #37 "native ads no longer appear" audit).
-        // Full entry-state snapshot on every call, so the eventual TestFlight capture can show
-        // exactly which decision (skip/defer/populate) was made and why. Remove alongside every
-        // other TEMPORARY block in this file once the regression is confirmed fixed on-device.
-        #if !DEBUG
-        let widthConstraintForLog = context.coordinator.widthConstraint
-        let entryStateDescription = "nativeAdIdentity=\(Self.identityDescription(nativeAd)), " +
-            "widthConstraintExists=\(widthConstraintForLog != nil), " +
-            "widthConstraintIsActive=\(widthConstraintForLog?.isActive ?? false), " +
-            "widthConstraintConstant=\(widthConstraintForLog?.constant ?? -1), " +
-            "lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil"), " +
-            "pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd)), " +
-            "lastPopulatedNativeAdIdentity=\(Self.identityDescription(context.coordinator.lastPopulatedNativeAd))"
-        #endif
-
         // Cheap early exit for the common case (already populated, SwiftUI re-rendering the
         // surrounding hierarchy for an unrelated reason) — avoids touching the Coordinator's
         // pending state or calling populateIfNeeded at all once there's nothing left to do.
         // populateIfNeeded's OWN identical guard (below) is still the source of truth — this is
         // purely a hot-path optimization, not a second, independent correctness mechanism.
-        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else {
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                updateUIView SKIP (already populated) — \(entryStateDescription, privacy: .public)
-                """)
-            #endif
-            return
-        }
+        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
 
         guard context.coordinator.lastKnownBoundedWidth != nil else {
             // DEFERRED — see this function's header comment. sizeThatFits(_:uiView:context:)
@@ -514,19 +327,9 @@ private struct NativeAdContainer: UIViewRepresentable {
             // Recorded explicitly as pendingNativeAd so the "is an ad waiting" state is directly
             // observable rather than implicit — see the Coordinator field's own comment.
             context.coordinator.pendingNativeAd = nativeAd
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                updateUIView DEFER/STORE PENDING — bounded width never established yet \
-                (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)) — \
-                \(entryStateDescription, privacy: .public)
-                """)
-            #endif
             return
         }
 
-        #if !DEBUG
-        admobDiagnosticsLogger.log("updateUIView POPULATE NOW — \(entryStateDescription, privacy: .public)")
-        #endif
         populateIfNeeded(uiView, context: context)
     }
 
@@ -536,30 +339,12 @@ private struct NativeAdContainer: UIViewRepresentable {
     // times: the lastPopulatedNativeAd guard makes real population (and everything logged
     // below it) happen at most once per NativeAd instance, regardless of caller.
     private func populateIfNeeded(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
-        // TEMPORARY — regression diagnostics (PR #37 "native ads no longer appear" audit).
-        // Remove alongside every other TEMPORARY block in this file once the regression is
-        // confirmed fixed on-device.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            populateIfNeeded entered — \
-            nativeAdIdentity=\(Self.identityDescription(nativeAd), privacy: .public), \
-            pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
-            lastPopulatedNativeAdIdentity=\(Self.identityDescription(context.coordinator.lastPopulatedNativeAd), privacy: .public), \
-            lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public)
-            """)
-        #endif
-
         // Only repopulate when the underlying NativeAd instance actually changed. Reference
         // identity (===/!==) is the right comparison here — NativeAd is a reference type, and
         // NativeAdLoader only ever produces one instance per placement's displayed lifetime (see
         // NativeAdLoader.loadIfNeeded()'s idle/loading/loaded/failed guard), so this reduces to
         // "populate exactly once," not a per-property diff.
-        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else {
-            #if !DEBUG
-            admobDiagnosticsLogger.log("populateIfNeeded ABORT — already populated")
-            #endif
-            return
-        }
+        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
 
         // REGRESSION FIX (replaces the prior widthConstraint?.isActive re-check — see
         // Coordinator.lastKnownBoundedWidth's own comment for the full root-cause rationale):
@@ -576,15 +361,7 @@ private struct NativeAdContainer: UIViewRepresentable {
         // bounded sizeThatFits call (which always re-schedules this same handoff whenever
         // lastPopulatedNativeAd !== nativeAd — see its own comment) naturally retries. No timer,
         // no polling, no new dispatch loop.
-        guard let lastKnownBoundedWidth = context.coordinator.lastKnownBoundedWidth else {
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                populateIfNeeded ABORT — bounded width never established yet \
-                (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public))
-                """)
-            #endif
-            return
-        }
+        guard let lastKnownBoundedWidth = context.coordinator.lastKnownBoundedWidth else { return }
 
         // Defensively re-apply the last known-good bounded width before populating. Between
         // lastKnownBoundedWidth being recorded and this call actually running, an intervening
@@ -613,292 +390,28 @@ private struct NativeAdContainer: UIViewRepresentable {
         // earlier, pre-population call) — measuring again here and re-pinning adView's actual
         // height to that fresh, ceiled result is what makes the very first population already
         // geometrically safe. See establishSafeRootHeight's own comment for the full mechanism.
-        // Return value intentionally discarded here — the diagnostic log below reads the applied
-        // result straight off heightConstraint.constant instead of a separate local binding, so
-        // nothing goes unused outside the #if !DEBUG that log lives in.
+        // Return value intentionally discarded — it internally re-applies the height constraint
+        // itself, so nothing further needs to be done with the (fittingResult, finalHeight) pair
+        // here.
         establishSafeRootHeight(uiView, context: context)
 
-        // TEMPORARY — pre-assignment containment verification (root-containment investigation).
-        // Computed the same way as sizeThatFits's own compliance signal: the max bottom edge
-        // across every VISIBLE registered asset, compared against adView's own real (now
-        // height-constrained) bounds. Logged explicitly BEFORE adView.nativeAd is assigned, so
-        // TestFlight capture can show exactly what geometry Google's SDK is about to be handed.
-        // Remove alongside every other TEMPORARY block in this file.
-        #if !DEBUG
-        let preAssignmentAssetViews: [UIView?] = [
-            uiView.headlineView, uiView.bodyView, uiView.iconView,
-            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
-        ]
-        let preAssignmentMaxRegisteredAssetBottom = preAssignmentAssetViews.compactMap { view -> CGFloat? in
-            guard let view, view.isHidden == false else { return nil }
-            return view.convert(view.bounds, to: uiView).maxY
-        }.max() ?? 0
-        let preAssignmentContainmentDelta = uiView.bounds.maxY - preAssignmentMaxRegisteredAssetBottom
-        admobDiagnosticsLogger.log("""
-            populateIfNeeded pre-nativeAd-assignment containment check — \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
-            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
-            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
-            maxRegisteredAssetBottom=\(preAssignmentMaxRegisteredAssetBottom, privacy: .public), \
-            rootBoundsMaxY=\(uiView.bounds.maxY, privacy: .public), \
-            containmentDelta=\(preAssignmentContainmentDelta, privacy: .public), \
-            allRegisteredAssetsContained=\(preAssignmentContainmentDelta >= 0, privacy: .public)
-            """)
-        #endif
-
         // Must be assigned last, after every asset view is populated AND the root already has a
-        // safe, verified, contained height (established/checked immediately above) — this is
-        // what activates Google's click/impression tracking for the ad (documented SDK
-        // requirement). Unchanged from before this fix in every respect except WHEN it now runs
-        // relative to root-height establishment.
+        // safe, contained height (established immediately above) — this is what activates
+        // Google's click/impression tracking for the ad (documented SDK requirement). Unchanged
+        // from before this fix in every respect except WHEN it now runs relative to root-height
+        // establishment.
         uiView.nativeAd = nativeAd
 
         context.coordinator.lastPopulatedNativeAd = nativeAd
         context.coordinator.pendingNativeAd = nil
 
-        #if !DEBUG
-        admobDiagnosticsLogger.log("populateIfNeeded SUCCESS — populated and cleared pendingNativeAd")
-        #endif
-
-        // TEMPORARY — asset frame diagnostics for the "Advertiser assets outside native ad
-        // view" validator investigation. Originally moved here from buildNativeAdView() (see
-        // git history) so uiView would have a real, resolved frame to log against. Now that
-        // this whole function only ever reaches this point once Coordinator.lastKnownBoundedWidth
-        // is confirmed established and freshly re-applied above (see updateUIView/sizeThatFits),
-        // that frame is the real, SwiftUI-bounded one (~372pt) rather than the transient,
-        // unbounded one (~862pt) it could previously be —
-        // see the LIFECYCLE FIX comment on updateUIView for the full investigation. See the
-        // diagnostics-logger declaration near the top of this file for the os.Logger/privacy
-        // rationale. Remove alongside every other TEMPORARY block in this file.
-        //
-        // ROOT-CONTAINMENT FIX — this layout pass now runs AFTER adView.nativeAd was just
-        // assigned above (previously it ran instead-of/before that assignment), specifically so
-        // every diagnostic below captures the "after assignment" state Phase 4 of the root-
-        // containment investigation asks for, in case Google's SDK itself makes any internal
-        // geometry adjustment as part of activating tracking on assignment. establishSafeRootHeight
-        // already forced its own layout passes before this point, so this is not the first real
-        // layout resolution here — it exists to pick up anything assignment itself changed.
+        // Forces adView to re-settle its geometry after `.nativeAd` was just assigned above, in
+        // case Google's SDK makes any internal subview adjustment as part of activating tracking
+        // on assignment. establishSafeRootHeight already forced its own layout passes before
+        // this point, so this exists to pick up anything the assignment itself changed, not to
+        // perform the first real layout resolution.
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
-
-        #if !DEBUG
-        let assetViews: [(name: String, view: UIView?)] = [
-            ("headlineView", uiView.headlineView),
-            ("bodyView", uiView.bodyView),
-            ("iconView", uiView.iconView),
-            ("mediaView", uiView.mediaView),
-            ("advertiserView", uiView.advertiserView),
-            ("callToActionView", uiView.callToActionView),
-        ]
-        // Extended for the width-audit investigation: uiView.frame (its position/size in its
-        // superview's coordinate space — where uiView.bounds is only its own local size) and,
-        // when uiView is actually in a window, that same frame converted into the window's
-        // coordinate space — the closest available approximation of "real screen-space size,"
-        // to compare directly against the ~340-430pt a real device's screen can actually offer.
-        let frameInWindowDescription: String
-        if let window = uiView.window {
-            let frameInWindow = uiView.convert(uiView.bounds, to: window)
-            frameInWindowDescription = String(describing: frameInWindow)
-        } else {
-            frameInWindowDescription = "no window"
-        }
-        admobDiagnosticsLogger.log("""
-            Native ad asset frames (updateUIView, post-populate) — \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
-            uiView.frame=\(String(describing: uiView.frame), privacy: .public), \
-            uiView.frameInWindow=\(frameInWindowDescription, privacy: .public)
-            """)
-        for (name, assetView) in assetViews {
-            guard let assetView else {
-                admobDiagnosticsLogger.log("""
-                    Native ad asset frame (updateUIView, post-populate) — \
-                    \(name, privacy: .public)=not registered
-                    """)
-                continue
-            }
-            let frameInAdView = assetView.convert(assetView.bounds, to: uiView)
-            admobDiagnosticsLogger.log("""
-                Native ad asset frame (updateUIView, post-populate) — \
-                \(name, privacy: .public)=\(String(describing: frameInAdView), privacy: .public)
-                """)
-        }
-        #endif
-
-        // TEMPORARY — deeper diagnostics for the same "Advertiser assets outside native ad
-        // view" validator investigation. The per-asset frame log above shows every REGISTERED
-        // asset view's own frame inside uiView's bounds, yet Ad Inspector still reports an
-        // asset outside the native ad view — which points at something the per-asset log
-        // can't see: content Google's SDK composes *inside* one of those registered views,
-        // on a subview this code never registered or sized itself. mediaView is the prime
-        // suspect (Google privately manages the real media creative as mediaView's own
-        // subview(s)), so this recursively dumps mediaView's entire UIView subtree — class,
-        // frame (converted into uiView's coordinate space, same basis as the log above),
-        // bounds, clipsToBounds, and hidden state for every descendant — plus
-        // intrinsicContentSize for headlineView/advertiserView, since a label's laid-out frame
-        // can be correct while its intrinsic content still exceeds it. Reuses the
-        // setNeedsLayout()/layoutIfNeeded() already forced above; no second layout pass.
-        // Remove alongside every other TEMPORARY block in this file.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            mediaView.clipsToBounds (updateUIView, post-populate) — \
-            \(uiView.mediaView != nil ? String(describing: uiView.mediaView!.clipsToBounds) : "mediaView not registered", privacy: .public)
-            """)
-
-        func dumpMediaViewSubtree(_ view: UIView, depth: Int) {
-            let indent = String(repeating: "  ", count: depth)
-            let frameInAdView = view.convert(view.bounds, to: uiView)
-            admobDiagnosticsLogger.log("""
-                mediaView subtree (updateUIView, post-populate) — \
-                \(indent, privacy: .public)class=\(String(describing: type(of: view)), privacy: .public), \
-                frame=\(String(describing: frameInAdView), privacy: .public), \
-                bounds=\(String(describing: view.bounds), privacy: .public), \
-                clipsToBounds=\(view.clipsToBounds, privacy: .public), \
-                hidden=\(view.isHidden, privacy: .public)
-                """)
-            for subview in view.subviews {
-                dumpMediaViewSubtree(subview, depth: depth + 1)
-            }
-        }
-
-        if let mediaView = uiView.mediaView {
-            dumpMediaViewSubtree(mediaView, depth: 0)
-        } else {
-            admobDiagnosticsLogger.log("mediaView subtree (updateUIView, post-populate) — mediaView not registered")
-        }
-
-        // TEMPORARY — optional-asset visibility diagnostics for the "Advertiser assets
-        // outside native ad view" validator investigation (per-asset audit, this pass).
-        // Google's documented pattern hides each of these four OPTIONAL assets exactly when
-        // its underlying NativeAd value is nil (confirmed already followed in
-        // populate(_:with:) — headline/media are guaranteed assets and are never hidden, so
-        // they're excluded here). This logs, per asset, whether that's exactly what
-        // happened: whether the source value was nil, the resulting view.isHidden, its frame
-        // (converted into uiView's coordinate space), and its intrinsicContentSize. A
-        // VISIBLE asset with nil content, or nativeValueNil not matching isHidden, would be
-        // a real bug this can catch; a HIDDEN asset with a zero-height/zero-size frame (e.g.
-        // an empty advertiserLabel when nativeAd.advertiser is nil) is the expected, correct
-        // result of a hidden UILabel with no text collapsing inside its UIStackView — not a
-        // bug. Replaces the old advertiserView-only block above (see git history). Remove
-        // alongside every other TEMPORARY block in this file.
-        func logOptionalAssetDiagnostics(name: String, view: UIView?, nativeValueIsNil: Bool) {
-            guard let view else {
-                admobDiagnosticsLogger.log("""
-                    \(name, privacy: .public) asset (updateUIView, post-populate) — not registered
-                    """)
-                return
-            }
-            let frameInAdView = view.convert(view.bounds, to: uiView)
-            admobDiagnosticsLogger.log("""
-                \(name, privacy: .public) asset (updateUIView, post-populate):
-                nativeValueNil=\(nativeValueIsNil, privacy: .public)
-                isHidden=\(view.isHidden, privacy: .public)
-                frame=\(String(describing: frameInAdView), privacy: .public)
-                intrinsicContentSize=\(String(describing: view.intrinsicContentSize), privacy: .public)
-                """)
-        }
-
-        logOptionalAssetDiagnostics(name: "body", view: uiView.bodyView, nativeValueIsNil: nativeAd.body == nil)
-        logOptionalAssetDiagnostics(name: "icon", view: uiView.iconView, nativeValueIsNil: nativeAd.icon == nil)
-        logOptionalAssetDiagnostics(name: "advertiser", view: uiView.advertiserView, nativeValueIsNil: nativeAd.advertiser == nil)
-        logOptionalAssetDiagnostics(name: "callToAction", view: uiView.callToActionView, nativeValueIsNil: nativeAd.callToAction == nil)
-
-        if let headlineView = uiView.headlineView {
-            let frameInAdView = headlineView.convert(headlineView.bounds, to: uiView)
-            admobDiagnosticsLogger.log("""
-                headlineView (updateUIView, post-populate) — \
-                frame=\(String(describing: frameInAdView), privacy: .public), \
-                intrinsicContentSize=\(String(describing: headlineView.intrinsicContentSize), privacy: .public)
-                """)
-        } else {
-            admobDiagnosticsLogger.log("headlineView (updateUIView, post-populate) — not registered")
-        }
-
-        // TEMPORARY — final-layout diagnostics (lifecycle-ordering pass). This function only
-        // ever reaches this point once Coordinator.lastKnownBoundedWidth is confirmed
-        // established (and the width constraint freshly re-applied above), so every field below
-        // reflects the view's REAL, SwiftUI-bounded geometry — direct proof (on the next
-        // TestFlight run) that the root view is ~372pt wide here, never the transient ~862pt
-        // this investigation started from. Remove alongside every other TEMPORARY block in
-        // this file.
-        let widthConstraintDescription: String
-        if let widthConstraint = context.coordinator.widthConstraint {
-            widthConstraintDescription = """
-                active=\(widthConstraint.isActive), constant=\(widthConstraint.constant)
-                """
-        } else {
-            widthConstraintDescription = "nil"
-        }
-        let superviewDescription: String
-        if let superview = uiView.superview {
-            superviewDescription = "bounds=\(superview.bounds), frame=\(superview.frame)"
-        } else {
-            superviewDescription = "no superview"
-        }
-        let finalFrameInWindowDescription: String
-        if let window = uiView.window {
-            finalFrameInWindowDescription = String(describing: uiView.convert(uiView.bounds, to: window))
-        } else {
-            finalFrameInWindowDescription = "no window"
-        }
-        admobDiagnosticsLogger.log("""
-            Final-layout diagnostics (post-bounded-width) — \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
-            uiView.frame=\(String(describing: uiView.frame), privacy: .public) \
-            (final rounded root height == frame.height, see sizeThatFits's ceil()), \
-            superview=\(superviewDescription, privacy: .public), \
-            frameInWindow=\(finalFrameInWindowDescription, privacy: .public), \
-            widthConstraint=\(widthConstraintDescription, privacy: .public)
-            """)
-
-        let finalAssetViews: [(name: String, view: UIView?)] = [
-            ("headline", uiView.headlineView),
-            ("body", uiView.bodyView),
-            ("icon", uiView.iconView),
-            ("media", uiView.mediaView),
-            ("advertiser", uiView.advertiserView),
-            ("callToAction", uiView.callToActionView),
-        ]
-        // ROOT-CONTAINMENT FIX — aggregate compliance signal, computed alongside the per-asset
-        // loop below: the max bottom edge across every VISIBLE registered asset (hidden optional
-        // assets excluded — see sizeThatFits's identical computation for the same reasoning),
-        // compared against adView's own real (post-height-constraint) bounds. This is the
-        // "after assignment/layout" capture Phase 4 of the root-containment investigation asks
-        // for — the "before assignment" one is populateIfNeeded's own pre-nativeAd-assignment
-        // containment check, logged earlier in this same function.
-        let finalVisibleAssetMaxYValues: [CGFloat] = finalAssetViews.compactMap { _, view in
-            guard let view, view.isHidden == false else { return nil }
-            return view.convert(view.bounds, to: uiView).maxY
-        }
-        let finalMaxRegisteredAssetBottom = finalVisibleAssetMaxYValues.max() ?? 0
-        let finalContainmentDelta = uiView.bounds.maxY - finalMaxRegisteredAssetBottom
-        let finalAllRegisteredAssetsContained = finalContainmentDelta >= 0
-        admobDiagnosticsLogger.log("""
-            Final-layout containment summary (post-bounded-width, post-nativeAd-assignment) — \
-            maxRegisteredAssetBottom=\(finalMaxRegisteredAssetBottom, privacy: .public), \
-            rootBoundsMaxY=\(uiView.bounds.maxY, privacy: .public), \
-            containmentDelta=\(finalContainmentDelta, privacy: .public), \
-            allRegisteredAssetsContained=\(finalAllRegisteredAssetsContained, privacy: .public)
-            """)
-        for (name, assetView) in finalAssetViews {
-            guard let assetView else {
-                admobDiagnosticsLogger.log("""
-                    Final-layout asset (post-bounded-width) — \
-                    \(name, privacy: .public): not registered
-                    """)
-                continue
-            }
-            let frameInAdView = assetView.convert(assetView.bounds, to: uiView)
-            let containedInBounds = uiView.bounds.contains(frameInAdView)
-            admobDiagnosticsLogger.log("""
-                Final-layout asset (post-bounded-width) — \(name, privacy: .public): \
-                minX=\(frameInAdView.minX, privacy: .public), \
-                minY=\(frameInAdView.minY, privacy: .public), \
-                maxX=\(frameInAdView.maxX, privacy: .public), \
-                maxY=\(frameInAdView.maxY, privacy: .public), \
-                containedInBounds=\(containedInBounds, privacy: .public)
-                """)
-        }
-        #endif
     }
 
     // FIX (validator: "Advertiser assets outside native ad view" — root-containment fix). See
@@ -968,33 +481,10 @@ private struct NativeAdContainer: UIViewRepresentable {
         _ uiView: GoogleMobileAds.NativeAdView,
         context: Context
     ) -> (fittingResult: CGSize, finalHeight: CGFloat) {
-        // TEMPORARY — root-containment regression diagnostics (pre-merge audit fix). Captures
-        // the state THIS call found heightConstraint in, before touching it. Remove alongside
-        // every other TEMPORARY block in this file.
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            establishSafeRootHeight BEFORE — \
-            boundedWidth=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
-            heightConstraintExists=\(context.coordinator.heightConstraint != nil, privacy: .public), \
-            previousHeightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
-            previousHeightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public)
-            """)
-        #endif
-
         // THE FIX — see this function's header comment. Deactivated before anything else so
         // neither layout pass below nor the measurement call can be polluted by a stale,
         // required, self-referential prior result.
         context.coordinator.heightConstraint?.isActive = false
-
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            establishSafeRootHeight AFTER TEMPORARY DEACTIVATION — \
-            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
-            widthConstraintIsActive=\(context.coordinator.widthConstraint?.isActive ?? false, privacy: .public), \
-            widthConstraintConstant=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
-            """)
-        #endif
 
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
@@ -1010,14 +500,6 @@ private struct NativeAdContainer: UIViewRepresentable {
         // via the height constraint just below, instead of only reaching SwiftUI's copy of it.
         let finalHeight = ceil(fittingResult.height)
 
-        #if !DEBUG
-        admobDiagnosticsLogger.log("""
-            establishSafeRootHeight AFTER FRESH MEASUREMENT — \
-            fittingResult=\(String(describing: fittingResult), privacy: .public), \
-            finalHeight=\(finalHeight, privacy: .public)
-            """)
-        #endif
-
         context.coordinator.heightConstraint?.constant = finalHeight
         context.coordinator.heightConstraint?.isActive = true
 
@@ -1026,21 +508,6 @@ private struct NativeAdContainer: UIViewRepresentable {
         // constraint, purely content-driven (fractional) resolution from the layout pass above.
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
-
-        #if !DEBUG
-        let maxRegisteredAssetBottom = maxVisibleRegisteredAssetBottom(in: uiView)
-        let rootBoundsMaxY = uiView.bounds.maxY
-        let containmentDelta = rootBoundsMaxY - maxRegisteredAssetBottom
-        admobDiagnosticsLogger.log("""
-            establishSafeRootHeight AFTER REACTIVATION + SECOND LAYOUT — \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
-            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
-            maxRegisteredAssetBottom=\(maxRegisteredAssetBottom, privacy: .public), \
-            rootBoundsMaxY=\(rootBoundsMaxY, privacy: .public), \
-            containmentDelta=\(containmentDelta, privacy: .public), \
-            allRegisteredAssetsContained=\(containmentDelta >= 0, privacy: .public)
-            """)
-        #endif
 
         return (fittingResult, finalHeight)
     }
@@ -1144,28 +611,6 @@ private struct NativeAdContainer: UIViewRepresentable {
             let finalHeight = ceil(fittingResult.height)
             let fallbackSize = CGSize(width: fittingResult.width, height: finalHeight)
 
-            // TEMPORARY — width diagnostics for the same investigation, extended for the PR #37
-            // regression audit with post-mutation widthConstraint state and pending-ad identity
-            // (deferredClosureScheduled is always false in this branch — the deferred handoff
-            // below only ever fires from the bounded branch). Remove alongside every other
-            // TEMPORARY block in this file.
-            #if !DEBUG
-            admobDiagnosticsLogger.log("""
-                sizeThatFits (no bounded proposal.width) — \
-                proposal.width=\(String(describing: proposal.width), privacy: .public), \
-                proposal.height=\(String(describing: proposal.height), privacy: .public), \
-                targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
-                fittingResult=\(String(describing: fittingResult), privacy: .public), \
-                finalHeight=\(finalHeight, privacy: .public), \
-                returned=\(String(describing: fallbackSize), privacy: .public), \
-                widthConstraintIsActiveAfter=\(widthConstraint?.isActive ?? false, privacy: .public), \
-                heightConstraintIsActiveAfter=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
-                lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
-                pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
-                deferredClosureScheduled=false
-                """)
-            #endif
-
             return fallbackSize
         }
 
@@ -1176,13 +621,6 @@ private struct NativeAdContainer: UIViewRepresentable {
         // Deliberately never cleared by the nil-proposal branch — see Coordinator.
         // lastKnownBoundedWidth's own comment for the full root-cause rationale.
         context.coordinator.lastKnownBoundedWidth = proposedWidth
-
-        // TEMPORARY — height-reconciliation diagnostics (see the extended log below). Captured
-        // before establishSafeRootHeight below forces its own layout pass, for direct
-        // before/after comparison.
-        #if !DEBUG
-        let boundsBeforeLayout = uiView.bounds
-        #endif
 
         // HEIGHT FIX (validator: "Advertiser assets outside native ad view" — the warning
         // remaining after the width/MediaView/population-deadlock/height-reconciliation fixes).
@@ -1198,15 +636,8 @@ private struct NativeAdContainer: UIViewRepresentable {
         // Coordinator.heightConstraint — genuine structural containment, not epsilon tolerance.
         // Width remains exactly proposedWidth throughout (unchanged by this pass — only height
         // can move); no hardcoded card height is introduced anywhere.
-        // Kept as one tuple binding (rather than destructuring straight into two locals) so
-        // .fittingResult stays a valid reference for the #if !DEBUG log below without leaving an
-        // unconditionally-declared-but-DEBUG-only-used local (which would warn in DEBUG builds).
         let rootHeightResult = establishSafeRootHeight(uiView, context: context)
         let finalHeight = rootHeightResult.finalHeight
-
-        #if !DEBUG
-        let boundsAfterLayout = uiView.bounds
-        #endif
 
         // Width is guaranteed == proposedWidth by the required-priority constraint activated
         // just above — returned explicitly rather than trusting fittingResult's own width, so a
@@ -1214,102 +645,14 @@ private struct NativeAdContainer: UIViewRepresentable {
         // never inflate the size this reports back to SwiftUI.
         let returnedSize = CGSize(width: proposedWidth, height: finalHeight)
 
-        // TEMPORARY — width diagnostics for the same investigation. Remove alongside every other
-        // TEMPORARY block in this file. Extended for the PR #37 regression audit with
-        // post-mutation widthConstraint state, the newly-recorded lastKnownBoundedWidth,
-        // pending-ad identity, and whether the deferred handoff below will actually schedule.
-        // Further extended for the height-reconciliation audit: pre/post-layout bounds (to
-        // directly show the new setNeedsLayout()/layoutIfNeeded() pass above taking effect), the
-        // main vertical stack's own frame (uiView's single UIStackView subview — see
-        // buildNativeAdView()), CTA/body frames+bottoms specifically (the two tallest/most
-        // failure-prone assets), and a direct compliance signal: whether the height this call is
-        // about to return actually contains every VISIBLE registered asset's bottom edge (hidden
-        // optional assets are excluded — their frames aren't a meaningful containment signal
-        // once collapsed).
-        let willScheduleDeferredHandoff = context.coordinator.lastPopulatedNativeAd !== nativeAd
-        #if !DEBUG
-        let stackFrameDescription: String
-        if let stack = uiView.subviews.first(where: { $0 is UIStackView }) {
-            stackFrameDescription = "frame=\(String(describing: stack.convert(stack.bounds, to: uiView))), bounds=\(String(describing: stack.bounds))"
-        } else {
-            stackFrameDescription = "not found"
-        }
-
-        let registeredAssetViewsForHeightCheck: [UIView?] = [
-            uiView.headlineView, uiView.bodyView, uiView.iconView,
-            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
-        ]
-        let visibleAssetMaxYValues: [CGFloat] = registeredAssetViewsForHeightCheck.compactMap { view in
-            guard let view, view.isHidden == false else { return nil }
-            return view.convert(view.bounds, to: uiView).maxY
-        }
-        let maxRegisteredAssetBottom = visibleAssetMaxYValues.max() ?? 0
-        // ROOT-CONTAINMENT FIX — compliance signal now compares against adView's own REAL,
-        // post-height-constraint bounds (uiView.bounds.maxY), not just the value this call is
-        // about to report to SwiftUI — structural containment, not the value SwiftUI was told.
-        let rootBoundsMaxY = uiView.bounds.maxY
-        let containmentDelta = rootBoundsMaxY - maxRegisteredAssetBottom
-        let heightContainsAllRegisteredAssets = containmentDelta >= 0
-
-        let ctaFrameDescription: String
-        if let cta = uiView.callToActionView {
-            let frame = cta.convert(cta.bounds, to: uiView)
-            ctaFrameDescription = "frame=\(String(describing: frame)), bottom=\(frame.maxY)"
-        } else {
-            ctaFrameDescription = "not registered"
-        }
-        let bodyFrameDescription: String
-        if let body = uiView.bodyView {
-            let frame = body.convert(body.bounds, to: uiView)
-            bodyFrameDescription = "frame=\(String(describing: frame)), bottom=\(frame.maxY)"
-        } else {
-            bodyFrameDescription = "not registered"
-        }
-
-        admobDiagnosticsLogger.log("""
-            sizeThatFits (bounded) — \
-            proposal.width=\(String(describing: proposal.width), privacy: .public), \
-            proposal.height=\(String(describing: proposal.height), privacy: .public), \
-            boundsBeforeLayout=\(String(describing: boundsBeforeLayout), privacy: .public), \
-            widthConstraintIsActive=\(widthConstraint?.isActive ?? false, privacy: .public), \
-            widthConstraintConstant=\(widthConstraint?.constant ?? -1, privacy: .public), \
-            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
-            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
-            boundsAfterLayout=\(String(describing: boundsAfterLayout), privacy: .public), \
-            targetFittingSize=\(String(describing: UIView.layoutFittingCompressedSize), privacy: .public), \
-            fittingResult=\(String(describing: rootHeightResult.fittingResult), privacy: .public), \
-            finalHeight=\(finalHeight, privacy: .public), \
-            returned=\(String(describing: returnedSize), privacy: .public), \
-            stack=\(stackFrameDescription, privacy: .public), \
-            cta=\(ctaFrameDescription, privacy: .public), \
-            body=\(bodyFrameDescription, privacy: .public), \
-            maxRegisteredAssetBottom=\(maxRegisteredAssetBottom, privacy: .public), \
-            rootBoundsMaxY=\(rootBoundsMaxY, privacy: .public), \
-            containmentDelta=\(containmentDelta, privacy: .public), \
-            heightContainsAllRegisteredAssets=\(heightContainsAllRegisteredAssets, privacy: .public), \
-            lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
-            pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
-            deferredClosureScheduled=\(willScheduleDeferredHandoff, privacy: .public)
-            """)
-        #endif
-
         // LIFECYCLE FIX — deferred population handoff (see this function's header comment).
         // Only schedules the hop when population is still actually pending, so repeated
         // sizeThatFits calls after the ad is already populated (SwiftUI re-measuring for an
         // unrelated reason) never schedule a redundant no-op closure.
+        let willScheduleDeferredHandoff = context.coordinator.lastPopulatedNativeAd !== nativeAd
         if willScheduleDeferredHandoff {
             DispatchQueue.main.async { [weak uiView] in
                 guard let uiView else { return }
-                #if !DEBUG
-                admobDiagnosticsLogger.log("""
-                    sizeThatFits deferred closure executing — \
-                    pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
-                    lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
-                    widthConstraintIsActive=\(context.coordinator.widthConstraint?.isActive ?? false, privacy: .public), \
-                    widthConstraintConstant=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
-                    uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
-                    """)
-                #endif
                 self.populateIfNeeded(uiView, context: context)
             }
         }
