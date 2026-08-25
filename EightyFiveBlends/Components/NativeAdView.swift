@@ -384,6 +384,23 @@ private struct NativeAdContainer: UIViewRepresentable {
         // observable in the logs below, and to let the validation story for this fix be phrased
         // in terms of an explicit, inspectable field rather than an implicit invariant.
         var pendingNativeAd: NativeAd?
+
+        // FIX (validator: "Advertiser assets outside native ad view" — CTA.maxY landing a hair
+        // beyond root.bounds.maxY due to floating-point layout geometry, e.g. observed real-
+        // device Calculator values uiView.bounds.height≈268.3333333333333 vs.
+        // CTA.maxY≈268.33333333333337, containedInBounds=false; see
+        // establishSafeRootHeight(_:context:) for the full root-cause rationale). sizeThatFits's
+        // ceil()'d return value only tells SwiftUI how much OUTER layout space to allocate for
+        // this representable — it was never fed back into adView's own internal Auto Layout
+        // resolution, which remains governed entirely by stack.bottomAnchor == adView.bottomAnchor
+        // (required — see buildNativeAdView()), landing on whatever fractional height stack's own
+        // content-driven resolution independently computes. This constraint closes that gap:
+        // adView's ACTUAL height is pinned to that same integral, ceiled value, so every arranged
+        // subview (the CTA especially, as the stack's last one — see buildNativeAdView()) gets a
+        // small amount of GENUINE containment slack inside adView's real bounds, not just a
+        // larger number reported to SwiftUI that adView's own bounds never actually reaches. Held
+        // on the Coordinator for the same reason widthConstraint is (see its own comment).
+        var heightConstraint: NSLayoutConstraint?
     }
 
     // Shared identity string for the diagnostics below — ObjectIdentifier gives a stable,
@@ -402,6 +419,10 @@ private struct NativeAdContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> GoogleMobileAds.NativeAdView {
         let adView = buildNativeAdView()
         context.coordinator.widthConstraint = adView.widthAnchor.constraint(equalToConstant: 0)
+        // FIX (root-containment — see Coordinator.heightConstraint's own comment): created
+        // inactive here, same as widthConstraint, and only ever activated/updated inside
+        // establishSafeRootHeight(_:context:).
+        context.coordinator.heightConstraint = adView.heightAnchor.constraint(equalToConstant: 0)
         return adView
     }
 
@@ -560,7 +581,61 @@ private struct NativeAdContainer: UIViewRepresentable {
             widthConstraint.isActive = true
         }
 
-        populate(uiView, with: nativeAd)
+        // ROOT-CONTAINMENT FIX — "layout before native ad association": Google's SDK begins
+        // managing/tracking the registered assets the moment adView.nativeAd is assigned (see
+        // the assignment itself, below), so this populates asset VALUES first (text/images/
+        // hidden-state — everything populate(_:with:) used to do except the final assignment),
+        // then establishes and verifies a SAFE, contained root height BEFORE that assignment
+        // ever happens — rather than relying on some LATER sizeThatFits call to eventually
+        // correct the geometry. This is a refactor of the previous single populate(_:with:) call
+        // into its two halves (values, then association) — no ad-loading behavior changes, and
+        // this whole path still runs at most once per NativeAd instance (unchanged guard above).
+        populateAssetValues(uiView, with: nativeAd)
+
+        // Content is now real (not the empty/default state sizeThatFits may have measured on an
+        // earlier, pre-population call) — measuring again here and re-pinning adView's actual
+        // height to that fresh, ceiled result is what makes the very first population already
+        // geometrically safe. See establishSafeRootHeight's own comment for the full mechanism.
+        // Return value intentionally discarded here — the diagnostic log below reads the applied
+        // result straight off heightConstraint.constant instead of a separate local binding, so
+        // nothing goes unused outside the #if !DEBUG that log lives in.
+        establishSafeRootHeight(uiView, context: context)
+
+        // TEMPORARY — pre-assignment containment verification (root-containment investigation).
+        // Computed the same way as sizeThatFits's own compliance signal: the max bottom edge
+        // across every VISIBLE registered asset, compared against adView's own real (now
+        // height-constrained) bounds. Logged explicitly BEFORE adView.nativeAd is assigned, so
+        // TestFlight capture can show exactly what geometry Google's SDK is about to be handed.
+        // Remove alongside every other TEMPORARY block in this file.
+        #if !DEBUG
+        let preAssignmentAssetViews: [UIView?] = [
+            uiView.headlineView, uiView.bodyView, uiView.iconView,
+            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
+        ]
+        let preAssignmentMaxRegisteredAssetBottom = preAssignmentAssetViews.compactMap { view -> CGFloat? in
+            guard let view, view.isHidden == false else { return nil }
+            return view.convert(view.bounds, to: uiView).maxY
+        }.max() ?? 0
+        let preAssignmentContainmentDelta = uiView.bounds.maxY - preAssignmentMaxRegisteredAssetBottom
+        admobDiagnosticsLogger.log("""
+            populateIfNeeded pre-nativeAd-assignment containment check — \
+            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
+            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
+            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
+            maxRegisteredAssetBottom=\(preAssignmentMaxRegisteredAssetBottom, privacy: .public), \
+            rootBoundsMaxY=\(uiView.bounds.maxY, privacy: .public), \
+            containmentDelta=\(preAssignmentContainmentDelta, privacy: .public), \
+            allRegisteredAssetsContained=\(preAssignmentContainmentDelta >= 0, privacy: .public)
+            """)
+        #endif
+
+        // Must be assigned last, after every asset view is populated AND the root already has a
+        // safe, verified, contained height (established/checked immediately above) — this is
+        // what activates Google's click/impression tracking for the ad (documented SDK
+        // requirement). Unchanged from before this fix in every respect except WHEN it now runs
+        // relative to root-height establishment.
+        uiView.nativeAd = nativeAd
+
         context.coordinator.lastPopulatedNativeAd = nativeAd
         context.coordinator.pendingNativeAd = nil
 
@@ -578,6 +653,14 @@ private struct NativeAdContainer: UIViewRepresentable {
         // see the LIFECYCLE FIX comment on updateUIView for the full investigation. See the
         // diagnostics-logger declaration near the top of this file for the os.Logger/privacy
         // rationale. Remove alongside every other TEMPORARY block in this file.
+        //
+        // ROOT-CONTAINMENT FIX — this layout pass now runs AFTER adView.nativeAd was just
+        // assigned above (previously it ran instead-of/before that assignment), specifically so
+        // every diagnostic below captures the "after assignment" state Phase 4 of the root-
+        // containment investigation asks for, in case Google's SDK itself makes any internal
+        // geometry adjustment as part of activating tracking on assignment. establishSafeRootHeight
+        // already forced its own layout passes before this point, so this is not the first real
+        // layout resolution here — it exists to pick up anything assignment itself changed.
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
 
@@ -758,6 +841,27 @@ private struct NativeAdContainer: UIViewRepresentable {
             ("advertiser", uiView.advertiserView),
             ("callToAction", uiView.callToActionView),
         ]
+        // ROOT-CONTAINMENT FIX — aggregate compliance signal, computed alongside the per-asset
+        // loop below: the max bottom edge across every VISIBLE registered asset (hidden optional
+        // assets excluded — see sizeThatFits's identical computation for the same reasoning),
+        // compared against adView's own real (post-height-constraint) bounds. This is the
+        // "after assignment/layout" capture Phase 4 of the root-containment investigation asks
+        // for — the "before assignment" one is populateIfNeeded's own pre-nativeAd-assignment
+        // containment check, logged earlier in this same function.
+        let finalVisibleAssetMaxYValues: [CGFloat] = finalAssetViews.compactMap { _, view in
+            guard let view, view.isHidden == false else { return nil }
+            return view.convert(view.bounds, to: uiView).maxY
+        }
+        let finalMaxRegisteredAssetBottom = finalVisibleAssetMaxYValues.max() ?? 0
+        let finalContainmentDelta = uiView.bounds.maxY - finalMaxRegisteredAssetBottom
+        let finalAllRegisteredAssetsContained = finalContainmentDelta >= 0
+        admobDiagnosticsLogger.log("""
+            Final-layout containment summary (post-bounded-width, post-nativeAd-assignment) — \
+            maxRegisteredAssetBottom=\(finalMaxRegisteredAssetBottom, privacy: .public), \
+            rootBoundsMaxY=\(uiView.bounds.maxY, privacy: .public), \
+            containmentDelta=\(finalContainmentDelta, privacy: .public), \
+            allRegisteredAssetsContained=\(finalAllRegisteredAssetsContained, privacy: .public)
+            """)
         for (name, assetView) in finalAssetViews {
             guard let assetView else {
                 admobDiagnosticsLogger.log("""
@@ -778,6 +882,69 @@ private struct NativeAdContainer: UIViewRepresentable {
                 """)
         }
         #endif
+    }
+
+    // FIX (validator: "Advertiser assets outside native ad view" — root-containment fix). See
+    // Coordinator.heightConstraint's own comment for the full root-cause rationale: sizeThatFits's
+    // ceil()'d return value only tells SwiftUI how much OUTER layout space to allocate — it was
+    // never fed back into adView's own internal Auto Layout resolution, which stays governed
+    // entirely by stack's required top/bottom pins to adView (see buildNativeAdView()), landing
+    // on whatever fractional height stack's content-driven resolution independently computes.
+    //
+    // This measures adView's content-derived height at its CURRENTLY-bounded width, then pins
+    // adView's REAL height to that same ceiled value via Coordinator.heightConstraint, so
+    // uiView.bounds.height (the value Google's own Ad Inspector validator actually inspects) is
+    // deterministically the same integral number reported elsewhere — not an independently-
+    // resolved fractional value that can land a hair short of a registered asset's bottom edge.
+    // Conflict-free by construction: finalHeight = ceil(fittingResult.height) is always >=
+    // fittingResult.height, which is itself already the SMALLEST height satisfying every
+    // required constraint in the stack (that is exactly what .fittingSizeLevel +
+    // layoutFittingCompressedSize computes) — so this REQUIRED height constraint can never ask
+    // for less space than the content structurally needs, and can never create a real Auto
+    // Layout conflict. The stack's own .fill distribution (the default — never overridden in
+    // buildNativeAdView()) means any tiny slack from rounding up gets absorbed by the arranged
+    // subviews' own hugging/compression behavior, not by a gap at the bottom — the last arranged
+    // subview (the CTA) still ends exactly at adView's real bottom edge, now with real slack
+    // above the true minimum instead of none. Requires widthConstraint to already be bounded —
+    // both call sites (sizeThatFits's bounded branch, populateIfNeeded) establish that first.
+    //
+    // Called from BOTH sizeThatFits (every bounded measurement, keeping the height constraint
+    // honest as content/width genuinely change) and populateIfNeeded (immediately after asset
+    // VALUES are populated but before adView.nativeAd is assigned — see populateIfNeeded's own
+    // comment — so the very first population is already geometrically safe, not merely
+    // "eventually correct" once some later sizeThatFits call happens to re-measure). Pure
+    // geometry: reads/writes only Auto Layout constraints already active in the subtree, never
+    // ad content — safe to call synchronously from sizeThatFits for the same reason the width
+    // constraint's own constant/isActive mutation already was (see sizeThatFits's own comment).
+    @discardableResult
+    private func establishSafeRootHeight(
+        _ uiView: GoogleMobileAds.NativeAdView,
+        context: Context
+    ) -> (fittingResult: CGSize, finalHeight: CGFloat) {
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
+
+        let targetFittingSize = UIView.layoutFittingCompressedSize
+        let fittingResult = uiView.systemLayoutSizeFitting(
+            targetFittingSize,
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        // Same fractional-height hardening as before this fix (see sizeThatFits's own comment
+        // for the original rationale) — ceil() here now actually reaches adView's real bounds,
+        // via the height constraint just below, instead of only reaching SwiftUI's copy of it.
+        let finalHeight = ceil(fittingResult.height)
+
+        context.coordinator.heightConstraint?.constant = finalHeight
+        context.coordinator.heightConstraint?.isActive = true
+
+        // Re-resolve adView's ACTUAL geometry now that the height constraint has a real target —
+        // without this second pass, uiView.bounds would still reflect the pre-constraint, purely
+        // content-driven (fractional) resolution from the layout pass above.
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
+
+        return (fittingResult, finalHeight)
     }
 
     // FIX (AdMob validator: "Advertiser assets outside native ad view" — 862pt over-wide adView
@@ -832,9 +999,11 @@ private struct NativeAdContainer: UIViewRepresentable {
     // this hands off to DispatchQueue.main.async — a clean, standard "run on the next main-
     // thread run-loop turn, after this measurement call has already returned" — so
     // populateIfNeeded's real UIKit mutations never happen from inside a sizeThatFits call
-    // frame. The only mutations sizeThatFits performs directly are the widthConstraint's own
-    // constant/isActive and (HEIGHT-RECONCILIATION FIX, see the bounded branch below) a forced
-    // setNeedsLayout()/layoutIfNeeded() pass — pure Auto Layout constraint/geometry bookkeeping
+    // frame. The only mutations sizeThatFits performs directly are widthConstraint's own
+    // constant/isActive and (HEIGHT-RECONCILIATION + ROOT-CONTAINMENT FIXES, see the bounded
+    // branch below and establishSafeRootHeight) heightConstraint's constant/isActive plus the
+    // forced setNeedsLayout()/layoutIfNeeded() passes that go with both — pure Auto Layout
+    // constraint/geometry bookkeeping
     // from constraints already active in the subtree, never ad content (`.nativeAd`, label
     // text/images), which is what the async handoff above exists to keep out of this call frame.
     func sizeThatFits(
@@ -854,7 +1023,15 @@ private struct NativeAdContainer: UIViewRepresentable {
             // documented pairing, so this branch can never itself inflate the width. No bounded
             // width exists in this branch, so population is never triggered from here either —
             // see updateUIView's header comment.
+            //
+            // ROOT-CONTAINMENT FIX — Coordinator.heightConstraint must be deactivated here too,
+            // for the same reason: it's a REQUIRED-priority constraint (see its own comment), so
+            // if it were left active holding a PRIOR bounded call's height, it would force THIS
+            // call's systemLayoutSizeFitting to return at least that stale value — directly
+            // contradicting this branch's whole point of measuring the genuinely smallest valid
+            // size via low (.fittingSizeLevel) fitting priorities on both axes.
             widthConstraint?.isActive = false
+            context.coordinator.heightConstraint?.isActive = false
             let targetFittingSize = UIView.layoutFittingCompressedSize
             let fittingResult = uiView.systemLayoutSizeFitting(
                 targetFittingSize,
@@ -884,6 +1061,7 @@ private struct NativeAdContainer: UIViewRepresentable {
                 finalHeight=\(finalHeight, privacy: .public), \
                 returned=\(String(describing: fallbackSize), privacy: .public), \
                 widthConstraintIsActiveAfter=\(widthConstraint?.isActive ?? false, privacy: .public), \
+                heightConstraintIsActiveAfter=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
                 lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
                 pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
                 deferredClosureScheduled=false
@@ -902,55 +1080,36 @@ private struct NativeAdContainer: UIViewRepresentable {
         context.coordinator.lastKnownBoundedWidth = proposedWidth
 
         // TEMPORARY — height-reconciliation diagnostics (see the extended log below). Captured
-        // before forcing the layout pass just below, for direct before/after comparison.
+        // before establishSafeRootHeight below forces its own layout pass, for direct
+        // before/after comparison.
         #if !DEBUG
         let boundsBeforeLayout = uiView.bounds
         #endif
 
-        // HEIGHT FIX (validator: "Advertiser assets outside native ad view" — the one warning
-        // still remaining after the width/MediaView/population-deadlock fixes). Real-device
-        // evidence showed a persistent ~31pt gap between THIS call's own systemLayoutSizeFitting
-        // result (~252.67pt) and the real, resolved height of the populated hierarchy
-        // (~283.67pt — confirmed correct by populateIfNeeded's own post-layoutIfNeeded()
-        // diagnostics below, on this exact uiView). Root cause, confirmed directly against this
-        // file: this call never forced a real Auto Layout pass at the just-activated bounded
-        // width before measuring — populateIfNeeded's setNeedsLayout()/layoutIfNeeded() (see
-        // below) is the ONLY other place in this file that measures this hierarchy, and it's the
-        // one place that already measures it correctly. bodyLabel (numberOfLines = 3) never has
-        // preferredMaxLayoutWidth set anywhere in this file, so its true multi-line wrapped
-        // height can only be resolved through an actual settled layout pass at its real width —
-        // exactly what was missing here. Forcing the same setNeedsLayout()/layoutIfNeeded()
-        // sequence here, at the bounded width, before measuring, closes the gap: the
-        // systemLayoutSizeFitting call below now measures the hierarchy after it has already
-        // been laid out for real, the same way populateIfNeeded's own (already-correct) reads
-        // do. This is pure geometry resolution from already-active constraints, not a content
-        // mutation, so it's safe to call synchronously here — unlike populate()/`.nativeAd`
-        // assignment, which stays deferred (see this function's own header comment on why THAT
-        // specific mutation is not done inline). Width remains exactly proposedWidth (unchanged
-        // by this pass — only height can move); no hardcoded card height is introduced anywhere.
-        uiView.setNeedsLayout()
-        uiView.layoutIfNeeded()
+        // HEIGHT FIX (validator: "Advertiser assets outside native ad view" — the warning
+        // remaining after the width/MediaView/population-deadlock/height-reconciliation fixes).
+        // Real-device evidence showed sizeThatFits's ceil()'d return value never actually made
+        // adView's OWN bounds integral — uiView.bounds.height stayed fractional (e.g. observed
+        // Calculator: root≈268.3333333333333, CTA.maxY≈268.33333333333337 — CTA landing a hair
+        // outside root by floating-point layout geometry, containedInBounds=false). Root cause,
+        // confirmed directly against this file: adView's ACTUAL height was never governed by
+        // anything but stack's own required top/bottom pins to it (see buildNativeAdView()) —
+        // ceil() only rounded what SwiftUI was TOLD to allocate, never what adView's own Auto
+        // Layout resolution independently computed. establishSafeRootHeight (see its own
+        // comment) closes that gap by pinning adView's real height to the same ceiled value via
+        // Coordinator.heightConstraint — genuine structural containment, not epsilon tolerance.
+        // Width remains exactly proposedWidth throughout (unchanged by this pass — only height
+        // can move); no hardcoded card height is introduced anywhere.
+        // Kept as one tuple binding (rather than destructuring straight into two locals) so
+        // .fittingResult stays a valid reference for the #if !DEBUG log below without leaving an
+        // unconditionally-declared-but-DEBUG-only-used local (which would warn in DEBUG builds).
+        let rootHeightResult = establishSafeRootHeight(uiView, context: context)
+        let finalHeight = rootHeightResult.finalHeight
 
         #if !DEBUG
         let boundsAfterLayout = uiView.bounds
         #endif
 
-        let targetFittingSize = UIView.layoutFittingCompressedSize
-        let fittingResult = uiView.systemLayoutSizeFitting(
-            targetFittingSize,
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        )
-        // PHASE 3 (fractional-height hardening): the un-rounded fitted height (e.g. observed
-        // 252.666...pt on a real device) can land a registered asset's bottom edge exactly on
-        // that same fractional root boundary (observed: CTA bottom 214.666...+38 ==
-        // 252.666...) — a knife-edge that pixel/point rounding elsewhere in the rendering
-        // pipeline could tip either side of. Rounding the FITTED height up to the next whole
-        // point gives every asset a small amount of guaranteed containment slack against the
-        // root boundary, without hardcoding any fixed card height and without changing
-        // anything content-driven about the height itself — it is still entirely derived from
-        // systemLayoutSizeFitting above, just ceil()'d before being returned.
-        let finalHeight = ceil(fittingResult.height)
         // Width is guaranteed == proposedWidth by the required-priority constraint activated
         // just above — returned explicitly rather than trusting fittingResult's own width, so a
         // genuine content conflict (which would show up as an Auto Layout console warning) can
@@ -987,7 +1146,12 @@ private struct NativeAdContainer: UIViewRepresentable {
             return view.convert(view.bounds, to: uiView).maxY
         }
         let maxRegisteredAssetBottom = visibleAssetMaxYValues.max() ?? 0
-        let heightContainsAllRegisteredAssets = finalHeight >= maxRegisteredAssetBottom
+        // ROOT-CONTAINMENT FIX — compliance signal now compares against adView's own REAL,
+        // post-height-constraint bounds (uiView.bounds.maxY), not just the value this call is
+        // about to report to SwiftUI — structural containment, not the value SwiftUI was told.
+        let rootBoundsMaxY = uiView.bounds.maxY
+        let containmentDelta = rootBoundsMaxY - maxRegisteredAssetBottom
+        let heightContainsAllRegisteredAssets = containmentDelta >= 0
 
         let ctaFrameDescription: String
         if let cta = uiView.callToActionView {
@@ -1011,15 +1175,19 @@ private struct NativeAdContainer: UIViewRepresentable {
             boundsBeforeLayout=\(String(describing: boundsBeforeLayout), privacy: .public), \
             widthConstraintIsActive=\(widthConstraint?.isActive ?? false, privacy: .public), \
             widthConstraintConstant=\(widthConstraint?.constant ?? -1, privacy: .public), \
+            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
+            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
             boundsAfterLayout=\(String(describing: boundsAfterLayout), privacy: .public), \
-            targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
-            fittingResult=\(String(describing: fittingResult), privacy: .public), \
+            targetFittingSize=\(String(describing: UIView.layoutFittingCompressedSize), privacy: .public), \
+            fittingResult=\(String(describing: rootHeightResult.fittingResult), privacy: .public), \
             finalHeight=\(finalHeight, privacy: .public), \
             returned=\(String(describing: returnedSize), privacy: .public), \
             stack=\(stackFrameDescription, privacy: .public), \
             cta=\(ctaFrameDescription, privacy: .public), \
             body=\(bodyFrameDescription, privacy: .public), \
             maxRegisteredAssetBottom=\(maxRegisteredAssetBottom, privacy: .public), \
+            rootBoundsMaxY=\(rootBoundsMaxY, privacy: .public), \
+            containmentDelta=\(containmentDelta, privacy: .public), \
             heightContainsAllRegisteredAssets=\(heightContainsAllRegisteredAssets, privacy: .public), \
             lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
             pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
@@ -1203,7 +1371,14 @@ private struct NativeAdContainer: UIViewRepresentable {
         return adView
     }
 
-    private func populate(_ adView: GoogleMobileAds.NativeAdView, with nativeAd: NativeAd) {
+    // ROOT-CONTAINMENT FIX ("layout before native ad association"): this used to be a single
+    // populate(_:with:) that set every asset value AND assigned adView.nativeAd, in one call, at
+    // the end of populateIfNeeded. Split so populateIfNeeded can establish and verify a safe,
+    // contained root height (see establishSafeRootHeight) using REAL content in between — this
+    // half only sets asset values (text/images/hidden-state); the adView.nativeAd assignment
+    // itself now lives directly in populateIfNeeded, after that containment check. Google's
+    // documented optional-asset hide-when-nil pattern is unchanged, byte-for-byte, from before.
+    private func populateAssetValues(_ adView: GoogleMobileAds.NativeAdView, with nativeAd: NativeAd) {
         (adView.headlineView as? UILabel)?.text = nativeAd.headline
         (adView.bodyView as? UILabel)?.text = nativeAd.body
         (adView.bodyView as? UILabel)?.isHidden = nativeAd.body == nil
@@ -1214,9 +1389,5 @@ private struct NativeAdContainer: UIViewRepresentable {
         (adView.callToActionView as? UIButton)?.setTitle(nativeAd.callToAction, for: .normal)
         (adView.callToActionView as? UIButton)?.isHidden = nativeAd.callToAction == nil
         (adView.mediaView as? MediaView)?.mediaContent = nativeAd.mediaContent
-
-        // Must be assigned last, after every asset view above is registered — this is what
-        // activates Google's click/impression tracking for the ad (documented SDK requirement).
-        adView.nativeAd = nativeAd
     }
 }
