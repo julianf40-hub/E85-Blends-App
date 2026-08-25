@@ -431,6 +431,31 @@ private struct NativeAdContainer: UIViewRepresentable {
         // NativeAdLoader.loadIfNeeded()'s idle/loading/loaded/failed guard), so this reduces to
         // "populate exactly once," not a per-property diff.
         guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
+
+        // LIFECYCLE FIX (adversarial verification pass, closing a time-of-check/time-of-use
+        // gap): re-check bounded width HERE, at actual population time — not just trust that
+        // it was bounded at the moment sizeThatFits scheduled this call. sizeThatFits's
+        // DispatchQueue.main.async handoff can be queued while widthConstraint.isActive ==
+        // true, then a LATER sizeThatFits call (e.g. a subsequent nil-proposal "ideal size"
+        // measurement pass for this same representable — see sizeThatFits's own fallback-
+        // branch comment) can deactivate the width constraint again before that queued closure
+        // actually runs. Without re-verifying here, population would still proceed and assign
+        // adView.nativeAd while adView is once again unbounded — silently reproducing the
+        // exact 862pt-wide bug this whole lifecycle fix exists to close. If bounded width isn't
+        // active right now, do nothing: lastPopulatedNativeAd stays nil, so the next bounded
+        // sizeThatFits call (or a later updateUIView call once bounded again) naturally
+        // re-schedules/re-attempts this — self-correcting via the existing call sites, not a
+        // new timer or retry loop.
+        guard context.coordinator.widthConstraint?.isActive == true else {
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                populateIfNeeded deferring — bounded width no longer active at population time \
+                (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public))
+                """)
+            #endif
+            return
+        }
+
         populate(uiView, with: nativeAd)
         context.coordinator.lastPopulatedNativeAd = nativeAd
 
