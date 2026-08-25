@@ -353,6 +353,46 @@ private struct NativeAdContainer: UIViewRepresentable {
         // exactly this kind of per-instance state (see lastPopulatedNativeAd above), so it holds
         // the constraint directly instead.
         var widthConstraint: NSLayoutConstraint?
+
+        // REGRESSION FIX (PR #37 follow-up — "native ads no longer appear"): widthConstraint
+        // .isActive is a TRANSIENT, per-call toggle — sizeThatFits correctly flips it back to
+        // false on every nil-proposal "ideal size" measurement pass, which is a normal, expected,
+        // and (per real-device evidence across this whole investigation) RECURRING part of
+        // SwiftUI's layout negotiation for this view, not a one-time event. PR #37 gated
+        // population (updateUIView/populateIfNeeded) directly on widthConstraint?.isActive ==
+        // true. That is wrong: nothing guarantees the LAST sizeThatFits call SwiftUI ever makes
+        // for a given, now-settled NativeAdContainer instance is a bounded one — once SwiftUI
+        // considers this view's inputs unchanged, it can stop calling updateUIView/sizeThatFits
+        // for it entirely, even while it stays on screen. If that last call happened to be a
+        // nil-proposal one, widthConstraint.isActive is left false PERMANENTLY, and since
+        // nothing else ever re-triggers a fresh call for that instance, population never
+        // happens: lastPopulatedNativeAd stays nil forever and the ad silently never appears.
+        // This field is the fix: a MONOTONIC "has bounded layout ever been established" signal,
+        // set once a real, finite, positive width is first proposed (sizeThatFits's bounded
+        // branch) and deliberately NEVER cleared by the nil-proposal branch — unlike
+        // widthConstraint.isActive, which keeps toggling for its own, unrelated, correct
+        // measurement purposes. updateUIView/populateIfNeeded now gate on THIS instead.
+        var lastKnownBoundedWidth: CGFloat?
+
+        // REGRESSION FIX (diagnostics + explicit pending-state tracking, same investigation):
+        // the NativeAd updateUIView deferred because no bounded width had been established yet
+        // at that time. Set when deferring, cleared the moment populateIfNeeded actually
+        // populates. This doesn't change WHAT gets populated (this struct's own `nativeAd`
+        // property is already always the correct value — NativeAdLoader only ever produces one
+        // instance per placement's displayed lifetime), so it's bookkeeping/diagnostics only —
+        // it exists to make "is there currently an ad waiting on bounded width" directly
+        // observable in the logs below, and to let the validation story for this fix be phrased
+        // in terms of an explicit, inspectable field rather than an implicit invariant.
+        var pendingNativeAd: NativeAd?
+    }
+
+    // Shared identity string for the diagnostics below — ObjectIdentifier gives a stable,
+    // cheap-to-compute per-instance value so log lines can be correlated across calls without
+    // printing the ad's full content. NativeAd is a reference type (this file already relies on
+    // that via the !==/=== comparisons throughout), so ObjectIdentifier applies directly.
+    private static func identityDescription(_ nativeAd: NativeAd?) -> String {
+        guard let nativeAd else { return "nil" }
+        return String(describing: ObjectIdentifier(nativeAd))
     }
 
     func makeCoordinator() -> Coordinator {
@@ -382,13 +422,17 @@ private struct NativeAdContainer: UIViewRepresentable {
     // for why this one validator warning persisted after every code-visible frame was already
     // confirmed correct by the time SwiftUI finished laying out.
     //
-    // FIX: population is now gated on Coordinator.widthConstraint?.isActive == true — i.e. on
-    // sizeThatFits having ALREADY established a real, SwiftUI-proposed, bounded width for this
-    // exact uiView. On the (real-device-confirmed) ordering where updateUIView runs first, this
-    // defers here; sizeThatFits's own bounded branch below performs the deferred population
-    // once it activates the width constraint (see its own comment for why that handoff is
-    // async, not inline). On any LATER updateUIView call — once bounded width already exists —
-    // this populates directly, synchronously, exactly as before. Either path funnels through
+    // FIX: population is gated on Coordinator.lastKnownBoundedWidth != nil — a MONOTONIC "has
+    // sizeThatFits EVER established a real, SwiftUI-proposed, bounded width for this exact
+    // uiView" signal (see its declaration on Coordinator for why this replaced the transient
+    // widthConstraint?.isActive check a prior pass used here, which could leave a pending ad
+    // stranded forever — the PR #37 regression this fix addresses). On the (real-device-
+    // confirmed) ordering where updateUIView runs first, bounded width has never been
+    // established yet, so this stores the ad as pendingNativeAd and defers; sizeThatFits's own
+    // bounded branch below performs the deferred population once it first records a bounded
+    // width (see its own comment for why that handoff is async, not inline). On any LATER
+    // updateUIView call — once bounded width has already been established at least once — this
+    // populates directly, synchronously, exactly as before. Either path funnels through
     // populateIfNeeded(_:context:), whose own lastPopulatedNativeAd guard (unchanged from the
     // previous single-call-site version) makes population idempotent regardless of which path
     // actually triggers it — "populate exactly once per NativeAd instance" holds either way.
@@ -397,25 +441,54 @@ private struct NativeAdContainer: UIViewRepresentable {
     // `if let nativeAd = loader.nativeAd` gate) — deferring population defers nothing about the
     // network request, never triggers a second one, and never touches NativeAdLoader/AdLoader.
     func updateUIView(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
+        // TEMPORARY — regression diagnostics (PR #37 "native ads no longer appear" audit).
+        // Full entry-state snapshot on every call, so the eventual TestFlight capture can show
+        // exactly which decision (skip/defer/populate) was made and why. Remove alongside every
+        // other TEMPORARY block in this file once the regression is confirmed fixed on-device.
+        #if !DEBUG
+        let widthConstraintForLog = context.coordinator.widthConstraint
+        let entryStateDescription = "nativeAdIdentity=\(Self.identityDescription(nativeAd)), " +
+            "widthConstraintExists=\(widthConstraintForLog != nil), " +
+            "widthConstraintIsActive=\(widthConstraintForLog?.isActive ?? false), " +
+            "widthConstraintConstant=\(widthConstraintForLog?.constant ?? -1), " +
+            "lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil"), " +
+            "pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd)), " +
+            "lastPopulatedNativeAdIdentity=\(Self.identityDescription(context.coordinator.lastPopulatedNativeAd))"
+        #endif
+
         // Cheap early exit for the common case (already populated, SwiftUI re-rendering the
         // surrounding hierarchy for an unrelated reason) — avoids touching the Coordinator's
-        // widthConstraint or calling populateIfNeeded at all once there's nothing left to do.
+        // pending state or calling populateIfNeeded at all once there's nothing left to do.
         // populateIfNeeded's OWN identical guard (below) is still the source of truth — this is
         // purely a hot-path optimization, not a second, independent correctness mechanism.
-        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
-
-        guard context.coordinator.widthConstraint?.isActive == true else {
-            // DEFERRED — see this function's header comment. sizeThatFits(_:uiView:context:)
-            // will perform the deferred population once it establishes a real bounded width.
+        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else {
             #if !DEBUG
             admobDiagnosticsLogger.log("""
-                updateUIView deferring populate() — bounded width not yet established \
-                (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public))
+                updateUIView SKIP (already populated) — \(entryStateDescription, privacy: .public)
                 """)
             #endif
             return
         }
 
+        guard context.coordinator.lastKnownBoundedWidth != nil else {
+            // DEFERRED — see this function's header comment. sizeThatFits(_:uiView:context:)
+            // will perform the deferred population once it first establishes a bounded width.
+            // Recorded explicitly as pendingNativeAd so the "is an ad waiting" state is directly
+            // observable rather than implicit — see the Coordinator field's own comment.
+            context.coordinator.pendingNativeAd = nativeAd
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                updateUIView DEFER/STORE PENDING — bounded width never established yet \
+                (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)) — \
+                \(entryStateDescription, privacy: .public)
+                """)
+            #endif
+            return
+        }
+
+        #if !DEBUG
+        admobDiagnosticsLogger.log("updateUIView POPULATE NOW — \(entryStateDescription, privacy: .public)")
+        #endif
         populateIfNeeded(uiView, context: context)
     }
 
@@ -425,46 +498,83 @@ private struct NativeAdContainer: UIViewRepresentable {
     // times: the lastPopulatedNativeAd guard makes real population (and everything logged
     // below it) happen at most once per NativeAd instance, regardless of caller.
     private func populateIfNeeded(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
+        // TEMPORARY — regression diagnostics (PR #37 "native ads no longer appear" audit).
+        // Remove alongside every other TEMPORARY block in this file once the regression is
+        // confirmed fixed on-device.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            populateIfNeeded entered — \
+            nativeAdIdentity=\(Self.identityDescription(nativeAd), privacy: .public), \
+            pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
+            lastPopulatedNativeAdIdentity=\(Self.identityDescription(context.coordinator.lastPopulatedNativeAd), privacy: .public), \
+            lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public)
+            """)
+        #endif
+
         // Only repopulate when the underlying NativeAd instance actually changed. Reference
         // identity (===/!==) is the right comparison here — NativeAd is a reference type, and
         // NativeAdLoader only ever produces one instance per placement's displayed lifetime (see
         // NativeAdLoader.loadIfNeeded()'s idle/loading/loaded/failed guard), so this reduces to
         // "populate exactly once," not a per-property diff.
-        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else { return }
+        guard context.coordinator.lastPopulatedNativeAd !== nativeAd else {
+            #if !DEBUG
+            admobDiagnosticsLogger.log("populateIfNeeded ABORT — already populated")
+            #endif
+            return
+        }
 
-        // LIFECYCLE FIX (adversarial verification pass, closing a time-of-check/time-of-use
-        // gap): re-check bounded width HERE, at actual population time — not just trust that
-        // it was bounded at the moment sizeThatFits scheduled this call. sizeThatFits's
-        // DispatchQueue.main.async handoff can be queued while widthConstraint.isActive ==
-        // true, then a LATER sizeThatFits call (e.g. a subsequent nil-proposal "ideal size"
-        // measurement pass for this same representable — see sizeThatFits's own fallback-
-        // branch comment) can deactivate the width constraint again before that queued closure
-        // actually runs. Without re-verifying here, population would still proceed and assign
-        // adView.nativeAd while adView is once again unbounded — silently reproducing the
-        // exact 862pt-wide bug this whole lifecycle fix exists to close. If bounded width isn't
-        // active right now, do nothing: lastPopulatedNativeAd stays nil, so the next bounded
-        // sizeThatFits call (or a later updateUIView call once bounded again) naturally
-        // re-schedules/re-attempts this — self-correcting via the existing call sites, not a
-        // new timer or retry loop.
-        guard context.coordinator.widthConstraint?.isActive == true else {
+        // REGRESSION FIX (replaces the prior widthConstraint?.isActive re-check — see
+        // Coordinator.lastKnownBoundedWidth's own comment for the full root-cause rationale):
+        // gate on the MONOTONIC "has bounded width ever been established" signal, not the
+        // transient per-call isActive toggle. The prior check was itself a correct fix for a
+        // real time-of-check/time-of-use gap (a queued DispatchQueue.main.async handoff running
+        // after a LATER nil-proposal sizeThatFits call had deactivated the constraint again) —
+        // but re-checking isActive specifically, rather than lastKnownBoundedWidth, meant that
+        // TOCTOU-safe re-check could itself abort a population attempt that was perfectly safe
+        // to make (bounded width WAS established earlier; it just isn't the constraint's
+        // CURRENT transient state), with nothing guaranteeing another attempt would ever follow
+        // — the exact stranding this fix closes. If bounded width was never established at all,
+        // do nothing: lastPopulatedNativeAd stays nil, pendingNativeAd stays set, and the next
+        // bounded sizeThatFits call (which always re-schedules this same handoff whenever
+        // lastPopulatedNativeAd !== nativeAd — see its own comment) naturally retries. No timer,
+        // no polling, no new dispatch loop.
+        guard let lastKnownBoundedWidth = context.coordinator.lastKnownBoundedWidth else {
             #if !DEBUG
             admobDiagnosticsLogger.log("""
-                populateIfNeeded deferring — bounded width no longer active at population time \
+                populateIfNeeded ABORT — bounded width never established yet \
                 (uiView.bounds=\(String(describing: uiView.bounds), privacy: .public))
                 """)
             #endif
             return
         }
 
+        // Defensively re-apply the last known-good bounded width before populating. Between
+        // lastKnownBoundedWidth being recorded and this call actually running, an intervening
+        // nil-proposal sizeThatFits call may have deactivated widthConstraint for its own
+        // (correct, unrelated) measurement purposes — see sizeThatFits's fallback branch. This
+        // guarantees adView is in a genuinely bounded, correct state at the exact moment
+        // adView.nativeAd is assigned below, regardless of the constraint's transient state at
+        // this instant, without waiting for or depending on another sizeThatFits call.
+        if let widthConstraint = context.coordinator.widthConstraint {
+            widthConstraint.constant = lastKnownBoundedWidth
+            widthConstraint.isActive = true
+        }
+
         populate(uiView, with: nativeAd)
         context.coordinator.lastPopulatedNativeAd = nativeAd
+        context.coordinator.pendingNativeAd = nil
+
+        #if !DEBUG
+        admobDiagnosticsLogger.log("populateIfNeeded SUCCESS — populated and cleared pendingNativeAd")
+        #endif
 
         // TEMPORARY — asset frame diagnostics for the "Advertiser assets outside native ad
         // view" validator investigation. Originally moved here from buildNativeAdView() (see
         // git history) so uiView would have a real, resolved frame to log against. Now that
-        // this whole function only ever runs once Coordinator.widthConstraint is confirmed
-        // active (see updateUIView/sizeThatFits), that frame is the real, SwiftUI-bounded one
-        // (~372pt) rather than the transient, unbounded one (~862pt) it could previously be —
+        // this whole function only ever reaches this point once Coordinator.lastKnownBoundedWidth
+        // is confirmed established and freshly re-applied above (see updateUIView/sizeThatFits),
+        // that frame is the real, SwiftUI-bounded one (~372pt) rather than the transient,
+        // unbounded one (~862pt) it could previously be —
         // see the LIFECYCLE FIX comment on updateUIView for the full investigation. See the
         // diagnostics-logger declaration near the top of this file for the os.Logger/privacy
         // rationale. Remove alongside every other TEMPORARY block in this file.
@@ -604,7 +714,8 @@ private struct NativeAdContainer: UIViewRepresentable {
         }
 
         // TEMPORARY — final-layout diagnostics (lifecycle-ordering pass). This function only
-        // ever runs once Coordinator.widthConstraint is confirmed active, so every field below
+        // ever reaches this point once Coordinator.lastKnownBoundedWidth is confirmed
+        // established (and the width constraint freshly re-applied above), so every field below
         // reflects the view's REAL, SwiftUI-bounded geometry — direct proof (on the next
         // TestFlight run) that the root view is ~372pt wide here, never the transient ~862pt
         // this investigation started from. Remove alongside every other TEMPORARY block in
@@ -708,10 +819,13 @@ private struct NativeAdContainer: UIViewRepresentable {
     // rotation, and Dynamic Type without any device-specific branching.
     //
     // LIFECYCLE FIX (final validator investigation): the bounded branch below is also the
-    // ONLY place Coordinator.widthConstraint ever gets activated — which makes it the ONLY
-    // place that can correctly know "a real bounded width now exists," and therefore the
-    // right place to perform any population updateUIView deferred (see updateUIView's own
-    // header comment for the full ordering rationale). Deliberately NOT done inline/
+    // ONLY place Coordinator.lastKnownBoundedWidth ever gets recorded (REGRESSION FIX, PR #37
+    // follow-up: this used to be phrased in terms of widthConstraint.isActive, a transient
+    // per-call toggle that could leave a pending ad stranded forever — see lastKnownBoundedWidth's
+    // own comment on Coordinator) — which makes it the ONLY place that can correctly know "a
+    // real bounded width has now been established," and therefore the right place to perform
+    // any population updateUIView deferred (see updateUIView's own header comment for the full
+    // ordering rationale). Deliberately NOT done inline/
     // synchronously here: sizeThatFits runs during SwiftUI's live layout/measurement pass, and
     // mutating adView's content synchronously mid-measurement (labels' text, .nativeAd) is not
     // something UIKit/SwiftUI's layout machinery is guaranteed to tolerate cleanly. Instead,
@@ -753,8 +867,11 @@ private struct NativeAdContainer: UIViewRepresentable {
             let finalHeight = ceil(fittingResult.height)
             let fallbackSize = CGSize(width: fittingResult.width, height: finalHeight)
 
-            // TEMPORARY — width diagnostics for the same investigation. Remove alongside every
-            // other TEMPORARY block in this file.
+            // TEMPORARY — width diagnostics for the same investigation, extended for the PR #37
+            // regression audit with post-mutation widthConstraint state and pending-ad identity
+            // (deferredClosureScheduled is always false in this branch — the deferred handoff
+            // below only ever fires from the bounded branch). Remove alongside every other
+            // TEMPORARY block in this file.
             #if !DEBUG
             admobDiagnosticsLogger.log("""
                 sizeThatFits (no bounded proposal.width) — \
@@ -763,7 +880,11 @@ private struct NativeAdContainer: UIViewRepresentable {
                 targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
                 fittingResult=\(String(describing: fittingResult), privacy: .public), \
                 finalHeight=\(finalHeight, privacy: .public), \
-                returned=\(String(describing: fallbackSize), privacy: .public)
+                returned=\(String(describing: fallbackSize), privacy: .public), \
+                widthConstraintIsActiveAfter=\(widthConstraint?.isActive ?? false, privacy: .public), \
+                lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
+                pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
+                deferredClosureScheduled=false
                 """)
             #endif
 
@@ -772,6 +893,11 @@ private struct NativeAdContainer: UIViewRepresentable {
 
         widthConstraint?.constant = proposedWidth
         widthConstraint?.isActive = true
+        // REGRESSION FIX — record the MONOTONIC "bounded width established" signal here,
+        // alongside (but distinct from) the transient widthConstraint.isActive toggle above.
+        // Deliberately never cleared by the nil-proposal branch — see Coordinator.
+        // lastKnownBoundedWidth's own comment for the full root-cause rationale.
+        context.coordinator.lastKnownBoundedWidth = proposedWidth
 
         let targetFittingSize = UIView.layoutFittingCompressedSize
         let fittingResult = uiView.systemLayoutSizeFitting(
@@ -796,7 +922,10 @@ private struct NativeAdContainer: UIViewRepresentable {
         let returnedSize = CGSize(width: proposedWidth, height: finalHeight)
 
         // TEMPORARY — width diagnostics for the same investigation. Remove alongside every other
-        // TEMPORARY block in this file.
+        // TEMPORARY block in this file. Extended for the PR #37 regression audit with
+        // post-mutation widthConstraint state, the newly-recorded lastKnownBoundedWidth,
+        // pending-ad identity, and whether the deferred handoff below will actually schedule.
+        let willScheduleDeferredHandoff = context.coordinator.lastPopulatedNativeAd !== nativeAd
         #if !DEBUG
         admobDiagnosticsLogger.log("""
             sizeThatFits (bounded) — \
@@ -805,7 +934,11 @@ private struct NativeAdContainer: UIViewRepresentable {
             targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
             fittingResult=\(String(describing: fittingResult), privacy: .public), \
             finalHeight=\(finalHeight, privacy: .public), \
-            returned=\(String(describing: returnedSize), privacy: .public)
+            returned=\(String(describing: returnedSize), privacy: .public), \
+            widthConstraintIsActiveAfter=\(widthConstraint?.isActive ?? false, privacy: .public), \
+            lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
+            pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
+            deferredClosureScheduled=\(willScheduleDeferredHandoff, privacy: .public)
             """)
         #endif
 
@@ -813,9 +946,19 @@ private struct NativeAdContainer: UIViewRepresentable {
         // Only schedules the hop when population is still actually pending, so repeated
         // sizeThatFits calls after the ad is already populated (SwiftUI re-measuring for an
         // unrelated reason) never schedule a redundant no-op closure.
-        if context.coordinator.lastPopulatedNativeAd !== nativeAd {
+        if willScheduleDeferredHandoff {
             DispatchQueue.main.async { [weak uiView] in
                 guard let uiView else { return }
+                #if !DEBUG
+                admobDiagnosticsLogger.log("""
+                    sizeThatFits deferred closure executing — \
+                    pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
+                    lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
+                    widthConstraintIsActive=\(context.coordinator.widthConstraint?.isActive ?? false, privacy: .public), \
+                    widthConstraintConstant=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
+                    uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
+                    """)
+                #endif
                 self.populateIfNeeded(uiView, context: context)
             }
         }
