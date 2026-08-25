@@ -1722,7 +1722,7 @@ struct TripPlannerView: View {
             Text(isDiscoveringGasStations
                  ? "Searching for backup gas stations…"
                  : backupGasStations.isEmpty
-                    ? "Backup gas stations available along this route."
+                    ? "No backup gas stations found along this route."
                     : "\(backupGasStations.count) backup gas stations available along this route.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
