@@ -264,8 +264,8 @@ final class AdManager {
         private static let testAdUnitID = "ca-app-pub-3940256099942544/3986624511"
 
         /// The real 85Blends AdMob Native Advanced ad unit ID for this placement, as configured
-        /// in Julian's AdMob account. Recorded here now so going live is a one-line change to
-        /// `adUnitID` below — but nothing in this app reads `productionAdUnitID` yet.
+        /// in Julian's AdMob account. Requested only by the Release/App Store build — see
+        /// `adUnitID` below.
         var productionAdUnitID: String {
             switch self {
             case .calculatorHome: return "ca-app-pub-2011940670640942/1588596562"
@@ -273,12 +273,21 @@ final class AdManager {
             }
         }
 
-        /// The ad unit ID this app actually requests. Always `testAdUnitID` for now — Testing
-        /// Requirements for this phase are explicit: test ads only, regardless of build
-        /// configuration. Flipping this to `productionAdUnitID` (gated the same
-        /// `#if INTERNAL_BUILD`/Release way RevenueCatConfiguration already splits its keys) is
-        /// deliberately deferred to a later, explicit "go live" change — not bundled into this
-        /// phase.
-        var adUnitID: String { Self.testAdUnitID }
+        /// The ad unit ID this app actually requests. `#if DEBUG || INTERNAL_BUILD` — not plain
+        /// `#if DEBUG` — because Google's AdMob policy prohibits a publisher's own
+        /// devices/testers from generating impressions/clicks on real ad units: Debug (every
+        /// local Xcode run) and Internal (TestFlight builds used only by Julian and internal
+        /// testers, never distributed publicly) must both keep requesting Google's test ad,
+        /// exactly like `SubscriptionManager.isPro`'s own `#if DEBUG || INTERNAL_BUILD` split and
+        /// this file's own `configureIfNeeded()` log gate. Only the Release configuration (the
+        /// actual public App Store archive — confirmed to carry zero active compilation
+        /// conditions of its own) falls through to the real, placement-specific production ID.
+        var adUnitID: String {
+            #if DEBUG || INTERNAL_BUILD
+            Self.testAdUnitID
+            #else
+            productionAdUnitID
+            #endif
+        }
     }
 }
