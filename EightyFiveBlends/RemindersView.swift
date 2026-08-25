@@ -1077,6 +1077,7 @@ private struct ReminderStatusInfo: Identifiable {
 
 private struct ReminderRowCard: View {
     @Environment(\.openURL) private var openURL
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isShowingPurchaseLinks = false
 
     let info: ReminderStatusInfo
@@ -1241,7 +1242,29 @@ private struct ReminderRowCard: View {
         }
     }
 
+    // LIGHT-MODE CONTRAST FIX: the overdue palette below was tuned against a fixed dark
+    // burgundy card — fine in Dark/OLED, where AppTheme.Colors.textPrimary/textSecondary also
+    // resolve to light values, but in Light appearance those same theme colors resolve dark,
+    // producing dark text on a dark card. Dark/OLED are untouched (colorScheme reports .dark
+    // for both, so this always falls through to the original values); only Light gets its own
+    // palette. AppTheme.Colors itself has no existing semantic light error/warning surface to
+    // reuse (only warningRed, a foreground-style color), so this introduces one locally.
+    private var isOverdueLight: Bool {
+        info.group == .overdue && colorScheme == .light
+    }
+
+    // Deep, WCAG-checked red (contrast ratio ~5.6:1 at full opacity against the #FCEAEA card
+    // background below, comfortably above the 4.5:1 AA threshold for normal text) — used for
+    // every overdue red accent in Light mode (status text, category badge) so the palette reads
+    // as one consistent "overdue" signal rather than several different reds.
+    private static let overdueRedLight = Color(red: 0.72, green: 0.11, blue: 0.15)
+
     private var cardBackground: Color {
+        if isOverdueLight {
+            // #FCEAEA — soft pale rose, keeps the card clearly "overdue" without reading as a
+            // blocking error modal.
+            return Color(red: 0.988, green: 0.918, blue: 0.918)
+        }
         switch info.group {
         case .overdue:
             return Color(red: 0.24, green: 0.10, blue: 0.11)
@@ -1279,6 +1302,9 @@ private struct ReminderRowCard: View {
     }
 
     private var cardBorder: Color {
+        if isOverdueLight {
+            return Self.overdueRedLight.opacity(0.85)
+        }
         switch info.group {
         case .overdue:
             return Color(red: 0.91, green: 0.35, blue: 0.36).opacity(0.6)
@@ -1290,6 +1316,9 @@ private struct ReminderRowCard: View {
     }
 
     private var statusColor: Color {
+        if isOverdueLight {
+            return Self.overdueRedLight
+        }
         switch info.group {
         case .overdue:
             return Color(red: 0.98, green: 0.54, blue: 0.54)
@@ -1301,6 +1330,16 @@ private struct ReminderRowCard: View {
     }
 
     private var badgeBackground: Color {
+        if isOverdueLight {
+            // 0.08, not the dark-mode 0.2 — badgeForeground renders AT FULL OPACITY on TOP of
+            // this fill (not on the plain card background), so a lighter tint keeps the fill
+            // closer to cardBackground's high luminance, preserving badgeForeground's ~4.5:1+
+            // contrast against what it's actually drawn on. A higher opacity here darkens the
+            // fill toward overdueRedLight itself, closing the luminance gap with the
+            // already-dark foreground text and dropping contrast below the same-size-text
+            // 4.5:1 AA threshold.
+            return Self.overdueRedLight.opacity(0.08)
+        }
         switch info.group {
         case .overdue:
             return Color(red: 0.91, green: 0.35, blue: 0.36).opacity(0.2)
@@ -1312,6 +1351,9 @@ private struct ReminderRowCard: View {
     }
 
     private var badgeForeground: Color {
+        if isOverdueLight {
+            return Self.overdueRedLight
+        }
         switch info.group {
         case .overdue:
             return Color(red: 0.98, green: 0.54, blue: 0.54)
