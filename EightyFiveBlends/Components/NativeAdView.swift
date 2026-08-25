@@ -832,9 +832,11 @@ private struct NativeAdContainer: UIViewRepresentable {
     // this hands off to DispatchQueue.main.async — a clean, standard "run on the next main-
     // thread run-loop turn, after this measurement call has already returned" — so
     // populateIfNeeded's real UIKit mutations never happen from inside a sizeThatFits call
-    // frame. The only mutation sizeThatFits performs directly, unchanged from before this fix,
-    // is the widthConstraint's own constant/isActive — pure Auto Layout constraint bookkeeping,
-    // not ad content.
+    // frame. The only mutations sizeThatFits performs directly are the widthConstraint's own
+    // constant/isActive and (HEIGHT-RECONCILIATION FIX, see the bounded branch below) a forced
+    // setNeedsLayout()/layoutIfNeeded() pass — pure Auto Layout constraint/geometry bookkeeping
+    // from constraints already active in the subtree, never ad content (`.nativeAd`, label
+    // text/images), which is what the async handoff above exists to keep out of this call frame.
     func sizeThatFits(
         _ proposal: ProposedViewSize,
         uiView: GoogleMobileAds.NativeAdView,
@@ -899,6 +901,40 @@ private struct NativeAdContainer: UIViewRepresentable {
         // lastKnownBoundedWidth's own comment for the full root-cause rationale.
         context.coordinator.lastKnownBoundedWidth = proposedWidth
 
+        // TEMPORARY — height-reconciliation diagnostics (see the extended log below). Captured
+        // before forcing the layout pass just below, for direct before/after comparison.
+        #if !DEBUG
+        let boundsBeforeLayout = uiView.bounds
+        #endif
+
+        // HEIGHT FIX (validator: "Advertiser assets outside native ad view" — the one warning
+        // still remaining after the width/MediaView/population-deadlock fixes). Real-device
+        // evidence showed a persistent ~31pt gap between THIS call's own systemLayoutSizeFitting
+        // result (~252.67pt) and the real, resolved height of the populated hierarchy
+        // (~283.67pt — confirmed correct by populateIfNeeded's own post-layoutIfNeeded()
+        // diagnostics below, on this exact uiView). Root cause, confirmed directly against this
+        // file: this call never forced a real Auto Layout pass at the just-activated bounded
+        // width before measuring — populateIfNeeded's setNeedsLayout()/layoutIfNeeded() (see
+        // below) is the ONLY other place in this file that measures this hierarchy, and it's the
+        // one place that already measures it correctly. bodyLabel (numberOfLines = 3) never has
+        // preferredMaxLayoutWidth set anywhere in this file, so its true multi-line wrapped
+        // height can only be resolved through an actual settled layout pass at its real width —
+        // exactly what was missing here. Forcing the same setNeedsLayout()/layoutIfNeeded()
+        // sequence here, at the bounded width, before measuring, closes the gap: the
+        // systemLayoutSizeFitting call below now measures the hierarchy after it has already
+        // been laid out for real, the same way populateIfNeeded's own (already-correct) reads
+        // do. This is pure geometry resolution from already-active constraints, not a content
+        // mutation, so it's safe to call synchronously here — unlike populate()/`.nativeAd`
+        // assignment, which stays deferred (see this function's own header comment on why THAT
+        // specific mutation is not done inline). Width remains exactly proposedWidth (unchanged
+        // by this pass — only height can move); no hardcoded card height is introduced anywhere.
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
+
+        #if !DEBUG
+        let boundsAfterLayout = uiView.bounds
+        #endif
+
         let targetFittingSize = UIView.layoutFittingCompressedSize
         let fittingResult = uiView.systemLayoutSizeFitting(
             targetFittingSize,
@@ -925,17 +961,66 @@ private struct NativeAdContainer: UIViewRepresentable {
         // TEMPORARY block in this file. Extended for the PR #37 regression audit with
         // post-mutation widthConstraint state, the newly-recorded lastKnownBoundedWidth,
         // pending-ad identity, and whether the deferred handoff below will actually schedule.
+        // Further extended for the height-reconciliation audit: pre/post-layout bounds (to
+        // directly show the new setNeedsLayout()/layoutIfNeeded() pass above taking effect), the
+        // main vertical stack's own frame (uiView's single UIStackView subview — see
+        // buildNativeAdView()), CTA/body frames+bottoms specifically (the two tallest/most
+        // failure-prone assets), and a direct compliance signal: whether the height this call is
+        // about to return actually contains every VISIBLE registered asset's bottom edge (hidden
+        // optional assets are excluded — their frames aren't a meaningful containment signal
+        // once collapsed).
         let willScheduleDeferredHandoff = context.coordinator.lastPopulatedNativeAd !== nativeAd
         #if !DEBUG
+        let stackFrameDescription: String
+        if let stack = uiView.subviews.first(where: { $0 is UIStackView }) {
+            stackFrameDescription = "frame=\(String(describing: stack.convert(stack.bounds, to: uiView))), bounds=\(String(describing: stack.bounds))"
+        } else {
+            stackFrameDescription = "not found"
+        }
+
+        let registeredAssetViewsForHeightCheck: [UIView?] = [
+            uiView.headlineView, uiView.bodyView, uiView.iconView,
+            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
+        ]
+        let visibleAssetMaxYValues: [CGFloat] = registeredAssetViewsForHeightCheck.compactMap { view in
+            guard let view, view.isHidden == false else { return nil }
+            return view.convert(view.bounds, to: uiView).maxY
+        }
+        let maxRegisteredAssetBottom = visibleAssetMaxYValues.max() ?? 0
+        let heightContainsAllRegisteredAssets = finalHeight >= maxRegisteredAssetBottom
+
+        let ctaFrameDescription: String
+        if let cta = uiView.callToActionView {
+            let frame = cta.convert(cta.bounds, to: uiView)
+            ctaFrameDescription = "frame=\(String(describing: frame)), bottom=\(frame.maxY)"
+        } else {
+            ctaFrameDescription = "not registered"
+        }
+        let bodyFrameDescription: String
+        if let body = uiView.bodyView {
+            let frame = body.convert(body.bounds, to: uiView)
+            bodyFrameDescription = "frame=\(String(describing: frame)), bottom=\(frame.maxY)"
+        } else {
+            bodyFrameDescription = "not registered"
+        }
+
         admobDiagnosticsLogger.log("""
             sizeThatFits (bounded) — \
             proposal.width=\(String(describing: proposal.width), privacy: .public), \
             proposal.height=\(String(describing: proposal.height), privacy: .public), \
+            boundsBeforeLayout=\(String(describing: boundsBeforeLayout), privacy: .public), \
+            widthConstraintIsActive=\(widthConstraint?.isActive ?? false, privacy: .public), \
+            widthConstraintConstant=\(widthConstraint?.constant ?? -1, privacy: .public), \
+            boundsAfterLayout=\(String(describing: boundsAfterLayout), privacy: .public), \
             targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
             fittingResult=\(String(describing: fittingResult), privacy: .public), \
             finalHeight=\(finalHeight, privacy: .public), \
             returned=\(String(describing: returnedSize), privacy: .public), \
-            widthConstraintIsActiveAfter=\(widthConstraint?.isActive ?? false, privacy: .public), \
+            stack=\(stackFrameDescription, privacy: .public), \
+            cta=\(ctaFrameDescription, privacy: .public), \
+            body=\(bodyFrameDescription, privacy: .public), \
+            maxRegisteredAssetBottom=\(maxRegisteredAssetBottom, privacy: .public), \
+            heightContainsAllRegisteredAssets=\(heightContainsAllRegisteredAssets, privacy: .public), \
             lastKnownBoundedWidth=\(context.coordinator.lastKnownBoundedWidth.map(String.init) ?? "nil", privacy: .public), \
             pendingNativeAdIdentity=\(Self.identityDescription(context.coordinator.pendingNativeAd), privacy: .public), \
             deferredClosureScheduled=\(willScheduleDeferredHandoff, privacy: .public)
