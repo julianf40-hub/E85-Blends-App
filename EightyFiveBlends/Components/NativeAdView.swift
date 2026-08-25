@@ -341,6 +341,18 @@ private struct NativeAdContainer: UIViewRepresentable {
     // place to remember "this exact NativeAd instance is already displayed."
     final class Coordinator {
         var lastPopulatedNativeAd: NativeAd?
+
+        // FIX (validator: "Advertiser assets outside native ad view" — 862pt over-wide adView
+        // observed on real device; see sizeThatFits(_:uiView:context:) for the full width-audit
+        // rationale). sizeThatFits needs to reuse the SAME width constraint across every call —
+        // but an INACTIVE NSLayoutConstraint isn't discoverable via uiView.constraints (that
+        // collection only ever contains currently-active constraints), and sizeThatFits
+        // deliberately deactivates this one when SwiftUI proposes no concrete width (see below),
+        // so a uiView.constraints lookup would silently lose track of it the moment that
+        // happens. The Coordinator already persists across this representable's calls for
+        // exactly this kind of per-instance state (see lastPopulatedNativeAd above), so it holds
+        // the constraint directly instead.
+        var widthConstraint: NSLayoutConstraint?
     }
 
     func makeCoordinator() -> Coordinator {
@@ -348,7 +360,9 @@ private struct NativeAdContainer: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> GoogleMobileAds.NativeAdView {
-        buildNativeAdView()
+        let adView = buildNativeAdView()
+        context.coordinator.widthConstraint = adView.widthAnchor.constraint(equalToConstant: 0)
+        return adView
     }
 
     func updateUIView(_ uiView: GoogleMobileAds.NativeAdView, context: Context) {
@@ -382,9 +396,23 @@ private struct NativeAdContainer: UIViewRepresentable {
             ("advertiserView", uiView.advertiserView),
             ("callToActionView", uiView.callToActionView),
         ]
+        // Extended for the width-audit investigation: uiView.frame (its position/size in its
+        // superview's coordinate space — where uiView.bounds is only its own local size) and,
+        // when uiView is actually in a window, that same frame converted into the window's
+        // coordinate space — the closest available approximation of "real screen-space size,"
+        // to compare directly against the ~340-430pt a real device's screen can actually offer.
+        let frameInWindowDescription: String
+        if let window = uiView.window {
+            let frameInWindow = uiView.convert(uiView.bounds, to: window)
+            frameInWindowDescription = String(describing: frameInWindow)
+        } else {
+            frameInWindowDescription = "no window"
+        }
         admobDiagnosticsLogger.log("""
             Native ad asset frames (updateUIView, post-populate) — \
-            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
+            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
+            uiView.frame=\(String(describing: uiView.frame), privacy: .public), \
+            uiView.frameInWindow=\(frameInWindowDescription, privacy: .public)
             """)
         for (name, assetView) in assetViews {
             guard let assetView else {
@@ -468,38 +496,121 @@ private struct NativeAdContainer: UIViewRepresentable {
         #endif
     }
 
-    // FIX (AdMob validator: "Advertiser assets outside native ad view"): adView (built in
-    // buildNativeAdView() below, unchanged) never had an explicit width/height of its own —
-    // only stack's edges were pinned to it, which makes stack's size equal adView's, not the
-    // other way around. Without this override, SwiftUI's default UIViewRepresentable sizing
-    // for a plain UIView with no intrinsicContentSize (GoogleMobileAds.NativeAdView doesn't
-    // provide one) is implementation-defined, so adView's frame at the point Google's SDK
-    // validates the ad was never guaranteed to be correct — producing degenerate/zero-sized
-    // asset frames that the validator reports as "outside" the native ad view, even though the
-    // view HIERARCHY (see buildNativeAdView()) is correct. This makes adView's size
-    // deterministic: derived from its own Auto Layout constraint graph (stack's arrangedSubviews
-    // — sponsoredLabel, headerRow, mediaView, bodyLabel, callToActionButton — already produce a
-    // well-defined intrinsic height; see buildNativeAdView(), untouched), evaluated at SwiftUI's
-    // proposed width. No fixed/placeholder size — the proposed width comes from the real layout
-    // pass (AppCard's frame(maxWidth: .infinity)), and height still comes entirely from the ad's
-    // actual content via systemLayoutSizeFitting, exactly as it always should have.
+    // FIX (AdMob validator: "Advertiser assets outside native ad view" — 862pt over-wide adView
+    // observed on real device via the post-populate diagnostics; see NativeAdView.swift's width
+    // audit in git history for the full investigation):
+    //
+    // adView (built in buildNativeAdView() below) never had an explicit width of its own — only
+    // stack's edges were pinned to it, so adView's width had to come from somewhere else. The
+    // PREVIOUS version of this method tried to supply that width purely via
+    // systemLayoutSizeFitting's *fitting priority* — a soft, temporary negotiation parameter,
+    // not a real constraint. That negotiation can lose to OTHER required-priority constraints
+    // already inside this view's subtree: at the time this bug was diagnosed, callToActionButton
+    // had *required* horizontal compression resistance (see buildNativeAdView() below), and once
+    // its intrinsic content width (CTA title plus its horizontal content insets) exceeded the
+    // proposed width, Auto Layout let that required content constraint win instead of the
+    // proposed width — producing an adView far wider than the actual card (862pt on a real
+    // device, regardless of the ~340-430pt the card actually had to give it). Every downstream
+    // asset frame reported by the diagnostics scaled off that same inflated width.
+    //
+    // FIX: give adView a REAL, required-priority width constraint (held on the Coordinator —
+    // see its own comment for why) that this method updates to SwiftUI's actual proposed width
+    // on every call, instead of relying solely on fitting-priority negotiation. A real
+    // constraint wins deterministically against any other required-priority constraint in the
+    // subtree — content can no longer force adView wider than what SwiftUI proposed; a genuine
+    // conflict now surfaces as an Auto Layout console warning, never as an inflated returned
+    // frame. Height is still derived entirely from the ad's real content via
+    // systemLayoutSizeFitting's low vertical fitting priority, exactly as before — only the
+    // width mechanism changed.
+    //
+    // HARDENING (compliance pass, after this fix): callToActionButton's compression resistance
+    // was subsequently downgraded from .required to .defaultHigh specifically because THIS
+    // constraint is now required — leaving the CTA at .required too would have created a
+    // required-vs-required conflict for a long CTA string, which Auto Layout resolves by
+    // breaking one of them (a console warning) rather than a clean truncation. See
+    // buildNativeAdView() below for the current CTA priority and why.
+    //
+    // Never hardcodes a device width and never reads UIScreen.main.bounds — the width always
+    // comes from whatever SwiftUI actually proposes, so this keeps working across iPhone sizes,
+    // rotation, and Dynamic Type without any device-specific branching.
     func sizeThatFits(
         _ proposal: ProposedViewSize,
         uiView: GoogleMobileAds.NativeAdView,
         context: Context
     ) -> CGSize? {
-        let targetWidth = proposal.width ?? UIView.layoutFittingCompressedSize.width
-        return uiView.systemLayoutSizeFitting(
-            CGSize(width: targetWidth, height: UIView.layoutFittingCompressedSize.height),
+        let widthConstraint = context.coordinator.widthConstraint
+
+        guard let proposedWidth = proposal.width, proposedWidth.isFinite, proposedWidth > 0 else {
+            // No concrete proposal — SwiftUI is asking for an "ideal"/natural size (some internal
+            // measurement passes propose nil, per ProposedViewSize's own documented semantics,
+            // independent of the final resolved layout width). Deactivate the hard width
+            // constraint so it can't hold over a stale value from a previous call, and ask for
+            // adView's genuinely smallest valid size instead — layoutFittingCompressedSize paired
+            // with .fittingSizeLevel (not .required) priority on the same axis, matching its
+            // documented pairing, so this branch can never itself inflate the width.
+            widthConstraint?.isActive = false
+            let targetFittingSize = UIView.layoutFittingCompressedSize
+            let fittingResult = uiView.systemLayoutSizeFitting(
+                targetFittingSize,
+                withHorizontalFittingPriority: .fittingSizeLevel,
+                verticalFittingPriority: .fittingSizeLevel
+            )
+
+            // TEMPORARY — width diagnostics for the same investigation. Remove alongside every
+            // other TEMPORARY block in this file.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                sizeThatFits (no bounded proposal.width) — \
+                proposal.width=\(String(describing: proposal.width), privacy: .public), \
+                proposal.height=\(String(describing: proposal.height), privacy: .public), \
+                targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
+                fittingResult=\(String(describing: fittingResult), privacy: .public), \
+                returned=\(String(describing: fittingResult), privacy: .public)
+                """)
+            #endif
+
+            return fittingResult
+        }
+
+        widthConstraint?.constant = proposedWidth
+        widthConstraint?.isActive = true
+
+        let targetFittingSize = UIView.layoutFittingCompressedSize
+        let fittingResult = uiView.systemLayoutSizeFitting(
+            targetFittingSize,
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         )
+        // Width is guaranteed == proposedWidth by the required-priority constraint activated
+        // just above — returned explicitly rather than trusting fittingResult's own width, so a
+        // genuine content conflict (which would show up as an Auto Layout console warning) can
+        // never inflate the size this reports back to SwiftUI.
+        let returnedSize = CGSize(width: proposedWidth, height: fittingResult.height)
+
+        // TEMPORARY — width diagnostics for the same investigation. Remove alongside every other
+        // TEMPORARY block in this file.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            sizeThatFits (bounded) — \
+            proposal.width=\(String(describing: proposal.width), privacy: .public), \
+            proposal.height=\(String(describing: proposal.height), privacy: .public), \
+            targetFittingSize=\(String(describing: targetFittingSize), privacy: .public), \
+            fittingResult=\(String(describing: fittingResult), privacy: .public), \
+            returned=\(String(describing: returnedSize), privacy: .public)
+            """)
+        #endif
+
+        return returnedSize
     }
 
     private func buildNativeAdView() -> GoogleMobileAds.NativeAdView {
         let adView = GoogleMobileAds.NativeAdView()
         adView.backgroundColor = .clear
         adView.translatesAutoresizingMaskIntoConstraints = false
+        // Note: adView's real width constraint (FIX for the 862pt-over-wide-adView validator
+        // issue — see sizeThatFits(_:uiView:context:)) is created in makeUIView(context:), not
+        // here — it's stored on the Coordinator, which this function has no access to, so
+        // makeUIView creates it right after this function returns adView.
 
         // "Sponsored" badge — kept visually distinct and always present, per this app's
         // requirement that ad content never be mistaken for native 85Blends content.
@@ -520,11 +631,12 @@ private struct NativeAdContainer: UIViewRepresentable {
         let bodyLabel = UILabel()
         bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
         bodyLabel.textColor = UIColor(AppTheme.Colors.textSecondary)
-        // Visual sizing pass: 3 → 2 lines — trims card height toward the ~250-320pt compact-card
-        // target (see the sizing audit). Body copy isn't the ad's primary hook (the headline
-        // above still gets its full 2 lines), so 2 lines stays plenty for typical native-ad
-        // description text.
-        bodyLabel.numberOfLines = 2
+        // RESTORED (compliance hardening pass): PR #34's visual sizing pass trimmed this to 2
+        // lines toward the ~250-320pt compact-card target, but Google's Native Advanced
+        // guidelines require body text not be truncated before 90 characters — 2 lines can
+        // truncate earlier than that on narrower iPhones. Restored to 3; font/other body
+        // styling unchanged.
+        bodyLabel.numberOfLines = 3
 
         let iconImageView = UIImageView()
         iconImageView.contentMode = .scaleAspectFit
@@ -536,11 +648,13 @@ private struct NativeAdContainer: UIViewRepresentable {
 
         let mediaView = MediaView()
         mediaView.translatesAutoresizingMaskIntoConstraints = false
-        // Visual sizing pass: 120 → 110pt — a modest trim toward the compact-card target.
-        // Deliberately not smaller: Google's Native Ads policy expects the media asset to stay
-        // visually prominent, and this file has already fixed two separate asset-prominence/
-        // validator issues — no further reduction here to avoid reintroducing that risk.
-        mediaView.heightAnchor.constraint(equalToConstant: 110).isActive = true
+        // REVERTED (validator: "MediaView is too small for video") — PR #34's visual sizing pass
+        // trimmed this to 110pt, but Google requires MediaView to be at least 120x120pt on iOS
+        // for native video; 110pt tripped that minimum on the very next real-device validator
+        // run. Restored to 120pt — mandatory, not a style choice. The other PR #34 compact-card
+        // changes (stack spacing 6, bodyLabel 2 lines, CTA min height/insets below) are unrelated
+        // to this minimum and stay as they were.
+        mediaView.heightAnchor.constraint(equalToConstant: 120).isActive = true
         // FIX (AdMob validator: "Advertiser assets outside native ad view"): mediaView's own
         // frame is correctly constrained (height fixed above, width via the stack's fill
         // alignment — see the layout audit), but the media creative Google renders inside it
@@ -574,13 +688,25 @@ private struct NativeAdContainer: UIViewRepresentable {
         // comes from the stack's fill alignment, but nothing previously stopped a long
         // advertiser-supplied CTA string's intrinsic content width from winning that fight and
         // pushing the button wider than the stack (and therefore adView) — see the layout audit.
-        // .required compression resistance guarantees the fill constraint always wins instead,
-        // truncating the title (single line, tail-truncated) rather than growing the button.
-        // .defaultLow hugging keeps the button from being forced any wider than its content
-        // needs within that same fill width.
+        // Compression resistance guarantees the fill constraint always wins instead, truncating
+        // the title (single line, tail-truncated) rather than growing the button. .defaultLow
+        // hugging keeps the button from being forced any wider than its content needs within
+        // that same fill width.
+        //
+        // DOWNGRADED (compliance/Auto Layout hardening pass): .required → .defaultHigh. adView
+        // itself now carries a REQUIRED root width constraint (see sizeThatFits(_:uiView:
+        // context:)/Coordinator.widthConstraint) — leaving this at .required too meant a long
+        // advertiser-supplied CTA string could set up a required-vs-required Auto Layout
+        // conflict (this button's required intrinsic width vs. adView's required proposed
+        // width), which Auto Layout resolves by breaking one of them with a console warning
+        // rather than a clean, predictable truncation. .defaultHigh still beats the stack's
+        // .defaultLow-ish fill/hugging behavior in the normal case (so the CTA still reads as a
+        // real button, not a squashed sliver), but now yields cleanly to adView's required width
+        // instead of fighting it — numberOfLines = 1 + .byTruncatingTail below still guarantee
+        // truncation, not overflow, for a long title.
         callToActionButton.titleLabel?.numberOfLines = 1
         callToActionButton.titleLabel?.lineBreakMode = .byTruncatingTail
-        callToActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        callToActionButton.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         callToActionButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let headerTextStack = UIStackView(arrangedSubviews: [headlineLabel, advertiserLabel])
