@@ -472,16 +472,41 @@ private struct NativeAdContainer: UIViewRepresentable {
             admobDiagnosticsLogger.log("mediaView subtree (updateUIView, post-populate) — mediaView not registered")
         }
 
-        if let advertiserView = uiView.advertiserView {
-            let frameInAdView = advertiserView.convert(advertiserView.bounds, to: uiView)
+        // TEMPORARY — optional-asset visibility diagnostics for the "Advertiser assets
+        // outside native ad view" validator investigation (per-asset audit, this pass).
+        // Google's documented pattern hides each of these four OPTIONAL assets exactly when
+        // its underlying NativeAd value is nil (confirmed already followed in
+        // populate(_:with:) — headline/media are guaranteed assets and are never hidden, so
+        // they're excluded here). This logs, per asset, whether that's exactly what
+        // happened: whether the source value was nil, the resulting view.isHidden, its frame
+        // (converted into uiView's coordinate space), and its intrinsicContentSize. A
+        // VISIBLE asset with nil content, or nativeValueNil not matching isHidden, would be
+        // a real bug this can catch; a HIDDEN asset with a zero-height/zero-size frame (e.g.
+        // an empty advertiserLabel when nativeAd.advertiser is nil) is the expected, correct
+        // result of a hidden UILabel with no text collapsing inside its UIStackView — not a
+        // bug. Replaces the old advertiserView-only block above (see git history). Remove
+        // alongside every other TEMPORARY block in this file.
+        func logOptionalAssetDiagnostics(name: String, view: UIView?, nativeValueIsNil: Bool) {
+            guard let view else {
+                admobDiagnosticsLogger.log("""
+                    \(name, privacy: .public) asset (updateUIView, post-populate) — not registered
+                    """)
+                return
+            }
+            let frameInAdView = view.convert(view.bounds, to: uiView)
             admobDiagnosticsLogger.log("""
-                advertiserView (updateUIView, post-populate) — \
-                frame=\(String(describing: frameInAdView), privacy: .public), \
-                intrinsicContentSize=\(String(describing: advertiserView.intrinsicContentSize), privacy: .public)
+                \(name, privacy: .public) asset (updateUIView, post-populate):
+                nativeValueNil=\(nativeValueIsNil, privacy: .public)
+                isHidden=\(view.isHidden, privacy: .public)
+                frame=\(String(describing: frameInAdView), privacy: .public)
+                intrinsicContentSize=\(String(describing: view.intrinsicContentSize), privacy: .public)
                 """)
-        } else {
-            admobDiagnosticsLogger.log("advertiserView (updateUIView, post-populate) — not registered")
         }
+
+        logOptionalAssetDiagnostics(name: "body", view: uiView.bodyView, nativeValueIsNil: nativeAd.body == nil)
+        logOptionalAssetDiagnostics(name: "icon", view: uiView.iconView, nativeValueIsNil: nativeAd.icon == nil)
+        logOptionalAssetDiagnostics(name: "advertiser", view: uiView.advertiserView, nativeValueIsNil: nativeAd.advertiser == nil)
+        logOptionalAssetDiagnostics(name: "callToAction", view: uiView.callToActionView, nativeValueIsNil: nativeAd.callToAction == nil)
 
         if let headlineView = uiView.headlineView {
             let frameInAdView = headlineView.convert(headlineView.bounds, to: uiView)
@@ -618,6 +643,16 @@ private struct NativeAdContainer: UIViewRepresentable {
         sponsoredLabel.text = "SPONSORED"
         sponsoredLabel.font = .systemFont(ofSize: 10, weight: .heavy)
         sponsoredLabel.textColor = UIColor(AppTheme.Colors.stationYellow)
+        // POLICY (separate ad-attribution audit, this pass): Google's Native Ads Policy
+        // requires the attribution label ("Ad"/"Advertisement"/"Sponsored") to be at least
+        // 15pt in both height and width. Width is not a concern — "SPONSORED" at 10pt heavy
+        // is comfortably over 15pt wide — but this label's own 10pt system font has a line
+        // height of roughly 12-14pt, under that floor. Smallest possible fix: a minimum-
+        // height constraint only, not a font/text/color change — text stays visually
+        // centered within the (very slightly) taller box, and the label otherwise looks the
+        // same.
+        sponsoredLabel.translatesAutoresizingMaskIntoConstraints = false
+        sponsoredLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 15).isActive = true
 
         let headlineLabel = UILabel()
         headlineLabel.font = .systemFont(ofSize: 15, weight: .semibold)
