@@ -412,6 +412,23 @@ private struct NativeAdContainer: UIViewRepresentable {
         return String(describing: ObjectIdentifier(nativeAd))
     }
 
+    // Shared compliance computation — the max bottom edge (in uiView's own coordinate space)
+    // across every VISIBLE registered asset. Hidden optional assets (isHidden == true, e.g. an
+    // advertiserView collapsed because nativeAd.advertiser == nil) are excluded — their frames
+    // aren't a meaningful containment signal once collapsed. Factored out here so
+    // establishSafeRootHeight's own diagnostics, sizeThatFits's, and populateIfNeeded's
+    // pre/post-assignment checks all compute this identically instead of drifting apart.
+    private func maxVisibleRegisteredAssetBottom(in uiView: GoogleMobileAds.NativeAdView) -> CGFloat {
+        let registeredAssetViews: [UIView?] = [
+            uiView.headlineView, uiView.bodyView, uiView.iconView,
+            uiView.mediaView, uiView.advertiserView, uiView.callToActionView,
+        ]
+        return registeredAssetViews.compactMap { view -> CGFloat? in
+            guard let view, view.isHidden == false else { return nil }
+            return view.convert(view.bounds, to: uiView).maxY
+        }.max() ?? 0
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -916,11 +933,69 @@ private struct NativeAdContainer: UIViewRepresentable {
     // geometry: reads/writes only Auto Layout constraints already active in the subtree, never
     // ad content — safe to call synchronously from sizeThatFits for the same reason the width
     // constraint's own constant/isActive mutation already was (see sizeThatFits's own comment).
+    //
+    // REGRESSION FIX (pre-merge adversarial audit, PR #40): the first version of this function
+    // measured with Coordinator.heightConstraint left ACTIVE from any prior call. Because that
+    // constraint is required-priority and self-referential — it constrains adView.heightAnchor,
+    // the EXACT view/axis systemLayoutSizeFitting below is trying to measure — an already-active
+    // instance deterministically dominates the low (.fittingSizeLevel) vertical fitting priority
+    // on the same attribute, so every call after the very first one just echoed back the STALE
+    // prior constant instead of measuring current content. Concretely, on the real-device-
+    // confirmed normal ordering (see updateUIView's own header comment): the first bounded
+    // sizeThatFits call runs BEFORE population and measures empty content, activating
+    // heightConstraint at that small height; populateIfNeeded's own call — the one specifically
+    // meant to make the very first population geometrically safe (see this function's own
+    // comment above) — then ran with that stale constraint still active, silently re-confirming
+    // the WRONG, too-small height instead of measuring the just-populated real content. Auto
+    // Layout resolved that by compressing headlineLabel/bodyLabel/advertiserLabel (only default,
+    // non-required vertical compression resistance) below their natural size — i.e. clipped/
+    // truncated ad text — at the exact moment (.nativeAd assignment) this whole fix exists to
+    // make safe.
+    //
+    // FIX: heightConstraint is now explicitly deactivated FIRST, before either layout pass or
+    // the measurement call, so every invocation genuinely measures CURRENT content at the
+    // CURRENT bounded width — never a stale prior result. widthConstraint is untouched
+    // throughout (stays active, stays at whatever bounded width the caller already established)
+    // — this function only ever answers "how tall does this need to be at exactly this width,"
+    // never re-litigates width. Target sizing (UIView.layoutFittingCompressedSize paired with
+    // .required horizontal priority) is intentionally unchanged from before this fix — passing
+    // an explicit CGSize(width: boundedWidth, ...) instead would be equivalent (the .required
+    // horizontal priority already means "resolve via the real, active widthConstraint," not
+    // "shrink toward the target's own width component"), so keeping the existing form avoids
+    // threading an extra parameter through for no behavioral difference.
     @discardableResult
     private func establishSafeRootHeight(
         _ uiView: GoogleMobileAds.NativeAdView,
         context: Context
     ) -> (fittingResult: CGSize, finalHeight: CGFloat) {
+        // TEMPORARY — root-containment regression diagnostics (pre-merge audit fix). Captures
+        // the state THIS call found heightConstraint in, before touching it. Remove alongside
+        // every other TEMPORARY block in this file.
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            establishSafeRootHeight BEFORE — \
+            boundedWidth=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
+            heightConstraintExists=\(context.coordinator.heightConstraint != nil, privacy: .public), \
+            previousHeightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
+            previousHeightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public)
+            """)
+        #endif
+
+        // THE FIX — see this function's header comment. Deactivated before anything else so
+        // neither layout pass below nor the measurement call can be polluted by a stale,
+        // required, self-referential prior result.
+        context.coordinator.heightConstraint?.isActive = false
+
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            establishSafeRootHeight AFTER TEMPORARY DEACTIVATION — \
+            heightConstraintIsActive=\(context.coordinator.heightConstraint?.isActive ?? false, privacy: .public), \
+            widthConstraintIsActive=\(context.coordinator.widthConstraint?.isActive ?? false, privacy: .public), \
+            widthConstraintConstant=\(context.coordinator.widthConstraint?.constant ?? -1, privacy: .public), \
+            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public)
+            """)
+        #endif
+
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
 
@@ -935,14 +1010,37 @@ private struct NativeAdContainer: UIViewRepresentable {
         // via the height constraint just below, instead of only reaching SwiftUI's copy of it.
         let finalHeight = ceil(fittingResult.height)
 
+        #if !DEBUG
+        admobDiagnosticsLogger.log("""
+            establishSafeRootHeight AFTER FRESH MEASUREMENT — \
+            fittingResult=\(String(describing: fittingResult), privacy: .public), \
+            finalHeight=\(finalHeight, privacy: .public)
+            """)
+        #endif
+
         context.coordinator.heightConstraint?.constant = finalHeight
         context.coordinator.heightConstraint?.isActive = true
 
-        // Re-resolve adView's ACTUAL geometry now that the height constraint has a real target —
-        // without this second pass, uiView.bounds would still reflect the pre-constraint, purely
-        // content-driven (fractional) resolution from the layout pass above.
+        // Re-resolve adView's ACTUAL geometry now that the height constraint has a real, FRESH
+        // target — without this second pass, uiView.bounds would still reflect the pre-
+        // constraint, purely content-driven (fractional) resolution from the layout pass above.
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
+
+        #if !DEBUG
+        let maxRegisteredAssetBottom = maxVisibleRegisteredAssetBottom(in: uiView)
+        let rootBoundsMaxY = uiView.bounds.maxY
+        let containmentDelta = rootBoundsMaxY - maxRegisteredAssetBottom
+        admobDiagnosticsLogger.log("""
+            establishSafeRootHeight AFTER REACTIVATION + SECOND LAYOUT — \
+            uiView.bounds=\(String(describing: uiView.bounds), privacy: .public), \
+            heightConstraintConstant=\(context.coordinator.heightConstraint?.constant ?? -1, privacy: .public), \
+            maxRegisteredAssetBottom=\(maxRegisteredAssetBottom, privacy: .public), \
+            rootBoundsMaxY=\(rootBoundsMaxY, privacy: .public), \
+            containmentDelta=\(containmentDelta, privacy: .public), \
+            allRegisteredAssetsContained=\(containmentDelta >= 0, privacy: .public)
+            """)
+        #endif
 
         return (fittingResult, finalHeight)
     }
