@@ -505,13 +505,13 @@ private struct NativeAdContainer: UIViewRepresentable {
     // PREVIOUS version of this method tried to supply that width purely via
     // systemLayoutSizeFitting's *fitting priority* — a soft, temporary negotiation parameter,
     // not a real constraint. That negotiation can lose to OTHER required-priority constraints
-    // already inside this view's subtree: callToActionButton has *required* horizontal
-    // compression resistance (see buildNativeAdView() below), and once its intrinsic content
-    // width (CTA title plus its horizontal content insets) exceeded the proposed width, Auto
-    // Layout let that required content constraint win instead of the proposed width — producing
-    // an adView far wider than the actual card (862pt on a real device, regardless of the
-    // ~340-430pt the card actually had to give it). Every downstream asset frame reported by the
-    // diagnostics scaled off that same inflated width.
+    // already inside this view's subtree: at the time this bug was diagnosed, callToActionButton
+    // had *required* horizontal compression resistance (see buildNativeAdView() below), and once
+    // its intrinsic content width (CTA title plus its horizontal content insets) exceeded the
+    // proposed width, Auto Layout let that required content constraint win instead of the
+    // proposed width — producing an adView far wider than the actual card (862pt on a real
+    // device, regardless of the ~340-430pt the card actually had to give it). Every downstream
+    // asset frame reported by the diagnostics scaled off that same inflated width.
     //
     // FIX: give adView a REAL, required-priority width constraint (held on the Coordinator —
     // see its own comment for why) that this method updates to SwiftUI's actual proposed width
@@ -522,6 +522,13 @@ private struct NativeAdContainer: UIViewRepresentable {
     // frame. Height is still derived entirely from the ad's real content via
     // systemLayoutSizeFitting's low vertical fitting priority, exactly as before — only the
     // width mechanism changed.
+    //
+    // HARDENING (compliance pass, after this fix): callToActionButton's compression resistance
+    // was subsequently downgraded from .required to .defaultHigh specifically because THIS
+    // constraint is now required — leaving the CTA at .required too would have created a
+    // required-vs-required conflict for a long CTA string, which Auto Layout resolves by
+    // breaking one of them (a console warning) rather than a clean truncation. See
+    // buildNativeAdView() below for the current CTA priority and why.
     //
     // Never hardcodes a device width and never reads UIScreen.main.bounds — the width always
     // comes from whatever SwiftUI actually proposes, so this keeps working across iPhone sizes,
@@ -624,11 +631,12 @@ private struct NativeAdContainer: UIViewRepresentable {
         let bodyLabel = UILabel()
         bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
         bodyLabel.textColor = UIColor(AppTheme.Colors.textSecondary)
-        // Visual sizing pass: 3 → 2 lines — trims card height toward the ~250-320pt compact-card
-        // target (see the sizing audit). Body copy isn't the ad's primary hook (the headline
-        // above still gets its full 2 lines), so 2 lines stays plenty for typical native-ad
-        // description text.
-        bodyLabel.numberOfLines = 2
+        // RESTORED (compliance hardening pass): PR #34's visual sizing pass trimmed this to 2
+        // lines toward the ~250-320pt compact-card target, but Google's Native Advanced
+        // guidelines require body text not be truncated before 90 characters — 2 lines can
+        // truncate earlier than that on narrower iPhones. Restored to 3; font/other body
+        // styling unchanged.
+        bodyLabel.numberOfLines = 3
 
         let iconImageView = UIImageView()
         iconImageView.contentMode = .scaleAspectFit
@@ -680,13 +688,25 @@ private struct NativeAdContainer: UIViewRepresentable {
         // comes from the stack's fill alignment, but nothing previously stopped a long
         // advertiser-supplied CTA string's intrinsic content width from winning that fight and
         // pushing the button wider than the stack (and therefore adView) — see the layout audit.
-        // .required compression resistance guarantees the fill constraint always wins instead,
-        // truncating the title (single line, tail-truncated) rather than growing the button.
-        // .defaultLow hugging keeps the button from being forced any wider than its content
-        // needs within that same fill width.
+        // Compression resistance guarantees the fill constraint always wins instead, truncating
+        // the title (single line, tail-truncated) rather than growing the button. .defaultLow
+        // hugging keeps the button from being forced any wider than its content needs within
+        // that same fill width.
+        //
+        // DOWNGRADED (compliance/Auto Layout hardening pass): .required → .defaultHigh. adView
+        // itself now carries a REQUIRED root width constraint (see sizeThatFits(_:uiView:
+        // context:)/Coordinator.widthConstraint) — leaving this at .required too meant a long
+        // advertiser-supplied CTA string could set up a required-vs-required Auto Layout
+        // conflict (this button's required intrinsic width vs. adView's required proposed
+        // width), which Auto Layout resolves by breaking one of them with a console warning
+        // rather than a clean, predictable truncation. .defaultHigh still beats the stack's
+        // .defaultLow-ish fill/hugging behavior in the normal case (so the CTA still reads as a
+        // real button, not a squashed sliver), but now yields cleanly to adView's required width
+        // instead of fighting it — numberOfLines = 1 + .byTruncatingTail below still guarantee
+        // truncation, not overflow, for a long title.
         callToActionButton.titleLabel?.numberOfLines = 1
         callToActionButton.titleLabel?.lineBreakMode = .byTruncatingTail
-        callToActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        callToActionButton.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         callToActionButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let headerTextStack = UIStackView(arrangedSubviews: [headlineLabel, advertiserLabel])
