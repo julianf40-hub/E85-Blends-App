@@ -21,6 +21,13 @@ enum AppPreferenceKey {
     // this key drives. Absence of this key (never-set / pre-feature installs) must resolve to
     // .normal — see AppExperienceMode.resolved(from:).
     static let appExperienceMode = "appExperienceMode"
+    // Pro Stations layout preference (Map / Classic) — PR D. Independent of appExperienceMode;
+    // applies to a Pro user in BOTH Simple and Normal mode. Absence of this key (new install, or
+    // any existing install from before this preference existed) must resolve to .map — see
+    // ProStationsLayout.resolved(from:). Free users always see Classic regardless of this
+    // stored value, so it is never overwritten by an entitlement change and simply takes effect
+    // again automatically if Pro is restored.
+    static let proStationsLayout = "proStationsLayout"
     static let hasCompletedOnboarding = "hasCompletedOnboarding"
     static let hasAcknowledgedDisclaimer = "hasAcknowledgedDisclaimer"
     static let disclaimerAcknowledgedAt = "disclaimerAcknowledgedAt"
@@ -151,6 +158,44 @@ enum AppExperienceMode: String, CaseIterable, Identifiable {
             return ["Calculator", "Stations"]
         case .normal:
             return ["Calculator", "Stations", "Garage", "Reminders", "More"]
+        }
+    }
+}
+
+/// Pro-only Stations tab presentation choice — PR D. Deliberately independent of
+/// AppExperienceMode (Simple/Normal): this key alone (plus Pro entitlement) decides whether the
+/// Stations tab shows the premium map or the existing Classic presentation, in both modes. See
+/// StationsView.usesPremiumStationsMapPresentation for the gating logic this drives.
+enum ProStationsLayout: String, CaseIterable, Identifiable {
+    case map
+    case classic
+
+    var id: String { rawValue }
+
+    /// Absence of this key (new install, or any existing install predating this preference) —
+    /// and any stored value this app version doesn't recognize — resolves to `.map`. The
+    /// premium map is the intended modern Pro Stations experience, so a Pro user gets it by
+    /// default in both Simple and Normal mode; a user who prefers the previous list-first UI can
+    /// switch to Classic in Preferences. Every read site should go through this rather than
+    /// `ProStationsLayout(rawValue:)` directly, mirroring AppExperienceMode.resolved(from:).
+    static func resolved(from rawValue: String) -> ProStationsLayout {
+        ProStationsLayout(rawValue: rawValue) ?? .map
+    }
+
+    var displayName: String {
+        switch self {
+        case .map: return "Map"
+        case .classic: return "Classic"
+        }
+    }
+
+    /// One-line summary shown next to each option in Preferences.
+    var settingsSummary: String {
+        switch self {
+        case .map:
+            return "Full-screen map with swipeable station cards and a floating favorites list."
+        case .classic:
+            return "Scrollable list with an embedded map — the original Stations layout."
         }
     }
 }

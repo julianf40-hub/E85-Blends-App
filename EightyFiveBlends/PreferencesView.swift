@@ -14,12 +14,17 @@ struct PreferencesView: View {
     @AppStorage(AppPreferenceKey.showGarageTab) private var showGarageTab = true
     @AppStorage(AppPreferenceKey.showRemindersTab) private var showRemindersTab = true
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
+    @AppStorage(AppPreferenceKey.proStationsLayout) private var proStationsLayoutRaw = ProStationsLayout.map.rawValue
     @AppStorage(AppPreferenceKey.hasCompletedOnboarding) private var hasCompletedOnboarding = true
     @AppStorage(AppPreferenceKey.hasAcknowledgedDisclaimer) private var hasAcknowledgedDisclaimer = false
     @AppStorage(AppPreferenceKey.disclaimerAcknowledgedAt) private var disclaimerAcknowledgedAt = 0.0
 
     private var appExperienceMode: AppExperienceMode {
         .resolved(from: appExperienceModeRaw)
+    }
+
+    private var proStationsLayout: ProStationsLayout {
+        .resolved(from: proStationsLayoutRaw)
     }
 
     var body: some View {
@@ -36,6 +41,7 @@ struct PreferencesView: View {
                 }
 
                 appExperienceCard
+                stationsLayoutCard
                 settingsCard
                 AutomaticPumpDetectionPreferenceCard()
                 proStatusCard
@@ -70,6 +76,57 @@ struct PreferencesView: View {
                     }
                 )
             )
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    // PR D — a separate, small card (never folded into the "85Blends Pro" status card below) so
+    // this presentation choice reads as its own setting, distinct from App Experience Mode.
+    // Takes effect immediately (no Apply/Save button) and reacts live to an entitlement change
+    // like every other SubscriptionManager.shared.isProUser read in this app.
+    private var stationsLayoutCard: some View {
+        let isProUser = SubscriptionManager.shared.isProUser
+
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "Stations Layout",
+                subtitle: "Choose how Pro stations are displayed."
+            )
+
+            ProStationsLayoutSelectorRow(
+                selection: proStationsLayout,
+                isProUser: isProUser,
+                onSelect: { newLayout in
+                    proStationsLayoutRaw = newLayout.rawValue
+                    AppHaptics.selection()
+                }
+            )
+
+            // PR #51 final gate finding — the selector's checkmark always reflects the STORED
+            // preference (proStationsLayout), never the effective presentation, so a Free user
+            // whose stored preference is still Map would otherwise see "Map" checkmarked and
+            // locked with no indication that Classic — not Map — is what's actually showing on
+            // the Stations tab right now. Distinguishing the two Free copy variants here (rather
+            // than a single generic line) makes that gap explicit without presenting the
+            // paywall automatically and without ever overwriting the stored value — a previous
+            // Map choice still returns unchanged the moment Pro is restored.
+            if isProUser == false {
+                Text(
+                    proStationsLayout == .map
+                        ? "Classic is currently active on the Free plan. Your Map preference will return when Pro is active."
+                        : "Classic is currently active. Map layout is available with 85Blends Pro."
+                )
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -528,6 +585,93 @@ private struct AppExperienceModeSelectorRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(mode.displayName) mode. \(mode.settingsSummary)")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// PR D — Pro Stations layout choice. Same selectable-card-row shape as
+/// AppExperienceModeSelectorRow above, extended with a per-option Pro lock: only the Map
+/// option (the Pro-gated presentation) disables for a Free user — Classic remains a normal,
+/// tappable choice for everyone, since it is the existing free Stations experience.
+private struct ProStationsLayoutSelectorRow: View {
+    let selection: ProStationsLayout
+    let isProUser: Bool
+    let onSelect: (ProStationsLayout) -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(ProStationsLayout.allCases) { layout in
+                layoutOptionRow(layout)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func layoutOptionRow(_ layout: ProStationsLayout) -> some View {
+        let isSelected = selection == layout
+        let isLocked = layout == .map && isProUser == false
+
+        Button {
+            onSelect(layout)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(layout.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        if layout == .map {
+                            ProBadge()
+                        }
+                    }
+
+                    Text(layout.settingsSummary)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                // Selection is never color-only — same convention as
+                // AppExperienceModeSelectorRow above.
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                isSelected
+                    ? AppTheme.Colors.softGreenBackground
+                    : AppTheme.Colors.cardBackground
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? AppTheme.Colors.primaryGreen.opacity(0.6)
+                            : AppTheme.Colors.borderColor,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isLocked)
+        .opacity(isLocked ? 0.5 : 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel(for: layout, isLocked: isLocked))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func accessibilityLabel(for layout: ProStationsLayout, isLocked: Bool) -> String {
+        var label = "\(layout.displayName). \(layout.settingsSummary)"
+        if isLocked {
+            label += " Available with 85Blends Pro."
+        }
+        return label
     }
 }
 

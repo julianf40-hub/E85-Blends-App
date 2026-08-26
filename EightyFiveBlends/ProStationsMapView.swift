@@ -1,12 +1,14 @@
 //
-//  SimpleProStationsMapView.swift
+//  ProStationsMapView.swift
 //  EightyFiveBlends
 //
-//  PR B — "85Blends 2.3.2 — Simple Mode + Pro Premium Stations Map." A map-first premium
-//  presentation for the Stations tab, shown ONLY when appExperienceMode == .simple AND
-//  SubscriptionManager.shared.isProUser (see StationsView.usesPremiumSimpleStationsPresentation).
-//  Simple Free, Normal Free, and Normal Pro are all unaffected — they keep the existing
-//  list-first StationsView content exactly as it was before this file existed.
+//  Originally PR B — "85Blends 2.3.2 — Simple Mode + Pro Premium Stations Map." Renamed and
+//  regated in PR D ("Pro Stations Preference + Favorite/Save Unification + Natural Card
+//  Paging") — this is a map-first premium presentation for the Stations tab, shown for a Pro
+//  user whenever their stored Stations layout preference is .map (see
+//  StationsView.usesPremiumStationsMapPresentation), in BOTH Simple and Normal app-experience
+//  mode. It is no longer tied to Simple Mode. Any Free user, or a Pro user who chose Classic,
+//  keeps the existing list-first StationsView content exactly as before.
 //
 //  This file is presentation-only. It owns local UI state (which pin is selected, a transient
 //  directions-error alert) and nothing else — no NREL/Supabase/SwiftData calls, no cache/TTL
@@ -39,9 +41,9 @@ enum PremiumStationMapSelection: Hashable {
 /// existing StationDisplayItem.Content cases, never a second station model. Explicit Equatable
 /// conformance (final pre-merge gate finding) — a plain no-payload enum does NOT get `==`/`!=`
 /// synthesized for free without stating the protocol, and this type is compared with both
-/// operators below (SimpleProStationMapPin's badge logic, selectedStationCard's action-matrix
+/// operators below (ProStationMapPin's badge logic, selectedStationCard's action-matrix
 /// branch) — a harmless, presentation-only conformance.
-enum SimpleProStationKind: Equatable {
+enum ProStationKind: Equatable {
     case savedOnly
     case liveOnly
     case merged
@@ -60,7 +62,7 @@ struct PremiumStationPricePresentation {
 
 /// One premium map pin/card's worth of display data — derived fresh from StationsView's own
 /// unifiedItems every time that recomputes. Never persisted, never independently stored.
-struct SimpleProStationMapItem: Identifiable {
+struct ProStationMapItem: Identifiable {
     let selection: PremiumStationMapSelection
     var id: PremiumStationMapSelection { selection }
     let displayName: String
@@ -70,7 +72,7 @@ struct SimpleProStationMapItem: Identifiable {
     let price: PremiumStationPricePresentation
     let isSaved: Bool
     let isFavorite: Bool
-    let kind: SimpleProStationKind
+    let kind: ProStationKind
     let accessibilityDescription: String
 }
 
@@ -79,8 +81,8 @@ struct SimpleProStationMapItem: Identifiable {
 /// A new pin type for the premium map — independent of the existing StationMapPin /
 /// LiveStationMapPin, which stay completely untouched (they still back the old embedded map for
 /// Simple Free / Normal Free / Normal Pro).
-struct SimpleProStationMapPin: View {
-    let kind: SimpleProStationKind
+struct ProStationMapPin: View {
+    let kind: ProStationKind
     let isFavorite: Bool
     let isSelected: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -137,11 +139,11 @@ struct SimpleProStationMapPin: View {
 
 // MARK: - Main premium view
 
-struct SimpleProStationsMapView: View {
+struct ProStationsMapView: View {
     // Derived display data (StationsView owns the real state; this is a read-only snapshot).
-    let items: [SimpleProStationMapItem]
-    /// Final pre-merge gate fix — station discovery is "in progress" whenever a network fetch
-    /// is running OR a pending nearby-search is still waiting on a location fix
+    let items: [ProStationMapItem]
+    /// Station discovery is "in progress" whenever a network fetch is running OR a pending
+    /// nearby-search is still waiting on a location fix
     /// (StationsView.isPremiumStationsLoading = isSearchingLive || pendingLiveSearchReason !=
     /// nil). Deliberately a single combined signal rather than exposing isSearchingLive AND a
     /// second Boolean: nothing in this premium view needs to distinguish "waiting for GPS" from
@@ -174,7 +176,9 @@ struct SimpleProStationsMapView: View {
     let onRecenterUser: () -> Void
     let onRefresh: () -> Void
     let onDirections: (PremiumStationMapSelection) -> String?
-    let onSave: (PremiumStationMapSelection) -> Void
+    // PR D — Save is gone as a separate action; Favorite now covers every kind (live-only
+    // saves+favorites atomically, saved/merged toggles) — see the action row below and
+    // StationsView.premiumFavorite(for:).
     let onFavorite: (PremiumStationMapSelection) -> Void
     let onReportPrice: (PremiumStationMapSelection) -> Void
 
@@ -191,7 +195,7 @@ struct SimpleProStationsMapView: View {
     /// station that disappears after a refresh naturally closes the card (nil), and a live-only
     /// selection that becomes merged after Save (PR B section 40/42) naturally migrates to the
     /// merged item sharing the same live key, rather than needing a separate invalidation pass.
-    private var selectedItem: SimpleProStationMapItem? {
+    private var selectedItem: ProStationMapItem? {
         guard let selectedStationID else { return nil }
         if let exact = items.first(where: { $0.selection == selectedStationID }) {
             return exact
@@ -209,7 +213,7 @@ struct SimpleProStationsMapView: View {
     /// secondary @State array, no reload button. Only a saved/merged item can ever be favorite
     /// (favoriteItems inherits this from item.isFavorite, which itself only ever reflects a
     /// saved FuelStation's isFavorite — see StationsView.premiumStationMapItems).
-    private var favoriteItems: [SimpleProStationMapItem] {
+    private var favoriteItems: [ProStationMapItem] {
         items.filter(\.isFavorite)
     }
 
@@ -218,7 +222,7 @@ struct SimpleProStationsMapView: View {
     /// case-insensitive display name, then (final pre-merge gate fix, section 22) a stable
     /// per-selection string key as the last resort. Never array/hash/UUID/SwiftData internal
     /// order.
-    private var browsableItems: [SimpleProStationMapItem] {
+    private var browsableItems: [ProStationMapItem] {
         items.sorted { lhs, rhs in
             if let orderedByDistance = distanceOrdering(lhs, rhs) { return orderedByDistance }
             let nameComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
@@ -237,7 +241,7 @@ struct SimpleProStationsMapView: View {
     /// Returns a definitive "lhs belongs before rhs" answer when distance alone decides it (one
     /// or both known and unequal), or nil when distance is a tie (both nil, or both equal) and
     /// the caller should fall through to the name/stable-key tie-break.
-    private func distanceOrdering(_ lhs: SimpleProStationMapItem, _ rhs: SimpleProStationMapItem) -> Bool? {
+    private func distanceOrdering(_ lhs: ProStationMapItem, _ rhs: ProStationMapItem) -> Bool? {
         switch (lhs.distanceMiles, rhs.distanceMiles) {
         case let (leftDistance?, rightDistance?):
             return leftDistance == rightDistance ? nil : leftDistance < rightDistance
@@ -290,18 +294,22 @@ struct SimpleProStationsMapView: View {
         stepStation(by: -1)
     }
 
-    /// PR C — explicit product requirement (section 28): swipe RIGHT (positive horizontal
-    /// translation) = NEXT, swipe LEFT (negative) = PREVIOUS. Deliberately NOT the conventional
-    /// paging-view mapping. Requires a real, mostly-horizontal gesture (60pt minimum, and
-    /// horizontal motion at least 1.25x vertical) so button taps, small hand movement, and
-    /// vertical scroll noise can never be misread as a swipe (section 31).
+    /// PR D — explicit post-TestFlight product correction: swipe LEFT (negative horizontal
+    /// translation) = NEXT, swipe RIGHT (positive) = PREVIOUS — the conventional/natural paging
+    /// direction, replacing PR C's deliberately-reversed mapping. Only the physical
+    /// direction-to-function mapping changes here; browse order, wraparound, the 60pt/1.25x
+    /// threshold, and the VoiceOver "Next Station"/"Previous Station" action names are all
+    /// unchanged (they still call selectNextStation()/selectPreviousStation() respectively,
+    /// regardless of which swipe direction triggers them). Requires a real, mostly-horizontal
+    /// gesture (60pt minimum, and horizontal motion at least 1.25x vertical) so button taps,
+    /// small hand movement, and vertical scroll noise can never be misread as a swipe.
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 20)
             .onEnded { value in
                 let horizontal = value.translation.width
                 let vertical = value.translation.height
                 guard abs(horizontal) >= 60, abs(horizontal) > abs(vertical) * 1.25 else { return }
-                if horizontal > 0 {
+                if horizontal < 0 {
                     selectNextStation()
                 } else {
                     selectPreviousStation()
@@ -329,7 +337,7 @@ struct SimpleProStationsMapView: View {
     /// highlights its pin (via the existing selectedItem-driven isSelected computation), and
     /// centers the map with the same moderate span used elsewhere in this file — no NLR search,
     /// no geocoder, no location request, purely presentation.
-    private func selectFavorite(_ item: SimpleProStationMapItem) {
+    private func selectFavorite(_ item: ProStationMapItem) {
         AppHaptics.selection()
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
             isFavoritesPresented = false
@@ -478,7 +486,7 @@ struct SimpleProStationsMapView: View {
                             selectedStationID = (selectedItem?.id == item.selection) ? nil : item.selection
                         }
                     } label: {
-                        SimpleProStationMapPin(
+                        ProStationMapPin(
                             kind: item.kind,
                             isFavorite: item.isFavorite,
                             isSelected: selectedItem?.id == item.selection
@@ -812,7 +820,7 @@ struct SimpleProStationsMapView: View {
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
     }
 
-    private func favoriteRow(_ item: SimpleProStationMapItem) -> some View {
+    private func favoriteRow(_ item: ProStationMapItem) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "star.fill")
                 .font(.caption)
@@ -848,7 +856,7 @@ struct SimpleProStationsMapView: View {
     // MARK: Selected station card
 
     @ViewBuilder
-    private func selectedStationCard(_ item: SimpleProStationMapItem) -> some View {
+    private func selectedStationCard(_ item: ProStationMapItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             // PR C section 28-34: swipe browsing lives ONLY on this details block, never on the
             // action-button row below — attaching a drag gesture to a parent containing the
@@ -918,14 +926,11 @@ struct SimpleProStationsMapView: View {
                         directionsErrorMessage = message
                     }
                 }
-                if item.kind == .liveOnly {
-                    actionButton(title: "Save", systemImage: "bookmark", stationName: item.displayName) {
-                        onSave(item.selection)
-                    }
-                } else {
-                    actionButton(title: item.isFavorite ? "Favorited" : "Favorite", systemImage: item.isFavorite ? "star.fill" : "star", stationName: item.displayName) {
-                        onFavorite(item.selection)
-                    }
+                // PR D — Favorite is the single unified action for every kind: a live-only
+                // station is saved AND favorited in one tap (see
+                // StationsView.premiumFavorite(for:)); a saved/merged station simply toggles.
+                actionButton(title: item.isFavorite ? "Favorited" : "Favorite", systemImage: item.isFavorite ? "star.fill" : "star", stationName: item.displayName) {
+                    onFavorite(item.selection)
                 }
                 actionButton(title: item.isSaved ? "Update" : "Report", systemImage: "dollarsign.circle", stationName: item.displayName) {
                     onReportPrice(item.selection)
