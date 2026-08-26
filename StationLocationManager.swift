@@ -48,6 +48,20 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     /// without adding a second source of truth for freshness.
     var latestFixTimestamp: Date?
 
+    /// Bumped on every `didFailWithError` call (`.denied` included), so a caller awaiting a
+    /// pending `requestLocation()` has an observable signal that the request it is waiting on
+    /// just failed. Deliberately a revision counter rather than exposing `lastLocationFailureCode`
+    /// alone: two back-to-back failures with the identical `CLError.Code` (e.g. `.locationUnknown`
+    /// while parked in a garage) would otherwise collapse into a single `onChange`-observable
+    /// value change, silently swallowing the second failure. Callers should read
+    /// `lastLocationFailureCode` in response to a change here, not poll it independently.
+    private(set) var locationFailureRevision: UInt = 0
+    /// The `CLError.Code` behind the most recent `locationFailureRevision` bump, or nil if the
+    /// underlying error wasn't a `CLError`. Deliberately code-only — no coordinates, no
+    /// `NSError`/`userInfo`, no history of past failures — matching this class's existing
+    /// diagnostics posture (see `latestFixTimestamp`'s own comment above).
+    private(set) var lastLocationFailureCode: CLError.Code?
+
     /// Fired on region monitoring entry/exit/failure. Set by a feature (e.g. Automatic
     /// Pump Detection) that registered regions via `startMonitoringRegion`.
     var onRegionEvent: ((_ identifier: String, _ kind: RegionEventKind) -> Void)?
@@ -240,6 +254,13 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
             latestCoordinate = nil
             latestFixTimestamp = nil
         }
+
+        // Purely additive observable signal — see locationFailureRevision's own header.
+        // Fires for every failure (denied included) so a denied-triggered event is still
+        // observable; callers that already have a dedicated denied/authorization path (e.g.
+        // Stations' own authorizationStatus onChange) simply no-op here to avoid double-handling.
+        lastLocationFailureCode = (error as? CLError)?.code
+        locationFailureRevision += 1
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

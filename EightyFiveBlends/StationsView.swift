@@ -300,6 +300,9 @@ struct StationsView: View {
             handleAuthorizationStatusChange(status)
             refreshPumpDetectionMonitoredStations(reason: "Location authorization changed")
         }
+        .onChange(of: locationManager.locationFailureRevision) { _, _ in
+            handlePendingLocationFailureIfNeeded()
+        }
         .onChange(of: stations) { _, _ in
             refreshPumpDetectionMonitoredStations(reason: "Saved stations changed")
         }
@@ -1638,6 +1641,57 @@ struct StationsView: View {
 
         if locationManager.latestCoordinate == nil, mappableStations.isEmpty, liveStations.isEmpty {
             mapPosition = .region(StationsView.neutralUSRegion)
+        }
+    }
+
+    /// PR #48 blocker fix — closes out a pending nearby-search wait when the `requestLocation()`
+    /// it was waiting on fails instead of succeeding. Before this, only the success path
+    /// (`.onChange(of: locationManager.latestCoordinate)` above) ever consumed
+    /// `pendingLiveSearchReason`; a failure like `.locationUnknown` (no `.onChange`-visible
+    /// mutation on `StationLocationManager` at all under the old code) left it set forever —
+    /// permanently blocking `shouldPerformAutomaticNearbySearch()` for the rest of the session
+    /// once triggered by an automatic tab-open search, since that gate requires
+    /// `pendingLiveSearchReason == nil`. Driven by `locationFailureRevision`, not
+    /// `lastLocationFailureCode` alone, so two consecutive identical failures (e.g.
+    /// `.locationUnknown` while parked in a garage) are each independently observable — see
+    /// that property's own header on `StationLocationManager`.
+    ///
+    /// No-op when nothing is pending (a failure from Pump Mode's or the app-foreground
+    /// prewarm's own `requestLocation()` call — the same underlying `CLLocationManager`,
+    /// see `StationLocationManager`'s header — must not touch Stations' state). When
+    /// something IS pending, consumes it exactly once (mirrors the success path's own
+    /// single-consumption via `fetchLiveStations()`'s `pendingLiveSearchReason = nil`) and
+    /// never touches `liveStations`, `mappableStations`, saved stations, community-price
+    /// data, `isSearchingLive` (never true here — mutually exclusive with a pending reason;
+    /// only `fetchLiveStations()` sets it, and it clears `pendingLiveSearchReason` first),
+    /// `StationsRecentSearchStore` (no cooldown/timestamp write — a failure recorded no
+    /// results and must not poison a future compatible-snapshot check or suppress a real
+    /// retry), or `recentLiveStationCache`. Never auto-retries `requestUserLocation()`.
+    ///
+    /// A `.denied`/`.restricted` failure already flips `authorizationStatus`, which fires the
+    /// separate `.onChange(of: locationManager.authorizationStatus)` above into
+    /// `handleAuthorizationStatusChange()` — that path already clears
+    /// `pendingLiveSearchReason` and presents `locationDeniedAlert`. Deferring to it here
+    /// (instead of alerting again) avoids a duplicate alert regardless of which `onChange`
+    /// SwiftUI happens to dispatch first, since `locationManager.authorizationDenied` already
+    /// reflects the final state by the time either fires (both properties are mutated
+    /// synchronously within the same `didFailWithError` call, before either `onChange` runs).
+    private func handlePendingLocationFailureIfNeeded() {
+        guard let reason = pendingLiveSearchReason else { return }
+        pendingLiveSearchReason = nil
+
+        guard locationManager.authorizationDenied == false else { return }
+
+        switch reason {
+        case .automaticNearby:
+            // Silent — matches performAutomaticNearbySearchIfNeeded()'s own denied-authorization
+            // silence above; an unprompted alert on a background tab-open trigger the user never
+            // asked for is exactly the disruptive behavior that function's header already rules out.
+            break
+        case .manualNearby:
+            // Reuses the exact wording searchNearbyStations()/fetchLiveStations() already show for
+            // an unavailable current location, rather than introducing a new message or modal.
+            liveSearchError = "Current location is unavailable. Try again in a moment."
         }
     }
 
