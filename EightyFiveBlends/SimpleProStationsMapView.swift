@@ -36,8 +36,12 @@ enum PremiumStationMapSelection: Hashable {
 }
 
 /// Presentation-only classification driving pin styling and which actions apply — mirrors the
-/// existing StationDisplayItem.Content cases, never a second station model.
-enum SimpleProStationKind {
+/// existing StationDisplayItem.Content cases, never a second station model. Explicit Equatable
+/// conformance (final pre-merge gate finding) — a plain no-payload enum does NOT get `==`/`!=`
+/// synthesized for free without stating the protocol, and this type is compared with both
+/// operators below (SimpleProStationMapPin's badge logic, selectedStationCard's action-matrix
+/// branch) — a harmless, presentation-only conformance.
+enum SimpleProStationKind: Equatable {
     case savedOnly
     case liveOnly
     case merged
@@ -141,6 +145,11 @@ struct SimpleProStationsMapView: View {
     let isTypedLocationSearch: Bool
     let typedLocationDisplayName: String?
     let radiusOptions: [String]
+    /// Whether to draw the user's current-location marker (UserAnnotation) on the map. Plumbed
+    /// in as a plain Bool — never StationLocationManager itself — so this presentation-only view
+    /// stays fully independent of location authorization/lifecycle; StationsView computes it the
+    /// same way the existing embedded map does (locationManager.isAuthorizedForUserLocation).
+    let showsUserLocation: Bool
 
     // Shared state — same source of truth as the existing embedded map/search, never a second
     // independent copy (see PR B section 45/69/70).
@@ -229,6 +238,10 @@ struct SimpleProStationsMapView: View {
     @ViewBuilder
     private var mapLayer: some View {
         Map(position: $mapPosition, interactionModes: .all) {
+            if showsUserLocation {
+                UserAnnotation()
+            }
+
             ForEach(items) { item in
                 Annotation(item.displayName, coordinate: item.coordinate, anchor: .bottom) {
                     Button {

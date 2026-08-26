@@ -461,6 +461,12 @@ struct StationsView: View {
             isTypedLocationSearch: { if case .typedLocation = stationSearchSource { return true }; return false }(),
             typedLocationDisplayName: { if case .typedLocation(let name) = stationSearchSource { return name }; return nil }(),
             radiusOptions: radiusOptions,
+            // Final pre-merge gate finding — the premium map was missing the current-location
+            // marker the old embedded map already shows (mapSection's own
+            // "if locationManager.isAuthorizedForUserLocation { UserAnnotation() }"). Computed
+            // the identical way; the premium view receives only this Bool, never
+            // locationManager itself.
+            showsUserLocation: locationManager.isAuthorizedForUserLocation,
             mapPosition: $mapPosition,
             selectedRadius: $selectedRadius,
             locationSearchText: $locationSearchText,
