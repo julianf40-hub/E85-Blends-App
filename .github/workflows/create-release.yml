@@ -1,0 +1,207 @@
+name: Create 85Blends Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version without the v prefix (example: 2.3.2)"
+        required: true
+        type: string
+      app_store_build:
+        description: "App Store / Release build number"
+        required: true
+        type: string
+      internal_build:
+        description: "Internal build number"
+        required: true
+        type: string
+      target_ref:
+        description: "Commit SHA or branch to release (normally main)"
+        required: true
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate, tag, and release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - name: Validate release inputs and Xcode version metadata
+        env:
+          VERSION: ${{ inputs.version }}
+          APP_STORE_BUILD: ${{ inputs.app_store_build }}
+          INTERNAL_BUILD: ${{ inputs.internal_build }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like 2.3.2 (without a v prefix)."
+            exit 1
+          fi
+
+          if [[ ! "$APP_STORE_BUILD" =~ ^[0-9]+$ ]] || [[ ! "$INTERNAL_BUILD" =~ ^[0-9]+$ ]]; then
+            echo "::error::Build numbers must contain digits only."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          app_build = os.environ["APP_STORE_BUILD"]
+          internal_build = os.environ["INTERNAL_BUILD"]
+          project = Path("EightyFiveBlends.xcodeproj/project.pbxproj").read_text()
+
+          versions = re.findall(r"MARKETING_VERSION\s*=\s*([^;]+);", project)
+          builds = re.findall(r"CURRENT_PROJECT_VERSION\s*=\s*([^;]+);", project)
+
+          if not versions:
+              raise SystemExit("No MARKETING_VERSION values found in project.pbxproj")
+          if any(value.strip() != version for value in versions):
+              raise SystemExit(
+                  f"MARKETING_VERSION mismatch. Expected every app configuration to be {version}; found {versions}"
+              )
+
+          app_count = sum(value.strip() == app_build for value in builds)
+          internal_count = sum(value.strip() == internal_build for value in builds)
+
+          if app_build == internal_build:
+              if app_count < 3:
+                  raise SystemExit(
+                      f"Expected build {app_build} in all app configurations; found CURRENT_PROJECT_VERSION values {builds}"
+                  )
+          else:
+              if app_count < 2 or internal_count < 1:
+                  raise SystemExit(
+                      "Build-number mismatch. "
+                      f"Expected App Store build {app_build} at least twice and Internal build {internal_build} at least once; "
+                      f"found {builds}"
+                  )
+
+          print(f"Validated version {version}, App Store build {app_build}, Internal build {internal_build}.")
+          PY
+
+      - name: Resolve and validate release commit
+        id: release_commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TARGET_SHA="$(git rev-parse HEAD)"
+          git fetch origin main --tags --force
+
+          if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main; then
+            echo "::error::The selected release commit ($TARGET_SHA) is not contained in origin/main. Merge it to main before releasing."
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::GitHub Release ${TAG} already exists. Nothing was changed."
+            exit 1
+          fi
+
+          TAG_EXISTS="false"
+          if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            EXISTING_SHA="$(git rev-list -n 1 "$TAG")"
+            if [[ "$EXISTING_SHA" != "$TARGET_SHA" ]]; then
+              echo "::error::Tag ${TAG} already exists but points to ${EXISTING_SHA}, not ${TARGET_SHA}. This workflow never moves or overwrites release tags."
+              exit 1
+            fi
+            TAG_EXISTS="true"
+            echo "Tag ${TAG} already points to the requested commit; continuing so a previously interrupted release can be completed safely."
+          fi
+
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+
+      - name: Build release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_commit.outputs.tag }}
+          TARGET_SHA: ${{ steps.release_commit.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+          APP_STORE_BUILD: ${{ inputs.app_store_build }}
+          INTERNAL_BUILD: ${{ inputs.internal_build }}
+        run: |
+          set -euo pipefail
+
+          GENERATED_NOTES="$(gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$TARGET_SHA" \
+            --jq '.body')"
+
+          cat > release-notes.md <<EOF
+          ## 85Blends ${VERSION}
+
+          - **App Store build:** ${APP_STORE_BUILD}
+          - **Internal build:** ${INTERNAL_BUILD}
+          - **Commit:** \`${TARGET_SHA}\`
+          - **Tag:** \`${TAG}\`
+
+          ${GENERATED_NOTES}
+          EOF
+
+      - name: Create annotated tag
+        if: steps.release_commit.outputs.tag_exists != 'true'
+        env:
+          TAG: ${{ steps.release_commit.outputs.tag }}
+          TARGET_SHA: ${{ steps.release_commit.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+          APP_STORE_BUILD: ${{ inputs.app_store_build }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$TARGET_SHA" -m "85Blends ${VERSION} - App Store Build ${APP_STORE_BUILD}"
+          git push origin "refs/tags/${TAG}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_commit.outputs.tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "85Blends ${VERSION}" \
+            --notes-file release-notes.md
+
+      - name: Add release summary
+        env:
+          TAG: ${{ steps.release_commit.outputs.tag }}
+          VERSION: ${{ inputs.version }}
+          APP_STORE_BUILD: ${{ inputs.app_store_build }}
+          INTERNAL_BUILD: ${{ inputs.internal_build }}
+          TARGET_SHA: ${{ steps.release_commit.outputs.sha }}
+        run: |
+          {
+            echo "## 85Blends ${VERSION} released"
+            echo ""
+            echo "- Tag: \`${TAG}\`"
+            echo "- App Store build: \`${APP_STORE_BUILD}\`"
+            echo "- Internal build: \`${INTERNAL_BUILD}\`"
+            echo "- Commit: \`${TARGET_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
