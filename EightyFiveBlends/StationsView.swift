@@ -453,6 +453,36 @@ struct StationsView: View {
         }
     }
 
+    /// PR C ("Simple Pro Stations — Interaction / Responsiveness Polish") — immediate-feedback
+    /// recenter for the premium map. Root cause of the reported "Recenter feels slow": the old
+    /// wiring called locationManager.requestUserLocation() directly, which ALWAYS waits for a
+    /// brand-new GPS callback before the camera moves at all — even when a perfectly usable
+    /// latestCoordinate already exists from moments ago. Fixes this by using the known
+    /// coordinate for an IMMEDIATE visual anchor when one exists, then only requesting a fresh
+    /// fix (silently, in the background) if StationsLocationFreshness — read here, never
+    /// redefined — says the known one is old enough to be worth correcting. When a fresh fix
+    /// does arrive, the existing, unmodified `.onChange(of: locationManager.latestCoordinate)`
+    /// handler above already re-centers unconditionally, so no extra plumbing is needed for
+    /// "map updates again when a fresh fix arrives." Never touches pendingLiveSearchReason —
+    /// same precedent as the old map's own "locate me" button — so this can never fire an
+    /// unrelated station re-search. No StationLocationManager change, no second CLLocationManager,
+    /// no polling.
+    private func premiumRecenterOnUser() {
+        AppHaptics.selection()
+        if let coordinate = locationManager.latestCoordinate {
+            centerMap(on: coordinate.clCoordinate)
+            let isFresh = StationsLocationFreshness.isCoordinateRecentEnough(
+                fixTimestamp: locationManager.latestFixTimestamp,
+                now: .now
+            )
+            if isFresh == false {
+                locationManager.requestUserLocation()
+            }
+        } else {
+            locationManager.requestUserLocation()
+        }
+    }
+
     private var premiumSimpleStationsMapView: some View {
         SimpleProStationsMapView(
             items: premiumStationMapItems,
@@ -474,8 +504,12 @@ struct StationsView: View {
             locationSearchValidationMessage: locationSearchValidationMessage,
             onSubmitLocationSearch: searchStationsNearTypedLocation,
             onClearLocationSearch: clearTrip,
-            onRecenterUser: { locationManager.requestUserLocation() },
-            onShowAll: recenterMap,
+            onRecenterUser: premiumRecenterOnUser,
+            // PR C — Show All is now a premium-only fitAllStations() computed directly from
+            // this view's own `items` (see SimpleProStationsMapView) rather than reusing the
+            // legacy recenterMap(), which does legacy-only work (mutating selectedMapStationID,
+            // an old-map-only concept) irrelevant here. recenterMap() itself is untouched and
+            // still backs the old embedded map's own "Show All" button exactly as before.
             onRefresh: searchNearbyStations,
             onDirections: { premiumDirectionsMessage(for: $0) },
             onSave: { premiumSave(for: $0) },
