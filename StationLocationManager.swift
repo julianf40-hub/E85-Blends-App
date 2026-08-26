@@ -118,6 +118,21 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         manager.requestAlwaysAuthorization()
     }
 
+    /// One-shot location prewarm for app-foreground-active (see EightyFiveBlendsApp's
+    /// scenePhase handling) — deliberately narrower than `requestUserLocation()`: it NEVER
+    /// requests authorization and silently no-ops when not yet determined, denied, or
+    /// restricted. Only proceeds when already authorized, in which case it calls the exact
+    /// same one-shot `requestLocation()` primitive every other call site in this class already
+    /// uses — no continuous updates, no accuracy change, no new capability. Formalizes what
+    /// Stations already benefited from incidentally via Calculator's own foreground location
+    /// polling; see StationsRecentSearchStore/StationsLocationFreshness for the freshness
+    /// check callers should apply before calling this, so an already-recent fix isn't
+    /// needlessly re-requested on every foreground transition.
+    func prewarmLocationIfAuthorized() {
+        guard isAuthorizedForUserLocation else { return }
+        manager.requestLocation()
+    }
+
     /// One-shot async location fetch, independent of `requestUserLocation()`'s existing
     /// synchronous/delegate-driven path (that path keeps working exactly as before — this
     /// is purely additive). Used by Automatic Pump Detection's Stage-B precise confirmation,
