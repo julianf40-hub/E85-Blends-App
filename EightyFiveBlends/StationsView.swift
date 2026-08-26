@@ -100,6 +100,17 @@ struct StationsView: View {
         .resolved(from: appExperienceModeRaw)
     }
 
+    // PR B ("Simple Mode + Pro Premium Stations Map") — the ONE presentation decision this
+    // feature adds. Reads SubscriptionManager.shared.isProUser directly (no second entitlement
+    // flag, no @State cache) — SubscriptionManager is @Observable, so a purchase/downgrade while
+    // this view is visible re-evaluates this property and swaps presentation reactively, with no
+    // restart and no stale modal. Deliberately does not touch AppExperienceNavigation.visibleTabs
+    // — Simple Mode's tab set (Calculator/Stations/More) is unchanged; only what Stations itself
+    // renders differs.
+    private var usesPremiumSimpleStationsPresentation: Bool {
+        appExperienceMode == .simple && SubscriptionManager.shared.isProUser
+    }
+
     // MARK: - Unified display model
 
     private var unifiedItems: [StationDisplayItem] {
@@ -199,6 +210,280 @@ struct StationsView: View {
         liveStations.filter { isValidCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
     }
 
+    // MARK: - PR B: Simple + Pro premium map presentation
+    //
+    // Everything below is presentation-layer plumbing for SimpleProStationsMapView. It owns NO
+    // business logic of its own — every derivation reads unifiedItems/stations/liveStations
+    // (the SAME shared state the existing list/old map already read) and every action resolves
+    // back to the SAME existing functions (saveLiveStation, toggleFavorite, beginPriceUpdate,
+    // directionsMessage) used elsewhere in this file. This is deliberate: StationsView remains
+    // the sole data owner/orchestrator; the premium view never calls NREL/Supabase/SwiftData
+    // itself. The existing embedded 200pt map (mapSection), its StationMapPin/LiveStationMapPin,
+    // and selectedMapStationID (PersistentIdentifier?) are completely untouched by any of this.
+
+    /// Stable selection identity for the premium map, resolved the same way for every
+    /// StationDisplayItem.Content case — factored into one function so premiumStationMapItems
+    /// and resolveStationDisplayItem(for:) can never disagree about how a given item maps to a
+    /// PremiumStationMapSelection.
+    private func premiumSelection(for item: StationDisplayItem) -> PremiumStationMapSelection {
+        switch item.content {
+        case .savedOnly(let saved):
+            return .saved(saved.persistentModelID)
+        case .nearbyOnly(let nearby):
+            return .live(canonicalLiveStationKey(for: nearby))
+        case .merged(let saved, let nearby):
+            return .merged(saved: saved.persistentModelID, liveKey: canonicalLiveStationKey(for: nearby))
+        }
+    }
+
+    /// Durable identity for a live station that survives a background NREL refresh — deliberately
+    /// NOT LiveFuelStation.id (a fresh UUID generated on every decode; see that type's own
+    /// header). Delegates to the same canonical key NREL-vs-saved matching and community-price
+    /// keying already use, so "the same physical station" means one consistent thing everywhere
+    /// in this file. CommunityStationKey.canonicalKey can only return nil when name, address,
+    /// city, state, zip, AND coordinate are ALL blank — practically unreachable for a real NREL
+    /// result (name is always populated) — but per PR B's requirement to never silently fall back
+    /// to UUID()/array position/hashValue, a smallest-deterministic fallback is implemented
+    /// locally below (normalizedText + coordinate rounding reimplemented here since
+    /// CommunityStationKey's own rounding helpers are file-private to CommunityPriceEligibility.swift).
+    private func canonicalLiveStationKey(for station: LiveFuelStation) -> String {
+        let coordinate = isValidCoordinate(latitude: station.latitude, longitude: station.longitude)
+            ? (station.latitude, station.longitude)
+            : nil
+        if let key = CommunityStationKey.canonicalKey(
+            name: station.name,
+            streetAddress: station.address,
+            city: station.city,
+            state: station.state,
+            zip: station.zip,
+            latitude: coordinate?.0,
+            longitude: coordinate?.1
+        ) {
+            return key
+        }
+        let roundedLatitude = coordinate.map { ($0.0 * 1000).rounded() } ?? 0
+        let roundedLongitude = coordinate.map { ($0.1 * 1000).rounded() } ?? 0
+        return "fallback|\(CommunityStationKey.normalizedText(station.name))|\(roundedLatitude),\(roundedLongitude)"
+    }
+
+    /// Coordinate priority for a merged item — prefers the live coordinate (the current API
+    /// search result) when valid, falling back to the saved coordinate. Never fabricates a
+    /// coordinate; an item with neither simply cannot appear as a premium map annotation (it
+    /// still exists for saved/list purposes elsewhere, just not on this map).
+    private func premiumMapCoordinate(for item: StationDisplayItem) -> CLLocationCoordinate2D? {
+        func validSaved(_ saved: FuelStation) -> CLLocationCoordinate2D? {
+            guard let latitude = saved.latitude, let longitude = saved.longitude,
+                  isValidCoordinate(latitude: latitude, longitude: longitude) else { return nil }
+            return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+        func validLive(_ live: LiveFuelStation) -> CLLocationCoordinate2D? {
+            guard isValidCoordinate(latitude: live.latitude, longitude: live.longitude) else { return nil }
+            return CLLocationCoordinate2D(latitude: live.latitude, longitude: live.longitude)
+        }
+        switch item.content {
+        case .savedOnly(let saved):
+            return validSaved(saved)
+        case .nearbyOnly(let nearby):
+            return validLive(nearby)
+        case .merged(let saved, let nearby):
+            return validLive(nearby) ?? validSaved(saved)
+        }
+    }
+
+    /// Same saved/community price hierarchy StationRowCard/LiveStationRowCard already display —
+    /// a saved/local price is primary whenever it exists; community is primary only when no
+    /// saved price exists; a supporting community line may appear alongside a saved primary
+    /// price without ever being averaged or mislabeled as the saved price's source. NREL/live
+    /// data carries no price field at all (see LiveFuelStation's field list), so a "live price"
+    /// is structurally impossible here — there is nothing to invent it from.
+    private func premiumPricePresentation(for item: StationDisplayItem) -> PremiumStationPricePresentation {
+        let community: CommunityPriceSummary?
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            community = communitySummary(for: saved)
+        case .nearbyOnly(let nearby):
+            community = communitySummary(for: nearby)
+        }
+
+        if let saved = item.savedStation, saved.lastKnownE85Price > 0 {
+            let days = StationDataValidation.daysSince(saved.lastUpdated)
+            let tier = StationDataValidation.priceFreshnessTier(hasPrice: true, daysSinceUpdate: days)
+            let freshnessLabel: String
+            switch tier {
+            case .noPrice: freshnessLabel = "No Price"
+            case .fresh: freshnessLabel = "Fresh"
+            case .checkPrice: freshnessLabel = "Check Price"
+            case .stale: freshnessLabel = "Stale"
+            }
+            var supportingText: String?
+            if let community, let latestPrice = community.latestPrice, let latestReportedAt = community.latestReportedAt {
+                supportingText = "Community \(latestPrice.communityPriceText)/gal · \(latestReportedAt.communityReportedText)"
+            }
+            return PremiumStationPricePresentation(
+                primaryText: String(format: "$%.2f/gal", saved.lastKnownE85Price),
+                primarySource: "Saved",
+                freshnessText: freshnessLabel,
+                supportingText: supportingText,
+                hasNoPriceAtAll: false
+            )
+        }
+
+        if let community, let latestPrice = community.latestPrice, let latestReportedAt = community.latestReportedAt {
+            return PremiumStationPricePresentation(
+                primaryText: "\(latestPrice.communityPriceText)/gal",
+                primarySource: "Community",
+                freshnessText: latestReportedAt.communityReportedText,
+                supportingText: nil,
+                hasNoPriceAtAll: false
+            )
+        }
+
+        return PremiumStationPricePresentation(
+            primaryText: nil,
+            primarySource: nil,
+            freshnessText: nil,
+            supportingText: nil,
+            hasNoPriceAtAll: true
+        )
+    }
+
+    /// VoiceOver label, built conditionally so a missing price/distance never speaks as
+    /// "$0.00"/"nil" junk — see PR B's accessibility requirements. Order: name, saved/favorite
+    /// state, distance, price, freshness.
+    private func premiumAccessibilityDescription(
+        name: String,
+        isSaved: Bool,
+        isFavorite: Bool,
+        distanceMiles: Double?,
+        price: PremiumStationPricePresentation
+    ) -> String {
+        var parts: [String] = [name.isEmpty ? "Station" : name]
+        if isFavorite {
+            parts.append("Favorite")
+        } else if isSaved {
+            parts.append("Saved")
+        }
+        if let distanceMiles {
+            parts.append(String(format: "%.1f miles away", distanceMiles))
+        }
+        if let primaryText = price.primaryText {
+            parts.append("E85 \(primaryText)")
+        }
+        if let freshnessText = price.freshnessText {
+            parts.append(freshnessText)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// The full derived item list for the premium map — built fresh from unifiedItems every
+    /// time that recomputes (a new fetch, a save, a favorite toggle, a community-price arrival).
+    /// No separate @State copy of station data exists anywhere in this section.
+    private var premiumStationMapItems: [SimpleProStationMapItem] {
+        unifiedItems.compactMap { item in
+            guard let coordinate = premiumMapCoordinate(for: item) else { return nil }
+            let price = premiumPricePresentation(for: item)
+            let kind: SimpleProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
+            return SimpleProStationMapItem(
+                selection: premiumSelection(for: item),
+                displayName: item.displayName,
+                coordinate: coordinate,
+                displayAddress: item.displayAddress,
+                distanceMiles: item.distanceMiles,
+                price: price,
+                isSaved: item.isSaved,
+                isFavorite: item.isFavorite,
+                kind: kind,
+                accessibilityDescription: premiumAccessibilityDescription(
+                    name: item.displayName,
+                    isSaved: item.isSaved,
+                    isFavorite: item.isFavorite,
+                    distanceMiles: item.distanceMiles,
+                    price: price
+                )
+            )
+        }
+    }
+
+    private func resolveStationDisplayItem(for selection: PremiumStationMapSelection) -> StationDisplayItem? {
+        unifiedItems.first { premiumSelection(for: $0) == selection }
+    }
+
+    /// Directions — reuses the exact existing per-source helper (and, for a merged station, the
+    /// same saved-station variant the current app already uses for merged rows outside the
+    /// Nearby filter — see unifiedStationCard(for:)), never a new routing path.
+    private func premiumDirectionsMessage(for selection: PremiumStationMapSelection) -> String? {
+        guard let item = resolveStationDisplayItem(for: selection) else { return nil }
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            return directionsMessage(for: saved)
+        case .nearbyOnly(let nearby):
+            return directionsMessage(for: nearby)
+        }
+    }
+
+    /// Save is only meaningful for a live-only station (see PR B's action-availability matrix) —
+    /// reuses saveLiveStation(_:) verbatim, no second save path.
+    private func premiumSave(for selection: PremiumStationMapSelection) {
+        guard let item = resolveStationDisplayItem(for: selection),
+              case .nearbyOnly(let nearby) = item.content else { return }
+        saveLiveStation(nearby)
+    }
+
+    /// Favorite only applies to a saved or merged station — reuses toggleFavorite(_:) verbatim.
+    private func premiumFavorite(for selection: PremiumStationMapSelection) {
+        guard let item = resolveStationDisplayItem(for: selection) else { return }
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            toggleFavorite(saved)
+        case .nearbyOnly:
+            break
+        }
+    }
+
+    /// Report/Update Price — reuses the existing beginPriceUpdate(for:) overloads verbatim,
+    /// which already drive the shared $priceUpdateContext sheet attached to stationsContent
+    /// above; the premium map never presents a second price editor.
+    private func premiumReportPrice(for selection: PremiumStationMapSelection) {
+        guard let item = resolveStationDisplayItem(for: selection) else { return }
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            beginPriceUpdate(for: saved)
+        case .nearbyOnly(let nearby):
+            beginPriceUpdate(for: nearby)
+        }
+    }
+
+    private var premiumSimpleStationsMapView: some View {
+        SimpleProStationsMapView(
+            items: premiumStationMapItems,
+            isSearchingLive: isSearchingLive,
+            liveSearchError: liveSearchError,
+            isTypedLocationSearch: { if case .typedLocation = stationSearchSource { return true }; return false }(),
+            typedLocationDisplayName: { if case .typedLocation(let name) = stationSearchSource { return name }; return nil }(),
+            radiusOptions: radiusOptions,
+            // Final pre-merge gate finding — the premium map was missing the current-location
+            // marker the old embedded map already shows (mapSection's own
+            // "if locationManager.isAuthorizedForUserLocation { UserAnnotation() }"). Computed
+            // the identical way; the premium view receives only this Bool, never
+            // locationManager itself.
+            showsUserLocation: locationManager.isAuthorizedForUserLocation,
+            mapPosition: $mapPosition,
+            selectedRadius: $selectedRadius,
+            locationSearchText: $locationSearchText,
+            isGeocodingLocation: isGeocodingLocation,
+            locationSearchValidationMessage: locationSearchValidationMessage,
+            onSubmitLocationSearch: searchStationsNearTypedLocation,
+            onClearLocationSearch: clearTrip,
+            onRecenterUser: { locationManager.requestUserLocation() },
+            onShowAll: recenterMap,
+            onRefresh: searchNearbyStations,
+            onDirections: { premiumDirectionsMessage(for: $0) },
+            onSave: { premiumSave(for: $0) },
+            onFavorite: { premiumFavorite(for: $0) },
+            onReportPrice: { premiumReportPrice(for: $0) }
+        )
+    }
+
     var body: some View {
         stationsContent
     }
@@ -209,37 +494,47 @@ struct StationsView: View {
             // width and clips overflow so the entire page can never translate
             // horizontally — no two-finger / long-press drag can shift the screen.
             GeometryReader { proxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        headerSection
-                        // Trip Planner / Station Price Alerts entry points are Normal Mode
-                        // feature navigation — core station search, map, favorites, directions,
-                        // and community pricing below remain fully functional in both modes.
-                        if appExperienceMode == .normal {
-                            proFeaturesSection
-                            comingSoonSection
+                // PR B — Simple Mode + Pro gets an entirely different presentation (a map-first
+                // premium view); every other combination (Simple Free, Normal Free, Normal Pro)
+                // renders the exact same ScrollView content as before this PR, byte-for-byte
+                // unchanged below. This `if/else` is the only structural change to this
+                // GeometryReader — see usesPremiumSimpleStationsPresentation's own header.
+                if usesPremiumSimpleStationsPresentation {
+                    premiumSimpleStationsMapView
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            headerSection
+                            // Trip Planner / Station Price Alerts entry points are Normal Mode
+                            // feature navigation — core station search, map, favorites, directions,
+                            // and community pricing below remain fully functional in both modes.
+                            if appExperienceMode == .normal {
+                                proFeaturesSection
+                                comingSoonSection
+                            }
+                            mapSection
+                            findNearbyButton
+                            radiusSelector
+                            locationSearchCard
+                            activeTripBanner
+                            searchCard
+                            filterChipsRow
+                            unifiedStationsSection
                         }
-                        mapSection
-                        findNearbyButton
-                        radiusSelector
-                        locationSearchCard
-                        activeTripBanner
-                        searchCard
-                        filterChipsRow
-                        unifiedStationsSection
+                        .padding(16)
+                        .frame(width: proxy.size.width, alignment: .leading)
                     }
-                    .padding(16)
-                    .frame(width: proxy.size.width, alignment: .leading)
+                    .scrollIndicators(.visible, axes: .vertical)
+                    // Pull-to-refresh — forces an immediate nearby search regardless of the
+                    // auto-search cooldown below (see performPullToRefresh()).
+                    .refreshable {
+                        await performPullToRefresh()
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+                    .background(AppTheme.Colors.charcoal)
                 }
-                .scrollIndicators(.visible, axes: .vertical)
-                // Pull-to-refresh — forces an immediate nearby search regardless of the
-                // auto-search cooldown below (see performPullToRefresh()).
-                .refreshable {
-                    await performPullToRefresh()
-                }
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
-                .background(AppTheme.Colors.charcoal)
             }
             .toolbar(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
@@ -280,7 +575,28 @@ struct StationsView: View {
             isGeocodingLocation = false
         }
         .onChange(of: mappableStations) { _, _ in
+            // PR B adversarial audit finding — mappableStations changes on ANY saved-station
+            // mutation SavedStationMapItem's Equatable compares (name/coordinate/price/
+            // lastUpdated), including a bare favorite toggle (which bumps updatedAt). The
+            // premium map manages its own camera via user pan/zoom plus explicit Recenter/Show
+            // All controls (see PR B section 46 — "should not recenter on every render"), so
+            // auto-recentering here would unexpectedly rezoom/jump the full-screen premium map
+            // out from under a Simple+Pro user who just tapped Favorite. The OLD embedded map
+            // (Simple Free / Normal Free / Normal Pro) keeps this exact recenter-on-change
+            // behavior, unchanged.
+            guard usesPremiumSimpleStationsPresentation == false else { return }
             recenterMap()
+        }
+        .onChange(of: usesPremiumSimpleStationsPresentation) { _, _ in
+            // PR B adversarial audit finding — selectedMapStationID only has meaning for the
+            // OLD embedded map's own tap-to-select UI (selectedMapStationCard); recenterMap()
+            // (shared by both presentations' "Show All"/fetch-completion paths) can set it as a
+            // side effect. Resetting it on every premium/legacy transition prevents a stale
+            // auto-selection picked up while one presentation was active from surfacing as an
+            // unexpected selectedMapStationCard when switching back to the other (e.g. a Pro
+            // subscription lapsing, or the mode switching Simple->Normal, while this view stays
+            // mounted) — see PR B section 43's "no stale modal" requirement.
+            selectedMapStationID = nil
         }
         .onChange(of: searchText) { _, _ in
             refreshCommunityPricePreviews()
