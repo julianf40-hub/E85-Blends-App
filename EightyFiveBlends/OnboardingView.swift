@@ -82,15 +82,18 @@ struct OnboardingView: View {
         // same inaccurate claims (Advanced Fuel Analytics, Station Price Alerts, Unlimited
         // Vehicles, Cloud Sync Ready are not genuinely delivered-and-Pro-exclusive today — see
         // ProUpgradeView.swift). Trimmed to benefits that are actually true and shipping today;
-        // not replaced with invented substitutes.
+        // not replaced with invented substitutes. 85Blends 2.3.1: added Ad-Free Experience,
+        // genuinely implemented and validated on a real device — see ProUpgradeView.swift's
+        // majorBenefits comment for the same evidence.
         .init(
             emoji: "👑",
             title: "Unlock 85Blends Pro",
             subtitle: "Take your E85 experience even further.",
             bulletPoints: [
                 "Intelligent Trip Planning with E85 fuel stops along the way",
-                "Save and revisit your favorite trips",
-                "Unlimited Vehicles in your Garage"
+                "Ad-Free Experience throughout 85Blends",
+                "Unlimited Vehicles in your Garage",
+                "Save and revisit your favorite trips"
             ]
         )
     ]
