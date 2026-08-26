@@ -25,6 +25,12 @@ struct EightyFiveBlendsApp: App {
     @State private var locationManager = StationLocationManager()
     @State private var automaticPumpDetectionService = AutomaticPumpDetectionService()
     @State private var recentLiveStationCache = RecentLiveStationCache()
+    // Stations instant-loading foundation (2.3.2, PR A) — session-scoped, in-memory only.
+    // Deliberately separate from recentLiveStationCache above (Pump Mode's own cache) — see
+    // StationsRecentSearchStore's header for why. Injected once here, exactly like
+    // recentLiveStationCache, so it survives StationsView being recreated and ordinary tab
+    // switching within one app session.
+    @State private var stationsRecentSearchStore = StationsRecentSearchStore()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
     private let isUsingInMemoryFallback: Bool
@@ -130,6 +136,7 @@ struct EightyFiveBlendsApp: App {
                 .environment(locationManager)
                 .environment(automaticPumpDetectionService)
                 .environment(recentLiveStationCache)
+                .environment(stationsRecentSearchStore)
                 .preferredColorScheme(
                     ThemePreferenceOption(rawValue: themePreference)?.colorScheme
                 )
@@ -161,6 +168,22 @@ struct EightyFiveBlendsApp: App {
                     // launch .task above.
                     if newPhase == .active {
                         Task { await RevenueCatSubscriptionService.shared.refreshCustomerInfoNow() }
+
+                        // Stations instant-loading foundation (2.3.2, PR A) — formalizes what
+                        // Stations already benefited from incidentally via Calculator's own
+                        // foreground location polling: a cheap, authorization-gated, one-shot
+                        // location prewarm so a coordinate is often already available by the
+                        // time the user opens Stations. Never requests authorization (silently
+                        // no-ops if not yet granted), never starts continuous updates, and is
+                        // skipped entirely when a recent-enough fix already exists — see
+                        // StationLocationManager.prewarmLocationIfAuthorized() and
+                        // StationsLocationFreshness.
+                        if StationsLocationFreshness.isCoordinateRecentEnough(
+                            fixTimestamp: locationManager.latestFixTimestamp,
+                            now: .now
+                        ) == false {
+                            locationManager.prewarmLocationIfAuthorized()
+                        }
                     }
                 }
                 .onChange(of: themePreference) { _, _ in

@@ -34,16 +34,21 @@ struct StationsView: View {
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
+    // Stations instant-loading foundation (2.3.2, PR A) — deliberately separate from
+    // recentLiveStationCache above; see StationsRecentSearchStore's header for why. Owns the
+    // last successful current-location search snapshot AND the shared auto-search cooldown
+    // timestamp (formerly the view-local lastNearbySearchDate below), so both survive
+    // StationsView being recreated instead of resetting on every appearance.
+    @Environment(StationsRecentSearchStore.self) private var stationsSearchStore
     @State private var locationDeniedAlert = false
     @State private var liveStations: [LiveFuelStation] = []
     @State private var isSearchingLive = false
     @State private var liveSearchError: String?
-    @State private var pendingLiveSearch = false
-    // Auto-nearby-search cooldown tracking — see shouldPerformAutomaticNearbySearch() and
-    // Self.autoNearbySearchCooldown below. Plain @State, matching every other transient
-    // per-appearance flag on this view (isSearchingLive, pendingLiveSearch, etc.) — no new
-    // persistence layer, since this only needs to survive tab switches within one app session.
-    @State private var lastNearbySearchDate: Date?
+    // Identifies WHY a location fix is currently being awaited, so one flow (e.g. the map's
+    // "locate me" button, which only wants to recenter) can never silently cancel an unrelated
+    // flow's genuinely pending search — see the map locate-me button and
+    // PendingLiveSearchReason's own doc comment below.
+    @State private var pendingLiveSearchReason: PendingLiveSearchReason?
     @State private var liveSearchTask: Task<Void, Never>?
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @State private var priceInput = ""
@@ -71,6 +76,10 @@ struct StationsView: View {
     @State private var locationSearchValidationMessage: String?
     @State private var isGeocodingLocation = false
     @State private var stationSearchSource: StationSearchSource = .currentLocation
+    // A new typed-location search (or this view disappearing) cancels a still-in-flight one,
+    // preventing a stale geocode result from mutating state after the fact — see
+    // searchStationsNearTypedLocation().
+    @State private var typedLocationSearchTask: Task<Void, Never>?
     @FocusState private var isTripPlannerFieldFocused: Bool
 
     private let radiusOptions = ["10 mi", "25 mi", "50 mi", "100 mi"]
@@ -78,9 +87,9 @@ struct StationsView: View {
     /// Minimum time between automatic (tab-open-triggered) nearby searches — see
     /// shouldPerformAutomaticNearbySearch(). The manual "Find Nearby E85"/header-refresh
     /// buttons and pull-to-refresh never check this cooldown themselves (they always search
-    /// immediately); they do update lastNearbySearchDate like any other current-location
-    /// search, which just means a later automatic trigger won't immediately re-fetch right
-    /// behind them.
+    /// immediately); they do update stationsSearchStore.lastCurrentLocationSearchAt like any
+    /// other current-location search, which just means a later automatic trigger won't
+    /// immediately re-fetch right behind them.
     private static let autoNearbySearchCooldown: TimeInterval = 5 * 60
 
     private var appVersionString: String? {
@@ -238,21 +247,37 @@ struct StationsView: View {
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .onAppear {
+            // Stations instant-loading foundation (2.3.2, PR A) — hydrate liveStations from a
+            // compatible recent-session snapshot BEFORE recenterMap()/refreshCommunityPricePreviews()
+            // run, so the very first map fit and community-price fetch already account for it
+            // instead of only catching up after a second pass. See
+            // hydrateFromRecentSearchCacheIfNeeded()'s own header.
+            hydrateFromRecentSearchCacheIfNeeded()
             recenterMap()
             refreshCommunityPricePreviews()
             // UX improvement — auto-populate the Nearby E85 feed on tab open instead of
             // requiring a manual "Find Nearby E85" tap every time. See
             // performAutomaticNearbySearchIfNeeded()'s own header for the cooldown/denied-
             // permission handling that keeps this from spamming requests or interrupting the
-            // user with an unprompted alert.
+            // user with an unprompted alert. This is also the stale-while-refresh step for any
+            // cache hydration just above — its own cooldown check (now backed by
+            // stationsSearchStore.lastCurrentLocationSearchAt) decides whether a quiet
+            // background refresh is actually warranted right now.
             performAutomaticNearbySearchIfNeeded()
         }
         .onDisappear {
             liveSearchTask?.cancel()
             communityPriceTask?.cancel()
             communityReportSuccessDismissTask?.cancel()
+            typedLocationSearchTask?.cancel()
             isSearchingLive = false
-            pendingLiveSearch = false
+            pendingLiveSearchReason = nil
+            // Mirrors isSearchingLive's own reset above — without this, cancelling a
+            // still-in-flight typed-location geocode here leaves isGeocodingLocation stuck
+            // true forever (the task's own cancellation-guarded defer intentionally skips
+            // resetting it, precisely so it can't clobber a NEWER task's spinner), permanently
+            // disabling the Trip Planner Search button for the rest of the session.
+            isGeocodingLocation = false
         }
         .onChange(of: mappableStations) { _, _ in
             recenterMap()
@@ -266,7 +291,7 @@ struct StationsView: View {
         .onChange(of: locationManager.latestCoordinate) { _, coordinate in
             guard let coordinate else { return }
             centerMap(on: coordinate.clCoordinate)
-            if pendingLiveSearch {
+            if pendingLiveSearchReason != nil {
                 fetchLiveStations(at: coordinate.clCoordinate)
             }
             refreshPumpDetectionMonitoredStations(reason: "Location updated")
@@ -274,6 +299,9 @@ struct StationsView: View {
         .onChange(of: locationManager.authorizationStatus) { _, status in
             handleAuthorizationStatusChange(status)
             refreshPumpDetectionMonitoredStations(reason: "Location authorization changed")
+        }
+        .onChange(of: locationManager.locationFailureRevision) { _, _ in
+            handlePendingLocationFailureIfNeeded()
         }
         .onChange(of: stations) { _, _ in
             refreshPumpDetectionMonitoredStations(reason: "Saved stations changed")
@@ -898,7 +926,11 @@ struct StationsView: View {
             )
             .overlay(alignment: .topTrailing) {
                 Button {
-                    pendingLiveSearch = false
+                    // Deliberately does NOT touch pendingLiveSearchReason — this button only
+                    // wants to recenter the map (via the unconditional centerMap(on:) in the
+                    // .onChange(of: locationManager.latestCoordinate) handler above), never to
+                    // silently cancel an unrelated automatic/manual search that may already be
+                    // genuinely awaiting this exact same coordinate fix.
                     locationManager.requestUserLocation()
                     AppHaptics.selection()
                 } label: {
@@ -1086,10 +1118,15 @@ struct StationsView: View {
 
     private func clearTrip() {
         liveSearchTask?.cancel()
+        typedLocationSearchTask?.cancel()
         liveStations = []
         liveSearchError = nil
         isSearchingLive = false
-        pendingLiveSearch = false
+        pendingLiveSearchReason = nil
+        // See the identical fix/comment in .onDisappear -- cancelling typedLocationSearchTask
+        // here without this would leave isGeocodingLocation stuck true if a typed-location
+        // geocode was still in flight when Clear Trip was tapped.
+        isGeocodingLocation = false
         stationSearchSource = .currentLocation
         stationListFilter = .all
         AppHaptics.selection()
@@ -1102,15 +1139,31 @@ struct StationsView: View {
             return
         }
 
+        // A new typed-location search always supersedes a still-in-flight one — mirrors
+        // fetchLiveStations()'s own cancel-then-check pattern below, so a stale geocode result
+        // can never mutate state after being superseded or after this view disappears.
+        typedLocationSearchTask?.cancel()
+
         locationSearchValidationMessage = nil
         isGeocodingLocation = true
         liveSearchError = nil
         AppHaptics.selection()
 
-        Task { @MainActor in
-            defer { isGeocodingLocation = false }
+        typedLocationSearchTask = Task { @MainActor in
+            defer {
+                // Runs on every exit from this closure (fall-through, or any early `return`
+                // below) — guaranteeing the task handle is always cleared on a genuine
+                // completion. Skipped when cancelled, so a superseded task's cleanup can never
+                // stop a NEWER task's still-in-progress spinner or clear the newer task's own
+                // handle out from under it.
+                if Task.isCancelled == false {
+                    isGeocodingLocation = false
+                    typedLocationSearchTask = nil
+                }
+            }
             do {
                 let placemarks = try await CLGeocoder().geocodeAddressString(trimmed)
+                guard Task.isCancelled == false else { return }
                 guard let placemark = placemarks.first, let location = placemark.location else {
                     liveSearchError = "Couldn't find that location. Try a city/state or ZIP code."
                     return
@@ -1127,8 +1180,13 @@ struct StationsView: View {
                 stationSearchSource = .typedLocation(name: displayName)
                 stationListFilter = .nearby
                 centerMap(on: coordinate)
+                // Deliberately typed-location, not current-location — fetchLiveStations() below
+                // only records into stationsSearchStore (the current-location nearby-search
+                // cache) when stationSearchSource == .currentLocation, so this can never poison
+                // that cache with a typed-location result. See stationsSearchStore's own header.
                 fetchLiveStations(at: coordinate, limit: 50)
             } catch let clError as CLError {
+                guard Task.isCancelled == false else { return }
                 switch clError.code {
                 case .geocodeFoundNoResult:
                     liveSearchError = "We couldn't find \"\(trimmed)\". Try a city, state, or ZIP code."
@@ -1138,6 +1196,7 @@ struct StationsView: View {
                     liveSearchError = "We couldn't find that location. Try a city, state, or ZIP code."
                 }
             } catch {
+                guard Task.isCancelled == false else { return }
                 liveSearchError = "We couldn't find that location. Try a city, state, or ZIP code."
             }
         }
@@ -1418,10 +1477,10 @@ struct StationsView: View {
             fetchLiveStations(at: userCoordinate)
             refreshPumpDetectionMonitoredStations(reason: "Find Nearby E85 tapped")
         } else if locationManager.authorizationDenied {
-            pendingLiveSearch = false
+            pendingLiveSearchReason = nil
             locationDeniedAlert = true
         } else {
-            pendingLiveSearch = true
+            pendingLiveSearchReason = .manualNearby
             locationManager.requestUserLocation()
         }
     }
@@ -1433,9 +1492,11 @@ struct StationsView: View {
     /// search happened within `autoNearbySearchCooldown`.
     private func shouldPerformAutomaticNearbySearch() -> Bool {
         guard stationSearchSource == .currentLocation else { return false }
-        guard isSearchingLive == false, pendingLiveSearch == false else { return false }
-        if let lastNearbySearchDate,
-           Date.now.timeIntervalSince(lastNearbySearchDate) < Self.autoNearbySearchCooldown {
+        guard isSearchingLive == false, pendingLiveSearchReason == nil else { return false }
+        // Backed by the shared, session-scoped store (not view-local @State) so this cooldown
+        // survives Stations view-state churn — see StationsRecentSearchStore.
+        if let lastSearchAt = stationsSearchStore.lastCurrentLocationSearchAt,
+           Date.now.timeIntervalSince(lastSearchAt) < Self.autoNearbySearchCooldown {
             return false
         }
         return true
@@ -1464,17 +1525,86 @@ struct StationsView: View {
             fetchLiveStations(at: userCoordinate)
             refreshPumpDetectionMonitoredStations(reason: "Stations tab opened")
         } else if locationManager.authorizationDenied == false {
-            pendingLiveSearch = true
+            pendingLiveSearchReason = .automaticNearby
             locationManager.requestUserLocation()
         }
         // authorizationDenied == true: intentionally silent — see header comment above.
     }
 
+    /// Stations instant-loading foundation (2.3.2, PR A) — hydrates `liveStations` synchronously
+    /// from the shared, session-scoped StationsRecentSearchStore the moment this view appears,
+    /// so a compatible recent nearby-search snapshot renders immediately instead of waiting for
+    /// a fresh Core Location fix + network round trip. Only ever populates an EMPTY
+    /// `liveStations` — never overwrites already-loaded in-memory results from earlier in this
+    /// same view's lifetime, so this can only improve a cold/first appearance, never regress an
+    /// already-populated one.
+    ///
+    /// Purely a display hydration: it never marks the automatic-search cooldown itself (only a
+    /// real fetchLiveStations() call does that, via
+    /// stationsSearchStore.recordCurrentLocationSearchAttempt(at:)), so
+    /// performAutomaticNearbySearchIfNeeded() immediately after this call still runs its own
+    /// unchanged cooldown/authorization logic and decides, independently, whether a quiet
+    /// background refresh is actually warranted right now — that existing gated auto-trigger IS
+    /// this feature's "stale-while-refresh" refresh step, not a second mechanism.
+    private func hydrateFromRecentSearchCacheIfNeeded() {
+        guard stationSearchSource == .currentLocation else { return }
+        guard liveStations.isEmpty else { return }
+
+        let radiusValue = Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
+        let coordinate = locationManager.latestCoordinate
+
+        switch stationsSearchStore.compatibleSnapshot(near: coordinate, radiusMiles: radiusValue, now: .now) {
+        case .fresh(let snapshot), .staleButUsable(let snapshot):
+            liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
+        case .incompatible, .none:
+            break
+        }
+    }
+
+    /// A cached snapshot can be reused after the user has moved (within the compatibility
+    /// drift tolerance enforced by StationsRecentSearchStore.compatibleSnapshot), but every
+    /// station's `distanceMiles` was computed by the NREL API relative to the OLD search
+    /// center, not the user's current position — displaying it verbatim could understate or
+    /// overstate a station's real distance by up to that same drift amount (and, since the
+    /// nearby list sorts by this field, could even show the wrong station as "closest").
+    /// Recomputing it here — straight-line distance from the current coordinate, matching the
+    /// same meters-per-mile conversion StationsRecentSearchStore already uses — keeps both the
+    /// displayed figures and the sort order accurate to the user's real position instead of
+    /// silently showing a stale number with no staleness indication. Falls back to the cached
+    /// (uncorrected) values only when no current coordinate is available at all — there is
+    /// nothing better to compute against in that case.
+    private func recomputedDistances(for stations: [LiveFuelStation], from coordinate: StationCoordinate?) -> [LiveFuelStation] {
+        guard let coordinate else { return stations }
+        let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        return stations.map { station in
+            guard isValidCoordinate(latitude: station.latitude, longitude: station.longitude) else {
+                return station
+            }
+            let stationLocation = CLLocation(latitude: station.latitude, longitude: station.longitude)
+            let recomputedMiles = userLocation.distance(from: stationLocation) / 1609.34
+            return LiveFuelStation(
+                name: station.name,
+                address: station.address,
+                city: station.city,
+                state: station.state,
+                zip: station.zip,
+                latitude: station.latitude,
+                longitude: station.longitude,
+                distanceMiles: recomputedMiles,
+                phone: station.phone,
+                accessHours: station.accessHours,
+                dateLastConfirmed: station.dateLastConfirmed,
+                fuelTypeCode: station.fuelTypeCode
+            )
+        }
+    }
+
     /// Pull-to-refresh — see the `.refreshable` modifier in `stationsContent`.
     /// searchNearbyStations() already always searches immediately regardless of
-    /// lastNearbySearchDate (only shouldPerformAutomaticNearbySearch() ever consults that
-    /// cooldown), so this needs no separate bypass to satisfy "pull-to-refresh always forces a
-    /// refresh."
+    /// stationsSearchStore.lastCurrentLocationSearchAt (only
+    /// shouldPerformAutomaticNearbySearch() ever consults that cooldown), so this needs no
+    /// separate bypass to satisfy "pull-to-refresh always forces a refresh."
     private func performPullToRefresh() async {
         searchNearbyStations()
         // .refreshable's own spinner only needs to bridge the moment until the existing
@@ -1506,11 +1636,62 @@ struct StationsView: View {
     private func handleAuthorizationStatusChange(_ status: CLAuthorizationStatus) {
         guard status == .denied || status == .restricted else { return }
 
-        pendingLiveSearch = false
+        pendingLiveSearchReason = nil
         locationDeniedAlert = true
 
         if locationManager.latestCoordinate == nil, mappableStations.isEmpty, liveStations.isEmpty {
             mapPosition = .region(StationsView.neutralUSRegion)
+        }
+    }
+
+    /// PR #48 blocker fix — closes out a pending nearby-search wait when the `requestLocation()`
+    /// it was waiting on fails instead of succeeding. Before this, only the success path
+    /// (`.onChange(of: locationManager.latestCoordinate)` above) ever consumed
+    /// `pendingLiveSearchReason`; a failure like `.locationUnknown` (no `.onChange`-visible
+    /// mutation on `StationLocationManager` at all under the old code) left it set forever —
+    /// permanently blocking `shouldPerformAutomaticNearbySearch()` for the rest of the session
+    /// once triggered by an automatic tab-open search, since that gate requires
+    /// `pendingLiveSearchReason == nil`. Driven by `locationFailureRevision`, not
+    /// `lastLocationFailureCode` alone, so two consecutive identical failures (e.g.
+    /// `.locationUnknown` while parked in a garage) are each independently observable — see
+    /// that property's own header on `StationLocationManager`.
+    ///
+    /// No-op when nothing is pending (a failure from Pump Mode's or the app-foreground
+    /// prewarm's own `requestLocation()` call — the same underlying `CLLocationManager`,
+    /// see `StationLocationManager`'s header — must not touch Stations' state). When
+    /// something IS pending, consumes it exactly once (mirrors the success path's own
+    /// single-consumption via `fetchLiveStations()`'s `pendingLiveSearchReason = nil`) and
+    /// never touches `liveStations`, `mappableStations`, saved stations, community-price
+    /// data, `isSearchingLive` (never true here — mutually exclusive with a pending reason;
+    /// only `fetchLiveStations()` sets it, and it clears `pendingLiveSearchReason` first),
+    /// `StationsRecentSearchStore` (no cooldown/timestamp write — a failure recorded no
+    /// results and must not poison a future compatible-snapshot check or suppress a real
+    /// retry), or `recentLiveStationCache`. Never auto-retries `requestUserLocation()`.
+    ///
+    /// A `.denied`/`.restricted` failure already flips `authorizationStatus`, which fires the
+    /// separate `.onChange(of: locationManager.authorizationStatus)` above into
+    /// `handleAuthorizationStatusChange()` — that path already clears
+    /// `pendingLiveSearchReason` and presents `locationDeniedAlert`. Deferring to it here
+    /// (instead of alerting again) avoids a duplicate alert regardless of which `onChange`
+    /// SwiftUI happens to dispatch first, since `locationManager.authorizationDenied` already
+    /// reflects the final state by the time either fires (both properties are mutated
+    /// synchronously within the same `didFailWithError` call, before either `onChange` runs).
+    private func handlePendingLocationFailureIfNeeded() {
+        guard let reason = pendingLiveSearchReason else { return }
+        pendingLiveSearchReason = nil
+
+        guard locationManager.authorizationDenied == false else { return }
+
+        switch reason {
+        case .automaticNearby:
+            // Silent — matches performAutomaticNearbySearchIfNeeded()'s own denied-authorization
+            // silence above; an unprompted alert on a background tab-open trigger the user never
+            // asked for is exactly the disruptive behavior that function's header already rules out.
+            break
+        case .manualNearby:
+            // Reuses the exact wording searchNearbyStations()/fetchLiveStations() already show for
+            // an unavailable current location, rather than introducing a new message or modal.
+            liveSearchError = "Current location is unavailable. Try again in a moment."
         }
     }
 
@@ -1520,12 +1701,12 @@ struct StationsView: View {
         guard isValidCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
             liveStations = []
             liveSearchError = "Current location is unavailable. Try again in a moment."
-            pendingLiveSearch = false
+            pendingLiveSearchReason = nil
             isSearchingLive = false
             return
         }
 
-        pendingLiveSearch = false
+        pendingLiveSearchReason = nil
         isSearchingLive = true
         liveSearchError = nil
 
@@ -1533,9 +1714,13 @@ struct StationsView: View {
         // refresh, pull-to-refresh, or the automatic tab-open trigger all funnel through here
         // with stationSearchSource == .currentLocation). An explicit Trip Planner search
         // targets a different place entirely and must never suppress a later current-location
-        // auto-search — see shouldPerformAutomaticNearbySearch().
-        if stationSearchSource == .currentLocation {
-            lastNearbySearchDate = .now
+        // auto-search — see shouldPerformAutomaticNearbySearch(). Stamped at request start (not
+        // on success) so a failing/offline search still suppresses immediate auto-retry spam —
+        // matches the exact prior timing, just relocated into the shared, session-scoped store
+        // so this cooldown survives Stations view-state churn — see StationsRecentSearchStore.
+        let isCurrentLocationSearch = stationSearchSource == .currentLocation
+        if isCurrentLocationSearch {
+            stationsSearchStore.recordCurrentLocationSearchAttempt(at: .now)
         }
 
         let radiusValue = Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
@@ -1560,6 +1745,19 @@ struct StationsView: View {
                 // Replaces (rather than merges with) any previous search's results, and
                 // is not persisted — see RecentLiveStationCache's own documentation.
                 recentLiveStationCache.replace(with: results, fetchedAt: Date())
+                // Stations instant-loading foundation (2.3.2, PR A) — a SEPARATE, Stations-only
+                // cache from the Pump-Mode-owned RecentLiveStationCache write above; additive,
+                // never a replacement for it. Only for current-location searches, mirroring the
+                // cooldown-stamp guard above — a typed-location search must never poison this
+                // cache. See StationsRecentSearchStore's own header.
+                if isCurrentLocationSearch {
+                    stationsSearchStore.recordCurrentLocationSearchResult(
+                        stations: results,
+                        center: StationCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
+                        radiusMiles: radiusValue,
+                        fetchedAt: Date()
+                    )
+                }
                 refreshCommunityPricePreviews()
             } catch {
                 guard Task.isCancelled == false else { return }
@@ -2042,6 +2240,17 @@ struct StationsView: View {
     StationsView()
         .modelContainer(for: FuelStation.self, inMemory: true)
         .environment(StationLocationManager())
+}
+
+/// Identifies WHY a location fix is currently being awaited, so one flow can never silently
+/// cancel or resume in place of another — see the map's "locate me" button (which deliberately
+/// does NOT set this — it only wants to recenter) and every read/write site's own comment.
+/// Deliberately small (no `.mapRecentering` case, no larger state machine) — derived only from
+/// the searches that actually exist today; pull-to-refresh shares `.manualNearby` since it
+/// literally calls the same `searchNearbyStations()` function.
+private enum PendingLiveSearchReason: Equatable {
+    case automaticNearby
+    case manualNearby
 }
 
 private enum StationSearchSource: Equatable {
