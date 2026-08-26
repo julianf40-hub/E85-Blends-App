@@ -51,6 +51,11 @@ struct StationsView: View {
     @State private var pendingLiveSearchReason: PendingLiveSearchReason?
     @State private var liveSearchTask: Task<Void, Never>?
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
+    // PR D — Pro Stations layout preference (Map vs Classic). Deliberately independent of
+    // appExperienceMode: this key alone (plus Pro entitlement) decides the Stations
+    // presentation now, in both Simple and Normal mode. See ProStationsLayout/AppPreferenceKey
+    // in AppPreferences.swift and usesPremiumStationsMapPresentation below.
+    @AppStorage(AppPreferenceKey.proStationsLayout) private var proStationsLayoutRaw = ProStationsLayout.map.rawValue
     @State private var priceInput = ""
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
@@ -100,15 +105,24 @@ struct StationsView: View {
         .resolved(from: appExperienceModeRaw)
     }
 
-    // PR B ("Simple Mode + Pro Premium Stations Map") — the ONE presentation decision this
-    // feature adds. Reads SubscriptionManager.shared.isProUser directly (no second entitlement
-    // flag, no @State cache) — SubscriptionManager is @Observable, so a purchase/downgrade while
-    // this view is visible re-evaluates this property and swaps presentation reactively, with no
-    // restart and no stale modal. Deliberately does not touch AppExperienceNavigation.visibleTabs
-    // — Simple Mode's tab set (Calculator/Stations/More) is unchanged; only what Stations itself
-    // renders differs.
-    private var usesPremiumSimpleStationsPresentation: Bool {
-        appExperienceMode == .simple && SubscriptionManager.shared.isProUser
+    private var proStationsLayout: ProStationsLayout {
+        .resolved(from: proStationsLayoutRaw)
+    }
+
+    // PR D ("Pro Stations Preference + Favorite/Save Unification + Natural Card Paging") —
+    // replaces PR B's Simple-Mode-only coupling. The premium map is now a Pro Stations LAYOUT
+    // choice, independent of appExperienceMode: a Pro user sees it in BOTH Simple and Normal
+    // mode when proStationsLayout == .map, and the existing Classic presentation (which still
+    // branches internally on appExperienceMode exactly as before) otherwise. Free users always
+    // get Classic regardless of the stored preference, which is left untouched so it returns
+    // automatically if Pro is restored. Reads SubscriptionManager.shared.isProUser directly (no
+    // second entitlement flag, no @State cache) — SubscriptionManager is @Observable, so a
+    // purchase/downgrade or a Preferences change while this view is visible re-evaluates this
+    // property and swaps presentation reactively, with no restart and no stale modal.
+    // Deliberately does not touch AppExperienceNavigation.visibleTabs — tab sets for both modes
+    // are unchanged; only what Stations itself renders differs.
+    private var usesPremiumStationsMapPresentation: Bool {
+        SubscriptionManager.shared.isProUser && proStationsLayout == .map
     }
 
     /// PR #50 final pre-merge gate — a premium-PRESENTATION-only "is station discovery
@@ -225,9 +239,9 @@ struct StationsView: View {
         liveStations.filter { isValidCoordinate(latitude: $0.latitude, longitude: $0.longitude) }
     }
 
-    // MARK: - PR B: Simple + Pro premium map presentation
+    // MARK: - Pro premium map presentation
     //
-    // Everything below is presentation-layer plumbing for SimpleProStationsMapView. It owns NO
+    // Everything below is presentation-layer plumbing for ProStationsMapView. It owns NO
     // business logic of its own — every derivation reads unifiedItems/stations/liveStations
     // (the SAME shared state the existing list/old map already read) and every action resolves
     // back to the SAME existing functions (saveLiveStation, toggleFavorite, beginPriceUpdate,
@@ -393,12 +407,12 @@ struct StationsView: View {
     /// The full derived item list for the premium map — built fresh from unifiedItems every
     /// time that recomputes (a new fetch, a save, a favorite toggle, a community-price arrival).
     /// No separate @State copy of station data exists anywhere in this section.
-    private var premiumStationMapItems: [SimpleProStationMapItem] {
+    private var premiumStationMapItems: [ProStationMapItem] {
         unifiedItems.compactMap { item in
             guard let coordinate = premiumMapCoordinate(for: item) else { return nil }
             let price = premiumPricePresentation(for: item)
-            let kind: SimpleProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
-            return SimpleProStationMapItem(
+            let kind: ProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
+            return ProStationMapItem(
                 selection: premiumSelection(for: item),
                 displayName: item.displayName,
                 coordinate: coordinate,
@@ -436,22 +450,23 @@ struct StationsView: View {
         }
     }
 
-    /// Save is only meaningful for a live-only station (see PR B's action-availability matrix) —
-    /// reuses saveLiveStation(_:) verbatim, no second save path.
-    private func premiumSave(for selection: PremiumStationMapSelection) {
-        guard let item = resolveStationDisplayItem(for: selection),
-              case .nearbyOnly(let nearby) = item.content else { return }
-        saveLiveStation(nearby)
-    }
-
-    /// Favorite only applies to a saved or merged station — reuses toggleFavorite(_:) verbatim.
+    /// PR D — the single unified user-facing Favorite action for the premium map (section
+    /// 23-27). A live-only station is saved AND favorited in one call — saveLiveStation(_:
+    /// markFavorite:) sets isFavorite on the newly-created FuelStation at construction time, so
+    /// there is no second lookup/search step and no window where the station exists but isn't
+    /// yet favorite. The resulting selection identity migration (.live(key) -> .merged(id,
+    /// key)) is handled entirely by ProStationsMapView's existing selectedItem
+    /// live->merged fallback — unchanged by this PR, since it keys purely on the shared live
+    /// key, not on which action triggered the identity change. A saved/merged station simply
+    /// flips its existing isFavorite via toggleFavorite(_:), unchanged from before this PR.
+    /// There is no separate "Save" path left anywhere on the premium map.
     private func premiumFavorite(for selection: PremiumStationMapSelection) {
         guard let item = resolveStationDisplayItem(for: selection) else { return }
         switch item.content {
         case .savedOnly(let saved), .merged(let saved, _):
             toggleFavorite(saved)
-        case .nearbyOnly:
-            break
+        case .nearbyOnly(let nearby):
+            saveLiveStation(nearby, markFavorite: true)
         }
     }
 
@@ -498,8 +513,8 @@ struct StationsView: View {
         }
     }
 
-    private var premiumSimpleStationsMapView: some View {
-        SimpleProStationsMapView(
+    private var premiumStationsMapView: some View {
+        ProStationsMapView(
             items: premiumStationMapItems,
             isLoadingStations: isPremiumStationsLoading,
             liveSearchError: liveSearchError,
@@ -521,13 +536,15 @@ struct StationsView: View {
             onClearLocationSearch: clearTrip,
             onRecenterUser: premiumRecenterOnUser,
             // PR C — Show All is now a premium-only fitAllStations() computed directly from
-            // this view's own `items` (see SimpleProStationsMapView) rather than reusing the
+            // this view's own `items` (see ProStationsMapView) rather than reusing the
             // legacy recenterMap(), which does legacy-only work (mutating selectedMapStationID,
             // an old-map-only concept) irrelevant here. recenterMap() itself is untouched and
             // still backs the old embedded map's own "Show All" button exactly as before.
             onRefresh: searchNearbyStations,
             onDirections: { premiumDirectionsMessage(for: $0) },
-            onSave: { premiumSave(for: $0) },
+            // PR D — Save is gone as a separate premium-map action; Favorite now covers every
+            // kind (live-only saves+favorites atomically, saved/merged toggles) — see
+            // premiumFavorite(for:) above.
             onFavorite: { premiumFavorite(for: $0) },
             onReportPrice: { premiumReportPrice(for: $0) }
         )
@@ -543,13 +560,14 @@ struct StationsView: View {
             // width and clips overflow so the entire page can never translate
             // horizontally — no two-finger / long-press drag can shift the screen.
             GeometryReader { proxy in
-                // PR B — Simple Mode + Pro gets an entirely different presentation (a map-first
-                // premium view); every other combination (Simple Free, Normal Free, Normal Pro)
-                // renders the exact same ScrollView content as before this PR, byte-for-byte
-                // unchanged below. This `if/else` is the only structural change to this
-                // GeometryReader — see usesPremiumSimpleStationsPresentation's own header.
-                if usesPremiumSimpleStationsPresentation {
-                    premiumSimpleStationsMapView
+                // PR D — a Pro user gets the map-first premium presentation whenever their
+                // stored Stations layout preference is .map, in BOTH Simple and Normal mode;
+                // every other combination (any Free user, or a Pro user who chose Classic)
+                // renders the exact same ScrollView content as before, byte-for-byte unchanged
+                // below. This `if/else` is the only structural change to this GeometryReader —
+                // see usesPremiumStationsMapPresentation's own header.
+                if usesPremiumStationsMapPresentation {
+                    premiumStationsMapView
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
                     ScrollView(.vertical, showsIndicators: true) {
@@ -630,21 +648,24 @@ struct StationsView: View {
             // premium map manages its own camera via user pan/zoom plus explicit Recenter/Show
             // All controls (see PR B section 46 — "should not recenter on every render"), so
             // auto-recentering here would unexpectedly rezoom/jump the full-screen premium map
-            // out from under a Simple+Pro user who just tapped Favorite. The OLD embedded map
-            // (Simple Free / Normal Free / Normal Pro) keeps this exact recenter-on-change
+            // out from under a Pro user who just tapped Favorite. The OLD embedded map (Free
+            // users, or a Pro user who chose Classic) keeps this exact recenter-on-change
             // behavior, unchanged.
-            guard usesPremiumSimpleStationsPresentation == false else { return }
+            guard usesPremiumStationsMapPresentation == false else { return }
             recenterMap()
         }
-        .onChange(of: usesPremiumSimpleStationsPresentation) { _, _ in
+        .onChange(of: usesPremiumStationsMapPresentation) { _, _ in
             // PR B adversarial audit finding — selectedMapStationID only has meaning for the
             // OLD embedded map's own tap-to-select UI (selectedMapStationCard); recenterMap()
             // (shared by both presentations' "Show All"/fetch-completion paths) can set it as a
             // side effect. Resetting it on every premium/legacy transition prevents a stale
             // auto-selection picked up while one presentation was active from surfacing as an
             // unexpected selectedMapStationCard when switching back to the other (e.g. a Pro
-            // subscription lapsing, or the mode switching Simple->Normal, while this view stays
-            // mounted) — see PR B section 43's "no stale modal" requirement.
+            // subscription lapsing, or a Preferences change between Map and Classic, while this
+            // view stays mounted) — see PR B section 43's "no stale modal" requirement. The
+            // premium view's own local state (selectedStationID, Favorites panel) needs no
+            // equivalent reset here — SwiftUI already tears it down when this if/else branch
+            // swaps away from it and creates it fresh (default @State) on the way back.
             selectedMapStationID = nil
         }
         .onChange(of: searchText) { _, _ in
@@ -1035,7 +1056,9 @@ struct StationsView: View {
                 communitySummary: communitySummary(for: live),
                 directionsAction: { directionsMessage(for: live) },
                 reportPriceAction: { beginPriceUpdate(for: live) },
-                saveAction: { saveLiveStation(live) }
+                // PR D — the Classic nearby-station action is now Favorite, matching the
+                // premium map: one tap saves the station AND marks it favorite.
+                saveAction: { saveLiveStation(live, markFavorite: true) }
             )
         case .merged(let saved, let live):
             if stationListFilter == .nearby {
@@ -2145,7 +2168,12 @@ struct StationsView: View {
         (-90...90).contains(latitude) && (-180...180).contains(longitude) && (latitude != 0 || longitude != 0)
     }
 
-    private func saveLiveStation(_ station: LiveFuelStation) {
+    /// PR D — `markFavorite` defaults to false so every existing call site (the Classic
+    /// nearby-station "Save" flow, before this PR's own wording change below) behaves exactly
+    /// as before. The new unified Favorite action passes `markFavorite: true` so the newly
+    /// persisted FuelStation is favorite from the moment it's inserted — no second lookup/
+    /// toggle call, no window where the station exists but isn't yet favorite.
+    private func saveLiveStation(_ station: LiveFuelStation, markFavorite: Bool = false) {
         if isLiveStationSaved(station) {
             infoMessage = "This station is already saved."
             AppHaptics.selection()
@@ -2159,7 +2187,8 @@ struct StationsView: View {
             state: station.state,
             zipCode: station.zip,
             latitude: station.latitude == 0 ? nil : station.latitude,
-            longitude: station.longitude == 0 ? nil : station.longitude
+            longitude: station.longitude == 0 ? nil : station.longitude,
+            isFavorite: markFavorite
         )
         modelContext.insert(saved)
         do {
@@ -3163,16 +3192,20 @@ private struct LiveStationRowCard: View {
                 )
                 .accessibilityLabel("Report E85 price for \(station.name)")
 
+                // PR D — unified Favorite wording/icon (saves + favorites in one tap). The
+                // disabled "Saved" state for an already-merged station shown under the Nearby
+                // filter (isSaved: true, saveAction: {}) is left as informational status copy
+                // only — see section 30 — not a competing action.
                 stationActionButton(
-                    title: isSaved ? "Saved" : "Save Station",
-                    systemImage: isSaved ? "checkmark.circle.fill" : "square.and.arrow.down",
+                    title: isSaved ? "Saved" : "Favorite",
+                    systemImage: isSaved ? "checkmark.circle.fill" : "star",
                     foreground: isSaved ? AppTheme.Colors.textSecondary : AppTheme.Colors.textPrimary,
                     background: isSaved ? AppTheme.Colors.cardBackground : AppTheme.Colors.primaryGreen.opacity(0.20),
                     borderColor: isSaved ? AppTheme.Colors.borderColor : AppTheme.Colors.primaryGreen,
                     action: saveAction
                 )
                 .disabled(isSaved)
-                .accessibilityLabel(isSaved ? "\(station.name) already saved" : "Save \(station.name)")
+                .accessibilityLabel(isSaved ? "\(station.name) already saved" : "Favorite \(station.name)")
             }
         }
         .padding(16)
