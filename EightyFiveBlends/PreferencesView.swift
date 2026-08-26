@@ -109,15 +109,23 @@ struct PreferencesView: View {
                 }
             )
 
-            // Free state clearly explains why Map is locked without presenting the paywall just
-            // for opening Preferences — matches the Simple-Mode-disabled Garage/Reminders
-            // toggles' own pattern below. The stored value is never overwritten here, so a
-            // previous Map choice returns automatically if Pro is restored.
+            // PR #51 final gate finding — the selector's checkmark always reflects the STORED
+            // preference (proStationsLayout), never the effective presentation, so a Free user
+            // whose stored preference is still Map would otherwise see "Map" checkmarked and
+            // locked with no indication that Classic — not Map — is what's actually showing on
+            // the Stations tab right now. Distinguishing the two Free copy variants here (rather
+            // than a single generic line) makes that gap explicit without presenting the
+            // paywall automatically and without ever overwriting the stored value — a previous
+            // Map choice still returns unchanged the moment Pro is restored.
             if isProUser == false {
-                Text("Map layout is available with 85Blends Pro. Classic remains fully available on the Free plan.")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    proStationsLayout == .map
+                        ? "Classic is currently active on the Free plan. Your Map preference will return when Pro is active."
+                        : "Classic is currently active. Map layout is available with 85Blends Pro."
+                )
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(18)

@@ -2168,12 +2168,24 @@ struct StationsView: View {
         (-90...90).contains(latitude) && (-180...180).contains(longitude) && (latitude != 0 || longitude != 0)
     }
 
-    /// PR D — `markFavorite` defaults to false so every existing call site (the Classic
-    /// nearby-station "Save" flow, before this PR's own wording change below) behaves exactly
-    /// as before. The new unified Favorite action passes `markFavorite: true` so the newly
-    /// persisted FuelStation is favorite from the moment it's inserted — no second lookup/
-    /// toggle call, no window where the station exists but isn't yet favorite.
-    private func saveLiveStation(_ station: LiveFuelStation, markFavorite: Bool = false) {
+    /// PR #51 final gate — every current call site is a unified Favorite flow (both pass
+    /// `markFavorite: true`; grepped and confirmed no other call site exists), so `markFavorite`
+    /// has no default — a future caller must state its intent explicitly rather than silently
+    /// creating a non-favorite station from what is now exclusively a Favorite-labeled action.
+    /// `isFavorite: markFavorite` is set directly in FuelStation's own initializer, so the
+    /// persisted station is favorite from the moment it's inserted — no second lookup/toggle
+    /// call, no window where the station exists but isn't yet favorite.
+    ///
+    /// The final pre-merge gate's one required product fix: this function used to end with
+    /// `beginPriceUpdate(for: saved)`, automatically opening the price-update sheet on every
+    /// successful save — inherited from the old, separate "Save" workflow. Now that the
+    /// user-facing action is explicitly Favorite, an automatic price prompt is no longer
+    /// appropriate: Favorite and Report/Update Price are independent intentions, and a user who
+    /// wants to report a price can already tap the card's own explicit Report/Update button
+    /// (premiumReportPrice/beginPriceUpdate, untouched). Removed entirely — not made
+    /// conditional — since both remaining call sites are Favorite flows with no legitimate
+    /// save-then-prompt case left anywhere in this codebase.
+    private func saveLiveStation(_ station: LiveFuelStation, markFavorite: Bool) {
         if isLiveStationSaved(station) {
             infoMessage = "This station is already saved."
             AppHaptics.selection()
@@ -2202,7 +2214,6 @@ struct StationsView: View {
         }
         AppHaptics.success()
         refreshCommunityPricePreviews()
-        beginPriceUpdate(for: saved)
     }
 
     private func isLiveStationSaved(_ station: LiveFuelStation) -> Bool {
