@@ -26,13 +26,17 @@ struct ProUpgradeView: View {
 
     private var manager: SubscriptionManager { SubscriptionManager.shared }
 
-    // Benefit list — 85Blends 2.3.0 paywall content refresh. Split into two tiers so a quick
-    // scan reads "headline value" vs "everything else included," rather than one flat list of
-    // equally-weighted bullets:
+    // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
+    // Experience. Split into two tiers so a quick scan reads "headline value" vs "everything
+    // else included," rather than one flat list of equally-weighted bullets:
     //   - majorBenefits get full visual treatment (icon badge, headline-weight title). Trip
     //     Planning is genuinely implemented today and gated behind isProUser (see
-    //     ProFeatureGate/TripPlannerView). Unlimited Vehicles is genuinely implemented and
-    //     validated as of 2.3.0 (see VehicleCreationPolicy/SubscriptionManager.
+    //     ProFeatureGate/TripPlannerView). Ad-Free Experience is genuinely implemented and
+    //     validated on a real device as of 2.3.1 — AdManager.isAdsEnabled reads
+    //     SubscriptionManager.shared.isProUser directly, and NativeAdView never even constructs
+    //     an ad request when that's false (see AdManager.swift/NativeAdView.swift) — a zero-ad-
+    //     request guarantee, not "load then hide." Unlimited Vehicles is genuinely implemented
+    //     and validated as of 2.3.0 (see VehicleCreationPolicy/SubscriptionManager.
     //     canAccessUnlimitedVehicles) — no longer a Coming Soon item.
     //   - supportingBenefits render compactly underneath. Save & Revisit Routes intentionally
     //     never says "sync," "backed up," or "available across devices" — Saved Trips
@@ -42,6 +46,7 @@ struct ProUpgradeView: View {
     // product-policy note), so it is not Pro benefit content.
     private let majorBenefits: [(icon: String, title: String, detail: String)] = [
         ("map.fill", "Intelligent E85 Trip Planning", "Plan complete routes around E85 availability, reserve targets, and backup fuel options."),
+        ("sparkles", "Ad-Free Experience", "Enjoy 85Blends without ads while your Pro subscription is active."),
         ("car.fill", "Unlimited Vehicles", "Add and manage your entire garage with 85Blends Pro."),
     ]
 
@@ -183,8 +188,8 @@ struct ProUpgradeView: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
-    /// Full visual treatment — icon badge, headline-weight title — for the two headline
-    /// benefits (Trip Planning, Unlimited Vehicles).
+    /// Full visual treatment — icon badge, headline-weight title — for the headline benefits
+    /// in `majorBenefits` (Trip Planning, Ad-Free Experience, Unlimited Vehicles).
     private func majorBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
         HStack(alignment: .top, spacing: 14) {
             ZStack {
