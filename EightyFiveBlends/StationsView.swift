@@ -1552,9 +1552,48 @@ struct StationsView: View {
 
         switch stationsSearchStore.compatibleSnapshot(near: coordinate, radiusMiles: radiusValue, now: .now) {
         case .fresh(let snapshot), .staleButUsable(let snapshot):
-            liveStations = snapshot.stations
+            liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
         case .incompatible, .none:
             break
+        }
+    }
+
+    /// A cached snapshot can be reused after the user has moved (within the compatibility
+    /// drift tolerance enforced by StationsRecentSearchStore.compatibleSnapshot), but every
+    /// station's `distanceMiles` was computed by the NREL API relative to the OLD search
+    /// center, not the user's current position — displaying it verbatim could understate or
+    /// overstate a station's real distance by up to that same drift amount (and, since the
+    /// nearby list sorts by this field, could even show the wrong station as "closest").
+    /// Recomputing it here — straight-line distance from the current coordinate, matching the
+    /// same meters-per-mile conversion StationsRecentSearchStore already uses — keeps both the
+    /// displayed figures and the sort order accurate to the user's real position instead of
+    /// silently showing a stale number with no staleness indication. Falls back to the cached
+    /// (uncorrected) values only when no current coordinate is available at all — there is
+    /// nothing better to compute against in that case.
+    private func recomputedDistances(for stations: [LiveFuelStation], from coordinate: StationCoordinate?) -> [LiveFuelStation] {
+        guard let coordinate else { return stations }
+        let userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+
+        return stations.map { station in
+            guard isValidCoordinate(latitude: station.latitude, longitude: station.longitude) else {
+                return station
+            }
+            let stationLocation = CLLocation(latitude: station.latitude, longitude: station.longitude)
+            let recomputedMiles = userLocation.distance(from: stationLocation) / 1609.34
+            return LiveFuelStation(
+                name: station.name,
+                address: station.address,
+                city: station.city,
+                state: station.state,
+                zip: station.zip,
+                latitude: station.latitude,
+                longitude: station.longitude,
+                distanceMiles: recomputedMiles,
+                phone: station.phone,
+                accessHours: station.accessHours,
+                dateLastConfirmed: station.dateLastConfirmed,
+                fuelTypeCode: station.fuelTypeCode
+            )
         }
     }
 
