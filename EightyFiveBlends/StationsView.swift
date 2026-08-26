@@ -111,6 +111,21 @@ struct StationsView: View {
         appExperienceMode == .simple && SubscriptionManager.shared.isProUser
     }
 
+    /// PR #50 final pre-merge gate — a premium-PRESENTATION-only "is station discovery
+    /// currently in progress" signal. isSearchingLive alone only covers the network-fetch
+    /// phase (set inside fetchLiveStations); it stays false for the whole location-wait phase
+    /// of a pending automatic/manual nearby search (pendingLiveSearchReason != nil,
+    /// requestUserLocation() called, no coordinate yet), so the premium map was previously
+    /// telling the user nothing was happening at all during that window. Purely derived — no
+    /// new stored state, no change to isSearchingLive's own semantics (the legacy list UI still
+    /// reads it exactly as before), no change to pendingLiveSearchReason's lifecycle. PR #48
+    /// already guarantees pendingLiveSearchReason clears on success, non-denied failure,
+    /// denied/restricted, and view disappearance, so this naturally returns to false in every
+    /// case with no separate reset needed.
+    private var isPremiumStationsLoading: Bool {
+        isSearchingLive || pendingLiveSearchReason != nil
+    }
+
     // MARK: - Unified display model
 
     private var unifiedItems: [StationDisplayItem] {
@@ -486,7 +501,7 @@ struct StationsView: View {
     private var premiumSimpleStationsMapView: some View {
         SimpleProStationsMapView(
             items: premiumStationMapItems,
-            isSearchingLive: isSearchingLive,
+            isLoadingStations: isPremiumStationsLoading,
             liveSearchError: liveSearchError,
             isTypedLocationSearch: { if case .typedLocation = stationSearchSource { return true }; return false }(),
             typedLocationDisplayName: { if case .typedLocation(let name) = stationSearchSource { return name }; return nil }(),

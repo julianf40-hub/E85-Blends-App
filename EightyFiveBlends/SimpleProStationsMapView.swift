@@ -140,7 +140,15 @@ struct SimpleProStationMapPin: View {
 struct SimpleProStationsMapView: View {
     // Derived display data (StationsView owns the real state; this is a read-only snapshot).
     let items: [SimpleProStationMapItem]
-    let isSearchingLive: Bool
+    /// Final pre-merge gate fix — station discovery is "in progress" whenever a network fetch
+    /// is running OR a pending nearby-search is still waiting on a location fix
+    /// (StationsView.isPremiumStationsLoading = isSearchingLive || pendingLiveSearchReason !=
+    /// nil). Deliberately a single combined signal rather than exposing isSearchingLive AND a
+    /// second Boolean: nothing in this premium view needs to distinguish "waiting for GPS" from
+    /// "waiting for the network," and this file's own copy ("Searching for nearby E85…",
+    /// "Updating stations…") never claims otherwise. PendingLiveSearchReason itself is never
+    /// exposed here — only "is something happening," never why.
+    let isLoadingStations: Bool
     let liveSearchError: String?
     let isTypedLocationSearch: Bool
     let typedLocationDisplayName: String?
@@ -207,20 +215,49 @@ struct SimpleProStationsMapView: View {
 
     /// PR C — deterministic browse order for swipe/accessibility station stepping (section 29):
     /// known-distance items first (nearest to farthest), then nil-distance items, tie-broken by
-    /// case-insensitive display name. Never array/hash/UUID/SwiftData internal order.
+    /// case-insensitive display name, then (final pre-merge gate fix, section 22) a stable
+    /// per-selection string key as the last resort. Never array/hash/UUID/SwiftData internal
+    /// order.
     private var browsableItems: [SimpleProStationMapItem] {
         items.sorted { lhs, rhs in
-            switch (lhs.distanceMiles, rhs.distanceMiles) {
-            case let (leftDistance?, rightDistance?):
-                if leftDistance != rightDistance { return leftDistance < rightDistance }
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-            case (.some, .none):
-                return true
-            case (.none, .some):
-                return false
-            case (.none, .none):
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
-            }
+            if let orderedByDistance = distanceOrdering(lhs, rhs) { return orderedByDistance }
+            let nameComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
+            // Two DIFFERENT physical stations sharing both an identical distance and an
+            // identical case-insensitive display name is an extreme edge case, but
+            // Array.sorted's behavior for a comparator that returns false in both directions
+            // for a given pair is otherwise unspecified across repeated calls - this final,
+            // stable tie-break (never hashValue/UUID/memory identity, just each selection's own
+            // deterministic string form) guarantees browsableItems is the exact same order
+            // every time it's recomputed for the same underlying stations.
+            return stableTieBreakKey(lhs.selection) < stableTieBreakKey(rhs.selection)
+        }
+    }
+
+    /// Returns a definitive "lhs belongs before rhs" answer when distance alone decides it (one
+    /// or both known and unequal), or nil when distance is a tie (both nil, or both equal) and
+    /// the caller should fall through to the name/stable-key tie-break.
+    private func distanceOrdering(_ lhs: SimpleProStationMapItem, _ rhs: SimpleProStationMapItem) -> Bool? {
+        switch (lhs.distanceMiles, rhs.distanceMiles) {
+        case let (leftDistance?, rightDistance?):
+            return leftDistance == rightDistance ? nil : leftDistance < rightDistance
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            return nil
+        }
+    }
+
+    private func stableTieBreakKey(_ selection: PremiumStationMapSelection) -> String {
+        switch selection {
+        case .saved(let id):
+            return "saved|" + String(describing: id)
+        case .live(let key):
+            return "live|" + key
+        case .merged(let id, let key):
+            return "merged|" + String(describing: id) + "|" + key
         }
     }
 
@@ -395,6 +432,22 @@ struct SimpleProStationsMapView: View {
         .background(AppTheme.Colors.oledBackground)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: selectedItem?.id)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: isFavoritesPresented)
+        // Final pre-merge gate fix (section 26/27) — if the selected station is no longer
+        // resolvable AT ALL (selectedItem already tried both the exact match and the
+        // live->merged migration fallback and found neither), clear selectedStationID so a
+        // LATER, unrelated reappearance of the same physical station in a future refresh can't
+        // silently pop its old card back up without a new user tap ("stale resurrection"). Keyed
+        // on the stable PremiumStationMapSelection identities only (never the full,
+        // coordinate-containing items), so this fires only when the actual set of stations
+        // changes, not on every render. Because selectedItem's own existing fallback runs
+        // first and this only clears when THAT already failed, a genuine live->merged
+        // migration (section 27) is never disturbed - it resolves via the fallback and this
+        // onChange sees selectedItem != nil, so it does nothing.
+        .onChange(of: items.map(\.selection)) { _, _ in
+            if selectedStationID != nil, selectedItem == nil {
+                selectedStationID = nil
+            }
+        }
         .alert("Directions Unavailable", isPresented: Binding(
             get: { directionsErrorMessage != nil },
             set: { isPresented in if isPresented == false { directionsErrorMessage = nil } }
@@ -452,7 +505,12 @@ struct SimpleProStationsMapView: View {
     @ViewBuilder
     private var emptyOrLoadingOverlay: some View {
         VStack(spacing: 10) {
-            if isSearchingLive {
+            // Final pre-merge gate fix (section 3/7) — this must show the Searching state
+            // while a pending automatic/manual nearby search is still waiting on a location
+            // fix, not only once the network fetch itself has started (isLoadingStations
+            // covers both; the old isSearchingLive-only check left this false, and the "No E85
+            // stations loaded yet." + Find Nearby button, misleadingly, while GPS was resolving).
+            if isLoadingStations {
                 ProgressView()
                 Text("Searching for nearby E85…")
             } else {
@@ -496,13 +554,21 @@ struct SimpleProStationsMapView: View {
                 Spacer(minLength: 8)
 
                 Button(action: onRefresh) {
-                    Image(systemName: isSearchingLive ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    Image(systemName: isLoadingStations ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .padding(8)
                         .background(.ultraThinMaterial, in: Circle())
                 }
-                .disabled(isSearchingLive)
+                // Final pre-merge gate fix (section 9) — disabling on isLoadingStations (not
+                // just isSearchingLive) prevents a repeated tap during the location-wait
+                // sub-phase of a manual refresh from calling searchNearbyStations() again,
+                // which would otherwise re-set pendingLiveSearchReason and call
+                // locationManager.requestUserLocation() a second time — wasteful and can
+                // restart/delay the in-flight one-shot fix rather than speed it up. This only
+                // changes the PREMIUM refresh button's disabled state; searchNearbyStations()
+                // and the legacy header refresh button are untouched.
+                .disabled(isLoadingStations)
                 .accessibilityLabel("Refresh nearby stations")
             }
 
@@ -565,14 +631,15 @@ struct SimpleProStationsMapView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // PR C section 9-10 — a warm refresh (existing pins already visible,
-            // isSearchingLive true) previously showed NO loading feedback at all in the premium
-            // map: emptyOrLoadingOverlay only ever appears when items.isEmpty. This small,
-            // non-blocking pill fills that gap without dimming/covering the map or introducing
-            // a second, competing loading indicator - it disappears the instant the search ends
-            // since it's driven directly by isSearchingLive, the same flag fetchLiveStations()
-            // already resets on completion.
-            if isSearchingLive, items.isEmpty == false {
+            // PR C section 9-10 — a warm refresh (existing pins already visible) previously
+            // showed NO loading feedback at all in the premium map: emptyOrLoadingOverlay only
+            // ever appears when items.isEmpty. This small, non-blocking pill fills that gap
+            // without dimming/covering the map or introducing a second, competing loading
+            // indicator - it disappears the instant loading ends since it reads
+            // isLoadingStations directly (final pre-merge gate fix - this now also covers the
+            // location-wait sub-phase of a pending nearby search, not just the network fetch
+            // itself, per section 8: the same copy covers both without exposing which phase).
+            if isLoadingStations, items.isEmpty == false {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text("Updating stations…")
@@ -699,11 +766,20 @@ struct SimpleProStationsMapView: View {
             Divider().overlay(AppTheme.Colors.borderColor)
 
             if favoriteItems.isEmpty {
+                // Final pre-merge gate finding (section 19) — a saved FuelStation's
+                // latitude/longitude are optional, so a favorited station can exist without a
+                // valid coordinate; premiumMapCoordinate(for:) already excludes such a station
+                // from `items` entirely (it can never appear as a map annotation), which means
+                // favoriteItems (filtered from `items`) can never include it either. Wording
+                // deliberately says "on the map"/"mappable" rather than an unqualified "no
+                // favorites at all" so this stays accurate whether the user truly has zero
+                // favorites or has some that just aren't mappable — no new plumbing to
+                // distinguish the two cases, per this being a wording fix, not a new feature.
                 VStack(spacing: 4) {
-                    Text("No favorite stations yet.")
+                    Text("No mappable favorite stations yet.")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.Colors.textSecondary)
-                    Text("Favorite a saved station to find it here.")
+                    Text("Favorite a saved station with a valid location to find it here.")
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textMuted)
                 }
