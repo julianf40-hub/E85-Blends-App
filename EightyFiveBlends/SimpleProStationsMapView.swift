@@ -140,7 +140,15 @@ struct SimpleProStationMapPin: View {
 struct SimpleProStationsMapView: View {
     // Derived display data (StationsView owns the real state; this is a read-only snapshot).
     let items: [SimpleProStationMapItem]
-    let isSearchingLive: Bool
+    /// Final pre-merge gate fix — station discovery is "in progress" whenever a network fetch
+    /// is running OR a pending nearby-search is still waiting on a location fix
+    /// (StationsView.isPremiumStationsLoading = isSearchingLive || pendingLiveSearchReason !=
+    /// nil). Deliberately a single combined signal rather than exposing isSearchingLive AND a
+    /// second Boolean: nothing in this premium view needs to distinguish "waiting for GPS" from
+    /// "waiting for the network," and this file's own copy ("Searching for nearby E85…",
+    /// "Updating stations…") never claims otherwise. PendingLiveSearchReason itself is never
+    /// exposed here — only "is something happening," never why.
+    let isLoadingStations: Bool
     let liveSearchError: String?
     let isTypedLocationSearch: Bool
     let typedLocationDisplayName: String?
@@ -164,7 +172,6 @@ struct SimpleProStationsMapView: View {
     let onSubmitLocationSearch: () -> Void
     let onClearLocationSearch: () -> Void
     let onRecenterUser: () -> Void
-    let onShowAll: () -> Void
     let onRefresh: () -> Void
     let onDirections: (PremiumStationMapSelection) -> String?
     let onSave: (PremiumStationMapSelection) -> Void
@@ -173,6 +180,10 @@ struct SimpleProStationsMapView: View {
 
     @State private var selectedStationID: PremiumStationMapSelection?
     @State private var directionsErrorMessage: String?
+    /// PR C — Favorites floating panel presentation. Local, transient, never persisted (see
+    /// section 26). Favorites content itself is never a second data model — see favoriteItems
+    /// below, which derives from `items` on every access, same as everything else in this view.
+    @State private var isFavoritesPresented = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isSearchFieldFocused: Bool
 
@@ -194,6 +205,191 @@ struct SimpleProStationsMapView: View {
         return nil
     }
 
+    /// PR C — favorite stations, derived fresh from `items` on every access (section 27): no
+    /// secondary @State array, no reload button. Only a saved/merged item can ever be favorite
+    /// (favoriteItems inherits this from item.isFavorite, which itself only ever reflects a
+    /// saved FuelStation's isFavorite — see StationsView.premiumStationMapItems).
+    private var favoriteItems: [SimpleProStationMapItem] {
+        items.filter(\.isFavorite)
+    }
+
+    /// PR C — deterministic browse order for swipe/accessibility station stepping (section 29):
+    /// known-distance items first (nearest to farthest), then nil-distance items, tie-broken by
+    /// case-insensitive display name, then (final pre-merge gate fix, section 22) a stable
+    /// per-selection string key as the last resort. Never array/hash/UUID/SwiftData internal
+    /// order.
+    private var browsableItems: [SimpleProStationMapItem] {
+        items.sorted { lhs, rhs in
+            if let orderedByDistance = distanceOrdering(lhs, rhs) { return orderedByDistance }
+            let nameComparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            if nameComparison != .orderedSame { return nameComparison == .orderedAscending }
+            // Two DIFFERENT physical stations sharing both an identical distance and an
+            // identical case-insensitive display name is an extreme edge case, but
+            // Array.sorted's behavior for a comparator that returns false in both directions
+            // for a given pair is otherwise unspecified across repeated calls - this final,
+            // stable tie-break (never hashValue/UUID/memory identity, just each selection's own
+            // deterministic string form) guarantees browsableItems is the exact same order
+            // every time it's recomputed for the same underlying stations.
+            return stableTieBreakKey(lhs.selection) < stableTieBreakKey(rhs.selection)
+        }
+    }
+
+    /// Returns a definitive "lhs belongs before rhs" answer when distance alone decides it (one
+    /// or both known and unequal), or nil when distance is a tie (both nil, or both equal) and
+    /// the caller should fall through to the name/stable-key tie-break.
+    private func distanceOrdering(_ lhs: SimpleProStationMapItem, _ rhs: SimpleProStationMapItem) -> Bool? {
+        switch (lhs.distanceMiles, rhs.distanceMiles) {
+        case let (leftDistance?, rightDistance?):
+            return leftDistance == rightDistance ? nil : leftDistance < rightDistance
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            return nil
+        }
+    }
+
+    private func stableTieBreakKey(_ selection: PremiumStationMapSelection) -> String {
+        switch selection {
+        case .saved(let id):
+            return "saved|" + String(describing: id)
+        case .live(let key):
+            return "live|" + key
+        case .merged(let id, let key):
+            return "merged|" + String(describing: id) + "|" + key
+        }
+    }
+
+    /// The selected item's position in browsableItems, or nil if nothing is selected/resolvable.
+    private var currentBrowseIndex: Int? {
+        guard let selectedItem else { return nil }
+        return browsableItems.firstIndex(where: { $0.selection == selectedItem.selection })
+    }
+
+    /// PR C — centralized index stepping for both swipe and the accessibility Next/Previous
+    /// actions (section 38), so the two can never disagree about wraparound math. Continuous
+    /// wraparound (section 30); a single station (or none) is a safe no-op — `count > 1` is
+    /// proven before any modulo (section 59/31), so there is no divide-by-zero or
+    /// integer-underflow risk. Never touches mapPosition (section 34 — no auto-zoom on swipe)
+    /// and never fires network/geocoding — a pure selection change plus a haptic.
+    private func stepStation(by delta: Int) {
+        let order = browsableItems
+        guard order.count > 1, let currentIndex = currentBrowseIndex else { return }
+        let count = order.count
+        let newIndex = ((currentIndex + delta) % count + count) % count
+        AppHaptics.selection()
+        selectedStationID = order[newIndex].selection
+    }
+
+    private func selectNextStation() {
+        stepStation(by: 1)
+    }
+
+    private func selectPreviousStation() {
+        stepStation(by: -1)
+    }
+
+    /// PR C — explicit product requirement (section 28): swipe RIGHT (positive horizontal
+    /// translation) = NEXT, swipe LEFT (negative) = PREVIOUS. Deliberately NOT the conventional
+    /// paging-view mapping. Requires a real, mostly-horizontal gesture (60pt minimum, and
+    /// horizontal motion at least 1.25x vertical) so button taps, small hand movement, and
+    /// vertical scroll noise can never be misread as a swipe (section 31).
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                guard abs(horizontal) >= 60, abs(horizontal) > abs(vertical) * 1.25 else { return }
+                if horizontal > 0 {
+                    selectNextStation()
+                } else {
+                    selectPreviousStation()
+                }
+            }
+    }
+
+    /// PR C — opens/closes the Favorites panel with immediate haptic feedback (section 18/47).
+    /// Opening clears any open station card (section 26 — only one bottom floating surface at a
+    /// time); closing leaves selection alone since selecting a favorite (selectFavorite(_:))
+    /// already closes the panel itself.
+    private func toggleFavoritesPanel() {
+        AppHaptics.selection()
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+            if isFavoritesPresented {
+                isFavoritesPresented = false
+            } else {
+                selectedStationID = nil
+                isFavoritesPresented = true
+            }
+        }
+    }
+
+    /// PR C — selecting a favorite (section 24-25): closes the panel, selects the station,
+    /// highlights its pin (via the existing selectedItem-driven isSelected computation), and
+    /// centers the map with the same moderate span used elsewhere in this file — no NLR search,
+    /// no geocoder, no location request, purely presentation.
+    private func selectFavorite(_ item: SimpleProStationMapItem) {
+        AppHaptics.selection()
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+            isFavoritesPresented = false
+        }
+        selectedStationID = item.selection
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+            mapPosition = .region(MKCoordinateRegion(
+                center: item.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+            ))
+        }
+    }
+
+    /// PR C — premium-only "fit all stations" (section 15-16), replacing the Show All button's
+    /// old reuse of the legacy recenterMap(). Computes directly from `items` (already owned by
+    /// this view) in O(n), avoiding recenterMap()'s legacy-only side effect (mutating
+    /// selectedMapStationID, a concept this view has no use for) and its redundant
+    /// recomputation of mappableStations/liveMapStations from scratch. Mirrors recenterMap()'s
+    /// own padding formula (35% of span, floored at 0.05°) for a consistent feel. Presentation
+    /// only: no network, no selection change, no saved-data mutation, no search-source change.
+    /// recenterMap() itself is untouched and still backs the old embedded map's own Show All.
+    private func fitAllStations() {
+        AppHaptics.selection()
+        let coordinates = items.map(\.coordinate)
+        guard coordinates.isEmpty == false else { return }
+
+        if coordinates.count == 1 {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                mapPosition = .region(MKCoordinateRegion(
+                    center: coordinates[0],
+                    span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+                ))
+            }
+            return
+        }
+
+        let latitudes = coordinates.map(\.latitude)
+        let longitudes = coordinates.map(\.longitude)
+        guard
+            let minLatitude = latitudes.min(), let maxLatitude = latitudes.max(),
+            let minLongitude = longitudes.min(), let maxLongitude = longitudes.max()
+        else { return }
+
+        let latitudePadding = max((maxLatitude - minLatitude) * 0.35, 0.05)
+        let longitudePadding = max((maxLongitude - minLongitude) * 0.35, 0.05)
+
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+            mapPosition = .region(MKCoordinateRegion(
+                center: CLLocationCoordinate2D(
+                    latitude: (minLatitude + maxLatitude) / 2,
+                    longitude: (minLongitude + maxLongitude) / 2
+                ),
+                span: MKCoordinateSpan(
+                    latitudeDelta: (maxLatitude - minLatitude) + latitudePadding,
+                    longitudeDelta: (maxLongitude - minLongitude) + longitudePadding
+                )
+            ))
+        }
+    }
+
     var body: some View {
         ZStack {
             mapLayer
@@ -211,7 +407,19 @@ struct SimpleProStationsMapView: View {
                 }
             }
 
-            if let selectedItem {
+            // PR C section 26/45 — Favorites panel and the selected-station card are mutually
+            // exclusive bottom floating surfaces; toggleFavoritesPanel()/selectFavorite(_:)
+            // already keep the two @State values from both being "on" at once, but this gate
+            // makes that guarantee structural rather than relying purely on call-site discipline.
+            if isFavoritesPresented {
+                VStack {
+                    Spacer()
+                    favoritesPanel
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            } else if let selectedItem {
                 VStack {
                     Spacer()
                     selectedStationCard(selectedItem)
@@ -223,6 +431,23 @@ struct SimpleProStationsMapView: View {
         }
         .background(AppTheme.Colors.oledBackground)
         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: selectedItem?.id)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: isFavoritesPresented)
+        // Final pre-merge gate fix (section 26/27) — if the selected station is no longer
+        // resolvable AT ALL (selectedItem already tried both the exact match and the
+        // live->merged migration fallback and found neither), clear selectedStationID so a
+        // LATER, unrelated reappearance of the same physical station in a future refresh can't
+        // silently pop its old card back up without a new user tap ("stale resurrection"). Keyed
+        // on the stable PremiumStationMapSelection identities only (never the full,
+        // coordinate-containing items), so this fires only when the actual set of stations
+        // changes, not on every render. Because selectedItem's own existing fallback runs
+        // first and this only clears when THAT already failed, a genuine live->merged
+        // migration (section 27) is never disturbed - it resolves via the fallback and this
+        // onChange sees selectedItem != nil, so it does nothing.
+        .onChange(of: items.map(\.selection)) { _, _ in
+            if selectedStationID != nil, selectedItem == nil {
+                selectedStationID = nil
+            }
+        }
         .alert("Directions Unavailable", isPresented: Binding(
             get: { directionsErrorMessage != nil },
             set: { isPresented in if isPresented == false { directionsErrorMessage = nil } }
@@ -247,6 +472,9 @@ struct SimpleProStationsMapView: View {
                     Button {
                         AppHaptics.selection()
                         withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7)) {
+                            // A direct pin tap always means "show this station's card" — close
+                            // Favorites if it happened to be open (section 26/45 mutual exclusion).
+                            isFavoritesPresented = false
                             selectedStationID = (selectedItem?.id == item.selection) ? nil : item.selection
                         }
                     } label: {
@@ -277,7 +505,12 @@ struct SimpleProStationsMapView: View {
     @ViewBuilder
     private var emptyOrLoadingOverlay: some View {
         VStack(spacing: 10) {
-            if isSearchingLive {
+            // Final pre-merge gate fix (section 3/7) — this must show the Searching state
+            // while a pending automatic/manual nearby search is still waiting on a location
+            // fix, not only once the network fetch itself has started (isLoadingStations
+            // covers both; the old isSearchingLive-only check left this false, and the "No E85
+            // stations loaded yet." + Find Nearby button, misleadingly, while GPS was resolving).
+            if isLoadingStations {
                 ProgressView()
                 Text("Searching for nearby E85…")
             } else {
@@ -321,13 +554,21 @@ struct SimpleProStationsMapView: View {
                 Spacer(minLength: 8)
 
                 Button(action: onRefresh) {
-                    Image(systemName: isSearchingLive ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    Image(systemName: isLoadingStations ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .padding(8)
                         .background(.ultraThinMaterial, in: Circle())
                 }
-                .disabled(isSearchingLive)
+                // Final pre-merge gate fix (section 9) — disabling on isLoadingStations (not
+                // just isSearchingLive) prevents a repeated tap during the location-wait
+                // sub-phase of a manual refresh from calling searchNearbyStations() again,
+                // which would otherwise re-set pendingLiveSearchReason and call
+                // locationManager.requestUserLocation() a second time — wasteful and can
+                // restart/delay the in-flight one-shot fix rather than speed it up. This only
+                // changes the PREMIUM refresh button's disabled state; searchNearbyStations()
+                // and the legacy header refresh button are untouched.
+                .disabled(isLoadingStations)
                 .accessibilityLabel("Refresh nearby stations")
             }
 
@@ -389,6 +630,26 @@ struct SimpleProStationsMapView: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            // PR C section 9-10 — a warm refresh (existing pins already visible) previously
+            // showed NO loading feedback at all in the premium map: emptyOrLoadingOverlay only
+            // ever appears when items.isEmpty. This small, non-blocking pill fills that gap
+            // without dimming/covering the map or introducing a second, competing loading
+            // indicator - it disappears the instant loading ends since it reads
+            // isLoadingStations directly (final pre-merge gate fix - this now also covers the
+            // location-wait sub-phase of a pending nearby search, not just the network fetch
+            // itself, per section 8: the same copy covers both without exposing which phase).
+            if isLoadingStations, items.isEmpty == false {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating stations…")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(AppTheme.Colors.cardBackground, in: Capsule())
+            }
         }
         .padding(12)
         // Adversarial audit finding AN — secondary/muted text was sitting directly on bare
@@ -431,21 +692,157 @@ struct SimpleProStationsMapView: View {
     private var mapControls: some View {
         VStack(spacing: 10) {
             mapControlButton(systemImage: "location.fill", label: "Center on my location", action: onRecenterUser)
-            mapControlButton(systemImage: "map", label: "Show all stations", action: onShowAll)
+            mapControlButton(systemImage: "map", label: "Show all stations", action: fitAllStations)
+            mapControlButton(
+                systemImage: "star.fill",
+                label: "Favorite stations",
+                badge: favoriteItems.count,
+                action: toggleFavoritesPanel
+            )
         }
         .padding(.trailing, 12)
         .padding(.top, 8)
     }
 
-    private func mapControlButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+    /// Map control button — 48x48 (up from the original 44x44 minimum, section 17) with an
+    /// explicit .buttonStyle(.plain)/.contentShape(Circle()) so the full circle is reliably
+    /// hit-testable above the Map underneath it, and an optional small count badge (section 20,
+    /// used by the Favorites control; nil/0 renders no badge).
+    private func mapControlButton(systemImage: String, label: String, badge: Int? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: systemImage)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(width: 48, height: 48)
+                    .background(.ultraThinMaterial, in: Circle())
+
+                if let badge, badge > 0 {
+                    Text("\(badge)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(4)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(AppTheme.Colors.primaryGreen, in: Circle())
+                        .offset(x: 4, y: -4)
+                }
+            }
         }
-        .accessibilityLabel(label)
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .accessibilityLabel(badgeAccessibilityLabel(label, badge: badge))
+    }
+
+    private func badgeAccessibilityLabel(_ label: String, badge: Int?) -> String {
+        guard let badge, badge > 0 else { return label }
+        return "\(label), \(badge) favorite\(badge == 1 ? "" : "s")"
+    }
+
+    // MARK: Favorites panel
+
+    /// PR C — floating in-map Favorites panel (section 21-23): an overlay card, never a
+    /// full-screen destination, never a new tab, never a modal navigation push. Content derives
+    /// entirely from favoriteItems (section 27) — favoriting/unfavoriting elsewhere updates this
+    /// list on the next render with no reload button.
+    @ViewBuilder
+    private var favoritesPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Favorite Stations")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Spacer()
+                Button {
+                    toggleFavoritesPanel()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+                .accessibilityLabel("Close favorites")
+            }
+            .padding(16)
+
+            Divider().overlay(AppTheme.Colors.borderColor)
+
+            if favoriteItems.isEmpty {
+                // Final pre-merge gate finding (section 19) — a saved FuelStation's
+                // latitude/longitude are optional, so a favorited station can exist without a
+                // valid coordinate; premiumMapCoordinate(for:) already excludes such a station
+                // from `items` entirely (it can never appear as a map annotation), which means
+                // favoriteItems (filtered from `items`) can never include it either. Wording
+                // deliberately says "on the map"/"mappable" rather than an unqualified "no
+                // favorites at all" so this stays accurate whether the user truly has zero
+                // favorites or has some that just aren't mappable — no new plumbing to
+                // distinguish the two cases, per this being a wording fix, not a new feature.
+                VStack(spacing: 4) {
+                    Text("No mappable favorite stations yet.")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                    Text("Favorite a saved station with a valid location to find it here.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(24)
+            } else {
+                // Capped height (section 22) so a long favorites list scrolls internally
+                // instead of consuming the whole screen.
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(favoriteItems) { item in
+                            Button {
+                                selectFavorite(item)
+                            } label: {
+                                favoriteRow(item)
+                            }
+                            .buttonStyle(.plain)
+
+                            if item.id != favoriteItems.last?.id {
+                                Divider().overlay(AppTheme.Colors.borderColor).padding(.leading, 16)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+        .background(AppTheme.Colors.elevatedCardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.Colors.borderColor, lineWidth: 1))
+        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+    }
+
+    private func favoriteRow(_ item: SimpleProStationMapItem) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "star.fill")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.stationYellow)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                if let distanceMiles = item.distanceMiles {
+                    Text(String(format: "%.1f mi", distanceMiles))
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+            }
+
+            Spacer()
+
+            if let primaryText = item.price.primaryText {
+                Text(primaryText)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.accessibilityDescription)
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Selected station card
@@ -453,50 +850,65 @@ struct SimpleProStationsMapView: View {
     @ViewBuilder
     private func selectedStationCard(_ item: SimpleProStationMapItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.displayName)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                    if item.displayAddress.isEmpty == false {
-                        Text(item.displayAddress)
-                            .font(.caption)
+            // PR C section 28-34: swipe browsing lives ONLY on this details block, never on the
+            // action-button row below — attaching a drag gesture to a parent containing the
+            // Directions/Save/Favorite/Report buttons risked exactly the "buttons stop firing"
+            // failure mode section 32 explicitly forbids keeping; this block and the button row
+            // are disjoint siblings, so the gesture can never intercept a button tap.
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.displayName)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        if item.displayAddress.isEmpty == false {
+                            Text(item.displayAddress)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            selectedStationID = nil
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
+                    }
+                    .accessibilityLabel("Close station details")
+                }
+
+                HStack(spacing: 12) {
+                    if let distanceMiles = item.distanceMiles {
+                        Label(String(format: "%.1f mi", distanceMiles), systemImage: "location.fill")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
-                }
-                Spacer()
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        selectedStationID = nil
+                    if item.isSaved {
+                        Label("Saved", systemImage: "bookmark.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.primaryGreen)
                     }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    if item.isFavorite {
+                        Label("Favorite", systemImage: "star.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                    }
                 }
-                .accessibilityLabel("Close station details")
-            }
+                .labelStyle(.titleAndIcon)
 
-            HStack(spacing: 12) {
-                if let distanceMiles = item.distanceMiles {
-                    Label(String(format: "%.1f mi", distanceMiles), systemImage: "location.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-                if item.isSaved {
-                    Label("Saved", systemImage: "bookmark.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.primaryGreen)
-                }
-                if item.isFavorite {
-                    Label("Favorite", systemImage: "star.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                priceSection(item.price)
+
+                if browsableItems.count > 1 {
+                    pageIndicator
                 }
             }
-            .labelStyle(.titleAndIcon)
-
-            priceSection(item.price)
+            .contentShape(Rectangle())
+            .gesture(swipeGesture)
+            .accessibilityAction(named: Text("Next Station")) { selectNextStation() }
+            .accessibilityAction(named: Text("Previous Station")) { selectPreviousStation() }
 
             Divider().overlay(AppTheme.Colors.borderColor)
 
@@ -524,6 +936,22 @@ struct SimpleProStationsMapView: View {
         .background(AppTheme.Colors.elevatedCardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.Colors.borderColor, lineWidth: 1))
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+    }
+
+    /// PR C section 35-36 — a compact "N of M" indicator plus a subtle chevron affordance,
+    /// teaching users the card can be browsed without adding large Previous/Next buttons.
+    /// Omitted entirely when there's only one browsable station (guarded by the call site).
+    @ViewBuilder
+    private var pageIndicator: some View {
+        if let index = currentBrowseIndex {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.left").accessibilityHidden(true)
+                Text("\(index + 1) of \(browsableItems.count)")
+                Image(systemName: "chevron.right").accessibilityHidden(true)
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(AppTheme.Colors.textMuted)
+        }
     }
 
     @ViewBuilder

@@ -111,6 +111,21 @@ struct StationsView: View {
         appExperienceMode == .simple && SubscriptionManager.shared.isProUser
     }
 
+    /// PR #50 final pre-merge gate — a premium-PRESENTATION-only "is station discovery
+    /// currently in progress" signal. isSearchingLive alone only covers the network-fetch
+    /// phase (set inside fetchLiveStations); it stays false for the whole location-wait phase
+    /// of a pending automatic/manual nearby search (pendingLiveSearchReason != nil,
+    /// requestUserLocation() called, no coordinate yet), so the premium map was previously
+    /// telling the user nothing was happening at all during that window. Purely derived — no
+    /// new stored state, no change to isSearchingLive's own semantics (the legacy list UI still
+    /// reads it exactly as before), no change to pendingLiveSearchReason's lifecycle. PR #48
+    /// already guarantees pendingLiveSearchReason clears on success, non-denied failure,
+    /// denied/restricted, and view disappearance, so this naturally returns to false in every
+    /// case with no separate reset needed.
+    private var isPremiumStationsLoading: Bool {
+        isSearchingLive || pendingLiveSearchReason != nil
+    }
+
     // MARK: - Unified display model
 
     private var unifiedItems: [StationDisplayItem] {
@@ -453,10 +468,40 @@ struct StationsView: View {
         }
     }
 
+    /// PR C ("Simple Pro Stations — Interaction / Responsiveness Polish") — immediate-feedback
+    /// recenter for the premium map. Root cause of the reported "Recenter feels slow": the old
+    /// wiring called locationManager.requestUserLocation() directly, which ALWAYS waits for a
+    /// brand-new GPS callback before the camera moves at all — even when a perfectly usable
+    /// latestCoordinate already exists from moments ago. Fixes this by using the known
+    /// coordinate for an IMMEDIATE visual anchor when one exists, then only requesting a fresh
+    /// fix (silently, in the background) if StationsLocationFreshness — read here, never
+    /// redefined — says the known one is old enough to be worth correcting. When a fresh fix
+    /// does arrive, the existing, unmodified `.onChange(of: locationManager.latestCoordinate)`
+    /// handler above already re-centers unconditionally, so no extra plumbing is needed for
+    /// "map updates again when a fresh fix arrives." Never touches pendingLiveSearchReason —
+    /// same precedent as the old map's own "locate me" button — so this can never fire an
+    /// unrelated station re-search. No StationLocationManager change, no second CLLocationManager,
+    /// no polling.
+    private func premiumRecenterOnUser() {
+        AppHaptics.selection()
+        if let coordinate = locationManager.latestCoordinate {
+            centerMap(on: coordinate.clCoordinate)
+            let isFresh = StationsLocationFreshness.isCoordinateRecentEnough(
+                fixTimestamp: locationManager.latestFixTimestamp,
+                now: .now
+            )
+            if isFresh == false {
+                locationManager.requestUserLocation()
+            }
+        } else {
+            locationManager.requestUserLocation()
+        }
+    }
+
     private var premiumSimpleStationsMapView: some View {
         SimpleProStationsMapView(
             items: premiumStationMapItems,
-            isSearchingLive: isSearchingLive,
+            isLoadingStations: isPremiumStationsLoading,
             liveSearchError: liveSearchError,
             isTypedLocationSearch: { if case .typedLocation = stationSearchSource { return true }; return false }(),
             typedLocationDisplayName: { if case .typedLocation(let name) = stationSearchSource { return name }; return nil }(),
@@ -474,8 +519,12 @@ struct StationsView: View {
             locationSearchValidationMessage: locationSearchValidationMessage,
             onSubmitLocationSearch: searchStationsNearTypedLocation,
             onClearLocationSearch: clearTrip,
-            onRecenterUser: { locationManager.requestUserLocation() },
-            onShowAll: recenterMap,
+            onRecenterUser: premiumRecenterOnUser,
+            // PR C — Show All is now a premium-only fitAllStations() computed directly from
+            // this view's own `items` (see SimpleProStationsMapView) rather than reusing the
+            // legacy recenterMap(), which does legacy-only work (mutating selectedMapStationID,
+            // an old-map-only concept) irrelevant here. recenterMap() itself is untouched and
+            // still backs the old embedded map's own "Show All" button exactly as before.
             onRefresh: searchNearbyStations,
             onDirections: { premiumDirectionsMessage(for: $0) },
             onSave: { premiumSave(for: $0) },
