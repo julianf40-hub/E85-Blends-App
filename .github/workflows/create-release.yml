@@ -100,7 +100,7 @@ jobs:
       - name: Resolve and validate release commit
         id: release_commit
         env:
-          TARGET_REF: ${{ inputs.target_ref }}
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -113,26 +113,26 @@ jobs:
           fi
 
           TAG="v${VERSION}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::Tag ${TAG} already exists on origin. This workflow never moves or overwrites release tags."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::GitHub Release ${TAG} already exists. Nothing was changed."
             exit 1
+          fi
+
+          TAG_EXISTS="false"
+          if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            EXISTING_SHA="$(git rev-list -n 1 "$TAG")"
+            if [[ "$EXISTING_SHA" != "$TARGET_SHA" ]]; then
+              echo "::error::Tag ${TAG} already exists but points to ${EXISTING_SHA}, not ${TARGET_SHA}. This workflow never moves or overwrites release tags."
+              exit 1
+            fi
+            TAG_EXISTS="true"
+            echo "Tag ${TAG} already points to the requested commit; continuing so a previously interrupted release can be completed safely."
           fi
 
           echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Create annotated tag
-        env:
-          TAG: ${{ steps.release_commit.outputs.tag }}
-          TARGET_SHA: ${{ steps.release_commit.outputs.sha }}
-          VERSION: ${{ inputs.version }}
-          APP_STORE_BUILD: ${{ inputs.app_store_build }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" "$TARGET_SHA" -m "85Blends ${VERSION} - App Store Build ${APP_STORE_BUILD}"
-          git push origin "refs/tags/${TAG}"
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes
         env:
@@ -162,6 +162,20 @@ jobs:
 
           ${GENERATED_NOTES}
           EOF
+
+      - name: Create annotated tag
+        if: steps.release_commit.outputs.tag_exists != 'true'
+        env:
+          TAG: ${{ steps.release_commit.outputs.tag }}
+          TARGET_SHA: ${{ steps.release_commit.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+          APP_STORE_BUILD: ${{ inputs.app_store_build }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$TARGET_SHA" -m "85Blends ${VERSION} - App Store Build ${APP_STORE_BUILD}"
+          git push origin "refs/tags/${TAG}"
 
       - name: Create GitHub Release
         env:
