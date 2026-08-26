@@ -31,6 +31,11 @@ struct StationsView: View {
     @State private var infoMessage: String?
     @State private var mapPosition: MapCameraPosition = .region(StationsView.neutralUSRegion)
     @State private var selectedMapStationID: PersistentIdentifier?
+    // Follow-on polish — the premium map's floating Trip Planner button pushes onto this same
+    // NavigationStack via .navigationDestination(isPresented:) below, reusing TripPlannerView()
+    // exactly as ProFeatureGate already does for the Classic/More entry points (never a second
+    // Trip Planner implementation).
+    @State private var isTripPlannerPresented = false
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
@@ -546,8 +551,19 @@ struct StationsView: View {
             // kind (live-only saves+favorites atomically, saved/merged toggles) — see
             // premiumFavorite(for:) above.
             onFavorite: { premiumFavorite(for: $0) },
-            onReportPrice: { premiumReportPrice(for: $0) }
+            onReportPrice: { premiumReportPrice(for: $0) },
+            onOpenTripPlanner: openTripPlannerFromPremiumMap
         )
+    }
+
+    /// Follow-on polish — the premium map's floating Trip Planner button only signals intent
+    /// (ProStationsMapView presents nothing itself); this sets the same isTripPlannerPresented
+    /// flag the stationsContent NavigationStack's own .navigationDestination(isPresented:)
+    /// reads, pushing TripPlannerView() exactly as ProFeatureGate already does elsewhere — no
+    /// second Trip Planner implementation, no new presentation mechanism.
+    private func openTripPlannerFromPremiumMap() {
+        AppHaptics.selection()
+        isTripPlannerPresented = true
     }
 
     var body: some View {
@@ -606,6 +622,14 @@ struct StationsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .keyboardDoneToolbar()
             .dismissKeyboardOnTap()
+            // Follow-on polish — the premium map's floating Trip Planner button pushes here,
+            // onto this same NavigationStack. TripPlannerView() takes no arguments and sets its
+            // own navigationTitle/back button, matching exactly how ProFeatureGate's
+            // NavigationLink already presents it from proFeaturesSection/MoreView — this is a
+            // second entry point to the identical destination, never a second implementation.
+            .navigationDestination(isPresented: $isTripPlannerPresented) {
+                TripPlannerView()
+            }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
         .onAppear {
