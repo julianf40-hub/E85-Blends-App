@@ -98,7 +98,12 @@ enum StationsPersistedPreviewCompatibility: Equatable {
     /// center — safe to show as if it were an ordinary session-compatible result.
     case validated(StationsSearchSnapshot)
     /// No current coordinate is available yet to confirm the user hasn't moved — may be shown
-    /// briefly, explicitly marked unvalidated, while location/network resolve.
+    /// briefly while location/network resolve. The caller tracks this state explicitly (never
+    /// inferring it from array emptiness/age/map position — see StationsView's
+    /// isShowingUnvalidatedPersistedStations); the only user-visible cue during this window is
+    /// the existing "Updating stations…" indicator, already active because the normal automatic
+    /// current-location refresh is in flight at the same time — no separate "unconfirmed
+    /// location" UI treatment exists or is required.
     case provisional(StationsSearchSnapshot)
     /// A current coordinate is known and proves the user has materially moved away from the
     /// persisted snapshot's search center — must NOT be shown.
@@ -385,7 +390,9 @@ final class StationsRecentSearchStore {
 
         guard let coordinate else {
             // No current coordinate yet to validate against -- exactly the cold-launch case
-            // this tier exists for (section 25). May be shown, explicitly marked provisional.
+            // this tier exists for (section 25). May be shown; see .provisional's own header
+            // for what "unvalidated" actually means here (an explicit, tracked state — not a
+            // dedicated visual treatment).
             return .provisional(snapshot)
         }
 

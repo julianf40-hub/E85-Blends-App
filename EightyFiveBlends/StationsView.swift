@@ -2190,10 +2190,31 @@ struct StationsView: View {
         let coordinate = locationManager.latestCoordinate
 
         switch stationsSearchStore.compatibleSnapshot(near: coordinate, radiusMiles: radiusValue, now: .now) {
-        case .fresh(let snapshot), .staleButUsable(let snapshot):
-            // Existing PR A/#48 session-cache behavior — completely unchanged (section 20).
+        case .fresh(let snapshot):
+            // `.fresh` is ONLY ever returned when a real coordinate was already supplied and
+            // matched within radius (compatibleSnapshot's own no-coordinate branch below always
+            // returns `.staleButUsable`, never `.fresh`) — already GPS-validated, disk-restored
+            // or not. Existing PR A/#48 session-cache behavior — completely unchanged (section 20).
             liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
             return
+        case .staleButUsable(let snapshot):
+            // Gate-fix (adversarial audit finding) — compatibleSnapshot's own no-coordinate
+            // branch returns `.staleButUsable` for ANY snapshot <=30 minutes old with no way to
+            // tell "this process's own brief background gap" (PR A/#48's original, accepted
+            // case — the process never stopped) apart from "this snapshot was restored from
+            // disk after a full relaunch, possibly in a materially different place, minutes
+            // ago" — only snapshotOrigin can. Trusting the latter outright here would let a
+            // wrong-city preview slip past the persisted-preview tier's own GPS validation
+            // entirely (isShowingUnvalidatedPersistedStations would never be set, so
+            // validateProvisionalPersistedPreviewIfNeeded would later no-op even once real GPS
+            // proved it wrong). A same-session snapshot (.currentSession) keeps the exact
+            // existing PR A/#48 behavior, byte-identical; only a disk-restored snapshot with no
+            // coordinate yet is redirected to the persisted-preview tier below instead —
+            // compatibleSnapshot itself remains completely untouched either way (section 20).
+            guard coordinate == nil, stationsSearchStore.snapshotOrigin == .restoredFromDisk else {
+                liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
+                return
+            }
         case .incompatible, .none:
             break
         }
