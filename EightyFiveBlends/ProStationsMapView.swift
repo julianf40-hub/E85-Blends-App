@@ -181,6 +181,11 @@ struct ProStationsMapView: View {
     // StationsView.premiumFavorite(for:).
     let onFavorite: (PremiumStationMapSelection) -> Void
     let onReportPrice: (PremiumStationMapSelection) -> Void
+    // Follow-on polish — additive convenience access to the existing Trip Planner experience
+    // while using the premium map. This view never presents Trip Planner itself (it has no
+    // NavigationLink/sheet/destination of its own) — it only signals intent; StationsView owns
+    // the actual navigation trigger, same as every other action above.
+    let onOpenTripPlanner: () -> Void
 
     @State private var selectedStationID: PremiumStationMapSelection?
     @State private var directionsErrorMessage: String?
@@ -275,15 +280,66 @@ struct ProStationsMapView: View {
     /// actions (section 38), so the two can never disagree about wraparound math. Continuous
     /// wraparound (section 30); a single station (or none) is a safe no-op — `count > 1` is
     /// proven before any modulo (section 59/31), so there is no divide-by-zero or
-    /// integer-underflow risk. Never touches mapPosition (section 34 — no auto-zoom on swipe)
-    /// and never fires network/geocoding — a pure selection change plus a haptic.
+    /// integer-underflow risk. Never fires network/geocoding — a pure selection change plus a
+    /// haptic and (follow-on polish) a camera move.
+    ///
+    /// Follow-on polish — swiping/stepping now also moves the map camera to the newly-selected
+    /// station via followMapToStation(_:), so the background map never feels disconnected from
+    /// the floating card. This is the SOLE choke point for both swipe (swipeGesture) and both
+    /// VoiceOver Next/Previous accessibility actions, so neither path can ever disagree about
+    /// whether the camera follows. No other selection path (pin tap, Favorites-panel selection,
+    /// a Save/Favorite live->merged migration, or a background refresh) calls this function, so
+    /// none of those are affected — matching the "only deliberate swipe/step selection changes
+    /// should move the map" requirement and avoiding any repeat of the earlier "favorite toggle
+    /// recenters unexpectedly" regression (StationsView's unrelated .onChange(of:
+    /// mappableStations) guard).
     private func stepStation(by delta: Int) {
         let order = browsableItems
         guard order.count > 1, let currentIndex = currentBrowseIndex else { return }
         let count = order.count
         let newIndex = ((currentIndex + delta) % count + count) % count
+        let newItem = order[newIndex]
         AppHaptics.selection()
-        selectedStationID = order[newIndex].selection
+        selectedStationID = newItem.selection
+        followMapToStation(newItem)
+    }
+
+    /// Follow-on polish — a pure camera move to the given station: no search, no location
+    /// request, no radius change, no cache mutation. Reuses the exact fixed fallback span
+    /// (0.08°/0.08°) already used by selectFavorite(_:)/fitAllStations() for a single station,
+    /// but prefers the map's OWN current span when it's available (a prior selection/recenter/
+    /// user pinch-zoom already leaves MapCameraPosition able to report one) so stepping between
+    /// stations approximately preserves the user's own zoom level instead of always resetting
+    /// to the fixed default.
+    private func followMapToStation(_ item: ProStationMapItem) {
+        let span = currentRegionSpan ?? Self.defaultSelectionSpan
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+            mapPosition = .region(MKCoordinateRegion(center: biasedUpward(item.coordinate, span: span), span: span))
+        }
+    }
+
+    /// Final pre-merge gate compiler-risk fix — MapCameraPosition is not a pattern-matchable
+    /// enum (`.region(_:)` is a static factory method, not a case), so it must be read back
+    /// through its own supported `region: MKCoordinateRegion?` property rather than
+    /// `if case .region(let region) = mapPosition`. If MapCameraPosition can currently provide a
+    /// region, reuse its span; otherwise fall back to the caller's own standard selection span.
+    private var currentRegionSpan: MKCoordinateSpan? {
+        mapPosition.region?.span
+    }
+
+    /// Same fixed span already used by selectFavorite(_:)/fitAllStations()'s single-station
+    /// case — the safe, consistent fallback when the current span can't be read back.
+    private static let defaultSelectionSpan = MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+
+    /// Shifts the camera center slightly south (never touching displayed coordinates/pins
+    /// themselves) so the selected station renders a bit above the map's vertical midpoint,
+    /// reducing visual crowding from the bottom floating card. A small, fixed fraction of the
+    /// current span — no screen-space geometry, no new architecture.
+    private func biasedUpward(_ coordinate: CLLocationCoordinate2D, span: MKCoordinateSpan) -> CLLocationCoordinate2D {
+        CLLocationCoordinate2D(
+            latitude: coordinate.latitude - span.latitudeDelta * 0.15,
+            longitude: coordinate.longitude
+        )
     }
 
     private func selectNextStation() {
@@ -707,6 +763,11 @@ struct ProStationsMapView: View {
                 badge: favoriteItems.count,
                 action: toggleFavoritesPanel
             )
+            // Follow-on polish — additive Trip Planner access while using the premium map.
+            // "map.fill" matches the icon already used for Trip Planner everywhere else in the
+            // app (StationsView.proFeaturesSection / MoreView.proPreviewSection's
+            // ProFeatureGate), and reads as visually distinct from Show All's outline "map".
+            mapControlButton(systemImage: "map.fill", label: "Trip Planner", action: onOpenTripPlanner)
         }
         .padding(.trailing, 12)
         .padding(.top, 8)
