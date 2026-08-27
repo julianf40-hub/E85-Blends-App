@@ -307,10 +307,10 @@ struct ProStationsMapView: View {
     /// Follow-on polish — a pure camera move to the given station: no search, no location
     /// request, no radius change, no cache mutation. Reuses the exact fixed fallback span
     /// (0.08°/0.08°) already used by selectFavorite(_:)/fitAllStations() for a single station,
-    /// but prefers the map's OWN current span when it's available (i.e. mapPosition is
-    /// currently in `.region` state, which is what a prior selection/recenter/user pinch-zoom
-    /// leaves it in) so stepping between stations approximately preserves the user's own zoom
-    /// level instead of always resetting to the fixed default.
+    /// but prefers the map's OWN current span when it's available (a prior selection/recenter/
+    /// user pinch-zoom already leaves MapCameraPosition able to report one) so stepping between
+    /// stations approximately preserves the user's own zoom level instead of always resetting
+    /// to the fixed default.
     private func followMapToStation(_ item: ProStationMapItem) {
         let span = currentRegionSpan ?? Self.defaultSelectionSpan
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
@@ -318,13 +318,13 @@ struct ProStationsMapView: View {
         }
     }
 
-    /// The map's current span, read back only when mapPosition happens to be in `.region`
-    /// state — a defensive, non-crashing pattern (falls straight through to the caller's own
-    /// fallback in every other MapCameraPosition case, e.g. `.automatic`/`.camera`/
-    /// `.userLocation`), never a new source of truth for camera state.
+    /// Final pre-merge gate compiler-risk fix — MapCameraPosition is not a pattern-matchable
+    /// enum (`.region(_:)` is a static factory method, not a case), so it must be read back
+    /// through its own supported `region: MKCoordinateRegion?` property rather than
+    /// `if case .region(let region) = mapPosition`. If MapCameraPosition can currently provide a
+    /// region, reuse its span; otherwise fall back to the caller's own standard selection span.
     private var currentRegionSpan: MKCoordinateSpan? {
-        if case .region(let region) = mapPosition { return region.span }
-        return nil
+        mapPosition.region?.span
     }
 
     /// Same fixed span already used by selectFavorite(_:)/fitAllStations()'s single-station
