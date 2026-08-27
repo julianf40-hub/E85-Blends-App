@@ -58,6 +58,16 @@ struct StationsView: View {
     // flow's genuinely pending search — see the map locate-me button and
     // PendingLiveSearchReason's own doc comment below.
     @State private var pendingLiveSearchReason: PendingLiveSearchReason?
+    // Cross-launch cache (2.3.2, PR #54) — true only while `liveStations` reflects an
+    // UNVALIDATED cold-launch disk preview (StationsRecentSearchStore.SnapshotOrigin.
+    // restoredFromDisk, shown before a real current-location GPS fix has confirmed it still
+    // describes "here" — see hydrateFromRecentSearchCacheIfNeeded()/
+    // validateProvisionalPersistedPreviewIfNeeded(against:)). Deliberately explicit, transient
+    // @State — never persisted, never inferred from liveStations.isEmpty/snapshot age/map
+    // position (section 63: "Explicit is safer"). Cleared the instant the preview is
+    // validated by a real coordinate, replaced by a fresh network fetch, or invalidated by a
+    // location mismatch or an authorization change.
+    @State private var isShowingUnvalidatedPersistedStations = false
     @State private var liveSearchTask: Task<Void, Never>?
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     // PR D — Pro Stations layout preference (Map vs Classic). Deliberately independent of
@@ -882,6 +892,10 @@ struct StationsView: View {
         }
         .onChange(of: locationManager.latestCoordinate) { _, coordinate in
             guard let coordinate else { return }
+            // Cross-launch cache (2.3.2, PR #54, section 28) — CRITICAL ordering: resolve any
+            // provisional disk-restored preview against this real coordinate before any other
+            // camera/fetch logic below runs.
+            validateProvisionalPersistedPreviewIfNeeded(against: coordinate)
             // PR #53 — an ordinary location update must not let the premium map's
             // established camera get overwritten by a tight, user-only recenter every time a
             // fresh fix arrives; the one-time initial framing (or its no-station-yet ->
@@ -2172,14 +2186,140 @@ struct StationsView: View {
         guard stationSearchSource == .currentLocation else { return }
         guard liveStations.isEmpty else { return }
 
-        let radiusValue = Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
+        let radiusValue = selectedRadiusMiles
         let coordinate = locationManager.latestCoordinate
 
         switch stationsSearchStore.compatibleSnapshot(near: coordinate, radiusMiles: radiusValue, now: .now) {
-        case .fresh(let snapshot), .staleButUsable(let snapshot):
+        case .fresh(let snapshot):
+            // `.fresh` is ONLY ever returned when a real coordinate was already supplied and
+            // matched within radius (compatibleSnapshot's own no-coordinate branch below always
+            // returns `.staleButUsable`, never `.fresh`) — already GPS-validated, disk-restored
+            // or not. Existing PR A/#48 session-cache behavior — completely unchanged (section 20).
             liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
+            return
+        case .staleButUsable(let snapshot):
+            // Gate-fix (adversarial audit finding) — compatibleSnapshot's own no-coordinate
+            // branch returns `.staleButUsable` for ANY snapshot <=30 minutes old with no way to
+            // tell "this process's own brief background gap" (PR A/#48's original, accepted
+            // case — the process never stopped) apart from "this snapshot was restored from
+            // disk after a full relaunch, possibly in a materially different place, minutes
+            // ago" — only snapshotOrigin can. Trusting the latter outright here would let a
+            // wrong-city preview slip past the persisted-preview tier's own GPS validation
+            // entirely (isShowingUnvalidatedPersistedStations would never be set, so
+            // validateProvisionalPersistedPreviewIfNeeded would later no-op even once real GPS
+            // proved it wrong). A same-session snapshot (.currentSession) keeps the exact
+            // existing PR A/#48 behavior, byte-identical; only a disk-restored snapshot with no
+            // coordinate yet is redirected to the persisted-preview tier below instead —
+            // compatibleSnapshot itself remains completely untouched either way (section 20).
+            guard coordinate == nil, stationsSearchStore.snapshotOrigin == .restoredFromDisk else {
+                liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
+                return
+            }
         case .incompatible, .none:
             break
+        }
+
+        // Cross-launch cache (2.3.2, PR #54, section 23) — no session-compatible snapshot was
+        // available (most commonly: this IS a cold launch, and the restored disk snapshot is
+        // older than compatibleSnapshot's own 30-minute session ceiling, though still within
+        // the separate, more permissive persistentPreviewCeiling). Falls through to the
+        // SEPARATE persisted-preview policy rather than ever widening compatibleSnapshot
+        // itself. Section 26 — never show a persisted current-location preview once location
+        // authorization is not currently granted, even though the file itself may still exist.
+        guard locationManager.isAuthorizedForUserLocation else { return }
+
+        switch stationsSearchStore.persistedPreviewCompatibility(near: coordinate, radiusMiles: radiusValue) {
+        case .validated(let snapshot):
+            // A coordinate was already known (e.g. the app-foreground prewarm) AND it matches
+            // the restored snapshot's search center — hydrate immediately, already validated,
+            // exactly like a normal session-compatible hit (section 24). The subsequent
+            // applyInitialPremiumNearbyFramingIfNeeded()/recenterMap() call in .onAppear
+            // already has both a real coordinate and populated station data at this point, so
+            // no separate camera handling is needed here.
+            liveStations = recomputedDistances(for: snapshot.stations, from: coordinate)
+            isShowingUnvalidatedPersistedStations = false
+        case .provisional(let snapshot):
+            // The key cold-launch case (section 25): no coordinate yet to validate against.
+            // Hydrate as PROVISIONAL — distances are shown using the persisted (uncorrected)
+            // values, exactly as compatibleSnapshot's own no-coordinate branch already does for
+            // the session cache; there is nothing better to compute against yet.
+            liveStations = snapshot.stations
+            isShowingUnvalidatedPersistedStations = true
+            applyProvisionalPersistedPreviewFramingIfNeeded(center: snapshot.center.clCoordinate)
+        case .incompatibleLocation:
+            // A coordinate was already known and proves the restored snapshot belongs to a
+            // materially different area (section 24) — never display it, and there is no
+            // benefit to re-discovering the same known-wrong snapshot again this process
+            // (section 30).
+            stationsSearchStore.discardRestoredSnapshot()
+        case .unavailable:
+            break
+        }
+    }
+
+    /// Cross-launch cache (2.3.2, PR #54, sections 33-34) — camera-PREVIEW-ONLY anchor for the
+    /// moment between a provisional disk-restored preview appearing and a real GPS fix
+    /// arriving, so the premium map's initial camera doesn't linger on the North America
+    /// neutral region while nothing else is known yet. The persisted snapshot's search center
+    /// is used SOLELY as a temporary anchor for PR #53's own bounding-box helpers — it is NEVER
+    /// treated as a real location fix (never assigned to locationManager.latestCoordinate,
+    /// never used for Pump Mode/refreshPumpDetectionMonitoredStations). Classic needs no
+    /// equivalent: recenterMap() already fits a bounding box around whatever
+    /// mappableStations/liveMapStations exist regardless of user coordinate, so the
+    /// provisional stations hydrated just above are already included the moment it next runs
+    /// (section 35).
+    ///
+    /// Critically (section 34), this deliberately leaves premiumNearbyFramingState == .pending
+    /// — never .framedWithStation — so applyInitialPremiumNearbyFramingIfNeeded() still runs
+    /// its own real, GPS-driven framing (or upgrade) exactly once when a genuine coordinate
+    /// arrives; this call is never a substitute for that one, only a placeholder until then.
+    private func applyProvisionalPersistedPreviewFramingIfNeeded(center: CLLocationCoordinate2D) {
+        guard usesPremiumStationsMapPresentation else { return }
+        guard premiumNearbyFramingState == .pending else { return }
+
+        let nearestStation = nearestPremiumStation(to: center)
+        let coordinates = [center] + (nearestStation.map { [$0.coordinate] } ?? [])
+        let region = initialFramingRegion(for: coordinates)
+        withAnimation {
+            mapPosition = .region(region)
+        }
+        // premiumNearbyFramingState deliberately left untouched at .pending — see header above.
+    }
+
+    /// Cross-launch cache (2.3.2, PR #54, section 28) — resolves a provisional disk-restored
+    /// preview against a REAL coordinate the moment one arrives. Called from
+    /// .onChange(of: locationManager.latestCoordinate) BEFORE that handler's own premium
+    /// framing/centerMap/fetch logic (the ordering the task calls out as CRITICAL), so a
+    /// provisional preview is always resolved before anything downstream relies on it. A
+    /// complete no-op whenever no provisional preview is currently onscreen — this never
+    /// touches an ordinary already-live, already-validated, or typed-location `liveStations`.
+    private func validateProvisionalPersistedPreviewIfNeeded(against coordinate: StationCoordinate) {
+        guard isShowingUnvalidatedPersistedStations else { return }
+        guard stationSearchSource == .currentLocation else { return }
+
+        switch stationsSearchStore.persistedPreviewCompatibility(near: coordinate, radiusMiles: selectedRadiusMiles) {
+        case .validated:
+            // CASE A (section 28) — compatible: keep the provisional stations, just recompute
+            // their distances from the now-known real coordinate, and clear the provisional
+            // flag. The caller's own subsequent applyInitialPremiumNearbyFramingIfNeeded()/
+            // centerMap(on:) then runs normally, with premiumNearbyFramingState still .pending
+            // (see applyProvisionalPersistedPreviewFramingIfNeeded's header), so this is the
+            // one real, GPS-driven PR #53 initial frame for this session.
+            liveStations = recomputedDistances(for: liveStations, from: coordinate)
+            isShowingUnvalidatedPersistedStations = false
+        case .provisional, .incompatibleLocation, .unavailable:
+            // CASE B (section 28) — a real coordinate was just supplied, so `.provisional`
+            // itself is unreachable here in practice; grouped with the genuine mismatch/expiry
+            // cases and handled identically and conservatively: clear ONLY the provisional
+            // `liveStations` (never saved stations/favorites — section 29), clear the
+            // provisional flag, discard the mismatched/expired restored snapshot from memory +
+            // disk (section 30), and reset the premium map's one-time framing state so the
+            // real current-location frame the caller runs immediately after this is never
+            // mistaken for a redundant repeat (section 48's Phoenix -> Los Angeles case).
+            liveStations = []
+            isShowingUnvalidatedPersistedStations = false
+            stationsSearchStore.discardRestoredSnapshot()
+            premiumNearbyFramingState = .pending
         }
     }
 
@@ -2260,6 +2400,19 @@ struct StationsView: View {
 
         pendingLiveSearchReason = nil
         locationDeniedAlert = true
+
+        // Cross-launch cache (2.3.2, PR #54, section 42) — a provisional disk-restored preview
+        // must not keep presenting as "nearby"/"current" once location authorization is no
+        // longer granted, even though it was never GPS-validated or invalidated by a location
+        // mismatch. Saved stations/favorites are completely untouched — only the provisional
+        // current-location `liveStations`. Also discards the restored snapshot from disk:
+        // once authorization is denied there is no near-term path back to validating it, and
+        // section 42 itself prefers deleting it outright for privacy/simplicity.
+        if isShowingUnvalidatedPersistedStations {
+            liveStations = []
+            isShowingUnvalidatedPersistedStations = false
+            stationsSearchStore.discardRestoredSnapshot()
+        }
 
         if locationManager.latestCoordinate == nil, mappableStations.isEmpty, liveStations.isEmpty {
             mapPosition = .region(StationsView.neutralUSRegion)
@@ -2358,6 +2511,11 @@ struct StationsView: View {
                 )
                 guard Task.isCancelled == false else { return }
                 liveStations = results
+                // Cross-launch cache (2.3.2, PR #54, section 39) — a real, fresh network result
+                // always fully supersedes any provisional disk-restored preview; explicit here
+                // as a safety net even though every reachable path already resolves this flag
+                // before a fetch can start (see validateProvisionalPersistedPreviewIfNeeded).
+                isShowingUnvalidatedPersistedStations = false
                 if results.isEmpty {
                     liveSearchError = "No E85 stations found within \(selectedRadius) of \(stationSearchSource.displayName). Try selecting a larger radius above."
                 }
