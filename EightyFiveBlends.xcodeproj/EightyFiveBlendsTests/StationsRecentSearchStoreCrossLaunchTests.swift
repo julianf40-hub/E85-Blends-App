@@ -23,6 +23,13 @@ import Foundation
 import Testing
 @testable import EightyFiveBlends
 
+// StationsRecentSearchStore is @MainActor (see its own declaration) — every test below
+// constructs and calls it synchronously, so the suite itself is annotated @MainActor rather
+// than decorating each individual @Test function. This is semantically correct (the suite
+// exclusively exercises a @MainActor-isolated store) and lets Swift Testing dispatch every
+// test method onto the main actor at runtime with no `await`/Task/MainActor.assumeIsolated
+// workaround needed at any call site.
+@MainActor
 struct StationsRecentSearchStoreCrossLaunchTests {
 
     // MARK: - Test helpers
