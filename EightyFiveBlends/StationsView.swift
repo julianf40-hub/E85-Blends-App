@@ -388,22 +388,50 @@ struct StationsView: View {
         premiumNearbyFramingState = nearestStation == nil ? .framedWithoutStation : .framedWithStation
     }
 
-    /// Geographically nearest premiumStationMapItems entry to the given coordinate — live-only,
-    /// saved-only, and merged all included, as long as the item has a valid map coordinate
-    /// (exactly what premiumStationMapItems already guarantees). Deliberately independent of
-    /// ProStationMapItem.distanceMiles, which is nil for every savedOnly station and can be
-    /// stale/zero for a live station outside the one cache-rehydration path that recomputes it
-    /// — CLLocation distance from each item's own coordinate is the only source of truth that
-    /// is correct for every kind, every time.
+    /// PR #53 final pre-merge gate — the same "25 mi" -> 25.0 conversion already used verbatim
+    /// at both fetchLiveStations(at:limit:) call sites (radiusValue), factored into one
+    /// property so nearestPremiumStation(to:)'s saved-only eligibility check below can reuse
+    /// the identical parsing rather than introducing a second one. Read-only; never mutates
+    /// selectedRadius itself, and this initial-framing feature never mutates it either.
+    private var selectedRadiusMiles: Double {
+        Double(selectedRadius.replacingOccurrences(of: " mi", with: "")) ?? 25
+    }
+
+    /// Geographically nearest LOCALLY RELEVANT premiumStationMapItems entry to the given
+    /// coordinate. "Locally relevant" (final pre-merge gate correction) means: a live-only or
+    /// merged result is always eligible — both are already constrained by the current nearby
+    /// search's own radius/context, so being "nearest" among them is meaningful on its own. A
+    /// saved-only station, which carries no such context (it could be anywhere in the user's
+    /// entire saved history), is eligible only within the selected search radius
+    /// (selectedRadiusMiles) — never unbounded. Without this cap, a single old saved station
+    /// hundreds of miles away could become "nearest" whenever no live results exist yet,
+    /// expanding the initial camera across the state/country; capping it means such a station
+    /// is correctly excluded, nearestPremiumStation(to:) returns nil, and
+    /// applyInitialPremiumNearbyFramingIfNeeded() falls back to the ~10-mile user-only view
+    /// (never locking premiumNearbyFramingState into .framedWithStation) until a genuinely
+    /// local candidate — live, merged, or a nearby saved-only station — actually exists. This
+    /// affects camera-candidate selection ONLY: premiumStationMapItems/Show All/Favorites/the
+    /// map's own pins are completely unaffected, and selectedRadius itself is never changed.
+    /// Deliberately independent of ProStationMapItem.distanceMiles, which is nil for every
+    /// savedOnly station and can be stale/zero for a live station outside the one
+    /// cache-rehydration path that recomputes it — CLLocation distance from each item's own
+    /// coordinate is the only source of truth that is correct for every kind, every time.
     private func nearestPremiumStation(to userCoordinate: CLLocationCoordinate2D) -> ProStationMapItem? {
         let userLocation = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
-        return premiumStationMapItems.min { lhs, rhs in
-            let lhsDistance = CLLocation(latitude: lhs.coordinate.latitude, longitude: lhs.coordinate.longitude)
+        let radiusMiles = selectedRadiusMiles
+
+        let eligible: [(item: ProStationMapItem, distance: CLLocationDistance)] = premiumStationMapItems.compactMap { item in
+            let distance = CLLocation(latitude: item.coordinate.latitude, longitude: item.coordinate.longitude)
                 .distance(from: userLocation)
-            let rhsDistance = CLLocation(latitude: rhs.coordinate.latitude, longitude: rhs.coordinate.longitude)
-                .distance(from: userLocation)
-            return lhsDistance < rhsDistance
+            switch item.kind {
+            case .liveOnly, .merged:
+                return (item, distance)
+            case .savedOnly:
+                let distanceMiles = distance / Self.metersPerMile
+                return distanceMiles <= radiusMiles ? (item, distance) : nil
+            }
         }
+        return eligible.min(by: { $0.distance < $1.distance })?.item
     }
 
     /// Bounding box over 1-2 coordinates (user alone, or user + nearest station) using the
