@@ -25,11 +25,15 @@ struct EightyFiveBlendsApp: App {
     @State private var locationManager = StationLocationManager()
     @State private var automaticPumpDetectionService = AutomaticPumpDetectionService()
     @State private var recentLiveStationCache = RecentLiveStationCache()
-    // Stations instant-loading foundation (2.3.2, PR A) — session-scoped, in-memory only.
+    // Stations instant-loading foundation (2.3.2, PR A; cross-launch cache added in PR #54) —
+    // an in-memory session cache PLUS a small, optional, atomic on-disk preview that lets a
+    // cold relaunch show the last known nearby stations immediately while a fresh search runs
+    // in the background — see StationsRecentSearchStore's header for the full two-tier design.
     // Deliberately separate from recentLiveStationCache above (Pump Mode's own cache) — see
     // StationsRecentSearchStore's header for why. Injected once here, exactly like
     // recentLiveStationCache, so it survives StationsView being recreated and ordinary tab
-    // switching within one app session.
+    // switching within one app session. No change to how it's constructed or injected — the
+    // default `StationsRecentSearchStore()` call below is unchanged.
     @State private var stationsRecentSearchStore = StationsRecentSearchStore()
     private let sharedModelContainer: ModelContainer
     // True when all persistent store attempts failed and we are running data-less this session.
