@@ -36,6 +36,10 @@ struct StationsView: View {
     // exactly as ProFeatureGate already does for the Classic/More entry points (never a second
     // Trip Planner implementation).
     @State private var isTripPlannerPresented = false
+    // PR #53 — tracks the premium map's one-time initial nearby framing (user + nearest
+    // station, ~10-mile-radius minimum) so it never repeatedly snaps the camera back after
+    // the user has panned/zoomed. See applyInitialPremiumNearbyFramingIfNeeded()'s own header.
+    @State private var premiumNearbyFramingState: PremiumNearbyFramingState = .pending
     @Environment(StationLocationManager.self) private var locationManager
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
     @Environment(RecentLiveStationCache.self) private var recentLiveStationCache
@@ -322,6 +326,136 @@ struct StationsView: View {
         case .merged(let saved, let nearby):
             return validLive(nearby) ?? validSaved(saved)
         }
+    }
+
+    /// PR #53 — the premium map's one-time initial nearby framing: user location + nearest
+    /// available premium station, at least the minimumLocalRadiusMiles floor, expanding
+    /// farther only if the nearest station requires it. `.pending` means no framing has
+    /// happened yet this "current-location session"; `.framedWithoutStation` means the
+    /// framing already ran with no station available (the ~10-mile user-only fallback) and
+    /// may still upgrade exactly once if a station later arrives; `.framedWithStation` means
+    /// a real station was already included and this feature never touches the camera again —
+    /// user pan/zoom, Recenter, Show All, swipe-follow, and Favorites selection all remain
+    /// completely unaffected and untouched by this state.
+    private enum PremiumNearbyFramingState: Equatable {
+        case pending
+        case framedWithoutStation
+        case framedWithStation
+    }
+
+    /// Minimum useful local viewport for the initial premium-map framing — a floor, never a
+    /// ceiling (section 10: "Do NOT enforce a maximum 10-mile view that cuts off the
+    /// station"). Not survey-grade; just a stable ~10-mile-radius visual minimum, per the
+    /// task's own explicit permission to use MapKit/CoreLocation geometry rather than a
+    /// hand-rolled degrees-per-mile constant for correctness across latitudes.
+    private static let initialFramingMinimumRadiusMiles = 10.0
+    private static let metersPerMile = 1609.34
+
+    /// PR #53 — called from every place a fresh coordinate or a fresh nearby-fetch result
+    /// could newly satisfy this one-time framing (StationsView.onAppear,
+    /// .onChange(of: locationManager.latestCoordinate), performAutomaticNearbySearchIfNeeded(),
+    /// and fetchLiveStations(at:limit:)'s completion) — safe to call redundantly from
+    /// multiple sites since premiumNearbyFramingState makes every call after the first a
+    /// cheap no-op. Applies ONLY to the premium map's ordinary current-location presentation
+    /// (never Classic, never a typed-location/Trip-Planner search, which keeps its own
+    /// existing centerMap(on:) camera behavior in searchStationsNearTypedLocation()
+    /// untouched). Never sets selectedStationID/selectedMapStationID — the nearest station's
+    /// pin is merely visible, no card opens automatically. No network, location, or cache
+    /// call of its own; a pure camera-region computation from whatever premiumStationMapItems
+    /// already holds at the moment it's called.
+    private func applyInitialPremiumNearbyFramingIfNeeded() {
+        guard usesPremiumStationsMapPresentation else { return }
+        guard stationSearchSource == .currentLocation else { return }
+        guard premiumNearbyFramingState != .framedWithStation else { return }
+        // Mirrors recenterMap()'s own existing "latestCoordinate + isAuthorizedForUserLocation"
+        // pairing — a cached coordinate from before authorization was revoked should not be
+        // treated as a usable "current" location for this framing either.
+        guard locationManager.isAuthorizedForUserLocation,
+              let userCoordinate = locationManager.latestCoordinate?.clCoordinate else { return }
+
+        let nearestStation = nearestPremiumStation(to: userCoordinate)
+        if premiumNearbyFramingState == .framedWithoutStation, nearestStation == nil {
+            // Already showed the no-station fallback; nothing new to upgrade to yet.
+            return
+        }
+
+        let coordinates = [userCoordinate] + (nearestStation.map { [$0.coordinate] } ?? [])
+        let region = initialFramingRegion(for: coordinates)
+
+        withAnimation {
+            mapPosition = .region(region)
+        }
+        premiumNearbyFramingState = nearestStation == nil ? .framedWithoutStation : .framedWithStation
+    }
+
+    /// Geographically nearest premiumStationMapItems entry to the given coordinate — live-only,
+    /// saved-only, and merged all included, as long as the item has a valid map coordinate
+    /// (exactly what premiumStationMapItems already guarantees). Deliberately independent of
+    /// ProStationMapItem.distanceMiles, which is nil for every savedOnly station and can be
+    /// stale/zero for a live station outside the one cache-rehydration path that recomputes it
+    /// — CLLocation distance from each item's own coordinate is the only source of truth that
+    /// is correct for every kind, every time.
+    private func nearestPremiumStation(to userCoordinate: CLLocationCoordinate2D) -> ProStationMapItem? {
+        let userLocation = CLLocation(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude)
+        return premiumStationMapItems.min { lhs, rhs in
+            let lhsDistance = CLLocation(latitude: lhs.coordinate.latitude, longitude: lhs.coordinate.longitude)
+                .distance(from: userLocation)
+            let rhsDistance = CLLocation(latitude: rhs.coordinate.latitude, longitude: rhs.coordinate.longitude)
+                .distance(from: userLocation)
+            return lhsDistance < rhsDistance
+        }
+    }
+
+    /// Bounding box over 1-2 coordinates (user alone, or user + nearest station) using the
+    /// exact same padding shape already established by fitAllStations()/recenterMap() (0.35x
+    /// padding factor, 0.05° floor) — then enforces the ~10-mile-radius minimum span on top,
+    /// so a very close station (or no station at all) never zooms in tighter than that floor,
+    /// while a station that genuinely needs more room (>10 miles away) always wins via the
+    /// plain max(), never getting cut off.
+    private func initialFramingRegion(for coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion {
+        let latitudes = coordinates.map(\.latitude)
+        let longitudes = coordinates.map(\.longitude)
+        guard
+            let minLatitude = latitudes.min(), let maxLatitude = latitudes.max(),
+            let minLongitude = longitudes.min(), let maxLongitude = longitudes.max()
+        else {
+            return MKCoordinateRegion(center: Self.neutralUSRegion.center, span: Self.neutralUSRegion.span)
+        }
+
+        let center = CLLocationCoordinate2D(
+            latitude: (minLatitude + maxLatitude) / 2,
+            longitude: (minLongitude + maxLongitude) / 2
+        )
+        let latitudePadding = max((maxLatitude - minLatitude) * 0.35, 0.05)
+        let longitudePadding = max((maxLongitude - minLongitude) * 0.35, 0.05)
+        let paddedSpan = MKCoordinateSpan(
+            latitudeDelta: (maxLatitude - minLatitude) + latitudePadding,
+            longitudeDelta: (maxLongitude - minLongitude) + longitudePadding
+        )
+
+        let minimumSpan = minimumLocalSpan(atLatitude: center.latitude, longitude: center.longitude)
+        return MKCoordinateRegion(
+            center: center,
+            span: MKCoordinateSpan(
+                latitudeDelta: max(paddedSpan.latitudeDelta, minimumSpan.latitudeDelta),
+                longitudeDelta: max(paddedSpan.longitudeDelta, minimumSpan.longitudeDelta)
+            )
+        )
+    }
+
+    /// The ~10-mile-radius minimum viewport, expressed as a span at the given center. Uses
+    /// MapKit's own meters-based region initializer (latitudinalMeters/longitudinalMeters)
+    /// rather than a hand-rolled degrees-per-mile conversion, so the correction for longitude
+    /// degrees representing fewer real-world miles at higher latitudes is handled by MapKit
+    /// itself instead of a manually-reasoned trig approximation.
+    private func minimumLocalSpan(atLatitude latitude: Double, longitude: Double) -> MKCoordinateSpan {
+        let diameterMeters = Self.initialFramingMinimumRadiusMiles * 2 * Self.metersPerMile
+        let region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            latitudinalMeters: diameterMeters,
+            longitudinalMeters: diameterMeters
+        )
+        return region.span
     }
 
     /// Same saved/community price hierarchy StationRowCard/LiveStationRowCard already display —
@@ -639,7 +773,16 @@ struct StationsView: View {
             // instead of only catching up after a second pass. See
             // hydrateFromRecentSearchCacheIfNeeded()'s own header.
             hydrateFromRecentSearchCacheIfNeeded()
-            recenterMap()
+            // PR #53 — recenterMap()'s fit-all-saved-stations bounding box can zoom the
+            // premium map out across the state/country around a single far-away saved
+            // station (section 7's explicit "far saved station must not distort initial
+            // view"); the premium map gets its own user+nearest-station framing instead.
+            // Classic keeps recenterMap() exactly as before.
+            if usesPremiumStationsMapPresentation {
+                applyInitialPremiumNearbyFramingIfNeeded()
+            } else {
+                recenterMap()
+            }
             refreshCommunityPricePreviews()
             // UX improvement — auto-populate the Nearby E85 feed on tab open instead of
             // requiring a manual "Find Nearby E85" tap every time. See
@@ -691,6 +834,17 @@ struct StationsView: View {
             // equivalent reset here — SwiftUI already tears it down when this if/else branch
             // swaps away from it and creates it fresh (default @State) on the way back.
             selectedMapStationID = nil
+            // PR #53 — a fresh entry into the premium presentation (Classic -> Map, or Pro
+            // regained while this view stays mounted) deserves its own fresh initial framing,
+            // per section 14's explicit reset trigger. Immediately re-applies (mirroring
+            // clearTrip()'s identical reset-then-reapply pattern below) rather than only
+            // arming the flag for some later trigger — otherwise, if a coordinate and premium
+            // items are already known at the moment this transition happens (e.g. Pro just
+            // regained via a purchase sheet, with no new location update or fetch about to
+            // fire on its own), the map would keep showing whatever stale camera the OTHER
+            // presentation last left it at until some unrelated trigger happened to fire.
+            premiumNearbyFramingState = .pending
+            applyInitialPremiumNearbyFramingIfNeeded()
         }
         .onChange(of: searchText) { _, _ in
             refreshCommunityPricePreviews()
@@ -700,7 +854,16 @@ struct StationsView: View {
         }
         .onChange(of: locationManager.latestCoordinate) { _, coordinate in
             guard let coordinate else { return }
-            centerMap(on: coordinate.clCoordinate)
+            // PR #53 — an ordinary location update must not let the premium map's
+            // established camera get overwritten by a tight, user-only recenter every time a
+            // fresh fix arrives; the one-time initial framing (or its no-station-yet ->
+            // has-station upgrade) is the only thing this triggers for the premium map now.
+            // Classic keeps centerMap(on:) exactly as before.
+            if usesPremiumStationsMapPresentation {
+                applyInitialPremiumNearbyFramingIfNeeded()
+            } else {
+                centerMap(on: coordinate.clCoordinate)
+            }
             if pendingLiveSearchReason != nil {
                 fetchLiveStations(at: coordinate.clCoordinate)
             }
@@ -1542,6 +1705,12 @@ struct StationsView: View {
         stationSearchSource = .currentLocation
         stationListFilter = .all
         AppHaptics.selection()
+        // PR #53 — returning to current-location mode after an explicit typed-location
+        // search deserves a fresh initial framing (section 14); liveStations was just
+        // cleared above, so this immediately reapplies the ~10-mile user-only fallback view
+        // rather than leaving the old typed-location camera in place.
+        premiumNearbyFramingState = .pending
+        applyInitialPremiumNearbyFramingIfNeeded()
     }
 
     private func searchStationsNearTypedLocation() {
@@ -1875,6 +2044,14 @@ struct StationsView: View {
     private func searchNearbyStations() {
         guard isSearchingLive == false else { return }
         liveSearchError = nil
+        // PR #53 — only reset the initial-framing state when this call is actually resuming
+        // current-location mode from an active typed-location search (section 14); an
+        // ordinary manual refresh that was already in current-location mode must not reset
+        // it, or every tap of this button (also the premium map's own header refresh) would
+        // re-snap the camera, violating the "no repeated snapping" requirement.
+        if case .typedLocation = stationSearchSource {
+            premiumNearbyFramingState = .pending
+        }
         stationSearchSource = .currentLocation
 
         if let coordinate = locationManager.latestCoordinate {
@@ -1933,7 +2110,12 @@ struct StationsView: View {
             guard isValidCoordinate(latitude: userCoordinate.latitude, longitude: userCoordinate.longitude) else {
                 return
             }
-            centerMap(on: userCoordinate)
+            // PR #53 — same premium/Classic split as the latestCoordinate onChange above.
+            if usesPremiumStationsMapPresentation {
+                applyInitialPremiumNearbyFramingIfNeeded()
+            } else {
+                centerMap(on: userCoordinate)
+            }
             fetchLiveStations(at: userCoordinate)
             refreshPumpDetectionMonitoredStations(reason: "Stations tab opened")
         } else if locationManager.authorizationDenied == false {
@@ -2183,6 +2365,11 @@ struct StationsView: View {
                 }
                 refreshCommunityPricePreviews()
             }
+            // PR #53 — after either outcome, give the premium map's one-time initial nearby
+            // framing a chance to run/upgrade now that liveStations reflects this fetch's
+            // actual result (empty or not). A no-op via its own internal guards for Classic, a
+            // typed-location search, or a framing that already included a station.
+            applyInitialPremiumNearbyFramingIfNeeded()
             isSearchingLive = false
             liveSearchTask = nil
         }
