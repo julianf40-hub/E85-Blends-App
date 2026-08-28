@@ -2201,6 +2201,18 @@ struct StationsView: View {
     ///      The existing "Find Nearby E85" button (and its alert, when tapped) is unchanged.
     ///   2. Gated by shouldPerformAutomaticNearbySearch()'s cooldown, so switching tabs
     ///      repeatedly reuses the existing results instead of re-fetching every time.
+    ///   3. 2.3.2 release-prep fix — not-yet-determined authorization ALSO silently no-ops,
+    ///      exactly like denied/restricted, rather than requesting user location. Only
+    ///      `locationManager.isAuthorizedForUserLocation` (i.e. already `.authorizedWhenInUse`/
+    ///      `.authorizedAlways`) may request a fresh fix from this automatic trigger — mirroring
+    ///      CalculatorView.requestPumpModeLocationIfNeeded()'s existing guard for the identical
+    ///      reason. Stations became the default launch tab in 2.3.2 (PR #55), so this function
+    ///      now fires unconditionally on first appearance after onboarding/every cold launch,
+    ///      not just when a user chose to tap into Stations — an automatic, non-tap-initiated
+    ///      trigger must never itself produce the OS location-permission dialog. The explicit
+    ///      "Find Nearby E85" button (searchNearbyStations(), above) is a real user action and
+    ///      is unchanged: it still requests location — and therefore still prompts — regardless
+    ///      of authorization status, including `.notDetermined`.
     private func performAutomaticNearbySearchIfNeeded() {
         guard shouldPerformAutomaticNearbySearch() else { return }
 
@@ -2217,11 +2229,13 @@ struct StationsView: View {
             }
             fetchLiveStations(at: userCoordinate)
             refreshPumpDetectionMonitoredStations(reason: "Stations tab opened")
-        } else if locationManager.authorizationDenied == false {
+        } else if locationManager.isAuthorizedForUserLocation {
             pendingLiveSearchReason = .automaticNearby
             locationManager.requestUserLocation()
         }
-        // authorizationDenied == true: intentionally silent — see header comment above.
+        // Denied/restricted, or not yet determined: intentionally silent — see header comment
+        // above. A not-yet-determined user must take an explicit action (e.g. "Find Nearby
+        // E85") before this automatic tab-open trigger may prompt for location.
     }
 
     /// Stations instant-loading foundation (2.3.2, PR A) — hydrates `liveStations` synchronously
