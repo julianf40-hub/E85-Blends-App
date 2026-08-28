@@ -136,6 +136,20 @@ final class SubscriptionManager {
     /// Public-facing alias used by feature code and views.
     var isProUser: Bool { isPro }
 
+    /// 85Blends 2.3.2 — true only until this process's first-ever authoritative RevenueCat
+    /// CustomerInfo answer arrives (or is determined unreachable). A presentation that gates on
+    /// `isProUser` alone cannot tell "not yet resolved" apart from "resolved to Free," since both
+    /// read as `false` — this is the separate question feature code should check first, before
+    /// ever treating an unresolved entitlement as Free. Never itself an entitlement signal: it
+    /// says nothing about whether the user is Pro, only whether that answer has arrived yet. See
+    /// RevenueCatSubscriptionService.isInitialEntitlementResolutionPending's own header for the
+    /// full rationale and forward-only lifecycle. Deliberately NOT gated behind the Developer Pro
+    /// Override (unlike `isPro` above) — the override forces an entitlement value, it does not
+    /// change whether RevenueCat itself has answered yet.
+    var isInitialEntitlementResolutionPending: Bool {
+        RevenueCatSubscriptionService.shared.isInitialEntitlementResolutionPending
+    }
+
     // MARK: - Feature access (all derived from `isPro`)
     var canAccessTripPlanner: Bool       { isPro }
     var canAccessAdvancedAnalytics: Bool { isPro }

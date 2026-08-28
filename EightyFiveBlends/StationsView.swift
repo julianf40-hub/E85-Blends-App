@@ -754,7 +754,20 @@ struct StationsView: View {
                 // renders the exact same ScrollView content as before, byte-for-byte unchanged
                 // below. This `if/else` is the only structural change to this GeometryReader —
                 // see usesPremiumStationsMapPresentation's own header.
-                if usesPremiumStationsMapPresentation {
+                // 85Blends 2.3.2 — entitlement-presentation fix: while this process's first
+                // RevenueCat CustomerInfo answer hasn't arrived yet, "not Pro" is unknown, not
+                // Free. Rendering the `else` (Classic/Free) branch below in that window is
+                // exactly the bug this checks first — a neutral, entitlement-agnostic loading
+                // shell instead, with NO Free-plan messaging, NO Pro-only controls, and NO ad
+                // placement (see stationsEntitlementResolvingView's own header). This is purely a
+                // presentation gate: .onAppear/.onChange below (hydration, GPS prewarm,
+                // automatic nearby search, community pricing) are attached to this view's outer
+                // NavigationStack, not nested inside this if/else, so none of that PR #54/#53
+                // pipeline work is delayed by this branch existing.
+                if SubscriptionManager.shared.isInitialEntitlementResolutionPending {
+                    stationsEntitlementResolvingView
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else if usesPremiumStationsMapPresentation {
                     premiumStationsMapView
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 } else {
@@ -1050,6 +1063,35 @@ struct StationsView: View {
             }
 
         }
+    }
+
+    /// 85Blends 2.3.2 — the ONLY thing rendered while
+    /// SubscriptionManager.shared.isInitialEntitlementResolutionPending is true (see
+    /// stationsContent's own header on the if/else this belongs to). Deliberately neutral: no
+    /// "Unlock 85Blends Pro"/locked Trip Planner (would misrepresent an unresolved entitlement as
+    /// Free — proFeaturesSection is never reached from this branch), no premium-only controls
+    /// (would misrepresent it as Pro — premiumStationsMapView is never reached either), and no
+    /// NativeAdView (an ad must never be requested merely because isProUser currently defaults to
+    /// false while entitlement is still unknown). Reuses stationHeaderIcon verbatim — plain
+    /// branding, no entitlement logic of its own. Normally on screen for only a few frames; none
+    /// of the station-cache/GPS/NREL/community-price pipeline is gated on this view existing —
+    /// see this branch's own comment in stationsContent.
+    private var stationsEntitlementResolvingView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            stationHeaderIcon
+            Text("E85 Stations")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            ProgressView()
+                .tint(AppTheme.Colors.primaryGreen)
+            Text("Loading Stations…")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.Colors.charcoal)
     }
 
     private var stationHeaderIcon: some View {
