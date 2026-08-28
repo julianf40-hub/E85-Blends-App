@@ -127,9 +127,17 @@ struct ProStationMapPin: View {
                     .background(Circle().fill(AppTheme.Colors.oledBackground))
                     .offset(x: 12, y: -12)
             } else if kind != .liveOnly {
+                // 2.3.2 release-prep fix — oledBackground isn't dark-only (it resolves to a
+                // near-white #F5F7FA circle in Light mode), so a hardcoded .white icon here was
+                // effectively invisible (~1.02:1 contrast) in the app's default Light appearance,
+                // silently defeating this badge's whole purpose: a non-color cue distinguishing
+                // a saved-but-unfavorited pin from a live-only one for colorblind/low-vision
+                // users. textPrimary is oledBackground's exact light/dark inverse (near-black in
+                // Light, white in Dark/OLED), so this restores Light-mode contrast with zero
+                // change to the already-correct Dark/OLED appearance.
                 Image(systemName: "bookmark.fill")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
                     .padding(2)
                     .background(Circle().fill(AppTheme.Colors.oledBackground))
                     .offset(x: 12, y: -12)
