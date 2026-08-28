@@ -150,6 +150,30 @@ final class RevenueCatSubscriptionService {
         case failed(String)
     }
 
+    /// 85Blends 2.3.2 — describes ONLY whether this process has received its first-ever
+    /// authoritative CustomerInfo answer, never whether the user is Pro (see `revenueCatIsPro`
+    /// for that — a deliberately separate question, per this PR's own explicit requirement that
+    /// entitlement authority never change). Fixes a real cold-launch bug: `revenueCatIsPro`
+    /// starts `false` and `configureIfNeeded()`'s CustomerInfo fetch is asynchronous, so the very
+    /// first SwiftUI frame could previously only ever see "not Pro" and had no way to tell an
+    /// unresolved entitlement apart from a genuinely Free one — Stations (now the default launch
+    /// tab) would flash its Free/Classic UI before swapping to the Pro premium map once RevenueCat
+    /// resolved. `isInitialEntitlementResolutionPending` below is what callers (StationsView, via
+    /// SubscriptionManager) should actually read to avoid presenting "unknown" as "Free."
+    enum InitialEntitlementResolutionState: Equatable {
+        case notStarted
+        case resolving
+        /// Reached exactly once per process, forward-only, on the FIRST successful fetch,
+        /// FIRST failed fetch, or missing/blank SDK key alike (see `configureIfNeeded()`'s
+        /// missing-key branch and `markInitialEntitlementResolutionCompleteIfNeeded()`) — never
+        /// re-entered afterward, so a later foreground refresh, purchase, restore, or
+        /// customerInfoStream update can never re-arm a "still resolving" presentation. A
+        /// missing key or a failed first fetch still reaches `.resolved` (with `revenueCatIsPro`
+        /// at its safe `false` default) rather than leaving Stations behind an indefinite
+        /// loading shell — see sections 7-8 of this feature's task.
+        case resolved
+    }
+
     // MARK: - Observable state (now authoritative — see this type's header)
 
     private(set) var configurationState: ConfigurationState = .notConfigured
@@ -157,6 +181,7 @@ final class RevenueCatSubscriptionService {
     /// `customerInfo.entitlements["pro"]?.isActive == true`. `SubscriptionManager.isPro` reads
     /// this directly (Internal/Debug may still layer the Developer Override on top).
     private(set) var revenueCatIsPro: Bool = false
+    private(set) var initialEntitlementResolutionState: InitialEntitlementResolutionState = .notStarted
     private(set) var customerInfoLastUpdatedAt: Date?
     private(set) var maskedAppUserID: String?
     private(set) var packageAvailability: PackageAvailability = .notLoaded
@@ -167,6 +192,15 @@ final class RevenueCatSubscriptionService {
     private(set) var lastErrorDescription: String?
 
     var isConfigured: Bool { configurationState == .configured }
+
+    /// True until this process's FIRST authoritative CustomerInfo answer arrives (or is
+    /// determined unreachable — see `InitialEntitlementResolutionState.resolved`'s own header).
+    /// This is the "have we resolved yet" question — completely independent of `revenueCatIsPro`
+    /// (the "is the user Pro" question) — so a presentation gate can tell "entitlement unknown"
+    /// apart from "entitlement known to be Free," which `revenueCatIsPro == false` alone cannot.
+    var isInitialEntitlementResolutionPending: Bool {
+        initialEntitlementResolutionState != .resolved
+    }
 
     /// The resolved, validated monthly package — non-nil only once `packageAvailability` is
     /// `.ready`. This is what `SubscriptionManager.purchasePro()` passes to `purchase(_:)`.
@@ -202,6 +236,10 @@ final class RevenueCatSubscriptionService {
             #if DEBUG || INTERNAL_BUILD
             print("[85Blends][RevenueCat] Not configured: SDK key not configured.")
             #endif
+            // No SDK key means no CustomerInfo fetch will ever happen this process — the
+            // initial resolution must not hang a presentation gate behind an indefinite loading
+            // shell (section 8). `revenueCatIsPro` stays at its safe `false` default.
+            initialEntitlementResolutionState = .resolved
             return
         }
 
@@ -220,7 +258,14 @@ final class RevenueCatSubscriptionService {
         configurationState = .configured
         maskedAppUserID = Self.maskedAppUserID(from: Purchases.shared.appUserID)
         startObservingCustomerInfo()
+        initialEntitlementResolutionState = .resolving
 
+        // CustomerInfo and offerings load concurrently, exactly as before this feature —
+        // Stations only ever needs the entitlement determination (CustomerInfo), never the
+        // paywall's package/offering, to know what to render (section 10). Neither `await`
+        // here waits on the other; `markInitialEntitlementResolutionCompleteIfNeeded()` (called
+        // from inside `refreshCustomerInfoNow()`/`apply(_:)`, not from here) completes as soon
+        // as the CustomerInfo half finishes, regardless of how long offerings takes.
         async let customerInfoLoad: Void = refreshCustomerInfoNow()
         async let offeringsLoad: Void = loadOfferings()
         _ = await (customerInfoLoad, offeringsLoad)
@@ -249,6 +294,11 @@ final class RevenueCatSubscriptionService {
         isSandboxEnvironment = entitlement?.isSandbox
         customerInfoLastUpdatedAt = Date()
         maskedAppUserID = Self.maskedAppUserID(from: Purchases.shared.appUserID)
+        // Covers every success path that produces a real CustomerInfo answer — a refresh, a
+        // purchase, a restore, and every customerInfoStream emission alike — so whichever one
+        // happens to complete first this process is what resolves the initial state. A no-op
+        // once already resolved (see the helper's own header).
+        markInitialEntitlementResolutionCompleteIfNeeded()
         print("[85Blends][RevenueCat] CustomerInfo applied: pro=\(revenueCatIsPro)")
     }
 
@@ -266,7 +316,25 @@ final class RevenueCatSubscriptionService {
             // `revenueCatIsProAfterFailedRefresh(previousValue:)` below: a transient refresh
             // failure must never clear a previously-established entitlement.
             revenueCatIsPro = Self.revenueCatIsProAfterFailedRefresh(previousValue: revenueCatIsPro)
+            // A terminal failure on the FIRST process-launch refresh must still end the initial
+            // resolution window (section 7) — with no authoritative answer, `revenueCatIsPro`
+            // simply stays at its safe `false` (Free) default rather than leaving Stations
+            // behind an indefinite loading shell. A no-op on every later (e.g. foreground)
+            // refresh failure, since this is already `.resolved` by then.
+            markInitialEntitlementResolutionCompleteIfNeeded()
         }
+    }
+
+    /// Forward-only, idempotent completion of the initial entitlement-resolution window (section
+    /// 6) — called from every path that produces a first-ever authoritative answer OR determines
+    /// one is unreachable this process: a successful `apply(_:)`, a failed initial
+    /// `refreshCustomerInfoNow()`, and a missing/blank SDK key in `configureIfNeeded()`. Never
+    /// reverses `.resolved` back to `.resolving`/`.notStarted` — see
+    /// `isInitialEntitlementResolutionPending`'s own header for why a later foreground refresh,
+    /// purchase, restore, or stream update must never re-arm a "still resolving" presentation.
+    private func markInitialEntitlementResolutionCompleteIfNeeded() {
+        guard initialEntitlementResolutionState != .resolved else { return }
+        initialEntitlementResolutionState = .resolved
     }
 
     // MARK: - Offering / package loading

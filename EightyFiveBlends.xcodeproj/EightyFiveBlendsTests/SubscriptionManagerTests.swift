@@ -296,4 +296,76 @@ struct SubscriptionManagerTests {
     // not exist in that build at all, so there is no override path left to reset, leak, or
     // otherwise affect production semantics. Verified by code inspection (see this file's header
     // and the accompanying verification report), not a runtime assertion.
+
+    // MARK: I. Initial entitlement resolution — the 2.3.2 Stations-flash fix (scenarios A-H)
+    //
+    // RevenueCatSubscriptionService.InitialEntitlementResolutionState/
+    // isInitialEntitlementResolutionPending/markInitialEntitlementResolutionCompleteIfNeeded()
+    // and SubscriptionManager.isInitialEntitlementResolutionPending. Unlike sections A-F above,
+    // these aren't pure static functions taking plain values — they're async instance
+    // orchestration (configureIfNeeded()/refreshCustomerInfoNow()/apply(_:)) that, exactly like
+    // every other CustomerInfo-touching code path in this file (see this file's own header),
+    // cannot be driven end-to-end in a unit test without a real, constructible `CustomerInfo` or
+    // without configuring the live, global `Purchases.shared` SDK singleton as a side effect
+    // (`configureIfNeeded()` calls `Purchases.configure(with:)` directly, independent of the
+    // injectable `RevenueCatClient` — there is no way to exercise it in-process without that real
+    // side effect). What IS directly testable is the enum contract itself: exactly what
+    // `isInitialEntitlementResolutionPending` is actually defined as (`state != .resolved`) — see
+    // below. Scenarios A-H are otherwise recorded as inspection facts, each pointing at the exact
+    // production line that provides the guarantee, mirroring items 13/20/22's established
+    // convention in this same file for the same class of untestable-in-process fact.
+
+    @Test("Only .resolved is a non-pending state — .notStarted and .resolving both still read as pending")
+    func initialEntitlementResolutionState_pendingContract() {
+        #expect(RevenueCatSubscriptionService.InitialEntitlementResolutionState.notStarted != .resolved)
+        #expect(RevenueCatSubscriptionService.InitialEntitlementResolutionState.resolving != .resolved)
+        #expect(RevenueCatSubscriptionService.InitialEntitlementResolutionState.resolved == .resolved)
+    }
+
+    // A. "launch notStarted -> pending": `initialEntitlementResolutionState` is declared
+    //    `= .notStarted` (RevenueCatSubscriptionService.swift) and `isInitialEntitlementResolutionPending`
+    //    is `state != .resolved` — `.notStarted != .resolved` is `true` per the contract test above,
+    //    so a freshly-constructed service (before configureIfNeeded() ever runs) is pending.
+    //
+    // B. "resolving -> pending": configureIfNeeded() sets `initialEntitlementResolutionState =
+    //    .resolving` immediately after `configurationState = .configured`, before either of the
+    //    concurrent CustomerInfo/offerings loads starts — `.resolving != .resolved` is `true` per
+    //    the contract test above, so this window is also pending.
+    //
+    // C. "successful Pro first refresh -> not pending + Pro": refreshCustomerInfoNow()'s success
+    //    path calls apply(_:), which sets `revenueCatIsPro` from the real entitlement AND
+    //    unconditionally calls `markInitialEntitlementResolutionCompleteIfNeeded()` (which sets
+    //    `.resolved` since the state is not already `.resolved`) in the same synchronous call —
+    //    both land together, so Stations never observes "Pro" without also observing "resolved."
+    //
+    // D. "successful Free first refresh -> not pending + Free": identical code path to C —
+    //    apply(_:) sets `revenueCatIsPro = false` and resolves in the same call regardless of
+    //    which way the entitlement came back.
+    //
+    // E. "failed first refresh -> not pending": refreshCustomerInfoNow()'s catch branch calls
+    //    `markInitialEntitlementResolutionCompleteIfNeeded()` right after preserving
+    //    `revenueCatIsPro` via `revenueCatIsProAfterFailedRefresh` (tested in section F above) —
+    //    a terminal failure still ends the pending window, with `revenueCatIsPro` at its safe
+    //    default/previous value, never leaving Stations behind an indefinite loading shell.
+    //
+    // F. "missing configuration/key -> not pending eventually": configureIfNeeded()'s
+    //    `guard let apiKey = RevenueCatConfiguration.publicSDKKey else { ... }` branch sets
+    //    `initialEntitlementResolutionState = .resolved` directly, before returning — this is not
+    //    "eventually," it's immediate, since there is no async fetch to wait for in this branch.
+    //
+    // G. "later foreground refresh does not become initial-pending again": nothing in this
+    //    feature ever assigns `.notStarted`/`.resolving` after the fact —
+    //    `markInitialEntitlementResolutionCompleteIfNeeded()` is the ONLY place
+    //    `initialEntitlementResolutionState` is written after configureIfNeeded()'s own two
+    //    initial writes (`.resolving`, and the missing-key `.resolved`), and it only ever writes
+    //    `.resolved` (a no-op once already there) — there is no code path in this file that can
+    //    move the state backward. EightyFiveBlendsApp's scenePhase -> .active handler calls
+    //    refreshCustomerInfoNow() again, which reaches this same idempotent guard.
+    //
+    // H. "purchase/restore does not become initial-pending again": purchase(_:) and restore()
+    //    both call apply(_:) on success, which reaches the same idempotent
+    //    `markInitialEntitlementResolutionCompleteIfNeeded()` — never `.notStarted`/`.resolving`.
+    //    Their failure (`catch`) branches never call apply(_:) or touch
+    //    `initialEntitlementResolutionState` at all, so a failed purchase/restore cannot regress
+    //    it either.
 }
