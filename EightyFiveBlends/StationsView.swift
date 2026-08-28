@@ -589,23 +589,18 @@ struct StationsView: View {
             guard let coordinate = premiumMapCoordinate(for: item) else { return nil }
             let price = premiumPricePresentation(for: item)
             let kind: ProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
-            // 2.3.2 — full postal address for Share (section 10-13), built from the exact same
-            // saved-preferred-over-nearby field precedence displayAddress/displayCity/
-            // displayState/displayZip above already establish for merged items — no separate,
-            // invented merge policy just for this. Presentation-only: never touches the
-            // persisted station model.
-            let shareAddress = StationShareContent.fullAddress(
-                street: item.displayAddress,
-                city: item.displayCity,
-                state: item.displayState,
-                zip: item.displayZip
-            )
+            // 2.3.2 gate fix — full postal address for Share, using StationDisplayItem's own
+            // per-field, saved-preferred-but-nearby-completes Share resolution (see
+            // StationDisplayItem.shareAddress) rather than rebuilding from displayAddress/
+            // displayCity/displayState/displayZip here, which would silently drop a merged
+            // item's fuller nearby-record fields whenever the saved record has that field
+            // present but empty. Presentation-only: never touches the persisted station model.
             return ProStationMapItem(
                 selection: premiumSelection(for: item),
                 displayName: item.displayName,
                 coordinate: coordinate,
                 displayAddress: item.displayAddress,
-                shareAddress: shareAddress,
+                shareAddress: item.shareAddress,
                 distanceMiles: item.distanceMiles,
                 price: price,
                 isSaved: item.isSaved,
@@ -1330,7 +1325,10 @@ struct StationsView: View {
                 updatePriceAction: { beginPriceUpdate(for: saved) },
                 favoriteAction: { toggleFavorite(saved) },
                 editAction: { sheetStation = saved },
-                deleteAction: { stationPendingDeletion = saved }
+                deleteAction: { stationPendingDeletion = saved },
+                // No live counterpart to borrow a missing field from — Share derives the
+                // address purely from `saved`, unchanged from this feature's original behavior.
+                shareAddressOverride: nil
             )
         case .nearbyOnly(let live):
             LiveStationRowCard(
@@ -1361,7 +1359,12 @@ struct StationsView: View {
                     updatePriceAction: { beginPriceUpdate(for: saved) },
                     favoriteAction: { toggleFavorite(saved) },
                     editAction: { sheetStation = saved },
-                    deleteAction: { stationPendingDeletion = saved }
+                    deleteAction: { stationPendingDeletion = saved },
+                    // 2.3.2 gate fix — a merged item: pass the per-field-resolved Share
+                    // address (item.shareAddress) so a saved record missing e.g. city/ZIP still
+                    // shares the fuller address the matching live record has, rather than the
+                    // truncated one `saved` alone would produce.
+                    shareAddressOverride: item.shareAddress
                 )
             }
         }
@@ -3178,6 +3181,24 @@ enum StationShareContent {
             .joined(separator: ", ")
     }
 
+    /// 2.3.2 gate fix — Share-specific, per-field resolution for a merged saved+live station:
+    /// "prefer a non-empty saved value, otherwise fall back to a non-empty nearby value."
+    /// `saved`/`nearby` describe the same physical station, so borrowing a missing field from
+    /// one to complete the other invents nothing. A whitespace-only saved value (e.g. `"   "`)
+    /// is treated the same as an absent one so it cannot silently suppress a valid nearby
+    /// fallback — this is the exact gap StationDisplayItem's plain `saved ?? nearby ?? ""`
+    /// display* properties have, since `??` only falls through on `nil`, never on
+    /// present-but-empty. Deliberately NOT used for those display* properties themselves — this
+    /// is Share-only; on-screen presentation intentionally keeps preferring the saved record
+    /// wholesale. Pure; never mutates either station.
+    static func preferredValue(saved: String?, nearby: String?) -> String {
+        let trimmedSaved = saved?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedSaved.isEmpty == false {
+            return trimmedSaved
+        }
+        return nearby?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
     /// The full deterministic share payload: station name, full postal address (omitted
     /// entirely — never a blank line — when `address` is empty), and the fixed 85Blends App
     /// Store referral footer. `address` is expected already-formatted, typically via
@@ -3262,6 +3283,27 @@ private struct StationDisplayItem: Identifiable {
     /// the same postal-code concept under different field names (see each model's own
     /// declaration). Not previously needed because no on-screen UI showed the ZIP on its own.
     var displayZip: String { savedStation?.zipCode ?? nearbyStation?.zip ?? "" }
+
+    /// 2.3.2 gate fix — the canonical Share address for this item, resolved PER FIELD rather
+    /// than reusing displayAddress/displayCity/displayState/displayZip above wholesale.
+    /// Those display* properties are pre-existing ON-SCREEN presentation semantics that
+    /// intentionally prefer the saved record in full whenever one exists — correct for display,
+    /// but wrong for Share: a saved record with only a street and no city/ZIP would otherwise
+    /// suppress a matching nearby (live) record's fuller address, even though both describe the
+    /// same physical station and Share is meant to send the fullest truthful address available.
+    /// StationShareContent.preferredValue(saved:nearby:) resolves each of street/city/state/zip
+    /// independently — a non-empty (post-trim) saved value wins, an empty or whitespace-only one
+    /// falls back to nearby, and both empty means that field is simply omitted, never invented.
+    /// For a savedOnly or nearbyOnly item this is equivalent to the pre-existing behavior (only
+    /// one side has any data to prefer). Presentation-only; never mutates either station.
+    var shareAddress: String {
+        StationShareContent.fullAddress(
+            street: StationShareContent.preferredValue(saved: savedStation?.address, nearby: nearbyStation?.address),
+            city: StationShareContent.preferredValue(saved: savedStation?.city, nearby: nearbyStation?.city),
+            state: StationShareContent.preferredValue(saved: savedStation?.state, nearby: nearbyStation?.state),
+            zip: StationShareContent.preferredValue(saved: savedStation?.zipCode, nearby: nearbyStation?.zip)
+        )
+    }
 }
 
 private struct StationRowCard: View {
@@ -3272,6 +3314,14 @@ private struct StationRowCard: View {
     let favoriteAction: () -> Void
     let editAction: () -> Void
     let deleteAction: () -> Void
+    /// 2.3.2 gate fix — a pre-resolved Share address for a merged saved+live station (see
+    /// StationDisplayItem.shareAddress), letting Share use the fuller of the two records
+    /// field-by-field instead of `station` (the saved record) alone. `nil` for a true
+    /// saved-only station, where there is no live counterpart to borrow a missing field from —
+    /// `shareAddress` below then falls back to deriving the address purely from `station`,
+    /// unchanged from this feature's original implementation. Presentation-only; never written
+    /// back onto FuelStation.
+    let shareAddressOverride: String?
     @State private var directionsMessage: String?
 
     var body: some View {
@@ -3491,9 +3541,12 @@ private struct StationRowCard: View {
     /// 2.3.2 — the full postal address used for Share, in the plain-text/comma-separated form
     /// meant to be copied elsewhere — deliberately NOT locationLine above, which is this same
     /// data in the on-screen bullet ("•") style meant to be read, not pasted into a navigation
-    /// app.
+    /// app. 2.3.2 gate fix — prefers `shareAddressOverride` (a merged item's fuller,
+    /// per-field-resolved address) when one was supplied; falls back to deriving the address
+    /// purely from `station` (the saved record) when it's nil, exactly as before this fix — the
+    /// correct, and only possible, behavior for a true saved-only station.
     private var shareAddress: String {
-        StationShareContent.fullAddress(street: station.address, city: station.city, state: station.state, zip: station.zipCode)
+        shareAddressOverride ?? StationShareContent.fullAddress(street: station.address, city: station.city, state: station.state, zip: station.zipCode)
     }
 
     private var daysSincePriceUpdate: Int {
