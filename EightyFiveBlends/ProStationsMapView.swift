@@ -68,6 +68,12 @@ struct ProStationMapItem: Identifiable {
     let displayName: String
     let coordinate: CLLocationCoordinate2D
     let displayAddress: String
+    /// 2.3.2 — the full postal address (street, city, state, ZIP) used for Share only, built
+    /// once by StationsView (StationShareContent.fullAddress(street:city:state:zip:)) from the
+    /// same station data displayAddress above already derives from — never the persisted
+    /// station model, never widened for any other purpose. `displayAddress` above (street only)
+    /// remains exactly as it was for the on-screen station-card text.
+    let shareAddress: String
     let distanceMiles: Double?
     let price: PremiumStationPricePresentation
     let isSaved: Bool
@@ -993,13 +999,19 @@ struct ProStationsMapView: View {
                 actionButton(title: item.isFavorite ? "Favorited" : "Favorite", systemImage: item.isFavorite ? "star.fill" : "star", stationName: item.displayName) {
                     onFavorite(item.selection)
                 }
-                // Share the station's LOCATION only (name/address/Maps link) — never the current
-                // E85 price, which can go stale after the message is sent. Native ShareLink, not
-                // a hand-built share menu, so the system decides available destinations; no
-                // network call, no selection/camera/Favorite/price mutation of any kind — see
-                // shareText(for:)'s own header. Available for every kind (saved-only/live-only/
-                // merged) alike; never requires saving/favoriting first.
-                ShareLink(item: Self.shareText(for: item)) {
+                // Share the station's LOCATION only (name + full postal address) — never the
+                // current E85 price, which can go stale after the message is sent, and never a
+                // Maps/coordinate URL (2.3.2 product revision — a plain-text postal address
+                // works with whichever navigation app the recipient prefers, not just Apple
+                // Maps). Native ShareLink, not a hand-built share menu, so the system decides
+                // available destinations; no network call, no selection/camera/Favorite/price
+                // mutation of any kind. Same StationShareContent.text(name:address:) formatter
+                // Classic's StationRowCard/LiveStationRowCard use — see StationsView.swift.
+                // Available for every kind (saved-only/live-only/merged) alike; never requires
+                // saving/favoriting first; never gated on entitlement (Share is core, not Pro —
+                // the premium map itself is already the Pro gate, this control adds none of its
+                // own).
+                ShareLink(item: StationShareContent.text(name: item.displayName, address: item.shareAddress)) {
                     actionButtonLabel(title: "Share", systemImage: "square.and.arrow.up")
                 }
                 .accessibilityLabel("Share \(item.displayName)")
@@ -1097,50 +1109,5 @@ struct ProStationsMapView: View {
             actionButtonLabel(title: title, systemImage: systemImage)
         }
         .accessibilityLabel("\(title) for \(stationName)")
-    }
-
-    // MARK: Share
-
-    /// Builds a stable Apple Maps link to a station's exact coordinate — safely percent-encoded
-    /// via URLComponents/URLQueryItem, never a hand-concatenated, unescaped string, so a station
-    /// name containing "&", "'", "/", or spaces still produces a correctly-formed URL. `ll` is
-    /// the coordinate (formatted to 6 decimal places — effectively exact, and avoids Double's raw
-    /// string interpolation producing an unnecessarily long/odd-looking number); `q` is the
-    /// display name, used by Maps as the pin label/search term. Deliberately no directions
-    /// origin/mode parameter — this is a place/location share, never an automatic route launch
-    /// (see onDirections above, a completely separate, untouched action). `nil` only in the
-    /// practically-unreachable case that URLComponents itself can't encode the given name — see
-    /// shareText(for:)'s own fallback for what happens then.
-    static func appleMapsURL(for item: ProStationMapItem) -> URL? {
-        var components = URLComponents(string: "https://maps.apple.com/")
-        components?.queryItems = [
-            URLQueryItem(name: "ll", value: String(format: "%.6f,%.6f", item.coordinate.latitude, item.coordinate.longitude)),
-            URLQueryItem(name: "q", value: item.displayName),
-        ]
-        return components?.url
-    }
-
-    /// The deterministic text shared for a station's LOCATION: name, address (when known), and
-    /// an Apple Maps link to its exact coordinate, plus a lightweight "Shared from 85Blends"
-    /// attribution. Deliberately excludes price/freshness/community-report age/Saved-Favorite
-    /// status/distance-from-user — those are user-relative or time-sensitive (a shared price can
-    /// read as stale the moment the recipient sees it), while the station's location is the one
-    /// stable thing worth sharing. `item.displayAddress` is the station's street address only
-    /// (StationDisplayItem.displayAddress, forwarded as-is — see StationsView.swift); that's
-    /// sufficient here because the Maps coordinate link already identifies the exact station, so
-    /// this deliberately does not widen ProStationMapItem with city/state/ZIP just for this.
-    /// Never force-unwraps the Maps URL — if appleMapsURL(for:) somehow returns nil, this falls
-    /// back to name + address alone rather than making sharing impossible.
-    static func shareText(for item: ProStationMapItem) -> String {
-        var lines = [item.displayName]
-        if item.displayAddress.isEmpty == false {
-            lines.append(item.displayAddress)
-        }
-        if let mapsURL = appleMapsURL(for: item) {
-            lines.append(mapsURL.absoluteString)
-        }
-        lines.append("")
-        lines.append("Shared from 85Blends")
-        return lines.joined(separator: "\n")
     }
 }

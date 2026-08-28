@@ -589,11 +589,23 @@ struct StationsView: View {
             guard let coordinate = premiumMapCoordinate(for: item) else { return nil }
             let price = premiumPricePresentation(for: item)
             let kind: ProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
+            // 2.3.2 — full postal address for Share (section 10-13), built from the exact same
+            // saved-preferred-over-nearby field precedence displayAddress/displayCity/
+            // displayState/displayZip above already establish for merged items — no separate,
+            // invented merge policy just for this. Presentation-only: never touches the
+            // persisted station model.
+            let shareAddress = StationShareContent.fullAddress(
+                street: item.displayAddress,
+                city: item.displayCity,
+                state: item.displayState,
+                zip: item.displayZip
+            )
             return ProStationMapItem(
                 selection: premiumSelection(for: item),
                 displayName: item.displayName,
                 coordinate: coordinate,
                 displayAddress: item.displayAddress,
+                shareAddress: shareAddress,
                 distanceMiles: item.distanceMiles,
                 price: price,
                 isSaved: item.isSaved,
@@ -3117,6 +3129,76 @@ private enum StationListFilter: String, CaseIterable {
     var title: String { rawValue }
 }
 
+/// 85Blends 2.3.2 — centralized station-share formatting, used identically by the Pro Stations
+/// map's selected-station card (ProStationsMapView.swift) and Classic's StationRowCard/
+/// LiveStationRowCard below, so all three presentation paths produce byte-identical share text
+/// from the same station data — never three competing string-builders. Deliberately internal
+/// (not private): ProStationsMapView.swift is a separate file in the same module/target and
+/// calls this directly, with no project.pbxproj change needed. Pure and stateless: every
+/// function takes plain values and returns a plain String — no network call, no station-model
+/// mutation, no SwiftUI/@State dependency, so it can never fail and never has a navigation/data
+/// side effect regardless of which of the three call sites invokes it.
+enum StationShareContent {
+    /// 85Blends' live App Store listing — fixed, developer-owned text; never generated,
+    /// geocoded, or looked up. Distinct from SubscriptionManager.monthlyID (the in-app
+    /// subscription's StoreKit product identifier) — this is the App Store LISTING url used for
+    /// referral, an unrelated concern.
+    static let appStoreURLString = "https://apps.apple.com/us/app/85blends/id6762037468"
+
+    /// One clean US-style postal address line: "<street>, <city>, <state> <zip>" — never the
+    /// Classic cards' own bullet-separated on-screen style ("<street> • <city>, <state> •
+    /// <zip>"), which reads fine on screen but is awkward to select/copy/paste into a
+    /// navigation app. Omits any empty component and never produces a stray leading/trailing/
+    /// doubled comma or a double space, for every combination of present/absent components (see
+    /// this feature's own static payload tests). Each component is trimmed of leading/trailing
+    /// whitespace before use; the underlying station model itself is never mutated — this is
+    /// formatting only, computed fresh from whatever the caller already has in hand.
+    static func fullAddress(street: String, city: String, state: String, zip: String) -> String {
+        let street = street.trimmingCharacters(in: .whitespacesAndNewlines)
+        let city = city.trimmingCharacters(in: .whitespacesAndNewlines)
+        let state = state.trimmingCharacters(in: .whitespacesAndNewlines)
+        let zip = zip.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // "<city>, <state> <zip>" is built as one unit first (standard US postal punctuation —
+        // a comma between city and state, a space, never a comma, before the ZIP), gracefully
+        // degrading through every partial combination, before being joined to the street.
+        let cityStateZip: String
+        if city.isEmpty == false, state.isEmpty == false {
+            cityStateZip = zip.isEmpty ? "\(city), \(state)" : "\(city), \(state) \(zip)"
+        } else if city.isEmpty == false {
+            cityStateZip = zip.isEmpty ? city : "\(city) \(zip)"
+        } else if state.isEmpty == false {
+            cityStateZip = zip.isEmpty ? state : "\(state) \(zip)"
+        } else {
+            cityStateZip = zip
+        }
+
+        return [street, cityStateZip]
+            .filter { $0.isEmpty == false }
+            .joined(separator: ", ")
+    }
+
+    /// The full deterministic share payload: station name, full postal address (omitted
+    /// entirely — never a blank line — when `address` is empty), and the fixed 85Blends App
+    /// Store referral footer. `address` is expected already-formatted, typically via
+    /// fullAddress(street:city:state:zip:) above. Deliberately excludes price, distance, and
+    /// Saved/Favorite state — all user-relative or time-sensitive — and deliberately excludes
+    /// any map/coordinate URL: the plain-text postal address is the universal, navigation-app-
+    /// agnostic location representation; the recipient chooses whichever app (Apple Maps,
+    /// Google Maps, Waze, or otherwise) they prefer. Never force-unwraps anything; this function
+    /// cannot fail.
+    static func text(name: String, address: String) -> String {
+        var lines = [name]
+        if address.isEmpty == false {
+            lines.append(address)
+        }
+        lines.append("")
+        lines.append("Get 85Blends on the App Store:")
+        lines.append(appStoreURLString)
+        return lines.joined(separator: "\n")
+    }
+}
+
 private struct StationDisplayItem: Identifiable {
     enum Content {
         case savedOnly(FuelStation)
@@ -3175,6 +3257,11 @@ private struct StationDisplayItem: Identifiable {
     var displayAddress: String { savedStation?.address ?? nearbyStation?.address ?? "" }
     var displayCity: String { savedStation?.city ?? nearbyStation?.city ?? "" }
     var displayState: String { savedStation?.state ?? nearbyStation?.state ?? "" }
+    /// Added for Share (2.3.2) — same saved-preferred-over-nearby precedent every other
+    /// display* property above already uses; FuelStation.zipCode and LiveFuelStation.zip are
+    /// the same postal-code concept under different field names (see each model's own
+    /// declaration). Not previously needed because no on-screen UI showed the ZIP on its own.
+    var displayZip: String { savedStation?.zipCode ?? nearbyStation?.zip ?? "" }
 }
 
 private struct StationRowCard: View {
@@ -3318,6 +3405,30 @@ private struct StationRowCard: View {
                 }
 
                 HStack(spacing: 8) {
+                    // 2.3.2 — Share is available to every user (Free and Pro alike), never
+                    // gated behind ProFeatureGate/SubscriptionManager/RevenueCat; sharing a
+                    // station's location is core, not a Pro feature. Self-contained — builds
+                    // its payload directly from `station` (already in hand), so no new
+                    // required initializer parameter/call-site change was needed here. Native
+                    // ShareLink only; no action closure exists to call, so this cannot mutate
+                    // Favorite/Saved/price/selection/SwiftData or start any network call —
+                    // dismissing the sheet leaves this card exactly as it was. 44x44 (this
+                    // control only) — Edit/Delete below keep their existing, untouched 42x42
+                    // targets.
+                    ShareLink(item: StationShareContent.text(name: station.name, address: shareAddress)) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .frame(width: 44, height: 44)
+                            .background(AppTheme.Colors.cardBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .accessibilityLabel("Share \(station.name)")
+
                     Button(action: editAction) {
                         Image(systemName: "pencil")
                             .font(.subheadline.weight(.semibold))
@@ -3375,6 +3486,14 @@ private struct StationRowCard: View {
         return [station.address, cityState, station.zipCode]
             .filter { $0.isEmpty == false }
             .joined(separator: " • ")
+    }
+
+    /// 2.3.2 — the full postal address used for Share, in the plain-text/comma-separated form
+    /// meant to be copied elsewhere — deliberately NOT locationLine above, which is this same
+    /// data in the on-screen bullet ("•") style meant to be read, not pasted into a navigation
+    /// app.
+    private var shareAddress: String {
+        StationShareContent.fullAddress(street: station.address, city: station.city, state: station.state, zip: station.zipCode)
     }
 
     private var daysSincePriceUpdate: Int {
@@ -3657,6 +3776,32 @@ private struct LiveStationRowCard: View {
                 .disabled(isSaved)
                 .accessibilityLabel(isSaved ? "\(station.name) already saved" : "Favorite \(station.name)")
             }
+
+            // 2.3.2 — Share as a compact secondary utility row rather than a fourth full-width
+            // action (section 16): the three primary actions above stay exactly as wide/as they
+            // were. Available to every user (Free and Pro), regardless of isSaved/price/
+            // Favorite — never gated. Self-contained — builds its payload directly from
+            // `station` (already in hand), so no new required initializer parameter was needed.
+            // Native ShareLink only; no action closure exists to call, so this cannot mutate
+            // Favorite/Saved/price/selection/SwiftData or start any network call — dismissing
+            // the sheet leaves this card exactly as it was.
+            HStack {
+                ShareLink(item: StationShareContent.text(name: station.name, address: shareAddress)) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .frame(width: 44, height: 44)
+                        .background(AppTheme.Colors.cardBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .accessibilityLabel("Share \(station.name)")
+
+                Spacer()
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3721,6 +3866,14 @@ private struct LiveStationRowCard: View {
         return [station.address, cityState, station.zip]
             .filter { $0.isEmpty == false }
             .joined(separator: " • ")
+    }
+
+    /// 2.3.2 — the full postal address used for Share, in the plain-text/comma-separated form
+    /// meant to be copied elsewhere — deliberately NOT locationLine above, which is this same
+    /// data in the on-screen bullet ("•") style meant to be read, not pasted into a navigation
+    /// app.
+    private var shareAddress: String {
+        StationShareContent.fullAddress(street: station.address, city: station.city, state: station.state, zip: station.zip)
     }
 
     private var directionsAlertBinding: Binding<Bool> {
