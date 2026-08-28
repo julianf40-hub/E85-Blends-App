@@ -23,7 +23,13 @@ struct ContentView: View {
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @AppStorage(AppPreferenceKey.lastPresentedWhatsNewVersion) private var lastPresentedWhatsNewVersion = ""
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
-    @State private var selectedTab: Tab = .calculator
+    // Stations is the default launch tab (2.3.2) — the initial selection only; this is never
+    // persisted/remembered (no @AppStorage, no last-tab memory), so every fresh ContentView
+    // still starts here regardless of what was last viewed. Explicit navigation still overrides
+    // it: the Automatic Pump Detection notification handler below still routes to .calculator,
+    // and AppExperienceNavigation.resolvedSelection's invalid-tab-after-a-mode-switch fallback
+    // (a separate concern from the startup default) still redirects to .calculator too.
+    @State private var selectedTab: Tab = .stations
     @State private var isShowingWhatsNew = false
     @State private var hasEvaluatedWhatsNewEligibility = false
     // Snapshotted once, synchronously, from the raw persisted value at the moment this view is
