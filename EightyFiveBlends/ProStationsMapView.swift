@@ -993,6 +993,16 @@ struct ProStationsMapView: View {
                 actionButton(title: item.isFavorite ? "Favorited" : "Favorite", systemImage: item.isFavorite ? "star.fill" : "star", stationName: item.displayName) {
                     onFavorite(item.selection)
                 }
+                // Share the station's LOCATION only (name/address/Maps link) — never the current
+                // E85 price, which can go stale after the message is sent. Native ShareLink, not
+                // a hand-built share menu, so the system decides available destinations; no
+                // network call, no selection/camera/Favorite/price mutation of any kind — see
+                // shareText(for:)'s own header. Available for every kind (saved-only/live-only/
+                // merged) alike; never requires saving/favoriting first.
+                ShareLink(item: Self.shareText(for: item)) {
+                    actionButtonLabel(title: "Share", systemImage: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Share \(item.displayName)")
                 actionButton(title: item.isSaved ? "Update" : "Report", systemImage: "dollarsign.circle", stationName: item.displayName) {
                     onReportPrice(item.selection)
                 }
@@ -1058,17 +1068,79 @@ struct ProStationsMapView: View {
         }
     }
 
+    /// Shared visual content for every action-row control (Directions/Favorite/Share/Report) —
+    /// icon over label, equal-width, matching this card's established style. Factored out of
+    /// actionButton(...) so ShareLink (a distinct root view type that can't be nested inside a
+    /// manually-constructed Button the way the other three actions are) can present the EXACT
+    /// same look rather than a second visual style. `.lineLimit(1)`/`.minimumScaleFactor(0.75)`
+    /// on the label text is new here (the pre-existing 3-button row never needed it) — with a
+    /// fourth equal-width column the available width per button shrinks, and this keeps the
+    /// longer labels ("Directions", "Favorited") from wrapping into an uneven row height at
+    /// larger Dynamic Type sizes instead of shrinking slightly, which reads better across four
+    /// columns than three did.
+    private func actionButtonLabel(title: String, systemImage: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: systemImage).font(.body.weight(.semibold))
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(AppTheme.Colors.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .foregroundStyle(AppTheme.Colors.textPrimary)
+    }
+
     private func actionButton(title: String, systemImage: String, stationName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemImage).font(.body.weight(.semibold))
-                Text(title).font(.caption2.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(AppTheme.Colors.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
+            actionButtonLabel(title: title, systemImage: systemImage)
         }
         .accessibilityLabel("\(title) for \(stationName)")
+    }
+
+    // MARK: Share
+
+    /// Builds a stable Apple Maps link to a station's exact coordinate — safely percent-encoded
+    /// via URLComponents/URLQueryItem, never a hand-concatenated, unescaped string, so a station
+    /// name containing "&", "'", "/", or spaces still produces a correctly-formed URL. `ll` is
+    /// the coordinate (formatted to 6 decimal places — effectively exact, and avoids Double's raw
+    /// string interpolation producing an unnecessarily long/odd-looking number); `q` is the
+    /// display name, used by Maps as the pin label/search term. Deliberately no directions
+    /// origin/mode parameter — this is a place/location share, never an automatic route launch
+    /// (see onDirections above, a completely separate, untouched action). `nil` only in the
+    /// practically-unreachable case that URLComponents itself can't encode the given name — see
+    /// shareText(for:)'s own fallback for what happens then.
+    static func appleMapsURL(for item: ProStationMapItem) -> URL? {
+        var components = URLComponents(string: "https://maps.apple.com/")
+        components?.queryItems = [
+            URLQueryItem(name: "ll", value: String(format: "%.6f,%.6f", item.coordinate.latitude, item.coordinate.longitude)),
+            URLQueryItem(name: "q", value: item.displayName),
+        ]
+        return components?.url
+    }
+
+    /// The deterministic text shared for a station's LOCATION: name, address (when known), and
+    /// an Apple Maps link to its exact coordinate, plus a lightweight "Shared from 85Blends"
+    /// attribution. Deliberately excludes price/freshness/community-report age/Saved-Favorite
+    /// status/distance-from-user — those are user-relative or time-sensitive (a shared price can
+    /// read as stale the moment the recipient sees it), while the station's location is the one
+    /// stable thing worth sharing. `item.displayAddress` is the station's street address only
+    /// (StationDisplayItem.displayAddress, forwarded as-is — see StationsView.swift); that's
+    /// sufficient here because the Maps coordinate link already identifies the exact station, so
+    /// this deliberately does not widen ProStationMapItem with city/state/ZIP just for this.
+    /// Never force-unwraps the Maps URL — if appleMapsURL(for:) somehow returns nil, this falls
+    /// back to name + address alone rather than making sharing impossible.
+    static func shareText(for item: ProStationMapItem) -> String {
+        var lines = [item.displayName]
+        if item.displayAddress.isEmpty == false {
+            lines.append(item.displayAddress)
+        }
+        if let mapsURL = appleMapsURL(for: item) {
+            lines.append(mapsURL.absoluteString)
+        }
+        lines.append("")
+        lines.append("Shared from 85Blends")
+        return lines.joined(separator: "\n")
     }
 }
