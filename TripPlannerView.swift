@@ -17,7 +17,9 @@ import MapKit
 import CoreLocation
 
 struct TripPlannerView: View {
-    @Environment(\.openURL) private var openURL
+    // fix/2.3.2-trip-planner-navigation — no longer needed: every external-navigation launch
+    // now goes through TripNavigationLauncher, which never uses SwiftUI's `openURL` action
+    // (that's what made Google Maps open Safari — see TripNavigationLauncher.swift's header).
     @Query(sort: \VehicleProfile.createdAt, order: .forward)
     private var vehicles: [VehicleProfile]
 
@@ -429,19 +431,25 @@ struct TripPlannerView: View {
                         } else {
                             gasOnlyStopsSection
                         }
-                        if !navigationWaypoints.isEmpty {
-                            navigationRecommendationCard
-                        }
+                        // fix/2.3.2-trip-planner-navigation — the separate "Best Experience"
+                        // card that used to sit here was folded into navigationHandoffCard's
+                        // own per-app status badges below; showing the same Recommended/
+                        // Manual-stop-required information twice was the reported duplication.
                         navigationHandoffCard(plan)
                         if isDiscoveringStations == false,
                            isDiscoveringGasOnlyStations == false,
                            analysis != nil || isGasolineOnly {
                             saveRouteSection(plan)
                         }
-                        // Extra breathing room below the last result card — the fixed
-                        // Plan Route bar already reserves its own space via safeAreaInset,
-                        // this just keeps the final buttons from sitting flush against it.
-                        Color.clear.frame(height: 24)
+                        // Extra breathing room below the last result card. The fixed Plan
+                        // Route bar already reserves its own height via safeAreaInset (below)
+                        // — that's the mechanism keeping content from being hidden behind it
+                        // at all — this spacer is purely cosmetic, closing the gap between
+                        // "fully scrollable" and "doesn't feel flush against the bar."
+                        // fix/2.3.2-trip-planner-navigation — increased from 24 to 40: Save
+                        // Route (the section most often left as the last visible content) was
+                        // reported as sitting too close to the bar.
+                        Color.clear.frame(height: 40)
                     }
                 }
                 .padding(16)
@@ -1928,13 +1936,14 @@ struct TripPlannerView: View {
 
             HStack(spacing: 8) {
                 gasHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
-                    openGasStationInAppleMaps(station)
+                    // "Gas Station" fallback matches this card's original per-context pin label.
+                    TripNavigationLauncher.openAppleMaps(for: .singleStop(station.coordinate, name: station.name.isEmpty ? "Gas Station" : station.name))
                 }
                 gasHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
-                    openExternal(googleMapsURL(to: station.coordinate))
+                    TripNavigationLauncher.openGoogleMaps(for: .singleStop(station.coordinate, name: station.name))
                 }
                 gasHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
-                    openExternal(wazeURL(to: station.coordinate))
+                    TripNavigationLauncher.openWaze(for: .singleStop(station.coordinate, name: station.name))
                 }
             }
         }
@@ -2008,12 +2017,6 @@ struct TripPlannerView: View {
         .disabled(disabled)
         .opacity(disabled ? 0.45 : 1)
         .accessibilityHint(disabled ? "Plan the route again to update this stop before getting directions." : "")
-    }
-
-    private func openGasStationInAppleMaps(_ station: BackupGasStation) {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: station.coordinate))
-        item.name = station.name.isEmpty ? "Gas Station" : station.name
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
     }
 
     private func stopsFootnote(_ analysis: RouteE85Analysis) -> String {
@@ -2171,13 +2174,14 @@ struct TripPlannerView: View {
             // Per-station navigation handoff
             HStack(spacing: 8) {
                 stationHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
-                    openStationInAppleMaps(stop.station)
+                    // "E85 Station" fallback matches this card's original per-context pin label.
+                    TripNavigationLauncher.openAppleMaps(for: .singleStop(stop.station.coordinate, name: stop.station.station.name.isEmpty ? "E85 Station" : stop.station.station.name))
                 }
                 stationHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
-                    openExternal(googleMapsURL(to: stop.station.coordinate))
+                    TripNavigationLauncher.openGoogleMaps(for: .singleStop(stop.station.coordinate, name: stop.station.station.name))
                 }
                 stationHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
-                    openExternal(wazeURL(to: stop.station.coordinate))
+                    TripNavigationLauncher.openWaze(for: .singleStop(stop.station.coordinate, name: stop.station.station.name))
                 }
             }
         }
@@ -2473,13 +2477,14 @@ struct TripPlannerView: View {
 
             HStack(spacing: 8) {
                 stationHandoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
-                    openGasStationInAppleMaps(station)
+                    // "Gas Station" fallback matches this card's original per-context pin label.
+                    TripNavigationLauncher.openAppleMaps(for: .singleStop(station.coordinate, name: station.name.isEmpty ? "Gas Station" : station.name))
                 }
                 stationHandoffButton(title: "Google", icon: "globe", disabled: requestTracker.isPlanStale) {
-                    openExternal(googleMapsURL(to: station.coordinate))
+                    TripNavigationLauncher.openGoogleMaps(for: .singleStop(station.coordinate, name: station.name))
                 }
                 stationHandoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
-                    openExternal(wazeURL(to: station.coordinate))
+                    TripNavigationLauncher.openWaze(for: .singleStop(station.coordinate, name: station.name))
                 }
             }
         }
@@ -2858,94 +2863,51 @@ struct TripPlannerView: View {
 
     // MARK: - Navigation handoff
 
-    /// Informational card shown above the navigation buttons when fuel stops exist.
-    /// Sets per-app expectations so the user knows Google Maps and Apple Maps give
-    /// the best multi-stop experience while Waze requires a manual in-app step.
-    private var navigationRecommendationCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "star.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                Text("Best Experience")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-            }
-
-            Text("Google Maps and Apple Maps can include recommended fuel stops automatically. Waze may require adding fuel stops manually after navigation begins.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(spacing: 0) {
-                navAppBadgeRow(appName: "Google Maps", icon: "globe",     status: "Recommended",        recommended: true)
-                Divider().overlay(AppTheme.Colors.borderColor)
-                navAppBadgeRow(appName: "Apple Maps",  icon: "applelogo", status: "Recommended",        recommended: true)
-                Divider().overlay(AppTheme.Colors.borderColor)
-                navAppBadgeRow(appName: "Waze",        icon: "car.fill",  status: "Extra steps required", recommended: false)
-            }
-            .padding(.horizontal, 14)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
-            )
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    private func navAppBadgeRow(appName: String, icon: String, status: String, recommended: Bool) -> some View {
-        let accent: Color = recommended ? AppTheme.Colors.primaryGreen : AppTheme.Colors.gasOrange
-        return HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.primaryGreen)
-                .frame(width: 22)
-            Text(appName)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-            Spacer()
-            Text(status)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(accent)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(accent.opacity(0.12))
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(accent.opacity(0.4), lineWidth: 0.5))
-        }
-        .padding(.vertical, 10)
-    }
-
+    /// fix/2.3.2-trip-planner-navigation — single navigation card. Previously this screen
+    /// showed a separate "Best Experience" card (an explanatory paragraph plus a
+    /// Google/Apple/Waze status list) directly above this one, which repeated the exact same
+    /// Recommended/Manual-stop-required information this card's own buttons already state.
+    /// That card is gone; each button below carries its own short status label instead, so
+    /// the same information now appears exactly once.
     private func navigationHandoffCard(_ plan: TripPlan) -> some View {
         let hasStops = !navigationWaypoints.isEmpty
         // In fallback mode the waypoint is the required backup gas stop, not a generic
         // "fuel stop" — name it accordingly so the handoff copy matches the Fuel Plan.
         let stopNoun = isFallbackActive ? "backup gas stop" : "fuel stop"
-        return VStack(alignment: .leading, spacing: 12) {
+        // Named routeHandoff, not `destination` — TripPlannerView already has a
+        // `@State private var destination: String` (the destination text field); a local
+        // `destination` here would silently shadow it.
+        let routeHandoff = TripNavigationLauncher.Destination.route(
+            origin: plan.sourceCoordinate,
+            destination: plan.destinationCoordinate,
+            waypoints: navigationWaypoints
+        )
+        return VStack(alignment: .leading, spacing: 14) {
             SectionHeader(
-                title: hasStops ? "Open Route With \(stopNoun.capitalized)" : "Open Directions In",
-                subtitle: hasStops
-                    ? "Google Maps will include supported \(stopNoun)s. Apple Maps may include stops. For Waze, add the \(stopNoun) manually after opening the route."
-                    : nil
+                title: hasStops ? "Open Route With \(stopNoun.capitalized)" : "Open Route",
+                subtitle: hasStops ? "Your recommended \(stopNoun) will be included when supported." : nil
             )
             HStack(spacing: 10) {
-                handoffButton(title: "Apple Maps", icon: "applelogo", disabled: requestTracker.isPlanStale) {
-                    openInAppleMaps(plan)
+                handoffButton(
+                    title: "Apple Maps", icon: "applelogo",
+                    status: hasStops ? "Recommended" : nil, statusColor: AppTheme.Colors.primaryGreen,
+                    disabled: requestTracker.isPlanStale
+                ) {
+                    TripNavigationLauncher.openAppleMaps(for: routeHandoff)
                 }
-                handoffButton(title: "Google Maps", icon: "globe", disabled: requestTracker.isPlanStale) {
-                    openExternal(navigationGoogleMapsURL(plan))
+                handoffButton(
+                    title: "Google Maps", icon: "globe",
+                    status: hasStops ? "Recommended" : nil, statusColor: AppTheme.Colors.primaryGreen,
+                    disabled: requestTracker.isPlanStale
+                ) {
+                    TripNavigationLauncher.openGoogleMaps(for: routeHandoff)
                 }
-                handoffButton(title: "Waze", icon: "car.fill", disabled: requestTracker.isPlanStale) {
-                    openExternal(navigationWazeURL(plan))
+                handoffButton(
+                    title: "Waze", icon: "car.fill",
+                    status: hasStops ? "Manual stop required" : nil, statusColor: AppTheme.Colors.gasOrange,
+                    disabled: requestTracker.isPlanStale
+                ) {
+                    TripNavigationLauncher.openWaze(for: routeHandoff)
                 }
             }
             if hasStops {
@@ -2996,12 +2958,25 @@ struct TripPlannerView: View {
         }
     }
 
-    private func handoffButton(title: String, icon: String, disabled: Bool = false, action: @escaping () -> Void) -> some View {
+    /// `status`/`statusColor` fold in what used to be a separate "Best Experience" card's
+    /// per-app badge (e.g. "Recommended" / "Manual stop required") directly onto the button —
+    /// the state is communicated by this text label, not by `statusColor` alone, so it reads
+    /// correctly under VoiceOver and for colorblind users. `status` is nil when there's no
+    /// fuel stop to have an opinion about (all three apps behave identically for a plain
+    /// point-to-point route), in which case no badge is shown at all.
+    private func handoffButton(
+        title: String,
+        icon: String,
+        status: String? = nil,
+        statusColor: Color = AppTheme.Colors.primaryGreen,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button {
             AppHaptics.selection()
             action()
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.title3)
                     .foregroundStyle(AppTheme.Colors.primaryGreen)
@@ -3010,6 +2985,14 @@ struct TripPlannerView: View {
                     .foregroundStyle(AppTheme.Colors.textPrimary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                if let status {
+                    Text(status)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .multilineTextAlignment(.center)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
@@ -3023,6 +3006,7 @@ struct TripPlannerView: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.45 : 1)
+        .accessibilityLabel(status.map { "\(title), \($0)" } ?? title)
         .accessibilityHint(disabled ? "Plan the route again to update this before getting directions." : "")
     }
 
@@ -3575,73 +3559,6 @@ struct TripPlannerView: View {
         }
     }
 
-    // MARK: - Navigation handoff actions
-
-    private func openStationInAppleMaps(_ routeStation: RouteStation) {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: routeStation.coordinate))
-        item.name = routeStation.station.name.isEmpty ? "E85 Station" : routeStation.station.name
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
-    }
-
-    private func googleMapsURL(to coordinate: CLLocationCoordinate2D) -> URL? {
-        URL(string: "https://www.google.com/maps/dir/?api=1&destination=\(coordinate.latitude),\(coordinate.longitude)&travelmode=driving")
-    }
-
-    private func wazeURL(to coordinate: CLLocationCoordinate2D) -> URL? {
-        URL(string: "https://waze.com/ul?ll=\(coordinate.latitude),\(coordinate.longitude)&navigate=yes")
-    }
-
-    private func openInAppleMaps(_ plan: TripPlan) {
-        let source = MKMapItem(placemark: MKPlacemark(coordinate: plan.sourceCoordinate))
-        source.name = "Start"
-        let destination = MKMapItem(placemark: MKPlacemark(coordinate: plan.destinationCoordinate))
-        destination.name = "Destination"
-
-        let waypoints = navigationWaypoints
-        var items: [MKMapItem] = [source]
-        for (index, coord) in waypoints.enumerated() {
-            let stop = MKMapItem(placemark: MKPlacemark(coordinate: coord))
-            stop.name = waypoints.count == 1 ? "Fuel Stop" : "Fuel Stop \(index + 1)"
-            items.append(stop)
-        }
-        items.append(destination)
-
-        MKMapItem.openMaps(
-            with: items,
-            launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving]
-        )
-    }
-
-    /// Google Maps URL for the main navigation handoff. Includes waypoints when
-    /// recommended stops exist. Per-station buttons use the separate `googleMapsURL(to:)`.
-    private func navigationGoogleMapsURL(_ plan: TripPlan) -> URL? {
-        let waypoints = navigationWaypoints
-        let origin = "\(plan.sourceCoordinate.latitude),\(plan.sourceCoordinate.longitude)"
-        let dest   = "\(plan.destinationCoordinate.latitude),\(plan.destinationCoordinate.longitude)"
-        var urlStr = "https://www.google.com/maps/dir/?api=1&origin=\(origin)&destination=\(dest)&travelmode=driving"
-        if waypoints.isEmpty == false {
-            let waypointStr = waypoints
-                .map { "\($0.latitude),\($0.longitude)" }
-                .joined(separator: "|")
-            urlStr += "&waypoints=\(waypointStr)"
-        }
-        return URL(string: urlStr)
-    }
-
-    /// Waze URL for the main navigation handoff. Always opens the final destination
-    /// because Waze does not reliably support waypoints from URL handoff. When fuel
-    /// stops are recommended the user is prompted to add them manually inside Waze.
-    /// Per-station buttons use the separate `wazeURL(to:)`.
-    private func navigationWazeURL(_ plan: TripPlan) -> URL? {
-        let coord = plan.destinationCoordinate
-        return URL(string: "https://waze.com/ul?ll=\(coord.latitude),\(coord.longitude)&navigate=yes")
-    }
-
-    private func openExternal(_ url: URL?) {
-        guard let url else { return }
-        openURL(url)
-    }
-
     // MARK: - Formatting
 
     private func formattedMiles(_ miles: Double) -> String {
@@ -4129,16 +4046,6 @@ struct TripPlan {
             estimatedStops: stops,
             risk: risk
         )
-    }
-
-    // Web URLs (no custom-scheme entitlement needed; redirect to the app if installed).
-    var googleMapsURL: URL? {
-        URL(string: "https://www.google.com/maps/dir/?api=1&origin=\(sourceCoordinate.latitude),\(sourceCoordinate.longitude)&destination=\(destinationCoordinate.latitude),\(destinationCoordinate.longitude)&travelmode=driving")
-    }
-
-    var wazeURL: URL? {
-        // Waze navigates to a destination from the user's current position.
-        URL(string: "https://waze.com/ul?ll=\(destinationCoordinate.latitude),\(destinationCoordinate.longitude)&navigate=yes")
     }
 }
 
