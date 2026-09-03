@@ -288,7 +288,11 @@ final class SubscriptionManager {
         case .proActivated:
             return .succeeded
         case .notEntitled:
-            return .failed("We couldn't verify your purchase. Please try again or contact support.")
+            // 2.3.2 release-readiness correction: names the actual, real support address
+            // directly in the message itself (support@85blends.app — see MoreView's "Contact
+            // Support" row for the same address), rather than a bare "contact support" with no
+            // way to act on it from this specific alert.
+            return .failed("We couldn't verify your purchase. Please try again or contact support@85blends.app.")
         case .cancelled:
             return .idle
         case .failed(let message):

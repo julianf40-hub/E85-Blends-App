@@ -13,6 +13,7 @@ struct MoreView: View {
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
 
     @State private var sponsorLinkMessage: String?
+    @State private var supportContactMessage: String?
 
     private var appExperienceMode: AppExperienceMode {
         .resolved(from: appExperienceModeRaw)
@@ -90,6 +91,26 @@ struct MoreView: View {
                             tint: AppTheme.Colors.accentGreen
                         ) {
                             HelpFAQView()
+                        }
+
+                        // 85Blends' existing, official support address (support@85blends.app,
+                        // already the contact used on 85blends.app's own Support page) — verified
+                        // reachable during the 2.3.2 release-readiness correction pass; not a
+                        // guessed or invented address. An action row, not a NavigationLink, since
+                        // it opens Mail rather than an in-app screen — see MoreActionRow below.
+                        MoreActionRow(
+                            title: "Contact Support",
+                            subtitle: "Email us with a question, issue, or feedback.",
+                            systemImage: "envelope",
+                            tint: AppTheme.Colors.accentGreen,
+                            action: openSupportEmail
+                        )
+
+                        if let supportContactMessage {
+                            Text(supportContactMessage)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                                .padding(.horizontal, 4)
                         }
 
                         MoreNavigationRow(
@@ -261,6 +282,29 @@ struct MoreView: View {
             }
         }
     }
+
+    // support@85blends.app is 85Blends' existing, official support address — see this row's own
+    // call-site comment. The subject line is a courtesy default only; the user can change it
+    // before sending, and nothing here attaches diagnostic or personal data automatically.
+    private func openSupportEmail() {
+        supportContactMessage = nil
+
+        let subject = "85Blends Support"
+        let encodedSubject = subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? subject
+        guard let url = URL(string: "mailto:support@85blends.app?subject=\(encodedSubject)") else {
+            supportContactMessage = "Support email link is unavailable right now."
+            return
+        }
+
+        openURL(url) { accepted in
+            if accepted == false {
+                // Most commonly means no Mail account is configured on this device — Mail.app
+                // itself still opens in that case, but openURL's completion reports `false` when
+                // there's genuinely nothing that can handle a mailto: URL at all.
+                supportContactMessage = "Couldn't open Mail. You can reach us at support@85blends.app."
+            }
+        }
+    }
 }
 
 #Preview {
@@ -312,5 +356,54 @@ private struct MoreNavigationRow<Destination: View>: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
+    }
+}
+
+// Same visual chrome as MoreNavigationRow, but performs an action (opening Mail, a URL, etc.)
+// instead of pushing a NavigationLink destination — trailing "arrow.up.forward.square" instead
+// of "chevron.right" signals "this leaves the app" rather than "this navigates within it".
+private struct MoreActionRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundStyle(tint)
+                    .frame(width: 42, height: 42)
+                    .background(tint.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
