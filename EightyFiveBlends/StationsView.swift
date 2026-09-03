@@ -3156,12 +3156,6 @@ private enum StationListFilter: String, CaseIterable {
 /// mutation, no SwiftUI/@State dependency, so it can never fail and never has a navigation/data
 /// side effect regardless of which of the three call sites invokes it.
 enum StationShareContent {
-    /// 85Blends' live App Store listing — fixed, developer-owned text; never generated,
-    /// geocoded, or looked up. Distinct from SubscriptionManager.monthlyID (the in-app
-    /// subscription's StoreKit product identifier) — this is the App Store LISTING url used for
-    /// referral, an unrelated concern.
-    static let appStoreURLString = "https://apps.apple.com/us/app/85blends/id6762037468"
-
     /// One clean US-style postal address line: "<street>, <city>, <state> <zip>" — never the
     /// Classic cards' own bullet-separated on-screen style ("<street> • <city>, <state> •
     /// <zip>"), which reads fine on screen but is awkward to select/copy/paste into a
@@ -3214,22 +3208,24 @@ enum StationShareContent {
     }
 
     /// The full deterministic share payload: station name, full postal address (omitted
-    /// entirely — never a blank line — when `address` is empty), and the fixed 85Blends App
-    /// Store referral footer. `address` is expected already-formatted, typically via
+    /// entirely — never a blank line — when `address` is empty), and a subtle plain-text
+    /// attribution line. `address` is expected already-formatted, typically via
     /// fullAddress(street:city:state:zip:) above. Deliberately excludes price, distance, and
     /// Saved/Favorite state — all user-relative or time-sensitive — and deliberately excludes
-    /// any map/coordinate URL: the plain-text postal address is the universal, navigation-app-
-    /// agnostic location representation; the recipient chooses whichever app (Apple Maps,
-    /// Google Maps, Waze, or otherwise) they prefer. Never force-unwraps anything; this function
-    /// cannot fail.
+    /// any URL at all: real-device 2.3.2 TestFlight testing showed that a station share
+    /// containing the App Store listing URL made Messages render a large App Store rich
+    /// preview that visually overwhelmed the actual station being shared, turning an ordinary
+    /// station share into something that read as promotional. The plain-text postal address
+    /// remains the universal, navigation-app-agnostic location representation; the recipient
+    /// chooses whichever app (Apple Maps, Google Maps, Waze, or otherwise) they prefer. Never
+    /// force-unwraps anything; this function cannot fail.
     static func text(name: String, address: String) -> String {
         var lines = [name]
         if address.isEmpty == false {
             lines.append(address)
         }
         lines.append("")
-        lines.append("Get 85Blends on the App Store:")
-        lines.append(appStoreURLString)
+        lines.append("Shared from 85Blends")
         return lines.joined(separator: "\n")
     }
 }
