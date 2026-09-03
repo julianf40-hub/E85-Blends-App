@@ -26,12 +26,17 @@
 //    - Failed (no internet, no fill, SDK unavailable, or any other error): renders EmptyView(),
 //      silently — never an error message, never a broken-looking box. The app must never look
 //      degraded because an ad didn't load.
-//    - Pro: every real call site (CalculatorView.swift / StationsView.swift) checks
-//      SubscriptionManager.shared.isProUser BEFORE constructing this view at all, so a Pro user
-//      never causes this type to exist. The AdManager.shared.isAdsEnabled check inside .task
-//      below is a second, defense-in-depth read of that exact same property (never a new
-//      entitlement source — see AdManager.swift's header) — belt-and-suspenders against a future
-//      call site that forgets to gate, not a new check.
+//    - Pro / entitlement-pending / consent: every real call site (CalculatorView.swift /
+//      StationsView.swift) checks SubscriptionManager.shared.isProUser BEFORE constructing this
+//      view at all, so a Pro user never causes this type to exist. The
+//      AdManager.shared.canRequestAds check inside .task below is the single, centralized
+//      ad-readiness gate (see AdManager.swift's header) — it re-checks Pro status as
+//      defense-in-depth against a future call site that forgets to gate, and ALSO covers two
+//      things no call site checks on its own: SubscriptionManager's entitlement-resolution-
+//      pending window (so this view never loads an ad before it's actually known whether the
+//      user is Pro) and Google UMP consent (so no ad is ever requested before the user's consent
+//      choice, where required, is known). One gate, three checks — see canRequestAds itself for
+//      why this is centralized here instead of duplicated per call site.
 //
 //  ONE LOAD PER PLACEMENT: each NativeAdView instance owns its own NativeAdLoader (below) via
 //  @State, created once for that instance's lifetime and guarded against a second concurrent or
@@ -74,11 +79,12 @@ struct NativeAdView: View {
             }
         }
         .task {
-            // Defense-in-depth Pro check — see this file's header. Every real call site already
-            // gates on SubscriptionManager.shared.isProUser before constructing this view at
-            // all, so this is a second, cheap read of the exact same property, never a new
-            // entitlement decision.
-            guard AdManager.shared.isAdsEnabled else { return }
+            // Centralized ad-readiness gate — see this file's header and AdManager.canRequestAds.
+            // Covers Pro status, entitlement-resolution-pending, and UMP consent in one read; a
+            // skipped load here always renders EmptyView() (see this file's header), so this
+            // fully closes the ad-readiness race for this placement without either call site
+            // needing its own pending/consent check.
+            guard AdManager.shared.canRequestAds else { return }
 
             loader.loadIfNeeded()
         }

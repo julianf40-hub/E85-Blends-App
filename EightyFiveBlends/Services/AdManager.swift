@@ -34,23 +34,44 @@
 //  RevenueCat already uses rather than adding a second reason to slow down cold launch. See
 //  EightyFiveBlendsApp.swift's own header/init() comment for the full reasoning.
 //
-//  TEST CONFIGURATION ONLY: Info.plist's GADApplicationIdentifier is Google's public sample App
-//  ID (`ca-app-pub-3940256099942544~1458002511`, from Phase 1), and `NativePlacement.adUnitID`
-//  below always resolves to Google's public sample Native Advanced ad unit ID, never the real
-//  85Blends ad unit IDs — see `NativePlacement` for why both real IDs are recorded but neither is
-//  requested yet.
+//  AD UNIT CONFIGURATION: Info.plist's GADApplicationIdentifier is the real 85Blends AdMob App ID
+//  (`ca-app-pub-2011940670640942~8655578112`) — not Google's sample App ID. (An earlier draft of
+//  this comment claimed otherwise; corrected during the 2.3.2 public-release-readiness pass —
+//  Info.plist itself was already correct, only this comment was stale.) `NativePlacement.adUnitID`
+//  below requests Google's public sample Native Advanced ad unit ID only for Debug/Internal
+//  builds; Release requests the real, placement-specific 85Blends ad unit ID — see
+//  `NativePlacement`.
 //
-//  PRO AWARENESS (foundation only): `isAdsEnabled` below reads SubscriptionManager.shared
-//  directly — the same single entitlement source every other Pro gate in this app reads (see
-//  SubscriptionManager.swift's own header) — so future native-ad placement code has one
-//  ready-made, already-correct gate to call. Nothing in this file requests, loads, or shows an ad
-//  against that gate yet; it exists now so later work doesn't need to invent a second way to ask
-//  "is this user Pro."
+//  PRIVACY-FIRST AD CONFIGURATION (2.3.2 release-readiness pass): ads support the Free tier, but
+//  85Blends does not introduce tracking merely to improve ad personalization. Three things
+//  enforce that here:
+//  1. Publisher First-Party ID is explicitly disabled (`setPublisherFirstPartyIDEnabled(false)`)
+//     in `configureIfNeeded()` below.
+//  2. Google's User Messaging Platform (UMP) SDK gathers the user's consent choice (EEA/UK
+//     Transparency & Consent Framework, plus supported US state privacy signals) before any ad
+//     is ever requested — see `gatherConsent()`. `MobileAds.shared.start()` itself is gated on
+//     `ConsentInformation.shared.canRequestAds`, matching Google's own documented integration
+//     pattern, so the SDK never starts ad-serving before consent is known.
+//  3. `canRequestAds` below is the single, centralized ad-readiness gate every placement must
+//     pass: Pro status, entitlement-resolution-pending, and UMP consent all have to clear before
+//     a native ad is requested anywhere in the app. See Components/NativeAdView.swift's `.task`,
+//     the only other place this file's ad-readiness state is read — no placement duplicates any
+//     part of this decision itself.
+//
+//  PRO AWARENESS: `isAdsEnabled` below reads SubscriptionManager.shared directly — the same
+//  single entitlement source every other Pro gate in this app reads (see SubscriptionManager.
+//  swift's own header). `canRequestAds` builds on it, adding the entitlement-resolution-pending
+//  check (mirrors StationsView's `isInitialEntitlementResolutionPending` gate — see
+//  SubscriptionManager.isInitialEntitlementResolutionPending's header for why a pending read must
+//  never be treated as "definitely Free") and UMP consent. Every ad-related Pro/consent check
+//  should funnel through `canRequestAds`, never re-derive its own combination of these checks.
 //
 
 import Foundation
 import Observation
 import GoogleMobileAds
+import UserMessagingPlatform
+import UIKit
 import os
 
 // TEMPORARY — production/TestFlight diagnostics for the "native ads not appearing"
@@ -117,6 +138,62 @@ final class AdManager {
         SubscriptionManager.shared.isProUser == false
     }
 
+    // MARK: - Advertising consent (UMP)
+
+    /// True until this session's first UMP consent-gathering attempt (success or failure)
+    /// completes. Mirrors `SubscriptionManager.isInitialEntitlementResolutionPending`'s shape and
+    /// purpose: while this is true, `canRequestAds` is always false, so no placement can render
+    /// an ad decision before this app even knows whether it's allowed to ask Google for one.
+    private(set) var isInitialConsentResolutionPending = true
+
+    /// Set from `ConsentInformation.shared.canRequestAds` once `gatherConsent()` completes.
+    /// Stored (rather than read live from the SDK on every access) so this `@Observable` class
+    /// actually publishes a change when consent resolves — a plain computed property reading an
+    /// external singleton's mutable state would not trigger SwiftUI observation the way a tracked
+    /// stored property does. Defaults to `false`, matching `ConsentInformation`'s own default
+    /// before any request has been made this session.
+    private(set) var consentAllowsAdRequests = false
+
+    /// Whether Preferences/About should show a "Privacy Options" entry point. Read live from
+    /// `ConsentInformation.shared` rather than cached — unlike `consentAllowsAdRequests`, this
+    /// only gates a Settings row's visibility, never an ad-loading decision, so there's no
+    /// reactivity requirement strong enough to justify caching it (by the time anyone opens
+    /// Preferences, `gatherConsent()` has long since run). Deliberately untyped here (no
+    /// `PrivacyOptionsRequirementStatus`-shaped stored property) so this file never has to name
+    /// that enum's exact declared type — only compare against `.required`, which Swift resolves
+    /// by inference regardless of the SDK's exact naming for it.
+    var isPrivacyOptionsEntryPointRequired: Bool {
+        ConsentInformation.shared.privacyOptionsRequirementStatus == .required
+    }
+
+    /// The single, centralized ad-readiness gate — see this file's header. Reads the three live
+    /// singleton-backed flags and hands them to `canRequestAds(isAdsEnabled:isEntitlementResolutionPending:consentAllowsAdRequests:)`
+    /// below, which is where the actual decision rule lives — split out the same way
+    /// `errorDescription(forAdapterStates:)` already is, so the rule itself is directly
+    /// unit-testable with plain Bool values, without mocking SubscriptionManager/
+    /// ConsentInformation.
+    var canRequestAds: Bool {
+        Self.canRequestAds(
+            isAdsEnabled: isAdsEnabled,
+            isEntitlementResolutionPending: SubscriptionManager.shared.isInitialEntitlementResolutionPending,
+            consentAllowsAdRequests: consentAllowsAdRequests
+        )
+    }
+
+    /// Pure decision rule behind `canRequestAds` above. Every one of these three checks must
+    /// independently allow ads before any placement may request one:
+    /// - `isAdsEnabled`: the user isn't Pro (Pro never sees ads, full stop).
+    /// - `isEntitlementResolutionPending` is `false` (mirrors StationsView's own gate — a pending
+    ///   read must never be treated as "definitely Free").
+    /// - `consentAllowsAdRequests`: UMP consent has been gathered and allows an ad request.
+    static func canRequestAds(
+        isAdsEnabled: Bool,
+        isEntitlementResolutionPending: Bool,
+        consentAllowsAdRequests: Bool
+    ) -> Bool {
+        isAdsEnabled && isEntitlementResolutionPending == false && consentAllowsAdRequests
+    }
+
     private init() {
         // Real SDK configuration happens once from app startup (see EightyFiveBlendsApp.swift's
         // launch `.task`), not here — same reasoning as RevenueCatSubscriptionService.init()'s
@@ -163,6 +240,34 @@ final class AdManager {
             state=\(String(describing: self.configurationState), privacy: .public)
             """)
         #endif
+
+        // Gather UMP consent BEFORE ever starting the Mobile Ads SDK — see gatherConsent()'s own
+        // header and this file's header for why. This sets consentAllowsAdRequests and clears
+        // isInitialConsentResolutionPending regardless of outcome (including a network/UMP
+        // failure — see gatherConsent()), so this function never hangs waiting on it.
+        await gatherConsent()
+
+        guard consentAllowsAdRequests else {
+            // Consent isn't known to allow ad requests yet (not yet granted, still required, or
+            // the request itself failed — see gatherConsent()). Per Google's own documented UMP
+            // integration pattern, the Mobile Ads SDK itself is not started in this case, so no
+            // ad-serving infrastructure spins up before consent is known. configurationState
+            // deliberately stays `.configuring` (not `.configured`) — nothing in this app reads
+            // isConfigured today, but leaving it here would misreport that the underlying SDK
+            // actually started. A later cold launch's configureIfNeeded() call will try again.
+            #if !DEBUG
+            admobDiagnosticsLogger.log("""
+                configureIfNeeded() stopping before MobileAds.shared.start() — \
+                consent does not yet allow ad requests
+                """)
+            #endif
+            return
+        }
+
+        // Privacy-first request configuration — set before start() so it's in effect for every
+        // request this session. GMA SDK 10.14.0+ (installed: 13.8.0); disabling this removes a
+        // cross-app publisher identifier signal from ad requests. See this file's header.
+        MobileAds.shared.requestConfiguration.setPublisherFirstPartyIDEnabled(false)
 
         // GADApplicationIdentifier is read from Info.plist by the SDK itself at start(); this
         // app doesn't need to read or pass it explicitly (see RevenueCatConfiguration.swift for
@@ -227,6 +332,92 @@ final class AdManager {
                 """)
         }
         #endif
+    }
+
+    /// Gathers/records the user's UMP consent choice before any ad is ever requested. Follows
+    /// Google's own documented integration pattern exactly: request a fresh consent status,
+    /// present the required consent form if-and-only-if the SDK determines one is needed (a
+    /// developer never decides this directly), then read back whether ads may now be requested.
+    /// Never throws — a network failure, a missing presenting view controller, or any other
+    /// error here is captured into `lastErrorDescription` and otherwise treated the same as
+    /// "consent not yet available": no ad request happens this launch, nothing crashes or blocks
+    /// any other feature, and the next cold launch tries again.
+    private func gatherConsent() async {
+        defer { isInitialConsentResolutionPending = false }
+
+        let parameters = RequestParameters()
+
+        // Debug-only geography override so EEA-specific consent UI can be exercised on a
+        // non-EEA test device. #if DEBUG || INTERNAL_BUILD — never Release — matching every
+        // other test-vs-production split in this file (NativePlacement.adUnitID above). Real
+        // users, in Release, always resolve geography from their actual location/IP, never a
+        // hardcoded value.
+        #if DEBUG || INTERNAL_BUILD
+        let debugSettings = DebugSettings()
+        debugSettings.geography = .EEA
+        parameters.debugSettings = debugSettings
+        #endif
+
+        let requestError = await withCheckedContinuation { (continuation: CheckedContinuation<Error?, Never>) in
+            ConsentInformation.shared.requestConsentInfoUpdate(with: parameters) { error in
+                continuation.resume(returning: error)
+            }
+        }
+
+        if let requestError {
+            #if !DEBUG
+            admobDiagnosticsLogger.error("""
+                gatherConsent() requestConsentInfoUpdate failed — \
+                \(requestError.localizedDescription, privacy: .public)
+                """)
+            #endif
+            lastErrorDescription = "UMP consent request failed: \(requestError.localizedDescription)"
+            consentAllowsAdRequests = ConsentInformation.shared.canRequestAds
+            return
+        }
+
+        do {
+            // Presents the consent form only if the SDK determines one is actually required for
+            // this user (e.g. EEA/UK, or an applicable US state) — a no-op otherwise. Never
+            // called speculatively; this is the one and only place 85Blends presents any
+            // consent/privacy UI at launch.
+            if let presentingViewController = Self.topMostPresentingViewController() {
+                try await ConsentForm.loadAndPresentIfRequired(from: presentingViewController)
+            }
+        } catch {
+            // A failure here (no form loaded, presentation error) still falls through to read
+            // whatever canRequestAds already reflects below — never crashes, never blocks.
+            #if !DEBUG
+            admobDiagnosticsLogger.error("""
+                gatherConsent() loadAndPresentIfRequired failed — \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            #endif
+        }
+
+        consentAllowsAdRequests = ConsentInformation.shared.canRequestAds
+    }
+
+    /// The topmost presented view controller in the key window's scene, used only to present the
+    /// UMP consent form (and, from Preferences, the privacy-options form) — never for any other
+    /// purpose. Returns `nil` (rather than force-unwrapping anything) if no window scene/window/
+    /// root view controller is available yet; every caller treats `nil` as "skip presenting this
+    /// time," never as an error to surface to the user.
+    static func topMostPresentingViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes
+        guard let windowScene = (scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene)
+            ?? scenes.first(where: { $0 is UIWindowScene }) as? UIWindowScene
+        else { return nil }
+
+        guard let root = (windowScene.windows.first { $0.isKeyWindow }?.rootViewController)
+            ?? windowScene.windows.first?.rootViewController
+        else { return nil }
+
+        var top = root
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        return top
     }
 
     /// Pure summary of any not-ready adapters, or `nil` if every reported adapter is ready.

@@ -36,7 +36,11 @@ struct PrivacyView: View {
                 )
                 InfoCard(
                     title: "Location Usage",
-                    message: "Location is used only while the app is open to find nearby E85 stations and help detect when you are near a saved station in At the Pump mode."
+                    message: "Calculator and Stations use your location only while 85Blends is open, to find nearby E85 stations and detect when you're near a saved one in At the Pump mode. If you turn on Automatic Pump Detection, 85Blends may also use your location in the background to recognize arrival at a saved station and send an alert — it never tracks or stores your travel history."
+                )
+                InfoCard(
+                    title: "Advertising",
+                    message: "Free-tier screens show native ads served by Google Mobile Ads. 85Blends doesn't add extra tracking to personalize them, and a consent prompt lets you control ad privacy where required by law — see Preferences for privacy options. 85Blends Pro removes ads entirely."
                 )
                 InfoCard(
                     title: "Community Price Reports",
