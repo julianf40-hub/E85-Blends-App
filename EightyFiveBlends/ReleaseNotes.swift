@@ -25,6 +25,8 @@ enum ReleaseNotes {
         "Share any E85 station's name and address directly from Stations — available to Free and Pro users.",
         "85Blends now opens directly to Stations, putting nearby E85 front and center when you launch the app.",
         "Improved station map framing and launch behavior make browsing nearby E85 feel smoother and more consistent.",
+        "Fixed Trip Planner directions not reliably opening in your chosen navigation app.",
+        "Fixed sharing a station showing an oversized preview image.",
     ]
 
     /// "What's New in X.Y.Z" — the version is read live from the bundle, never hardcoded, so
