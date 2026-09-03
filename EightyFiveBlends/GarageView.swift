@@ -646,6 +646,7 @@ private struct VehicleRowCard: View {
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+                .accessibilityLabel("Delete \(vehicle.nickname.isEmpty ? "Unnamed Vehicle" : vehicle.nickname)")
             }
         }
         .padding(18)

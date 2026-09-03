@@ -65,7 +65,11 @@ struct ContentView: View {
         Group {
             if hasCompletedOnboarding {
                 TabView(selection: $selectedTab) {
-                    CalculatorView()
+                    // isActiveTab drives CalculatorView's foreground GPS-polling lifecycle — see
+                    // that struct's own isActiveTab comment. TabView keeps every child mounted
+                    // regardless of selection, so this is the only reliable signal for "is
+                    // Calculator actually the one on screen right now."
+                    CalculatorView(isActiveTab: selectedTab == .calculator)
                     .tabItem {
                         Label("Calculator", systemImage: "fuelpump")
                     }

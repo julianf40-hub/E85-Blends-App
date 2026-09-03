@@ -10,6 +10,15 @@ import SwiftData
 import CoreLocation
 
 struct CalculatorView: View {
+    // Whether Calculator is the currently-selected tab, passed down from ContentView's existing
+    // `selectedTab` state (see ContentView.swift's TabView construction). Release-readiness fix
+    // (2.3.2): without this, the ~20s foreground GPS poll below kept running on every other tab
+    // too, because SwiftUI's TabView keeps every child view mounted regardless of which tab is
+    // selected — `scenePhase` alone (the app foregrounded/backgrounded) was never enough to tell
+    // "Calculator is on screen" apart from "Calculator merely still exists off-screen." See
+    // PumpPollingTaskID below and the `.task(id:)` that uses it.
+    let isActiveTab: Bool
+
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppPreferenceKey.defaultTargetBlend) private var preferredDefaultTargetBlend = BlendPreferenceOption.e30.rawValue
     // 2.3.0 UI polish pass: read directly, matching MoreView/StationsView/OnboardingView's own
@@ -319,11 +328,16 @@ struct CalculatorView: View {
         // tab appearance. Re-requesting periodically while the tab is visible and the app is
         // foregrounded lets a user who is already standing at the pump (or whose first fix was
         // a coarse one) still get caught by refreshPumpModeStation()/evaluateAutoPromptPumpMode()
-        // on a later fix. .task(id: scenePhase) restarts (and SwiftUI auto-cancels the previous
-        // run of) this loop whenever scenePhase changes, so it's inert the instant the app
-        // backgrounds and never fires while this view isn't on screen.
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
+        // on a later fix. .task(id:) restarts (and SwiftUI auto-cancels the previous run of)
+        // this loop whenever PumpPollingTaskID changes — scenePhase leaving .active makes it
+        // inert the instant the app backgrounds, and isActiveTab leaving true makes it inert the
+        // instant the user leaves Calculator for another tab (2.3.2 release-readiness fix — see
+        // isActiveTab's own comment for why scenePhase alone wasn't enough). Switching back to
+        // Calculator (isActiveTab true again) or returning to the foreground restarts it; rapid
+        // tab switching never stacks duplicate loops, since a new task ID always cancels the
+        // previous task before starting the next.
+        .task(id: PumpPollingTaskID(scenePhase: scenePhase, isActiveTab: isActiveTab)) {
+            guard PumpPollingTaskID.shouldPoll(scenePhase: scenePhase, isActiveTab: isActiveTab) else { return }
             await runPeriodicPumpLocationRefresh()
         }
         .onChange(of: activeVehicleKey) { _, newValue in
@@ -500,11 +514,14 @@ struct CalculatorView: View {
         locationManager.requestUserLocation()
     }
 
-    /// Backing loop for the `.task(id: scenePhase)` above — requests a fresh one-shot fix
-    /// every ~20s while active. requestPumpModeLocationIfNeeded() already guards on
-    /// authorization, so this never triggers a permission prompt (it only ever reaches
-    /// `.requestLocation()`, never `.requestWhenInUseAuthorization()`). 20s balances catching a
-    /// good fix promptly against not polling GPS so fast it wastes battery.
+    /// Backing loop for the `.task(id:)` above — requests a fresh one-shot fix every ~20s while
+    /// Calculator is both the active tab and the app is foregrounded. requestPumpModeLocationIfNeeded()
+    /// already guards on authorization, so this never triggers a permission prompt (it only ever
+    /// reaches `.requestLocation()`, never `.requestWhenInUseAuthorization()`). 20s balances
+    /// catching a good fix promptly against not polling GPS so fast it wastes battery. This is
+    /// unrelated to, and must never be confused with, Automatic Pump Detection — that's a
+    /// separate, opt-in, region-monitoring-based background feature owned by
+    /// AutomaticPumpDetectionService, not this loop.
     private func runPeriodicPumpLocationRefresh() async {
         while Task.isCancelled == false {
             requestPumpModeLocationIfNeeded()
@@ -979,9 +996,32 @@ struct CalculatorView: View {
 }
 
 #Preview {
-    CalculatorView()
+    CalculatorView(isActiveTab: true)
         .modelContainer(for: [VehicleProfile.self, FuelLogEntry.self, FuelStation.self], inMemory: true)
         .environment(StationLocationManager())
+}
+
+/// Combined identity for the foreground pump-location-polling `.task(id:)` above. SwiftUI's
+/// `.task(id:)` cancels the previous run and starts a new one whenever this value changes (via
+/// `Equatable`), so the polling loop restarts cleanly on any transition of either field —
+/// scenePhase leaving/returning to `.active`, or isActiveTab flipping as the user switches tabs —
+/// with no separate cancellation bookkeeping needed here.
+///
+/// Deliberately `internal` (not `private`), and `shouldPoll` deliberately split out as its own
+/// pure static function, so this decision rule is directly unit-testable — see
+/// EightyFiveBlendsTests/PumpPollingTaskIDTests.swift — without needing a UI test harness to
+/// exercise `.task(id:)`'s own restart behavior, which is a SwiftUI framework mechanism, not
+/// logic this file implements.
+struct PumpPollingTaskID: Equatable {
+    let scenePhase: ScenePhase
+    let isActiveTab: Bool
+
+    /// Whether the foreground pump-location-polling loop should run for this combination —
+    /// exactly the guard inside the `.task(id:)` above, extracted so it's testable with plain
+    /// values instead of a live `@Environment(\.scenePhase)`/`isActiveTab` pair.
+    static func shouldPoll(scenePhase: ScenePhase, isActiveTab: Bool) -> Bool {
+        scenePhase == .active && isActiveTab
+    }
 }
 
 // Pump Ethanol / Gas Ethanol are intentionally NOT fields here anymore — they're app-level
