@@ -7,6 +7,12 @@
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>comgooglemaps</string>
+		<!-- fix/2.3.2-trip-planner-navigation — required alongside comgooglemaps above:
+		     TripNavigationLauncher wraps Trip Planner's existing Google Maps web URL with
+		     this scheme to force it into the installed app instead of Safari. Without this
+		     entry, canOpenURL(_:) on a comgooglemapsurl:// URL always returns false regardless
+		     of whether Google Maps is installed, silently defeating that fix. -->
+		<string>comgooglemapsurl</string>
 		<string>waze</string>
 	</array>
 	<key>NLR_API_KEY</key>
