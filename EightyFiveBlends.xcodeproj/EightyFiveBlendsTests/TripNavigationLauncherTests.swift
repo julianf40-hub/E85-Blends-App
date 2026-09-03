@@ -19,13 +19,19 @@ import CoreLocation
 @testable import EightyFiveBlends
 
 /// Records every URL the launcher asks it to open/check, and lets a test control whether a
-/// given native scheme reports as "installed" — this is the seam that makes
-/// "Google Maps installed" vs. "not installed" testable without a real device.
+/// given native scheme reports as "installed" and whether launching it actually succeeds —
+/// these are the two independent seams that make "Google Maps installed" vs. "not installed"
+/// vs. "installed but the open call itself fails" all testable without a real device.
 @MainActor
 private final class FakeURLOpener: ExternalAppURLOpening {
     /// Schemes this fake reports as installed (i.e. `canOpen` returns true only for a URL
     /// whose scheme is in this set) — set per test to simulate installed/not-installed.
     var installedSchemes: Set<String> = []
+    /// Schemes whose `launch` call should report failure even though `canOpen` reported them
+    /// installed — simulates a native app that's installed but the open call still doesn't
+    /// succeed (e.g. a stale LaunchServices registration). Defaults to empty, so existing
+    /// tests that don't care about this keep their original "launch always succeeds" behavior.
+    var failingLaunchSchemes: Set<String> = []
     private(set) var openedURLs: [URL] = []
 
     func canOpen(_ url: URL) -> Bool {
@@ -33,8 +39,10 @@ private final class FakeURLOpener: ExternalAppURLOpening {
         return installedSchemes.contains(scheme)
     }
 
-    func launch(_ url: URL) {
+    func launch(_ url: URL) async -> Bool {
         openedURLs.append(url)
+        guard let scheme = url.scheme else { return true }
+        return !failingLaunchSchemes.contains(scheme)
     }
 }
 
@@ -47,12 +55,12 @@ struct TripNavigationLauncherTests {
     // MARK: - 1. Google Maps installed → native scheme selected, Safari never touched
 
     @Test("Google Maps installed selects the native comgooglemapsurl scheme, not the HTTPS URL")
-    func googleMapsInstalled_selectsNativeScheme() {
+    func googleMapsInstalled_selectsNativeScheme() async {
         let opener = FakeURLOpener()
         opener.installedSchemes = ["comgooglemapsurl"]
         TripNavigationLauncher.urlOpener = opener
 
-        TripNavigationLauncher.openGoogleMaps(for: .route(origin: origin, destination: destination, waypoints: [fuelStop]))
+        await TripNavigationLauncher.openGoogleMaps(for: .route(origin: origin, destination: destination, waypoints: [fuelStop])).value
 
         #expect(opener.openedURLs.count == 1)
         #expect(opener.openedURLs.first?.scheme == "comgooglemapsurl")
@@ -61,27 +69,49 @@ struct TripNavigationLauncherTests {
     // MARK: - 2. Google Maps unavailable → HTTPS fallback selected, no crash, no dead button
 
     @Test("Google Maps not installed falls back to the HTTPS web URL")
-    func googleMapsUnavailable_selectsHTTPSFallback() {
+    func googleMapsUnavailable_selectsHTTPSFallback() async {
         let opener = FakeURLOpener()
         opener.installedSchemes = [] // nothing installed
         TripNavigationLauncher.urlOpener = opener
 
-        TripNavigationLauncher.openGoogleMaps(for: .route(origin: origin, destination: destination, waypoints: [fuelStop]))
+        await TripNavigationLauncher.openGoogleMaps(for: .route(origin: origin, destination: destination, waypoints: [fuelStop])).value
 
         #expect(opener.openedURLs.count == 1)
         #expect(opener.openedURLs.first?.scheme == "https")
         #expect(opener.openedURLs.first?.host == "www.google.com")
     }
 
+    // MARK: - 2b. Google Maps installed but the native open itself fails → HTTPS fallback
+    // (regression test for the bug this fix addresses: canOpen(_:) reporting a scheme as
+    // installed is not a guarantee UIApplication.open will actually succeed opening it —
+    // before this fix, a failed native open had no way to report back and the button would
+    // silently no-op instead of falling back.)
+
+    @Test("Google Maps installed but native launch fails still falls back to the HTTPS URL")
+    func googleMapsInstalledButLaunchFails_fallsBackToHTTPS() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = ["comgooglemapsurl"]
+        opener.failingLaunchSchemes = ["comgooglemapsurl"]
+        TripNavigationLauncher.urlOpener = opener
+
+        await TripNavigationLauncher.openGoogleMaps(for: .route(origin: origin, destination: destination, waypoints: [fuelStop])).value
+
+        // Both the failed native attempt AND the fallback must have been launched, in order.
+        #expect(opener.openedURLs.count == 2)
+        #expect(opener.openedURLs.first?.scheme == "comgooglemapsurl")
+        #expect(opener.openedURLs.last?.scheme == "https")
+        #expect(opener.openedURLs.last?.host == "www.google.com")
+    }
+
     // MARK: - 3. Waze installed → native scheme selected
 
     @Test("Waze installed selects the native waze:// scheme")
-    func wazeInstalled_selectsNativeScheme() {
+    func wazeInstalled_selectsNativeScheme() async {
         let opener = FakeURLOpener()
         opener.installedSchemes = ["waze"]
         TripNavigationLauncher.urlOpener = opener
 
-        TripNavigationLauncher.openWaze(for: .route(origin: origin, destination: destination, waypoints: [fuelStop]))
+        await TripNavigationLauncher.openWaze(for: .route(origin: origin, destination: destination, waypoints: [fuelStop])).value
 
         #expect(opener.openedURLs.count == 1)
         #expect(opener.openedURLs.first?.scheme == "waze")
@@ -90,16 +120,34 @@ struct TripNavigationLauncherTests {
     // MARK: - 4. Waze unavailable → fallback behavior selected
 
     @Test("Waze not installed falls back to the HTTPS web URL")
-    func wazeUnavailable_selectsHTTPSFallback() {
+    func wazeUnavailable_selectsHTTPSFallback() async {
         let opener = FakeURLOpener()
         opener.installedSchemes = []
         TripNavigationLauncher.urlOpener = opener
 
-        TripNavigationLauncher.openWaze(for: .singleStop(fuelStop, name: "Test Stop"))
+        await TripNavigationLauncher.openWaze(for: .singleStop(fuelStop, name: "Test Stop")).value
 
         #expect(opener.openedURLs.count == 1)
         #expect(opener.openedURLs.first?.scheme == "https")
         #expect(opener.openedURLs.first?.host == "waze.com")
+    }
+
+    // MARK: - 4b. Waze installed but the native open itself fails → HTTPS fallback
+    // (comes for free from the shared openNativeThenFallback implementation both apps use.)
+
+    @Test("Waze installed but native launch fails still falls back to the HTTPS URL")
+    func wazeInstalledButLaunchFails_fallsBackToHTTPS() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = ["waze"]
+        opener.failingLaunchSchemes = ["waze"]
+        TripNavigationLauncher.urlOpener = opener
+
+        await TripNavigationLauncher.openWaze(for: .route(origin: origin, destination: destination, waypoints: [fuelStop])).value
+
+        #expect(opener.openedURLs.count == 2)
+        #expect(opener.openedURLs.first?.scheme == "waze")
+        #expect(opener.openedURLs.last?.scheme == "https")
+        #expect(opener.openedURLs.last?.host == "waze.com")
     }
 
     // MARK: - 5. Apple Maps — not covered by this file, deliberately

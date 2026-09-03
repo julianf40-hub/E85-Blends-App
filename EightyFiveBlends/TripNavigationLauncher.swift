@@ -55,21 +55,35 @@ import CoreLocation
 import UIKit
 
 /// Abstracts `UIApplication`'s URL-opening so navigation-launch DECISIONS (native app found
-/// vs. not) can be exercised in a unit test without ever touching a real installed app,
-/// launching Safari, or running on a device. The shipping app always uses
-/// `UIApplication.shared`; tests inject a fake that reports whatever installed/not-installed
-/// state the test wants to exercise. Deliberately named `canOpen`/`launch` — NOT `canOpenURL`/
-/// `open` — so this extension's methods can never collide with (and risk ambiguous-overload
-/// call sites for) `UIApplication`'s own `canOpenURL(_:)`/`open(_:options:completionHandler:)`
-/// anywhere else in the app.
+/// vs. not, and whether the actual open call succeeded) can be exercised in a unit test
+/// without ever touching a real installed app, launching Safari, or running on a device. The
+/// shipping app always uses `UIApplication.shared`; tests inject a fake that reports whatever
+/// installed/not-installed and succeeds/fails state the test wants to exercise. Deliberately
+/// named `canOpen`/`launch` — NOT `canOpenURL`/`open` — so this extension's methods can never
+/// collide with (and risk ambiguous-overload call sites for) `UIApplication`'s own
+/// `canOpenURL(_:)`/`open(_:options:completionHandler:)` anywhere else in the app.
+///
+/// `launch` reports whether the open actually succeeded (not just whether `canOpen` thought
+/// the scheme was installed) — `canOpen(_:)` returning true is not a guarantee that
+/// `UIApplication.open` will actually succeed (e.g. a stale LaunchServices registration for a
+/// scheme). Without this result, `openNativeThenFallback` below would have no way to notice a
+/// failed native open and fall back to the HTTPS URL, silently no-opping instead.
 protocol ExternalAppURLOpening {
     func canOpen(_ url: URL) -> Bool
-    func launch(_ url: URL)
+    @discardableResult
+    func launch(_ url: URL) async -> Bool
 }
 
 extension UIApplication: ExternalAppURLOpening {
     func canOpen(_ url: URL) -> Bool { canOpenURL(url) }
-    func launch(_ url: URL) { open(url, options: [:], completionHandler: nil) }
+
+    func launch(_ url: URL) async -> Bool {
+        await withCheckedContinuation { continuation in
+            open(url, options: [:]) { success in
+                continuation.resume(returning: success)
+            }
+        }
+    }
 }
 
 /// Centralizes every external-navigation-app launch Trip Planner performs. See file header
@@ -161,9 +175,16 @@ enum TripNavigationLauncher {
         return components.url
     }
 
-    static func openGoogleMaps(for destination: Destination) {
-        guard let webURL = googleMapsWebURL(for: destination) else { return }
-        openNativeThenFallback(native: googleMapsNativeURL(for: destination), webFallback: webURL)
+    /// Fires the native-then-fallback launch (see `openNativeThenFallback`) and returns the
+    /// backing `Task` so tests can `await task.value` for a deterministic result; production
+    /// Button actions call this synchronously and ignore the return value (`@discardableResult`),
+    /// so this is a source-compatible, fire-and-forget call at every existing call site.
+    @discardableResult
+    static func openGoogleMaps(for destination: Destination) -> Task<Void, Never> {
+        Task {
+            guard let webURL = googleMapsWebURL(for: destination) else { return }
+            await openNativeThenFallback(native: googleMapsNativeURL(for: destination), webFallback: webURL)
+        }
     }
 
     // MARK: - Waze
@@ -201,25 +222,31 @@ enum TripNavigationLauncher {
         ]
     }
 
-    static func openWaze(for destination: Destination) {
-        guard let webURL = wazeWebURL(for: destination) else { return }
-        openNativeThenFallback(native: wazeNativeURL(for: destination), webFallback: webURL)
+    /// Same fire-and-forget-but-awaitable shape as `openGoogleMaps` above, for the same reason.
+    @discardableResult
+    static func openWaze(for destination: Destination) -> Task<Void, Never> {
+        Task {
+            guard let webURL = wazeWebURL(for: destination) else { return }
+            await openNativeThenFallback(native: wazeNativeURL(for: destination), webFallback: webURL)
+        }
     }
 
     // MARK: - Shared open logic
 
     /// Tries the native app URL first, and only if the corresponding app is actually
     /// installed (`canOpen(_:)` — this is what `LSApplicationQueriesSchemes` in Info.plist
-    /// must declare the scheme for); falls back to the HTTPS web URL otherwise. The web
+    /// must declare the scheme for). If the native app isn't installed, OR if it is installed
+    /// but the native open call itself still fails, falls back to the HTTPS web URL. The web
     /// fallback always succeeds as an action (it either opens the app via Universal Link if
     /// iOS chooses to, or opens in the browser) — this is the "no dead button, no crash, no
-    /// silent failure when the app isn't installed" requirement.
-    private static func openNativeThenFallback(native: URL?, webFallback: URL) {
+    /// silent failure" requirement, now covering a native app that reports itself installed
+    /// but fails to actually open, not just the not-installed case.
+    private static func openNativeThenFallback(native: URL?, webFallback: URL) async {
         if let native, urlOpener.canOpen(native) {
-            urlOpener.launch(native)
-        } else {
-            urlOpener.launch(webFallback)
+            let opened = await urlOpener.launch(native)
+            if opened { return }
         }
+        await urlOpener.launch(webFallback)
     }
 
     private static func coordinateString(_ coordinate: CLLocationCoordinate2D) -> String {
