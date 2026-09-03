@@ -51,12 +51,25 @@ Until that baseline exists:
 
 `public.community_stations` and `public.e85_price_reports` — their schema, RLS policies, table
 grants, and data — are explicitly **out of scope** for every migration in this directory unless a
-future task is deliberately, narrowly scoped to touch them. In particular, the current live
-`INSERT` RLS-policy-vs-table-privilege discrepancy on both tables (RLS INSERT policies exist for
-`anon`/`authenticated`, but the underlying table `INSERT` privilege is currently `false` for
-`anon`) is a **known, deliberately untouched** finding from the prior audit — see
-`docs/PRE_RELEASE_SUPABASE_CHECKLIST.md`. Reconciling it is a separate, explicitly-scoped
-follow-up, not something any RevenueCat-entitlement migration should incidentally fix.
+future task is deliberately, narrowly scoped to touch them, exactly as the two
+`community_stations_*` migrations below were.
+
+**Historical note, corrected 2026-09-03:** an earlier pass at this file claimed a live `INSERT`
+RLS-policy-vs-table-privilege discrepancy (RLS allows `anon` INSERT, but the table privilege
+doesn't) on both tables. That was a misreading of `information_schema.role_table_grants`, which
+only shows table-wide grants and misses the column-scoped grants both tables actually use — INSERT
+worked correctly on both tables the whole time. The **real** issue, found and fixed afterward, was
+narrower: `community_stations`' upsert path (`CommunityPriceService.upsertCommunityStation`,
+`Prefer: resolution=merge-duplicates` → `INSERT ... ON CONFLICT (normalized_key) DO UPDATE`)
+required UPDATE privilege that `anon`/`authenticated` never had. The client now sends
+`Prefer: resolution=ignore-duplicates` (`... DO NOTHING`, INSERT-only) instead, so no anonymous
+UPDATE capability is needed or granted on `community_stations` — see
+`community_stations_allow_public_upsert_update` and `community_stations_revoke_anon_update` in
+`supabase/migrations/`, and `docs/PRE_RELEASE_SUPABASE_CHECKLIST.md` for the full verification
+record. `e85_price_reports` was never affected — its INSERT-only path worked correctly throughout.
+Any further change to either table's schema, RLS, or grants remains a separate, explicitly-scoped
+follow-up, not something a future RevenueCat-entitlement (or other) migration should incidentally
+touch.
 
 ## RevenueCat entitlement tables are private and server-only
 
