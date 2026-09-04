@@ -113,7 +113,7 @@ struct SubscriptionManagerTests {
     func purchase_notEntitled_neverUnlocks() {
         let state = SubscriptionManager.state(forPurchaseOutcome: .notEntitled)
         #expect(state != .succeeded)
-        #expect(state == .failed("We couldn't verify your purchase. Please try again or contact support."))
+        #expect(state == .failed("We couldn't verify your purchase. Please try again or contact support@85blends.app."))
     }
 
     @Test("Purchase cancellation → does not unlock, and is handled non-destructively (idle, not an error)")

@@ -7,7 +7,67 @@
 	<key>NSPrivacyTrackingDomains</key>
 	<array/>
 	<key>NSPrivacyCollectedDataTypes</key>
-	<array/>
+	<array>
+		<!-- Community Price Reports (Supabase-backed) — the only first-party data 85Blends
+		     itself persists off-device. Re-audited 2.3.2 (correction pass) against
+		     CommunityPriceService.swift's actual payloads:
+
+		     - Precise Location was REMOVED: the only coordinates ever sent to Supabase are the
+		       reported STATION's latitude/longitude (CommunityStationPayload), a business/POI
+		       location comparable to its name/address/city/state/zip — never the reporting
+		       user's own device coordinates (CommunityPriceReportPayload carries no lat/long at
+		       all). Apple's Location data type describes the location of a user or device;
+		       a station's fixed address-equivalent coordinate is not that, even though a report
+		       loosely implies the reporter was probably near it at some point.
+
+		     - User ID was RECLASSIFIED to Device ID: anonymousReporterID
+		       (CommunityPriceService.anonymousReporterID) is a UUID generated entirely
+		       client-side and stored in plain UserDefaults (not Keychain) — it does not survive
+		       reinstall, is never synced across a user's own devices, and has no server-side
+		       account record; 85Blends has no login/account system anywhere (see this app's
+		       Privacy screen, "No Account Required"). Apple's User ID data type is for an
+		       identifier tied to a user's account; Device ID is for a device/install-level
+		       identifier. This is the latter, mechanically and by Apple's own definition.
+
+		     - Other User Content (the optional free-text note) is unchanged.
+
+		     Both remaining entries are Linked: true, because the whole point of
+		     anonymousReporterID is correlating a person's own reports/notes together over time
+		     (see this app's Privacy screen, "Anonymous Reporter ID" card) — Apple counts that as
+		     linked even without a real name/email. Neither is Tracking: this data is never
+		     shared with a third party or used to correlate with data outside 85Blends' own
+		     Supabase backend.
+
+		     Everything else this app sends off-device (NREL/AFDC nearby-station lookups) only
+		     services that one real-time request and is never retained afterward, so it does not
+		     meet Apple's collection threshold — Apple's definition (App Store Connect App
+		     Privacy guidance): data is "collected" when a developer or third party can access it
+		     for longer than necessary to service the request in real time. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
 		<dict>

@@ -1684,6 +1684,7 @@ struct StationsView: View {
                                 .foregroundStyle(AppTheme.Colors.textMuted)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Clear search text")
                     }
                 }
                 .padding(.horizontal, 12)
@@ -2936,9 +2937,14 @@ struct StationsView: View {
             return
         }
 
-        let trimmedPrice = priceInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsedPrice = Double(trimmedPrice), parsedPrice > 0 else {
-            priceValidationMessage = "Enter a valid E85 price to continue."
+        // CommunityPriceValidation.parseValidPrice matches production Supabase's own bound on
+        // `e85_price_reports.price` exactly (see that file's header) — rejecting here, before
+        // ever constructing a network request or touching this device's own saved data, applies
+        // equally to "Save Locally" and "Save & Report" since a local-only absurd price would
+        // otherwise sit uncaught in FuelStation.lastKnownE85Price and skew Trip Planner's cost
+        // estimates.
+        guard let parsedPrice = CommunityPriceValidation.parseValidPrice(from: priceInput) else {
+            priceValidationMessage = "Enter an E85 price between $1.00 and $8.00."
             return
         }
 
@@ -3366,8 +3372,15 @@ private struct StationRowCard: View {
                                         .stroke(station.isFavorite ? AppTheme.Colors.stationYellow.opacity(0.55) : AppTheme.Colors.borderColor, lineWidth: 1)
                                 )
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                // 44x44pt minimum tap target (release-readiness fix). This outer
+                                // frame + contentShape grows only the tappable area — the visible
+                                // 30x30 badge above is unchanged, so this card's design doesn't
+                                // change, only how forgiving it is to tap.
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(station.isFavorite ? "Remove \(station.name) from Favorites" : "Favorite \(station.name)")
                     }
 
                     Text(locationLine)

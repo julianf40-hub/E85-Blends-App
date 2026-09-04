@@ -6,8 +6,11 @@
 //
 
 import SwiftUI
+import UserMessagingPlatform
 
 struct PreferencesView: View {
+    @State private var privacyOptionsErrorMessage: String?
+
     @AppStorage(AppPreferenceKey.preferredMapsApp) private var preferredMapsApp = MapsAppOption.appleMaps.rawValue
     @AppStorage(AppPreferenceKey.defaultTargetBlend) private var defaultTargetBlend = BlendPreferenceOption.e30.rawValue
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
@@ -43,6 +46,16 @@ struct PreferencesView: View {
                 appExperienceCard
                 stationsLayoutCard
                 settingsCard
+
+                // UMP requires a reachable "privacy options" entry point whenever
+                // ConsentInformation reports one is required (typically EEA/UK, or an
+                // applicable US state) — see AdManager.isPrivacyOptionsEntryPointRequired's own
+                // header. Hidden entirely (not just disabled) for every other user, since there's
+                // nothing to manage if consent gathering never required a choice.
+                if AdManager.shared.isPrivacyOptionsEntryPointRequired {
+                    privacyOptionsCard
+                }
+
                 AutomaticPumpDetectionPreferenceCard()
                 proStatusCard
 
@@ -212,6 +225,71 @@ struct PreferencesView: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    // Only ever shown when AdManager.shared.isPrivacyOptionsEntryPointRequired is true — see
+    // this card's call site in body. Presents Google UMP's own privacy-options form so a user
+    // who already made a consent choice at launch can change it later, exactly as required by
+    // Google's UMP integration guidelines whenever that choice applies to them.
+    private var privacyOptionsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(
+                title: "Ad Privacy",
+                subtitle: "Manage the ad consent choice you made for this device."
+            )
+
+            Button {
+                presentPrivacyOptionsForm()
+            } label: {
+                HStack {
+                    Text("Privacy Options")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Image(systemName: "hand.raised")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+
+            if let privacyOptionsErrorMessage {
+                Text(privacyOptionsErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    // Reuses AdManager's own presenting-view-controller lookup (see that file) rather than
+    // inventing a second way to find one — this is the only other place 85Blends presents any
+    // UMP-owned UI, so it deliberately shares that helper instead of duplicating it.
+    private func presentPrivacyOptionsForm() {
+        privacyOptionsErrorMessage = nil
+        guard let viewController = AdManager.topMostPresentingViewController() else {
+            privacyOptionsErrorMessage = "Privacy options aren't available right now. Try again in a moment."
+            return
+        }
+        Task {
+            do {
+                try await ConsentForm.presentPrivacyOptionsForm(from: viewController)
+            } catch {
+                privacyOptionsErrorMessage = "Couldn't open privacy options: \(error.localizedDescription)"
+            }
+        }
     }
 
     private var proStatusCard: some View {

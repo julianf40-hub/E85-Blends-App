@@ -105,6 +105,28 @@ struct CommunityPriceService {
         )
     }
 
+    /// 2.3.2 community-station upsert security hardening: this used to send
+    /// `Prefer: resolution=merge-duplicates`, which PostgREST turns into
+    /// `INSERT ... ON CONFLICT (normalized_key) DO UPDATE ...` -- Postgres requires UPDATE
+    /// privilege for that statement shape regardless of whether a conflict actually occurs.
+    /// Granting anonymous clients UPDATE on an existing community station's display/location
+    /// fields just to make this upsert convenient was broader than the app actually needs: no
+    /// legitimate 85Blends flow edits an *existing* station's details from this call -- the
+    /// existence check three lines below already returns early with the current row whenever
+    /// one is found, so the POST below only ever runs for a normalized_key this client believes
+    /// is genuinely new.
+    ///
+    /// `Prefer: resolution=ignore-duplicates` instead generates
+    /// `INSERT ... ON CONFLICT (normalized_key) DO NOTHING`, which requires only INSERT
+    /// privilege -- never UPDATE -- because a DO NOTHING conflict action never touches the
+    /// conflicting row. The only behavior difference from the caller's perspective: if another
+    /// request has *just* created the same normalized_key (the genuine concurrent-race case --
+    /// two devices reporting the same brand-new station within the same moment), this insert
+    /// becomes a no-op and PostgREST returns an empty body/array instead of the row. That exact
+    /// case was already handled below (`isResponseBodyEmpty` / the empty-array branch of
+    /// `decodeSingleOrArray`), which falls back to re-fetching by normalized_key -- so both
+    /// racing clients still converge on the one row the winner created, they just never attempt
+    /// to overwrite its fields to do so.
     func upsertCommunityStation(
         normalizedStationKey: String,
         name: String,
@@ -144,7 +166,7 @@ struct CommunityPriceService {
                 functionName: "upsertCommunityStation",
                 payload: AnyEncodable(payload),
                 extraHeaders: [
-                    "Prefer": "resolution=merge-duplicates,return=representation"
+                    "Prefer": "resolution=ignore-duplicates,return=representation"
                 ]
             )
         } catch {
