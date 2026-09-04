@@ -139,7 +139,18 @@ struct ContentView: View {
                 // onboarding." Not tied to any specific tab, so this works identically in
                 // Simple and Normal App Experience Mode.
                 .onAppear {
-                    evaluateWhatsNewEligibility()
+                    attemptWhatsNewPresentation()
+                }
+                // AdManager's UMP consent gathering (see its own header/gatherConsent()) can
+                // still be in flight when this view first appears, and may present a raw UIKit
+                // consent form on the same window a SwiftUI `.sheet` would use — see
+                // WhatsNewPresentation.shouldPresent's isRequiredConsentPresentationPending
+                // guard. Re-attempting here, once AdManager reports consent resolution is no
+                // longer pending, is what turns that guard's "not yet" into an actual
+                // presentation later in the same launch, without ever presenting over required
+                // consent UI.
+                .onChange(of: AdManager.shared.isInitialConsentResolutionPending) { _, _ in
+                    attemptWhatsNewPresentation()
                 }
                 .sheet(
                     isPresented: $isShowingWhatsNew,
@@ -160,9 +171,15 @@ struct ContentView: View {
         }
     }
 
-    private func evaluateWhatsNewEligibility() {
+    /// Called from `.onAppear` and again from the consent-pending `.onChange` above — safe to
+    /// call multiple times in a launch. The fresh-onboarder bookkeeping below only ever persists
+    /// state (never presents anything), so it always runs on the first call regardless of
+    /// consent timing; only the actual `isShowingWhatsNew` decision waits on consent resolution,
+    /// via `hasEvaluatedWhatsNewEligibility` staying `false` until that decision is actually made
+    /// — so a call that returns early because consent is still pending leaves this method free to
+    /// run again later in the same launch, exactly once, once consent resolution completes.
+    private func attemptWhatsNewPresentation() {
         guard hasEvaluatedWhatsNewEligibility == false else { return }
-        hasEvaluatedWhatsNewEligibility = true
 
         // 85Blends 2.3.0 release-blocker fix: a brand-new user who just finished onboarding
         // this launch has already been introduced to the current app (shouldPresent already
@@ -172,18 +189,28 @@ struct ContentView: View {
         // as already handled, at this same deterministic onboarding-completion transition,
         // reusing the exact persistence semantics a normal dismissal already uses (see
         // WhatsNewPresentation.versionToPersistOnDismiss). A future version upgrade remains
-        // eligible normally — this only ever records the CURRENT version.
+        // eligible normally — this only ever records the CURRENT version. Idempotent, so it's
+        // harmless if this method runs again before the actual decision below succeeds.
         if onboardingJustCompletedThisLaunch {
             lastPresentedWhatsNewVersion = WhatsNewPresentation.versionToPersistOnDismiss(
                 currentAppVersion: ReleaseNotes.currentAppVersion
             )
         }
 
+        let isConsentPending = AdManager.shared.isInitialConsentResolutionPending
+        guard isConsentPending == false else {
+            // Leave hasEvaluatedWhatsNewEligibility false so the .onChange above gets a real
+            // second attempt once consent resolution completes.
+            return
+        }
+
+        hasEvaluatedWhatsNewEligibility = true
         isShowingWhatsNew = WhatsNewPresentation.shouldPresent(
             currentAppVersion: ReleaseNotes.currentAppVersion,
             lastPresentedVersion: lastPresentedWhatsNewVersion,
             hasCompletedOnboarding: hasCompletedOnboarding,
-            onboardingJustCompletedThisLaunch: onboardingJustCompletedThisLaunch
+            onboardingJustCompletedThisLaunch: onboardingJustCompletedThisLaunch,
+            isRequiredConsentPresentationPending: isConsentPending
         )
     }
 }
