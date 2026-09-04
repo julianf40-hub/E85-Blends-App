@@ -18,6 +18,7 @@ enum WhatsNewPresentation {
     ///   finished onboarding has already been introduced to the current app and should not
     ///   immediately see a second "what's new" screen. `onboardingJustCompletedThisLaunch` is a
     ///   snapshot taken once at launch by the caller (see ContentView), not derived here.
+    /// - No required consent presentation is still pending (see `isRequiredConsentPresentationPending`).
     /// - The current app version differs from the last version this sheet was shown for.
     ///
     /// An existing user upgrading from a version that predates this feature has
@@ -29,10 +30,20 @@ enum WhatsNewPresentation {
         currentAppVersion: String,
         lastPresentedVersion: String,
         hasCompletedOnboarding: Bool,
-        onboardingJustCompletedThisLaunch: Bool
+        onboardingJustCompletedThisLaunch: Bool,
+        isRequiredConsentPresentationPending: Bool
     ) -> Bool {
         guard hasCompletedOnboarding else { return false }
         guard onboardingJustCompletedThisLaunch == false else { return false }
+        // 2.3.2 release-polish fix: at launch, AdManager may still be gathering/presenting
+        // required UMP consent (see AdManager.gatherConsent()) via a raw UIKit `present(...)` on
+        // the same window ContentView's own SwiftUI `.sheet` would use. Presenting both around
+        // the same moment risks a dropped/broken presentation ("Attempt to present ... whose
+        // view is not in the window hierarchy"). Required consent UI always takes priority —
+        // What's New is purely informational and can wait; the caller (ContentView) re-evaluates
+        // this once consent resolution is no longer pending, so this never permanently suppresses
+        // the sheet, only delays it within the same launch.
+        guard isRequiredConsentPresentationPending == false else { return false }
         return currentAppVersion != lastPresentedVersion
     }
 
