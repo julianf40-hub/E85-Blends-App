@@ -344,7 +344,7 @@ struct RouteE85PlannerTests {
         )
     }
 
-    private func expectNeverSafe(_ result: Recommendation, sourceLabel: String) {
+    private func expectNeverSafe(_ result: RouteE85Planner.Recommendation, sourceLabel: String) {
         #expect(result.inputsValid == false, "\(sourceLabel): must report inputsValid == false")
         #expect(result.planComplete == false, "\(sourceLabel): must not report destination reached")
         #expect(result.destinationReserveFraction != 1, "\(sourceLabel): must not report a 100% reserve")

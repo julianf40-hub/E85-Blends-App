@@ -8,8 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */; };
+		1FD94376DFEBAF890E2BB805 /* NearbyE85Widget.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC2171CB5719C29F9BA46E78 /* NearbyE85Widget.swift */; };
+		2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */; };
+		2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */; };
+		2E4E26685537428120887E81 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */; };
 		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
-		8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */; };
+		41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */; };
 		44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */; };
 		44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0E2FE8E4C900304289 /* StationReportStore.swift */; };
@@ -22,9 +26,47 @@
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
+		4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
+		8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */; };
+		C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */; };
+		C8A20B933D07A89B832EF200 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		8E08120799A30B2D275836E1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 44A9BC182FA0865900A9920E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 67F36C62C57649682D794DD7;
+			remoteInfo = NearbyE85Widget;
+		};
+		C77AB821A6187E892B0DF6C1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 44A9BC182FA0865900A9920E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 44A9BC1F2FA0865900A9920E;
+			remoteInfo = EightyFiveBlends;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1BECE3BD42FA94B6CF33A4A6 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NearbyE85Widget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1183F81018E00451620EF66D /* NearbyE85Widget.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = NearbyE85Widget.entitlements; sourceTree = "<group>"; };
 		44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteE85Planner.swift; sourceTree = "<group>"; };
 		44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedTripStore.swift; sourceTree = "<group>"; };
 		44309B0E2FE8E4C900304289 /* StationReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StationReportStore.swift; sourceTree = "<group>"; };
@@ -38,6 +80,13 @@
 		44A838532FA1EB1100D200DA /* NRELStationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NRELStationService.swift; sourceTree = "<group>"; };
 		44A9BC202FA0865900A9920E /* EightyFiveBlends.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EightyFiveBlends.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculatorView.swift; sourceTree = "<group>"; };
+		71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StationDataValidation.swift; path = EightyFiveBlends/StationDataValidation.swift; sourceTree = SOURCE_ROOT; };
+		B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Snapshot.swift; sourceTree = "<group>"; };
+		C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EightyFiveBlendsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC2171CB5719C29F9BA46E78 /* NearbyE85Widget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Widget.swift; sourceTree = "<group>"; };
+		CEC01578F153E0FE129AAF45 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Presentation.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -59,9 +108,24 @@
 			path = EightyFiveBlends;
 			sourceTree = "<group>";
 		};
+		F0014E4080EEA918DFCF64B7 /* EightyFiveBlends.xcodeproj/EightyFiveBlendsTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = EightyFiveBlends.xcodeproj/EightyFiveBlendsTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		04924E07E656D25C41652E5B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C8A20B933D07A89B832EF200 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		44A9BC1D2FA0865900A9920E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -69,6 +133,14 @@
 				40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */,
 				11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */,
 				8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D6711754312CFD3ABDA2FA26 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2E4E26685537428120887E81 /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -92,6 +164,10 @@
 				44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */,
 				44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */,
 				44309B0E2FE8E4C900304289 /* StationReportStore.swift */,
+				9704D28CE247B71FCFACAFEF /* SharedNearbyE85 */,
+				5DD999072F02D4F5D107196F /* Frameworks */,
+				559660DE31A80F8F9B5B1746 /* NearbyE85Widget */,
+				F0014E4080EEA918DFCF64B7 /* EightyFiveBlends.xcodeproj/EightyFiveBlendsTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -99,8 +175,48 @@
 			isa = PBXGroup;
 			children = (
 				44A9BC202FA0865900A9920E /* EightyFiveBlends.app */,
+				0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */,
+				C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		49A135967A6EEA38633AE407 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		559660DE31A80F8F9B5B1746 /* NearbyE85Widget */ = {
+			isa = PBXGroup;
+			children = (
+				CC2171CB5719C29F9BA46E78 /* NearbyE85Widget.swift */,
+				CEC01578F153E0FE129AAF45 /* Info.plist */,
+				1183F81018E00451620EF66D /* NearbyE85Widget.entitlements */,
+				EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */,
+			);
+			name = NearbyE85Widget;
+			path = NearbyE85Widget;
+			sourceTree = "<group>";
+		};
+		5DD999072F02D4F5D107196F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				49A135967A6EEA38633AE407 /* iOS */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		9704D28CE247B71FCFACAFEF /* SharedNearbyE85 */ = {
+			isa = PBXGroup;
+			children = (
+				B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */,
+				71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */,
+			);
+			name = SharedNearbyE85;
+			path = SharedNearbyE85;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -113,10 +229,12 @@
 				44A9BC1C2FA0865900A9920E /* Sources */,
 				44A9BC1D2FA0865900A9920E /* Frameworks */,
 				44A9BC1E2FA0865900A9920E /* Resources */,
+				1BECE3BD42FA94B6CF33A4A6 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B5FE82D1E4FF1120A4D7A5E0 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				44A9BC222FA0865900A9920E /* EightyFiveBlends */,
@@ -131,6 +249,44 @@
 			productReference = 44A9BC202FA0865900A9920E /* EightyFiveBlends.app */;
 			productType = "com.apple.product-type.application";
 		};
+		67F36C62C57649682D794DD7 /* NearbyE85Widget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 62C0CF5FF9F739CF906F3126 /* Build configuration list for PBXNativeTarget "NearbyE85Widget" */;
+			buildPhases = (
+				55FB8FFD2D0F507457A00DCE /* Sources */,
+				04924E07E656D25C41652E5B /* Frameworks */,
+				5CE1E17C56E8854C0DECE9F8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NearbyE85Widget;
+			productName = NearbyE85Widget;
+			productReference = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		9018448F2365248511A790D0 /* EightyFiveBlendsTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FECAFADF8EBF402C399BE0D2 /* Build configuration list for PBXNativeTarget "EightyFiveBlendsTests" */;
+			buildPhases = (
+				2A3A1C0316C5DB80424AA1B0 /* Sources */,
+				D6711754312CFD3ABDA2FA26 /* Frameworks */,
+				DF3214010E029A560DB7B611 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B172FCF941F35F74F8AAA618 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				F0014E4080EEA918DFCF64B7 /* EightyFiveBlends.xcodeproj/EightyFiveBlendsTests */,
+			);
+			name = EightyFiveBlendsTests;
+			productName = EightyFiveBlendsTests;
+			productReference = C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -143,6 +299,18 @@
 				TargetAttributes = {
 					44A9BC1F2FA0865900A9920E = {
 						CreatedOnToolsVersion = 26.4.1;
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+						};
+					};
+					67F36C62C57649682D794DD7 = {
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+						};
 					};
 				};
 			};
@@ -166,6 +334,8 @@
 			projectRoot = "";
 			targets = (
 				44A9BC1F2FA0865900A9920E /* EightyFiveBlends */,
+				67F36C62C57649682D794DD7 /* NearbyE85Widget */,
+				9018448F2365248511A790D0 /* EightyFiveBlendsTests */,
 			);
 		};
 /* End PBXProject section */
@@ -178,9 +348,31 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5CE1E17C56E8854C0DECE9F8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DF3214010E029A560DB7B611 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		2A3A1C0316C5DB80424AA1B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		44A9BC1C2FA0865900A9920E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -197,12 +389,72 @@
 				44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */,
 				44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */,
 				44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */,
+				41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		55FB8FFD2D0F507457A00DCE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1FD94376DFEBAF890E2BB805 /* NearbyE85Widget.swift in Sources */,
+				7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */,
+				2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */,
+				C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		B172FCF941F35F74F8AAA618 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = EightyFiveBlends;
+			target = 44A9BC1F2FA0865900A9920E /* EightyFiveBlends */;
+			targetProxy = C77AB821A6187E892B0DF6C1 /* PBXContainerItemProxy */;
+		};
+		B5FE82D1E4FF1120A4D7A5E0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = NearbyE85Widget;
+			target = 67F36C62C57649682D794DD7 /* NearbyE85Widget */;
+			targetProxy = 8E08120799A30B2D275836E1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		37CC3A979D103C1F0AC3DDF6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = NearbyE85Widget/NearbyE85Widget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 42;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NearbyE85Widget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Nearby E85";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.NearbyE85Widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 		4441BBC42FDA770400BC6C6D /* Internal */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -288,7 +540,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios.internal;
+				NEARBY_E85_URL_SCHEME = "e85blends-internal";
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.internal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -455,7 +709,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -498,7 +754,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.2;
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
 				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -514,6 +772,166 @@
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
+		};
+		4B9D70C7FED2A22105862075 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 42;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) NEARBY_WIDGET_TESTING";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EightyFiveBlends.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/EightyFiveBlends";
+			};
+			name = Debug;
+		};
+		4E60F43045F58DB220DCA727 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 42;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) NEARBY_WIDGET_TESTING";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EightyFiveBlends.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/EightyFiveBlends";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		5D92D81B47949639206E3BB2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = NearbyE85Widget/NearbyE85Widget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 42;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NearbyE85Widget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Nearby E85";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios;
+				NEARBY_E85_URL_SCHEME = e85blends;
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.NearbyE85Widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		7307EC7315DD1762401D5590 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 100;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios.internal;
+				NEARBY_E85_URL_SCHEME = "e85blends-internal";
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.internal.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) NEARBY_WIDGET_TESTING";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EightyFiveBlends.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/EightyFiveBlends";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Internal;
+		};
+		89AA7524B23CF6EB38A96D01 /* Internal */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_ENTITLEMENTS = NearbyE85Widget/NearbyE85Widget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 100;
+				DEVELOPMENT_TEAM = 6G83S7V2SK;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NearbyE85Widget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Nearby E85";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.4.0;
+				NEARBY_E85_APP_GROUP = group.com.e85blends.app.ios.internal;
+				NEARBY_E85_URL_SCHEME = "e85blends-internal";
+				PRODUCT_BUNDLE_IDENTIFIER = com.e85blends.app.ios.internal.NearbyE85Widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Internal;
 		};
 /* End XCBuildConfiguration section */
 
@@ -534,6 +952,26 @@
 				44A9BC2E2FA0865A00A9920E /* Debug */,
 				44A9BC2F2FA0865A00A9920E /* Release */,
 				4441BBC52FDA770400BC6C6D /* Internal */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		62C0CF5FF9F739CF906F3126 /* Build configuration list for PBXNativeTarget "NearbyE85Widget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				37CC3A979D103C1F0AC3DDF6 /* Release */,
+				5D92D81B47949639206E3BB2 /* Debug */,
+				89AA7524B23CF6EB38A96D01 /* Internal */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FECAFADF8EBF402C399BE0D2 /* Build configuration list for PBXNativeTarget "EightyFiveBlendsTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4E60F43045F58DB220DCA727 /* Release */,
+				4B9D70C7FED2A22105862075 /* Debug */,
+				7307EC7315DD1762401D5590 /* Internal */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

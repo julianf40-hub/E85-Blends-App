@@ -14,6 +14,7 @@
 //  SubscriptionManagerTests.swift, all likewise present but not yet part of a test target.
 //
 
+import Foundation
 import Testing
 import CoreLocation
 @testable import EightyFiveBlends

@@ -69,6 +69,7 @@ struct StationsSearchSnapshot: Equatable {
     let center: StationCoordinate
     let radiusMiles: Double
     let fetchedAt: Date
+    var locationAt: Date? = nil // Current-session widget provenance; never restored as a fresh fix.
 }
 
 /// Pure, directly-testable freshness/compatibility rules for StationsSearchSnapshot — kept
@@ -307,13 +308,15 @@ final class StationsRecentSearchStore {
         stations: [LiveFuelStation],
         center: StationCoordinate,
         radiusMiles: Double,
-        fetchedAt: Date
+        fetchedAt: Date,
+        locationAt: Date? = nil
     ) {
         let newSnapshot = StationsSearchSnapshot(
             stations: stations,
             center: center,
             radiusMiles: radiusMiles,
-            fetchedAt: fetchedAt
+            fetchedAt: fetchedAt,
+            locationAt: locationAt
         )
         snapshot = newSnapshot
         snapshotOrigin = .currentSession

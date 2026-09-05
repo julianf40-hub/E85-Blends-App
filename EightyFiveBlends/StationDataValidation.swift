@@ -9,7 +9,7 @@
 
 import Foundation
 
-enum StationDataValidation {
+nonisolated enum StationDataValidation {
     // MARK: - Price
 
     /// A price at or above this is treated as an implausible entry (e.g. a typo like $999)

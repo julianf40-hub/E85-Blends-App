@@ -75,6 +75,7 @@ struct EightyFiveBlendsApp: App {
             storeName,
             schema: schema,
             isStoredInMemoryOnly: false,
+            groupContainer: .none, // App Group is only for widget JSON; preserve the existing database location.
             cloudKitDatabase: .automatic
         )
         if let container = try? ModelContainer(for: schema, configurations: [cloudConfig]) {
@@ -89,6 +90,7 @@ struct EightyFiveBlendsApp: App {
             storeName,
             schema: schema,
             isStoredInMemoryOnly: false,
+            groupContainer: .none, // App Group is only for widget JSON; preserve the existing database location.
             cloudKitDatabase: .none
         )
         if let container = try? ModelContainer(for: schema, configurations: [localConfig]) {
@@ -112,6 +114,7 @@ struct EightyFiveBlendsApp: App {
             "EightyFiveBlends-InMemory.store",
             schema: schema,
             isStoredInMemoryOnly: true,
+            groupContainer: .none,
             cloudKitDatabase: .none
         )
         do {
@@ -124,7 +127,9 @@ struct EightyFiveBlendsApp: App {
 
             // In release builds, attempt a default no-configuration container so the app
             // can at least launch rather than hard-crashing.
-            if let fallback = try? ModelContainer(for: schema) {
+            if let fallback = try? ModelContainer(for: schema, configurations: [
+                ModelConfiguration(schema: schema, groupContainer: .none)
+            ]) {
                 return (fallback, true)
             }
 
@@ -146,6 +151,7 @@ struct EightyFiveBlendsApp: App {
                 )
                 .onAppear {
                     AppTheme.applyTabBarAppearance()
+                    if !locationManager.isAuthorizedForUserLocation { NearbyE85Publisher.revokeLocation() }
                     // automaticPumpDetectionService.attach(to:) now happens in init() above,
                     // not here — see that comment for why.
                 }
@@ -189,6 +195,9 @@ struct EightyFiveBlendsApp: App {
                             locationManager.prewarmLocationIfAuthorized()
                         }
                     }
+                }
+                .onChange(of: locationManager.authorizationStatus) { _, _ in
+                    if !locationManager.isAuthorizedForUserLocation { NearbyE85Publisher.revokeLocation() }
                 }
                 .onChange(of: themePreference) { _, _ in
                     AppTheme.applyTabBarAppearance()

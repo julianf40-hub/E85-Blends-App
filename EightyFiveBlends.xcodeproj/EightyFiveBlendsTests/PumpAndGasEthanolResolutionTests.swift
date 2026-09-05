@@ -10,6 +10,7 @@
 //  in project.pbxproj (see CLAUDE.md) — `xcodebuild test` will not run these until a test target
 //  is added. Written to compile and pass once one exists.
 
+import Foundation
 import Testing
 @testable import EightyFiveBlends
 

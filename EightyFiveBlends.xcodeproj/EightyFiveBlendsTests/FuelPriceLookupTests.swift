@@ -14,6 +14,7 @@
 //  a standard, supported way to unit-test SwiftData @Model property logic without a live
 //  container, since these tests only exercise plain stored-property reads.
 
+import Foundation
 import Testing
 @testable import EightyFiveBlends
 

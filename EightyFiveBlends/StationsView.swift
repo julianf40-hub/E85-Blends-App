@@ -2566,6 +2566,9 @@ struct StationsView: View {
         // matches the exact prior timing, just relocated into the shared, session-scoped store
         // so this cooldown survives Stations view-state churn — see StationsRecentSearchStore.
         let isCurrentLocationSearch = stationSearchSource == .currentLocation
+        let accuracy = locationManager.latestHorizontalAccuracyMeters ?? -1
+        let searchLocationAt = isCurrentLocationSearch && accuracy.isFinite && accuracy >= 0
+            ? locationManager.latestFixTimestamp : nil
         if isCurrentLocationSearch {
             stationsSearchStore.recordCurrentLocationSearchAttempt(at: .now)
         }
@@ -2607,7 +2610,8 @@ struct StationsView: View {
                         stations: results,
                         center: StationCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
                         radiusMiles: radiusValue,
-                        fetchedAt: Date()
+                        fetchedAt: Date(),
+                        locationAt: searchLocationAt
                     )
                 }
                 refreshCommunityPricePreviews()
@@ -2782,7 +2786,33 @@ struct StationsView: View {
         return communityPriceSummaries[key]
     }
 
+    /// Only validated current-session, current-location results may cross into the widget.
+    /// Typed searches and cold-launch provisional previews cannot relocate "nearby".
+    private func publishNearbyWidgetSnapshot() {
+        let now = Date.now
+        guard let snapshot = NearbyE85Publisher.eligibleSearch(
+            from: stationsSearchStore, isCurrentLocationSearch: stationSearchSource == .currentLocation,
+            authorized: locationManager.isAuthorizedForUserLocation, coordinate: locationManager.latestCoordinate,
+            fixTimestamp: locationManager.latestFixTimestamp, now: now),
+            let searchLocationAt = snapshot.locationAt else { return }
+        let items = recomputedDistances(for: snapshot.stations, from: snapshot.center).compactMap { live -> NearbyE85Station? in
+            guard let key = normalizedStationKey(for: live) else { return nil }
+            let saved = stations.first { matchesSavedStation($0, liveStation: live) }
+            let community = saved.flatMap { communitySummary(for: $0) } ?? communitySummary(for: live)
+            // Matches Stations' saved-first hierarchy; never invent a price from NLR data.
+            let localPrice = NearbyE85Price.validated(saved?.lastKnownE85Price, reportedAt: saved?.lastUpdated, source: .saved, now: now)
+            let communityPrice = NearbyE85Price.validated(community?.latestPrice, reportedAt: community?.latestReportedAt, source: .community, now: now)
+            return NearbyE85Station(id: key, name: live.name,
+                                   address: [live.address, live.city, live.state, live.zip].filter { !$0.isEmpty }.joined(separator: ", "),
+                                   latitude: live.latitude, longitude: live.longitude, distanceMiles: live.distanceMiles,
+                                   price: localPrice ?? communityPrice)
+        }
+        NearbyE85Publisher.publish(.make(stations: items, radiusMiles: snapshot.radiusMiles,
+                                         updatedAt: snapshot.fetchedAt, locationAt: searchLocationAt))
+    }
+
     private func refreshCommunityPricePreviews() {
+        publishNearbyWidgetSnapshot()
         communityPriceTask?.cancel()
 
         let keys = Set(
@@ -2804,6 +2834,7 @@ struct StationsView: View {
                 await MainActor.run {
                     communityPriceSummaries = summaries
                     communityPriceSyncMessage = nil
+                    publishNearbyWidgetSnapshot()
                 }
             } catch {
                 guard Task.isCancelled == false else { return }

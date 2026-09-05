@@ -2,6 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>NearbyE85AppGroup</key>
+    <string>$(NEARBY_E85_APP_GROUP)</string>
+    <key>NearbyE85URLScheme</key>
+    <string>$(NEARBY_E85_URL_SCHEME)</string>
+    <key>CFBundleURLTypes</key>
+    <array><dict>
+        <key>CFBundleURLName</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).nearby</string>
+        <key>CFBundleURLSchemes</key><array><string>$(NEARBY_E85_URL_SCHEME)</string></array>
+    </dict></array>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-2011940670640942~8655578112</string>
 	<key>LSApplicationQueriesSchemes</key>

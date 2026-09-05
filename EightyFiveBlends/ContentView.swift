@@ -29,6 +29,10 @@ struct ContentView: View {
     // it: the Automatic Pump Detection notification handler below still routes to .calculator,
     // and AppExperienceNavigation.resolvedSelection's invalid-tab-after-a-mode-switch fallback
     // (a separate concern from the startup default) still redirects to .calculator too.
+    @State private var widgetStation: NearbyE85Station?
+    @State private var widgetSnapshot: NearbyE85Snapshot?
+    @State private var pendingWidgetURL: URL?
+    @Environment(StationLocationManager.self) private var widgetLocationManager
     @State private var selectedTab: Tab = .stations
     @State private var isShowingWhatsNew = false
     @State private var hasEvaluatedWhatsNewEligibility = false
@@ -150,7 +154,8 @@ struct ContentView: View {
                 // presentation later in the same launch, without ever presenting over required
                 // consent UI.
                 .onChange(of: AdManager.shared.isInitialConsentResolutionPending) { _, _ in
-                    attemptWhatsNewPresentation()
+                    if pendingWidgetURL != nil { openPendingWidgetLink() }
+                    else { attemptWhatsNewPresentation() }
                 }
                 .sheet(
                     isPresented: $isShowingWhatsNew,
@@ -161,6 +166,7 @@ struct ContentView: View {
                         lastPresentedWhatsNewVersion = WhatsNewPresentation.versionToPersistOnDismiss(
                             currentAppVersion: ReleaseNotes.currentAppVersion
                         )
+                        openPendingWidgetLink()
                     }
                 ) {
                     WhatsNewView(onContinue: { isShowingWhatsNew = false })
@@ -169,6 +175,36 @@ struct ContentView: View {
                 OnboardingView()
             }
         }
+        .onOpenURL { url in
+            guard NearbyE85DeepLink.parse(url) != nil else { return }
+            pendingWidgetURL = url
+            openPendingWidgetLink()
+        }
+        .onChange(of: hasCompletedOnboarding) { _, completed in
+            if completed { openPendingWidgetLink() }
+        }
+        .sheet(item: $widgetStation) { station in
+            if let snapshot = widgetSnapshot { NearbyE85StationView(station: station, snapshot: snapshot) }
+        }
+    }
+
+    private func openPendingWidgetLink() {
+        guard hasCompletedOnboarding, let url = pendingWidgetURL,
+              let destination = NearbyE85DeepLink.parse(url) else { return }
+        selectedTab = .stations
+        hasEvaluatedWhatsNewEligibility = true
+        guard !AdManager.shared.isInitialConsentResolutionPending else { return }
+        if isShowingWhatsNew {
+            isShowingWhatsNew = false
+            return // Present after its onDismiss; never compete with an existing sheet.
+        }
+        pendingWidgetURL = nil
+        guard widgetLocationManager.isAuthorizedForUserLocation,
+              case .station(let id) = destination,
+              let snapshot = NearbyE85Cache().read(),
+              let station = snapshot.stations.first(where: { $0.id == id }) else { return }
+        widgetSnapshot = snapshot
+        widgetStation = station
     }
 
     /// Called from `.onAppear` and again from the consent-pending `.onChange` above — safe to
