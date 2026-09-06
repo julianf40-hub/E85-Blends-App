@@ -13,6 +13,11 @@ nonisolated struct NearbyE85Entry: TimelineEntry {
 struct NearbyE85WidgetView: View {
     let entry: NearbyE85Entry
     let family: WidgetFamily
+    // contentMarginsDisabled() (set on the widget configuration) hands content the entire
+    // canvas; this is the system's own default inset, applied back manually wherever text
+    // shouldn't sit flush against the widget's edge. Medium/large's map areas deliberately never
+    // apply this — the map is meant to run edge-to-edge.
+    @Environment(\.widgetContentMargins) private var widgetMargins
 
     var body: some View {
         content
@@ -21,85 +26,134 @@ struct NearbyE85WidgetView: View {
             .privacySensitive()
     }
 
-    var content: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            header
+    @ViewBuilder var content: some View {
+        switch family {
+        case .systemMedium: mediumContent
+        case .systemLarge: largeContent
+        default: smallContent
+        }
+    }
+
+    // MARK: - Small — information-first nearest-station card (unchanged visual design)
+
+    private var smallContent: some View {
+        Group {
             if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
-                if family == .systemSmall {
+                VStack(alignment: .leading, spacing: 6) {
+                    header
                     station(first, compact: false)
                     Spacer(minLength: 0)
                     footer(snapshot)
-                } else {
-                    mediumBody(snapshot: snapshot, first: first)
                 }
             } else {
-                fallback
+                fallbackBody
             }
         }
+        .padding(widgetMargins)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // Small keeps its original single-line title untouched. Medium adds a trailing freshness
-    // label so the map below never has to explain itself, and never implies the location is
-    // being tracked live.
-    @ViewBuilder private var header: some View {
-        if family == .systemMedium, let snapshot = entry.snapshot, snapshot.state == .ready {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Nearby E85", systemImage: "fuelpump.fill")
-                    .font(.caption.weight(.bold)).foregroundStyle(.green)
-                Spacer(minLength: 4)
-                Group {
-                    if snapshot.isStale(at: entry.date) {
-                        Text("Older location")
-                    } else {
-                        HStack(spacing: 3) { Text("Updated"); Text(snapshot.updatedAt, style: .relative) }
-                    }
-                }
-                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+    // MARK: - Medium — map-only: "Where am I, and where is E85 around me?"
+
+    @ViewBuilder private var mediumContent: some View {
+        if let snapshot = entry.snapshot, snapshot.state == .ready, let mapRender = entry.mapRender {
+            mapArea(mapRender, snapshot: snapshot)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
+            // No map yet (offline first render, or an older cached snapshot with no user
+            // coordinate) — degrade to the small-style information card rather than a blank map.
+            VStack(alignment: .leading, spacing: 6) {
+                header
+                station(first, compact: false)
+                Spacer(minLength: 0)
+                footer(snapshot)
             }
+            .padding(widgetMargins)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else {
-            Label("Nearby E85", systemImage: "fuelpump.fill")
-                .font(.caption.weight(.bold)).foregroundStyle(.green)
+            smallContent
         }
     }
 
-    @ViewBuilder private func mediumBody(snapshot: NearbyE85Snapshot, first: NearbyE85Station) -> some View {
-        if let mapRender = entry.mapRender {
-            NearbyE85MapView(render: mapRender)
-                .frame(height: mapRender.size.height)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            Divider()
-            Link(destination: NearbyE85DeepLink.url(stationID: first.id)) {
-                compactStrip(first)
-            }.buttonStyle(.plain)
+    // MARK: - Large — map on top, readable station list below
+
+    @ViewBuilder private var largeContent: some View {
+        if let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
+            VStack(spacing: 0) {
+                if let mapRender = entry.mapRender {
+                    mapArea(mapRender, snapshot: snapshot)
+                } else {
+                    // No map yet — still lead with something other than blank space.
+                    HStack { header; Spacer(minLength: 0) }
+                        .padding(widgetMargins)
+                    Spacer(minLength: 0)
+                }
+                Divider()
+                largeStationList(snapshot)
+                    .padding(.leading, widgetMargins.leading).padding(.trailing, widgetMargins.trailing)
+                    .padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            // No map yet (offline first render, or an older cached snapshot with no user
-            // coordinate) — fall back to the previous text-only rows rather than showing nothing.
-            ForEach(Array(snapshot.stations.prefix(2))) { item in
+            smallContent
+        }
+    }
+
+    private func largeStationList(_ snapshot: NearbyE85Snapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(snapshot.stations) { item in
                 Link(destination: NearbyE85DeepLink.url(stationID: item.id)) {
-                    station(item, compact: true)
+                    largeRow(item)
                 }.buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
-            footer(snapshot)
         }
     }
 
-    private func compactStrip(_ station: NearbyE85Station) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Spacer(minLength: 4)
+    private func largeRow(_ station: NearbyE85Station) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(station.name).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 6)
                 distance(station)
-                if let price = station.price {
-                    Text(price.dollarsPerGallon, format: .currency(code: "USD"))
-                        .font(.subheadline.bold()).minimumScaleFactor(0.8).lineLimit(1)
+            }
+            Text(priceLine(station)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }.accessibilityElement(children: .combine)
+    }
+
+    private func priceLine(_ station: NearbyE85Station) -> String {
+        guard let price = station.price else { return "No price reported" }
+        return "\(price.dollarsPerGallon.formatted(.currency(code: "USD"))) · \(price.status(at: entry.date))"
+    }
+
+    // MARK: - Shared map area (medium's full canvas, large's top portion)
+
+    /// Overlays the user/station pins onto a pre-rendered MKMapSnapshotter image and, only when
+    /// stale, a single small unobtrusive badge — no persistent header bar or branding repeated
+    /// over the map (the Home Screen already labels the widget by app name underneath it).
+    @ViewBuilder private func mapArea(_ mapRender: NearbyE85MapRender, snapshot: NearbyE85Snapshot) -> some View {
+        NearbyE85MapView(render: mapRender)
+            .frame(maxWidth: .infinity)
+            .frame(height: mapRender.size.height)
+            .overlay(alignment: .topTrailing) {
+                if snapshot.isStale(at: entry.date) {
+                    freshnessBadge("Older location")
                 }
             }
-            Text(station.price?.status(at: entry.date) ?? "No price reported")
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-        }.accessibilityElement(children: .combine)
+    }
+
+    private func freshnessBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(.thinMaterial, in: Capsule())
+            .padding(6)
+    }
+
+    // MARK: - Shared small-scale building blocks
+
+    private var header: some View {
+        Label("Nearby E85", systemImage: "fuelpump.fill")
+            .font(.caption.weight(.bold)).foregroundStyle(.green)
     }
 
     @ViewBuilder private func station(_ station: NearbyE85Station, compact: Bool) -> some View {
@@ -140,8 +194,9 @@ struct NearbyE85WidgetView: View {
             }
         }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
     }
-    private var fallback: some View {
+    private var fallbackBody: some View {
         VStack(alignment: .leading, spacing: 6) {
+            header
             if entry.snapshot?.state == .permissionRequired {
                 Text("Location needed").font(.headline)
                 Text("Open 85Blends to allow location and find nearby E85.")
@@ -154,7 +209,8 @@ struct NearbyE85WidgetView: View {
                 Text("Find nearby E85").font(.headline)
                 Text("Open 85Blends to refresh nearby stations.")
             }
-        }.font(.caption).foregroundStyle(.secondary)
+        }
+        .font(.caption).foregroundStyle(.secondary)
     }
 }
 

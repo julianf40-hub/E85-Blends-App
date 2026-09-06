@@ -6,29 +6,55 @@ import MapKit
 
 @MainActor
 final class NearbyE85RenderingTests: XCTestCase {
-    func testSmallAndMediumFallbackAndPriceLayouts() throws {
+    // Approximate current-generation iPhone reference sizes (points). Real on-device sizes vary
+    // slightly by model, but these are close enough to catch clipping/overlap/truncation.
+    private static let smallSize = CGSize(width: 155, height: 155)
+    private static let mediumSize = CGSize(width: 329, height: 155)
+    private static let largeSize = CGSize(width: 329, height: 345)
+    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize) throws -> UIImage {
+        // `widgetContentMargins` is read-only, so tests can't inject a stand-in value the way
+        // production gets it from the real widget host — NearbyE85WidgetView reads whatever
+        // default this environment resolves to outside an actual widget render context. Visual
+        // captures below confirm small/large still get sensible breathing room from it.
+        let view = NearbyE85WidgetView(entry: entry, family: family).content
+            .environment(\.colorScheme, .light)
+            .frame(width: size.width, height: size.height)
+            .background(Color.white)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        return try XCTUnwrap(renderer.uiImage)
+    }
+
+    private func attach(_ image: UIImage, name: String) {
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private static let familySizes: [(String, WidgetFamily, CGSize)] = [
+        ("small", .systemSmall, smallSize), ("medium", .systemMedium, mediumSize), ("large", .systemLarge, largeSize),
+    ]
+
+    func testFallbackStatesAcrossAllFamilies() throws {
         let now = Date.now
         let first = NearbyE85Station(id: "one", name: "Long Station Name E85 Fuel Center", address: "Example address",
             latitude: 33.45, longitude: -112.07, distanceMiles: 1.2,
             price: .init(dollarsPerGallon: 2.89, reportedAt: now.addingTimeInterval(-20 * 86400), source: .community))
         let second = NearbyE85Station(id: "two", name: "Second station", address: "Example address",
             latitude: 33.46, longitude: -112.08, distanceMiles: 2.8, price: nil)
-        let ready = NearbyE85Snapshot.make(stations: [first, second], radiusMiles: 25, updatedAt: now, locationAt: now)
-        let empty = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
-        let cases: [(String, NearbyE85Snapshot?)] = [("stations-stale-price", ready), ("empty", empty),
-            ("permission", .permissionRequired(at: now)), ("no-cache", nil)]
-        for (name, snapshot) in cases {
-            for (familyName, family, width) in [("small", WidgetFamily.systemSmall, 142.0), ("medium", .systemMedium, 306.0)] {
-                let view = NearbyE85WidgetView(entry: .init(date: now, snapshot: snapshot), family: family).content
-                    .environment(\.colorScheme, .light)
-                    .frame(width: width, height: 142).padding(16).background(Color.white)
-                let renderer = ImageRenderer(content: view)
-                renderer.scale = 3
-                let image = try XCTUnwrap(renderer.uiImage)
-                let attachment = XCTAttachment(image: image)
-                attachment.name = "nearby-\(familyName)-\(name)"
-                attachment.lifetime = .keepAlways
-                add(attachment)
+        // Deliberately no userLatitude/userLongitude — exercises the "ready but no map yet"
+        // degraded path (informationCard) for medium/large, since no mapRender is supplied.
+        let readyNoMap = NearbyE85Snapshot.make(stations: [first, second], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let cases: [(String, NearbyE85Snapshot?)] = [
+            ("ready-no-map-yet", readyNoMap), ("no-stations", noStations),
+            ("permission-required", .permissionRequired(at: now)), ("no-cache", nil),
+        ]
+        for (stateName, snapshot) in cases {
+            for (familyName, family, size) in Self.familySizes {
+                let image = try render(.init(date: now, snapshot: snapshot), family: family, size: size)
+                attach(image, name: "nearby-\(familyName)-\(stateName)")
             }
         }
     }
@@ -36,7 +62,6 @@ final class NearbyE85RenderingTests: XCTestCase {
     // Phoenix-area fixture coordinates so the map region/marker placement is realistic rather
     // than degenerate (e.g. all points identical).
     private static let phoenixUser = (latitude: 33.4484, longitude: -112.0740)
-    private static let mediumSize = CGSize(width: 306, height: 142)
 
     private func phoenixStations(now: Date) -> (nearest: NearbyE85Station, second: NearbyE85Station, third: NearbyE85Station) {
         (nearest: NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
@@ -44,7 +69,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             price: .init(dollarsPerGallon: 2.89, reportedAt: now.addingTimeInterval(-2 * 86400), source: .community)),
          second: NearbyE85Station(id: "second", name: "QuikTrip", address: "500 E Van Buren St, Phoenix, AZ",
             latitude: 33.4472, longitude: -112.0601, distanceMiles: 1.3, price: nil),
-         third: NearbyE85Station(id: "third", name: "Shell", address: "2100 N 7th Ave, Phoenix, AZ",
+         third: NearbyE85Station(id: "third", name: "Really Long Alliance AutoGas Fuel Center Name", address: "2100 N 7th Ave, Phoenix, AZ",
             latitude: 33.4675, longitude: -112.0850, distanceMiles: 2.1,
             price: .init(dollarsPerGallon: 3.05, reportedAt: now, source: .saved)))
     }
@@ -79,7 +104,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         return NearbyE85MapRender(image: image, size: size, markers: markers)
     }
 
-    func testMediumMapLayoutAcrossStates() throws {
+    func testMediumMapOnlyLayoutAcrossStates() throws {
         let now = Date.now
         let (nearest, second, third) = phoenixStations(now: now)
         let ready = NearbyE85Snapshot.make(stations: [nearest, second, third], radiusMiles: 25, updatedAt: now, locationAt: now,
@@ -92,49 +117,76 @@ final class NearbyE85RenderingTests: XCTestCase {
         let oneStation = NearbyE85Snapshot.make(stations: [nearest], radiusMiles: 25, updatedAt: now, locationAt: now,
                                                 userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
 
-        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.mediumSize)
+        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.mediumSize, heightFraction: 1.0)
         let cases: [(String, NearbyE85Snapshot)] = [
             ("ready-three-stations", ready), ("stale-location", stale), ("no-price-nearest", noPrice), ("one-station", oneStation),
         ]
         for (name, snapshot) in cases {
             let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: syntheticRender(for: snapshot, size: mapSize))
-            let view = NearbyE85WidgetView(entry: entry, family: .systemMedium).content
-                .environment(\.colorScheme, .light)
-                .frame(width: Self.mediumSize.width, height: Self.mediumSize.height).padding(16).background(Color.white)
-            let renderer = ImageRenderer(content: view)
-            renderer.scale = 3
-            let image = try XCTUnwrap(renderer.uiImage)
-            let attachment = XCTAttachment(image: image)
-            attachment.name = "nearby-medium-map-\(name)"
-            attachment.lifetime = .keepAlways
-            add(attachment)
+            let image = try render(entry, family: .systemMedium, size: Self.mediumSize)
+            attach(image, name: "nearby-medium-map-\(name)")
         }
     }
 
-    /// Best-effort real MKMapSnapshotter capture for the final visual review — skipped, not
+    func testLargeMapAndStationListAcrossStates() throws {
+        let now = Date.now
+        let (nearest, second, third) = phoenixStations(now: now)
+        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+
+        func snapshot(_ stations: [NearbyE85Station], stale: Bool = false) -> NearbyE85Snapshot {
+            let timestamp = stale ? now.addingTimeInterval(-2 * 3600) : now
+            return .make(stations: stations, radiusMiles: 25, updatedAt: timestamp, locationAt: timestamp,
+                        userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        }
+        let mixedPrices = snapshot([nearest, second, third])
+        let single = snapshot([nearest])
+        let noPriceOnly = snapshot([second])
+        let stale = snapshot([nearest, second], stale: true)
+
+        let cases: [(String, NearbyE85Snapshot)] = [
+            ("mixed-prices", mixedPrices), ("single-station", single),
+            ("no-price-rows", noPriceOnly), ("stale-location", stale),
+        ]
+        for (name, snap) in cases {
+            let entry = NearbyE85Entry(date: now, snapshot: snap, mapRender: syntheticRender(for: snap, size: mapSize))
+            let image = try render(entry, family: .systemLarge, size: Self.largeSize)
+            attach(image, name: "nearby-large-\(name)")
+        }
+    }
+
+    /// Best-effort real MKMapSnapshotter captures for the final visual review — skipped, not
     /// failed, if this environment has no route to Apple's map tile servers.
     func testMediumMapRealSnapshotterBestEffort() async throws {
         let now = Date.now
         let (nearest, second, _) = phoenixStations(now: now)
         let stations = [nearest, second]
-        let size = NearbyE85MapRenderer.mapSize(for: Self.mediumSize)
-        guard let render = await NearbyE85MapRenderer.render(
+        let size = NearbyE85MapRenderer.mapSize(for: Self.mediumSize, heightFraction: 1.0)
+        guard let mapRender = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
             stations: stations, size: size, scale: 2) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
         let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
-        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: render)
-        let view = NearbyE85WidgetView(entry: entry, family: .systemMedium).content
-            .environment(\.colorScheme, .light)
-            .frame(width: Self.mediumSize.width, height: Self.mediumSize.height).padding(16).background(Color.white)
-        let renderer = ImageRenderer(content: view)
-        renderer.scale = 3
-        let image = try XCTUnwrap(renderer.uiImage)
-        let attachment = XCTAttachment(image: image)
-        attachment.name = "nearby-medium-map-real-snapshot"
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let image = try render(entry, family: .systemMedium, size: Self.mediumSize)
+        attach(image, name: "nearby-medium-map-real-snapshot")
+    }
+
+    func testLargeMapRealSnapshotterBestEffort() async throws {
+        let now = Date.now
+        let (nearest, second, third) = phoenixStations(now: now)
+        let stations = [nearest, second, third]
+        let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        guard let mapRender = await NearbyE85MapRenderer.render(
+            userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
+            stations: stations, size: size, scale: 2) else {
+            throw XCTSkip("No network route to MapKit tile servers in this environment.")
+        }
+        let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let image = try render(entry, family: .systemLarge, size: Self.largeSize)
+        attach(image, name: "nearby-large-map-real-snapshot")
     }
 }

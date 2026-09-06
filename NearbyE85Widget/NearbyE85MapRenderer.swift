@@ -27,15 +27,17 @@ nonisolated struct NearbyE85MapRender {
 // image once per timeline, and marker positions are baked in via MapKit's own
 // coordinate-to-point conversion so pins land accurately without an interactive MKMapView.
 enum NearbyE85MapRenderer {
-    /// Matches the medium widget's map area so a snapshot never needs to be up- or down-scaled.
-    static let mapAspectRatio: Double = 342.0 / 130.0
     /// WidgetKit's Context has no displayScale; @2x is sharp enough for a map this size while
     /// keeping the rendered image small.
     static let defaultScale: CGFloat = 2
 
-    static func mapSize(for displaySize: CGSize) -> CGSize {
+    /// - Parameter heightFraction: How much of the widget's full canvas the map should occupy —
+    ///   `1.0` for the medium family's edge-to-edge map, a smaller fraction (e.g. `0.6`) for the
+    ///   large family, which reserves the remainder for its station list. The map always spans
+    ///   the widget's full width; only the height is fractional.
+    static func mapSize(for displaySize: CGSize, heightFraction: Double = 1.0) -> CGSize {
         guard displaySize.width > 0, displaySize.height > 0 else { return CGSize(width: 300, height: 114) }
-        let height = min(displaySize.width / mapAspectRatio, displaySize.height * 0.78)
+        let height = displaySize.height * min(max(heightFraction, 0.1), 1.0)
         return CGSize(width: displaySize.width, height: max(height, 80))
     }
 

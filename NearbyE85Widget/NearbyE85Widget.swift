@@ -47,11 +47,17 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         }
         return NearbyE85Cache().read()
     }
-    // Only the medium family shows a map; small keeps its existing text-only layout untouched.
+    // Medium is map-only (full-bleed); large reserves its bottom portion for a station list.
+    // Small keeps its existing text-only layout and never renders a map.
     @MainActor private func mapRender(for snapshot: NearbyE85Snapshot?, context: Context) async -> NearbyE85MapRender? {
-        guard context.family == .systemMedium, let snapshot, snapshot.state == .ready,
-              let user = snapshot.userCoordinate else { return nil }
-        let size = NearbyE85MapRenderer.mapSize(for: context.displaySize)
+        let heightFraction: Double
+        switch context.family {
+        case .systemMedium: heightFraction = 1.0
+        case .systemLarge: heightFraction = 0.6
+        default: return nil
+        }
+        guard let snapshot, snapshot.state == .ready, let user = snapshot.userCoordinate else { return nil }
+        let size = NearbyE85MapRenderer.mapSize(for: context.displaySize, heightFraction: heightFraction)
         return await NearbyE85MapRenderer.render(userLatitude: user.latitude, userLongitude: user.longitude,
                                                   stations: snapshot.stations, size: size,
                                                   scale: NearbyE85MapRenderer.defaultScale)
@@ -72,7 +78,12 @@ struct NearbyE85Widget: Widget {
         }
         .configurationDisplayName("Nearby E85")
         .description("E85 stations and reported prices near your last location in 85Blends. Open the app to refresh.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        // Medium is a full-bleed map; large's map portion is likewise edge-to-edge. Small and
+        // large's station list re-apply the system's own default margins themselves (see
+        // NearbyE85WidgetView's use of the widgetContentMargins environment value) so neither
+        // regresses to text sitting flush against the widget's edge.
+        .contentMarginsDisabled()
     }
 }
 
@@ -85,6 +96,12 @@ struct NearbyE85Widget: Widget {
 }
 
 #Preview(as: .systemMedium) {
+    NearbyE85Widget()
+} timeline: {
+    NearbyE85Entry(date: .now, snapshot: NearbyE85Provider.example)
+}
+
+#Preview(as: .systemLarge) {
     NearbyE85Widget()
 } timeline: {
     NearbyE85Entry(date: .now, snapshot: NearbyE85Provider.example)
