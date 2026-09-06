@@ -66,6 +66,20 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
     /// Pump Detection) that registered regions via `startMonitoringRegion`.
     var onRegionEvent: ((_ identifier: String, _ kind: RegionEventKind) -> Void)?
 
+    /// Fired on every `didUpdateLocations` delivery while significant-location-change
+    /// monitoring is active — see `startSignificantLocationMonitoringIfPossible()`. Set by
+    /// NearbyE85LocationRefreshCoordinator so the widget can stay roughly current as the user
+    /// travels. Deliberately fires on every fix regardless of source rather than trying to
+    /// distinguish "this update came from SLC" from "this came from an ordinary one-shot
+    /// request" — Core Location's delegate doesn't reliably distinguish the two, and the
+    /// coordinator's own distance/age acceptance gate already suppresses redundant work.
+    var onSignificantLocationUpdate: ((CLLocation) -> Void)?
+
+    /// Whether significant-location-change monitoring is currently active. OS-tracked
+    /// registration state isn't independently queryable the way `monitoredRegions` is, so this
+    /// mirrors it in-process.
+    private(set) var isMonitoringSignificantLocationChanges = false
+
     /// At most one Stage-B "give me a fresh fix right now" request in flight at a time —
     /// see `requestFreshLocationAsync()`.
     private var pendingFreshLocationContinuation: CheckedContinuation<FreshLocationResult?, Never>?
@@ -189,6 +203,27 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// Starts iOS's coarse, power-efficient "meaningfully moved" monitoring so the Nearby E85
+    /// widget can stay roughly current without continuous GPS or a `location` background
+    /// mode. Available starting from When In Use authorization: under When In Use alone,
+    /// deliveries still arrive whenever the app is running or within Core Location's normal
+    /// background execution grace period; Always authorization (if the user separately
+    /// granted it, e.g. via Automatic Pump Detection) additionally lets iOS relaunch a fully
+    /// terminated app to deliver one. Never requests or upgrades authorization itself. A
+    /// no-op when already monitoring, unauthorized, or unsupported by the device.
+    func startSignificantLocationMonitoringIfPossible() {
+        guard isAuthorizedForUserLocation, CLLocationManager.significantLocationChangeMonitoringAvailable() else { return }
+        guard !isMonitoringSignificantLocationChanges else { return }
+        manager.startMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = true
+    }
+
+    func stopSignificantLocationMonitoring() {
+        guard isMonitoringSignificantLocationChanges else { return }
+        manager.stopMonitoringSignificantLocationChanges()
+        isMonitoringSignificantLocationChanges = false
+    }
+
     /// Registers a small circular region for background entry/exit monitoring. Does not
     /// enable continuous location updates or set `allowsBackgroundLocationUpdates` — Core
     /// Location delivers region-monitoring events (and, briefly, background execution time
@@ -240,6 +275,8 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
                     timestamp: location.timestamp
                 ))
             }
+
+            onSignificantLocationUpdate?(location)
         }
     }
 
@@ -269,9 +306,14 @@ final class StationLocationManager: NSObject, CLLocationManagerDelegate {
         switch authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways:
             manager.requestLocation()
+            // Not a new authorization request — SLC monitoring only uses whatever level the
+            // user already granted. Idempotent; re-arms after a relaunch just as readily as
+            // after a fresh grant.
+            startSignificantLocationMonitoringIfPossible()
         case .denied, .restricted:
             latestCoordinate = nil
             latestFixTimestamp = nil
+            stopSignificantLocationMonitoring()
         default:
             break
         }

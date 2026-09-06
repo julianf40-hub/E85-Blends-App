@@ -928,6 +928,12 @@ struct StationsView: View {
             }
             if pendingLiveSearchReason != nil {
                 fetchLiveStations(at: coordinate.clCoordinate)
+            } else if shouldRefreshNearbyE85ForLocationChange(coordinate) {
+                // The user travelled meaningfully since the last published widget snapshot
+                // while Stations happened to be mounted — reuses the exact same live-fetch +
+                // publish pipeline as every other trigger here, just gated by
+                // NearbyE85LocationAcceptance instead of a tab-open/cooldown reason.
+                fetchLiveStations(at: coordinate.clCoordinate)
             }
             refreshPumpDetectionMonitoredStations(reason: "Location updated")
         }
@@ -2172,6 +2178,30 @@ struct StationsView: View {
             pendingLiveSearchReason = .manualNearby
             locationManager.requestUserLocation()
         }
+    }
+
+    /// Whether the ordinary `latestCoordinate` `.onChange` above should treat this fix as
+    /// meaningful travel, not GPS jitter, and trigger a live re-fetch — the "app active"
+    /// half of the Nearby E85 widget's location-follow behavior (the background half is
+    /// NearbyE85LocationRefreshCoordinator, which applies the exact same acceptance rule
+    /// against the same cached snapshot). Deliberately compares against the widget's own
+    /// last-published coordinate (not any StationsView-local state) so both paths agree on
+    /// what "meaningfully moved" means, and deliberately skips when a typed-location search
+    /// is active or a fetch is already in flight — identical guards to
+    /// shouldPerformAutomaticNearbySearch() below, minus its time-based cooldown (distance/age
+    /// acceptance already rate-limits this on its own).
+    private func shouldRefreshNearbyE85ForLocationChange(_ coordinate: StationCoordinate) -> Bool {
+        guard stationSearchSource == .currentLocation else { return false }
+        guard isSearchingLive == false, pendingLiveSearchReason == nil else { return false }
+        let now = Date.now
+        let cached = NearbyE85Cache().read(now: now)
+        let decision = NearbyE85LocationAcceptance.decision(
+            newLatitude: coordinate.latitude, newLongitude: coordinate.longitude,
+            newHorizontalAccuracyMeters: locationManager.latestHorizontalAccuracyMeters ?? -1,
+            newTimestamp: locationManager.latestFixTimestamp ?? now,
+            previousLatitude: cached?.userLatitude, previousLongitude: cached?.userLongitude,
+            previousAcceptedAt: cached?.locationAt, now: now)
+        return decision == .accept
     }
 
     /// Whether the tab-open auto-trigger (see performAutomaticNearbySearchIfNeeded()) should

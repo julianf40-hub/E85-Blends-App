@@ -64,6 +64,17 @@ struct EightyFiveBlendsApp: App {
         // SwiftUI had mounted its first view and run that .onAppear — silently dropping the
         // arrival with no retry, since onRegionEvent was still nil. See the branch report.
         automaticPumpDetectionService.attach(to: locationManager)
+
+        // Nearby E85 widget location awareness — wired here for the same reason as the
+        // attach(to:) call above: a significant-location-change delivery following a
+        // cold/background relaunch can arrive before any SwiftUI view's .onAppear runs, so
+        // both the callback and the (re-)arm call must happen before WindowGroup mounts.
+        // startSignificantLocationMonitoringIfPossible() only uses whatever authorization the
+        // user already granted in a previous session — it never requests anything new.
+        locationManager.onSignificantLocationUpdate = { location in
+            NearbyE85LocationRefreshCoordinator.handle(location: location)
+        }
+        locationManager.startSignificantLocationMonitoringIfPossible()
     }
 
     // Returns the best available ModelContainer and whether it is in-memory only.

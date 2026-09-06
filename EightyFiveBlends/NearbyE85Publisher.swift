@@ -5,9 +5,11 @@ import OSLog
 @MainActor
 enum NearbyE85Publisher {
     private static let logger = Logger(subsystem: "com.e85blends", category: "NearbyE85")
-    static func publish(_ snapshot: NearbyE85Snapshot) {
+    /// `cache` defaults to the real App-Group-backed cache; tests inject
+    /// `NearbyE85Cache(fileURL:)` pointed at a temporary file instead.
+    static func publish(_ snapshot: NearbyE85Snapshot, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now) {
         do {
-            if try NearbyE85Cache().write(snapshot) {
+            if try cache.write(snapshot, now: now) {
                 WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
             }
         } catch {
