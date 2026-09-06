@@ -218,7 +218,7 @@ enum ThemePreferenceOption: String, CaseIterable {
     }
 }
 
-struct MapsRoutingDestination {
+struct MapsRoutingDestination: Equatable {
     let name: String
     let streetAddress: String
     let city: String
@@ -264,7 +264,21 @@ enum MapsRoutingError: LocalizedError {
 
 @MainActor
 enum MapsRoutingHelper {
-    static func openDirections(to destination: MapsRoutingDestination) -> String? {
+    /// - Parameters:
+    ///   - canOpenURL/open/openMapItem: Injected seams so callers — notably tests — can verify
+    ///     exactly which navigation intent this resolves to (which preferred app, which URL,
+    ///     whether the "not installed" fallback fired) without any map app actually installed.
+    ///     Default to the real `UIApplication`/`MKMapItem` behavior; every existing call site is
+    ///     unaffected since it never needs to pass these.
+    @discardableResult
+    static func openDirections(
+        to destination: MapsRoutingDestination,
+        canOpenURL: (URL) -> Bool = { UIApplication.shared.canOpenURL($0) },
+        open: (URL) -> Void = { UIApplication.shared.open($0) },
+        openMapItem: (MKMapItem) -> Void = {
+            $0.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+        }
+    ) -> String? {
         guard destination.coordinate != nil || destination.addressQuery != nil else {
             return MapsRoutingError.insufficientLocationInformation.localizedDescription
         }
@@ -275,28 +289,26 @@ enum MapsRoutingHelper {
 
         switch preferredMapsApp {
         case .appleMaps:
-            openAppleMaps(to: destination)
+            openAppleMaps(to: destination, open: open, openMapItem: openMapItem)
         case .googleMaps:
-            if openURL(googleMapsURL(for: destination)) == false {
-                openAppleMaps(to: destination)
+            if openURL(googleMapsURL(for: destination), canOpenURL: canOpenURL, open: open) == false {
+                openAppleMaps(to: destination, open: open, openMapItem: openMapItem)
             }
         case .waze:
-            if openURL(wazeURL(for: destination)) == false {
-                openAppleMaps(to: destination)
+            if openURL(wazeURL(for: destination), canOpenURL: canOpenURL, open: open) == false {
+                openAppleMaps(to: destination, open: open, openMapItem: openMapItem)
             }
         }
 
         return nil
     }
 
-    private static func openAppleMaps(to destination: MapsRoutingDestination) {
+    private static func openAppleMaps(to destination: MapsRoutingDestination, open: (URL) -> Void, openMapItem: (MKMapItem) -> Void) {
         if let coordinate = destination.coordinate {
             let placemark = MKPlacemark(coordinate: coordinate)
             let item = MKMapItem(placemark: placemark)
             item.name = destination.name.isEmpty ? "Station" : destination.name
-            item.openInMaps(launchOptions: [
-                MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving
-            ])
+            openMapItem(item)
             return
         }
 
@@ -307,7 +319,7 @@ enum MapsRoutingHelper {
             URLQueryItem(name: "q", value: addressQuery),
             URLQueryItem(name: "dirflg", value: "d")
         ]
-        _ = openURL(components?.url)
+        if let url = components?.url { open(url) }
     }
 
     private static func googleMapsURL(for destination: MapsRoutingDestination) -> URL? {
@@ -351,10 +363,9 @@ enum MapsRoutingHelper {
     }
 
     @discardableResult
-    private static func openURL(_ url: URL?) -> Bool {
-        guard let url else { return false }
-        guard UIApplication.shared.canOpenURL(url) else { return false }
-        UIApplication.shared.open(url)
+    private static func openURL(_ url: URL?, canOpenURL: (URL) -> Bool, open: (URL) -> Void) -> Bool {
+        guard let url, canOpenURL(url) else { return false }
+        open(url)
         return true
     }
 }

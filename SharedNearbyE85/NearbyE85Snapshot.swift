@@ -162,23 +162,44 @@ nonisolated struct NearbyE85Cache {
     }
 }
 
+/// Two distinct, non-overlapping widget-originated intents — deliberately not a single
+/// "station" route with ambiguous meaning: `.stations` always just opens the Stations tab,
+/// `.directions` always means "skip straight to turn-by-turn," never a detail screen. The
+/// station identifier travels in a query item (not a path segment) so it round-trips exactly
+/// even when it contains characters like `/`, `?`, `#`, or `&` — canonical community station
+/// keys aren't guaranteed to avoid those.
 nonisolated enum NearbyE85DeepLink {
-    enum Destination: Equatable { case nearby, station(String) }
-    static func url(stationID: String? = nil, scheme: String = NearbyE85Configuration.urlScheme) -> URL {
+    enum Destination: Equatable { case stations, directions(stationID: String) }
+
+    static func stationsURL(scheme: String = NearbyE85Configuration.urlScheme) -> URL {
         var parts = URLComponents()
         parts.scheme = scheme
-        parts.host = "nearby"
-        if let stationID { parts.queryItems = [URLQueryItem(name: "station", value: stationID)] }
+        parts.host = "stations"
         return parts.url!
     }
+
+    static func directionsURL(stationID: String, scheme: String = NearbyE85Configuration.urlScheme) -> URL {
+        var parts = URLComponents()
+        parts.scheme = scheme
+        parts.host = "directions"
+        parts.path = "/station"
+        parts.queryItems = [URLQueryItem(name: "id", value: stationID)]
+        return parts.url!
+    }
+
     static func parse(_ url: URL, scheme: String = NearbyE85Configuration.urlScheme) -> Destination? {
-        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              parts.scheme == scheme, parts.host == "nearby", parts.path.isEmpty,
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), parts.scheme == scheme,
               parts.user == nil, parts.password == nil, parts.port == nil, parts.fragment == nil else { return nil }
-        let items = parts.queryItems ?? []
-        if items.isEmpty { return .nearby }
-        guard items.count == 1, items[0].name == "station", let id = items[0].value,
-              !id.isEmpty, id.count <= 1024 else { return nil }
-        return .station(id)
+        switch parts.host {
+        case "stations":
+            guard parts.path.isEmpty, (parts.queryItems ?? []).isEmpty else { return nil }
+            return .stations
+        case "directions":
+            guard parts.path == "/station", let items = parts.queryItems, items.count == 1,
+                  items[0].name == "id", let id = items[0].value, !id.isEmpty, id.count <= 1024 else { return nil }
+            return .directions(stationID: id)
+        default:
+            return nil
+        }
     }
 }

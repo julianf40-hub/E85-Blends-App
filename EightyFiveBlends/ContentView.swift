@@ -198,13 +198,19 @@ struct ContentView: View {
             isShowingWhatsNew = false
             return // Present after its onDismiss; never compete with an existing sheet.
         }
-        pendingWidgetURL = nil
-        guard widgetLocationManager.isAuthorizedForUserLocation,
-              case .station(let id) = destination,
-              let snapshot = NearbyE85Cache().read(),
-              let station = snapshot.stations.first(where: { $0.id == id }) else { return }
-        widgetSnapshot = snapshot
-        widgetStation = station
+        pendingWidgetURL = nil // Consumed exactly once, regardless of which outcome follows.
+        switch NearbyE85WidgetRouting.resolve(destination, snapshot: NearbyE85Cache().read(),
+                                              isAuthorized: widgetLocationManager.isAuthorizedForUserLocation) {
+        case .switchToStations:
+            break // selectedTab = .stations above is the entire result.
+        case .openDirections(let mapsDestination):
+            // One action, start to finish: no detail screen, no intermediate 85Blends UI beyond
+            // the Stations tab already selected underneath.
+            MapsRoutingHelper.openDirections(to: mapsDestination)
+        case .showStationDetail(let station, let snapshot):
+            widgetSnapshot = snapshot
+            widgetStation = station
+        }
     }
 
     /// Called from `.onAppear` and again from the consent-pending `.onChange` above — safe to

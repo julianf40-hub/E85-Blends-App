@@ -10,6 +10,19 @@ nonisolated struct NearbyE85Entry: TimelineEntry {
     var mapRender: NearbyE85MapRender? = nil
 }
 
+/// The single default tap destination for a whole widget — used as-is for small (one action,
+/// the entire widget) and medium (one action, always Stations), and as large's fallback for any
+/// area not covered by one of its own explicit `Link` regions (map, each row). Pure and
+/// side-effect-free so it's directly testable independent of rendering.
+nonisolated enum NearbyE85WidgetURLResolver {
+    static func widgetURL(family: WidgetFamily, snapshot: NearbyE85Snapshot?) -> URL {
+        if family == .systemSmall, let snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
+            return NearbyE85DeepLink.directionsURL(stationID: first.id)
+        }
+        return NearbyE85DeepLink.stationsURL()
+    }
+}
+
 struct NearbyE85WidgetView: View {
     let entry: NearbyE85Entry
     let family: WidgetFamily
@@ -22,7 +35,7 @@ struct NearbyE85WidgetView: View {
     var body: some View {
         content
             .containerBackground(.background, for: .widget)
-            .widgetURL(NearbyE85DeepLink.url(stationID: entry.snapshot?.stations.first?.id))
+            .widgetURL(NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: entry.snapshot))
             .privacySensitive()
     }
 
@@ -45,6 +58,11 @@ struct NearbyE85WidgetView: View {
                     Spacer(minLength: 0)
                     footer(snapshot)
                 }
+                // The whole widget is one tap target that starts directions — a single clear
+                // announcement beats VoiceOver reading out the name/distance/price separately
+                // and leaving the actual tap behavior unstated.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(directionsAccessibilityLabel(for: first))
             } else {
                 fallbackBody
             }
@@ -59,9 +77,12 @@ struct NearbyE85WidgetView: View {
         if let snapshot = entry.snapshot, snapshot.state == .ready, let mapRender = entry.mapRender {
             mapArea(mapRender, snapshot: snapshot)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(stationsAccessibilityLabel)
         } else if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
             // No map yet (offline first render, or an older cached snapshot with no user
             // coordinate) — degrade to the small-style information card rather than a blank map.
+            // Medium always opens Stations regardless of what's shown, never directions.
             VStack(alignment: .leading, spacing: 6) {
                 header
                 station(first, compact: false)
@@ -70,6 +91,8 @@ struct NearbyE85WidgetView: View {
             }
             .padding(widgetMargins)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(stationsAccessibilityLabel)
         } else {
             smallContent
         }
@@ -77,11 +100,19 @@ struct NearbyE85WidgetView: View {
 
     // MARK: - Large — map on top, readable station list below
 
+    // Deliberately not one global widgetURL for the whole widget: the map and each row are
+    // independent Link regions so tapping a row can never fall through to the map's "open
+    // Stations" action (or vice versa) — see NearbyE85WidgetURLResolver's doc comment for the
+    // fallback region any leftover, unLink-covered area (e.g. the divider) still uses.
     @ViewBuilder private var largeContent: some View {
         if let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
             VStack(spacing: 0) {
                 if let mapRender = entry.mapRender {
-                    mapArea(mapRender, snapshot: snapshot)
+                    Link(destination: NearbyE85DeepLink.stationsURL()) {
+                        mapArea(mapRender, snapshot: snapshot)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(stationsAccessibilityLabel)
                 } else {
                     // No map yet — still lead with something other than blank space.
                     HStack { header; Spacer(minLength: 0) }
@@ -101,10 +132,14 @@ struct NearbyE85WidgetView: View {
 
     private func largeStationList(_ snapshot: NearbyE85Snapshot) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Each row captures its OWN station's id at construction time — a row can never
+            // accidentally route to the nearest/first station instead of the one actually tapped.
             ForEach(snapshot.stations) { item in
-                Link(destination: NearbyE85DeepLink.url(stationID: item.id)) {
+                Link(destination: NearbyE85DeepLink.directionsURL(stationID: item.id)) {
                     largeRow(item)
-                }.buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(directionsAccessibilityLabel(for: item))
             }
         }
     }
@@ -139,6 +174,12 @@ struct NearbyE85WidgetView: View {
                     freshnessBadge("Older location")
                 }
             }
+    }
+
+    private var stationsAccessibilityLabel: String { "Open Nearby E85 stations" }
+
+    private func directionsAccessibilityLabel(for station: NearbyE85Station) -> String {
+        "Get directions to \(station.name), approximately \(String(format: "%.1f", station.distanceMiles)) miles away"
     }
 
     private func freshnessBadge(_ text: String) -> some View {

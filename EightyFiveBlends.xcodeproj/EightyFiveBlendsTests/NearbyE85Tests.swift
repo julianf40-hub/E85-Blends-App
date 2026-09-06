@@ -102,12 +102,15 @@ struct NearbyE85Tests {
         #expect(throws: (any Error).self) { try cache.write(bad, now: now) }
         #expect(cache.read(now: now) == snapshot())
     }
-    @Test func stationLinksRoundTripAndRejectMalformedOrForeignURLs() {
+    @Test func directionsLinksRoundTripAndRejectMalformedOrForeignURLs() {
         let key = "station|a & b?#/é"
-        let link = NearbyE85DeepLink.url(stationID: key, scheme: "e85blends")
-        #expect(NearbyE85DeepLink.parse(link, scheme: "e85blends") == .station(key))
-        #expect(NearbyE85DeepLink.parse(NearbyE85DeepLink.url(scheme: "e85blends"), scheme: "e85blends") == .nearby)
-        for raw in ["https://nearby", "e85blends://evil", "e85blends://nearby/path", "e85blends://nearby?station=", "e85blends://nearby?station=a&station=b", "e85blends://nearby?other=a", "e85blends://nearby#test", "e85blends-internal://nearby"] {
+        let link = NearbyE85DeepLink.directionsURL(stationID: key, scheme: "e85blends")
+        #expect(NearbyE85DeepLink.parse(link, scheme: "e85blends") == .directions(stationID: key))
+        #expect(NearbyE85DeepLink.parse(NearbyE85DeepLink.stationsURL(scheme: "e85blends"), scheme: "e85blends") == .stations)
+        for raw in ["https://stations", "e85blends://evil", "e85blends://stations/path", "e85blends://stations?id=a",
+                    "e85blends://directions/station?id=", "e85blends://directions/station?id=a&id=b",
+                    "e85blends://directions/station?other=a", "e85blends://directions/other?id=a",
+                    "e85blends://directions/station#test", "e85blends-internal://stations"] {
             #expect(NearbyE85DeepLink.parse(URL(string: raw)!, scheme: "e85blends") == nil)
         }
     }
