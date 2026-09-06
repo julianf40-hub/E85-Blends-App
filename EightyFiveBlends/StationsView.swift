@@ -2808,7 +2808,8 @@ struct StationsView: View {
                                    price: localPrice ?? communityPrice)
         }
         NearbyE85Publisher.publish(.make(stations: items, radiusMiles: snapshot.radiusMiles,
-                                         updatedAt: snapshot.fetchedAt, locationAt: searchLocationAt))
+                                         updatedAt: snapshot.fetchedAt, locationAt: searchLocationAt,
+                                         userLatitude: snapshot.center.latitude, userLongitude: snapshot.center.longitude))
     }
 
     private func refreshCommunityPricePreviews() {

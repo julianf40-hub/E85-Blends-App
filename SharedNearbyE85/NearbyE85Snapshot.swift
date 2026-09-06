@@ -57,8 +57,13 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
     let radiusMiles: Double
     let updatedAt: Date // Successful station search time; reading/enriching the cache never advances it.
     let locationAt: Date?
+    // Only present when the search fix that produced `stations` is known; the medium widget's
+    // map needs the user's own point, not just distances relative to it.
+    var userLatitude: Double? = nil
+    var userLongitude: Double? = nil
 
-    static func make(stations: [NearbyE85Station], radiusMiles: Double, updatedAt: Date, locationAt: Date) -> Self {
+    static func make(stations: [NearbyE85Station], radiusMiles: Double, updatedAt: Date, locationAt: Date,
+                      userLatitude: Double? = nil, userLongitude: Double? = nil) -> Self {
         var seen = Set<String>()
         let nearest = stations.filter {
             !$0.id.isEmpty && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -67,8 +72,11 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
         }.sorted {
             $0.distanceMiles == $1.distanceMiles ? $0.id < $1.id : $0.distanceMiles < $1.distanceMiles
         }.filter { seen.insert($0.id).inserted }.prefix(3)
+        let validUser = userLatitude.flatMap { lat in userLongitude.map { lon in (lat, lon) } }
+            .flatMap { StationDataValidation.isValidCoordinate(latitude: $0.0, longitude: $0.1) ? $0 : nil }
         return Self(version: schemaVersion, state: nearest.isEmpty ? .noStations : .ready,
-                    stations: Array(nearest), radiusMiles: radiusMiles, updatedAt: updatedAt, locationAt: locationAt)
+                    stations: Array(nearest), radiusMiles: radiusMiles, updatedAt: updatedAt, locationAt: locationAt,
+                    userLatitude: validUser?.0, userLongitude: validUser?.1)
     }
 
     static func permissionRequired(at date: Date) -> Self {
@@ -85,11 +93,18 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
               radiusMiles.isFinite, radiusMiles > 0, radiusMiles <= 100,
               stations.count <= 3,
               Set(stations.map(\.id)).count == stations.count else { return false }
-        if state == .permissionRequired { return stations.isEmpty && locationAt == nil }
+        if state == .permissionRequired {
+            return stations.isEmpty && locationAt == nil && userLatitude == nil && userLongitude == nil
+        }
         guard let locationAt, StationDataValidation.isValidTimestamp(locationAt, asOf: date),
               date.timeIntervalSince(locationAt) < Self.expiresAfter,
               date.timeIntervalSince(updatedAt) < Self.expiresAfter,
               (state == .ready) == !stations.isEmpty else { return false }
+        switch (userLatitude, userLongitude) {
+        case (nil, nil): break
+        case let (lat?, lon?): guard StationDataValidation.isValidCoordinate(latitude: lat, longitude: lon) else { return false }
+        default: return false
+        }
         return stations.allSatisfy { station in
             !station.id.isEmpty && station.id.count <= 1024 && !station.name.isEmpty && station.name.count <= 256 &&
             station.address.count <= 1024 &&
@@ -100,6 +115,13 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
                 (price.reportedAt.map { StationDataValidation.isValidTimestamp($0, asOf: date) } ?? true)
             } ?? true)
         }
+    }
+
+    /// The user's own point for the medium widget's map, when the search that produced
+    /// `stations` recorded one.
+    var userCoordinate: (latitude: Double, longitude: Double)? {
+        guard let userLatitude, let userLongitude else { return nil }
+        return (userLatitude, userLongitude)
     }
 }
 

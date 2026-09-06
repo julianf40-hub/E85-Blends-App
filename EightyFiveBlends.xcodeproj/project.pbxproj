@@ -26,6 +26,10 @@
 		44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838512FA1EAAB00D200DA /* StationLocationManager.swift */; };
 		44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */; };
+		44E16B9F304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */; };
+		44E16BA0304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */; };
+		44E16BA2304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */; };
+		44E16BA3304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */; };
 		4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */; };
@@ -80,12 +84,14 @@
 		44A838532FA1EB1100D200DA /* NRELStationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NRELStationService.swift; sourceTree = "<group>"; };
 		44A9BC202FA0865900A9920E /* EightyFiveBlends.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EightyFiveBlends.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		44CB8A452FB0592300A1C097 /* CostCalculatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CostCalculatorView.swift; sourceTree = "<group>"; };
+		44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85MapRegion.swift; sourceTree = "<group>"; };
+		44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85MapRenderer.swift; sourceTree = "<group>"; };
 		71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StationDataValidation.swift; path = EightyFiveBlends/StationDataValidation.swift; sourceTree = SOURCE_ROOT; };
 		B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Snapshot.swift; sourceTree = "<group>"; };
 		C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EightyFiveBlendsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC2171CB5719C29F9BA46E78 /* NearbyE85Widget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Widget.swift; sourceTree = "<group>"; };
 		CEC01578F153E0FE129AAF45 /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Presentation.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -110,8 +116,6 @@
 		};
 		F0014E4080EEA918DFCF64B7 /* EightyFiveBlends.xcodeproj/EightyFiveBlendsTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = EightyFiveBlends.xcodeproj/EightyFiveBlendsTests;
 			sourceTree = "<group>";
 		};
@@ -196,8 +200,8 @@
 				CEC01578F153E0FE129AAF45 /* Info.plist */,
 				1183F81018E00451620EF66D /* NearbyE85Widget.entitlements */,
 				EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */,
+				44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */,
 			);
-			name = NearbyE85Widget;
 			path = NearbyE85Widget;
 			sourceTree = "<group>";
 		};
@@ -214,8 +218,8 @@
 			children = (
 				B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */,
 				71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */,
+				44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */,
 			);
-			name = SharedNearbyE85;
 			path = SharedNearbyE85;
 			sourceTree = "<group>";
 		};
@@ -369,6 +373,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				44E16BA2304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
 				2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -387,6 +392,7 @@
 				4469CCB02FE13E940069F1D7 /* StationAlertsView.swift in Sources */,
 				444863EF2FB5B5CB001A39EE /* ProUpgradeView.swift in Sources */,
 				44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */,
+				44E16BA0304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
 				44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */,
 				44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */,
 				41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */,
@@ -399,6 +405,8 @@
 			files = (
 				1FD94376DFEBAF890E2BB805 /* NearbyE85Widget.swift in Sources */,
 				7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */,
+				44E16B9F304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
+				44E16BA3304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
 				2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */,
 				C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */,
 			);
@@ -525,7 +533,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = EightyFiveBlends/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "85Blends Internal";
+				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "85Blends uses your location in the background to recognize when you arrive at an E85 station and notify you that At The Pump is ready.";
@@ -533,9 +541,8 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -702,7 +709,6 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -747,7 +753,6 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UILaunchStoryboardName = "";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -877,7 +882,7 @@
 				CURRENT_PROJECT_VERSION = 100;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -912,7 +917,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NearbyE85Widget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Nearby E85";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

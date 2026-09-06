@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 import Testing
 @testable import EightyFiveBlends
 
@@ -23,6 +24,26 @@ struct NearbyE85Tests {
         #expect(snapshot(stations: [station(miles: 0)]).stations.count == 1)
         let bad = NearbyE85Station(id: "bad", name: "Bad", address: "", latitude: 0, longitude: 0, distanceMiles: 0, price: nil)
         #expect(snapshot(stations: [bad]).state == .noStations)
+    }
+    @Test func userCoordinateIsKeptWhenValidAndDroppedWhenNot() {
+        let withCoordinate = NearbyE85Snapshot.make(stations: [station()], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                                     userLatitude: 33.44, userLongitude: -112.08)
+        #expect(withCoordinate.userCoordinate?.latitude == 33.44)
+        #expect(withCoordinate.userCoordinate?.longitude == -112.08)
+        #expect(withCoordinate.isValid(at: now))
+
+        let nullIsland = NearbyE85Snapshot.make(stations: [station()], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                                 userLatitude: 0, userLongitude: 0)
+        #expect(nullIsland.userCoordinate == nil)
+
+        let missing = NearbyE85Snapshot.make(stations: [station()], radiusMiles: 25, updatedAt: now, locationAt: now)
+        #expect(missing.userCoordinate == nil)
+        #expect(missing.isValid(at: now))
+    }
+    @Test func mismatchedUserCoordinateHalfIsInvalid() {
+        let value = NearbyE85Snapshot(version: NearbyE85Snapshot.schemaVersion, state: .ready, stations: [station()],
+                                       radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: nil)
+        #expect(!value.isValid(at: now))
     }
     @Test func emptyResultsPermissionAndMissingCacheAreDistinct() {
         #expect(snapshot(stations: []).state == .noStations)
@@ -112,4 +133,83 @@ struct NearbyE85Tests {
         #expect(eligible(StationsRecentSearchStore(persistenceURL: url)) == nil)
     }
 
+}
+
+/// Pure geometry for the medium widget's map. Phoenix-area coordinates throughout so distances
+/// are realistic; assertions check behavior against the algorithm's own named bounds rather than
+/// recomputing exact spans, so they stay meaningful if the constants are retuned later.
+struct NearbyE85MapRegionTests {
+    private let user = CLLocationCoordinate2D(latitude: 33.4484, longitude: -112.0740)
+    private func milesPerDegreeLongitude(at latitude: Double) -> Double {
+        max(69.0 * cos(latitude * .pi / 180), 1)
+    }
+    private func offset(_ coordinate: CLLocationCoordinate2D, latitude: Double = 0, longitude: Double = 0) -> CLLocationCoordinate2D {
+        .init(latitude: coordinate.latitude + latitude, longitude: coordinate.longitude + longitude)
+    }
+
+    @Test func oneVeryCloseStationDoesNotOverZoom() {
+        // A station essentially on top of the user must not collapse the map to street level.
+        let station = offset(user, latitude: 0.0005)
+        let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [station], aspectRatio: 2.0)
+        let latitudeSpanMiles = region.span.latitudeDelta * 69.0
+        #expect(abs(latitudeSpanMiles - NearbyE85MapRegion.minimumSpanMiles) < 0.05)
+    }
+
+    @Test func severalNearbyStationsRemainInFrame() {
+        let stations = [offset(user, latitude: 0.01, longitude: 0.01),
+                         offset(user, latitude: -0.01, longitude: -0.02),
+                         offset(user, latitude: 0.02, longitude: -0.01)]
+        let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0)
+        let latitudeSpanMiles = region.span.latitudeDelta * 69.0
+        let longitudeSpanMiles = region.span.longitudeDelta * milesPerDegreeLongitude(at: region.center.latitude)
+        #expect(latitudeSpanMiles >= NearbyE85MapRegion.minimumSpanMiles - 0.01)
+        #expect(latitudeSpanMiles <= NearbyE85MapRegion.maximumSpanMiles)
+        #expect(longitudeSpanMiles >= NearbyE85MapRegion.minimumSpanMiles - 0.01)
+        for station in stations + [user] {
+            #expect(abs(station.latitude - region.center.latitude) <= region.span.latitudeDelta / 2 + 0.0001)
+            #expect(abs(station.longitude - region.center.longitude) <= region.span.longitudeDelta / 2 + 0.0001)
+        }
+    }
+
+    @Test func distantOutlierDoesNotZoomOutToMetroScale() {
+        let close = offset(user, latitude: 0.01)
+        let farOutlier = offset(user, longitude: 1.0) // ~55 miles east at this latitude
+        let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [close, farOutlier], aspectRatio: 2.0)
+        let longitudeSpanMiles = region.span.longitudeDelta * milesPerDegreeLongitude(at: region.center.latitude)
+        #expect(longitudeSpanMiles <= NearbyE85MapRegion.maximumSpanMiles + 0.5)
+        // The outlier's own presence must not have driven the span past the metro-scale ceiling.
+        #expect(longitudeSpanMiles < 1.0 * milesPerDegreeLongitude(at: user.latitude) * NearbyE85MapRegion.paddingFactor)
+    }
+
+    @Test func aspectRatioWidensTheShorterAxisWithoutShrinkingTheOther() {
+        let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [], aspectRatio: 3.0)
+        let latitudeSpanMiles = region.span.latitudeDelta * 69.0
+        let longitudeSpanMiles = region.span.longitudeDelta * milesPerDegreeLongitude(at: region.center.latitude)
+        #expect(abs(latitudeSpanMiles - NearbyE85MapRegion.minimumSpanMiles) < 0.05)
+        #expect(abs(longitudeSpanMiles / latitudeSpanMiles - 3.0) < 0.05)
+    }
+
+    @Test func centerIsTheMidpointOfUserAndStations() {
+        let station = offset(user, latitude: 0.02, longitude: 0.02)
+        let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [station], aspectRatio: 2.0)
+        #expect(abs(region.center.latitude - (user.latitude + station.latitude) / 2) < 0.0001)
+        #expect(abs(region.center.longitude - (user.longitude + station.longitude) / 2) < 0.0001)
+    }
+
+    @Test func userMarkerIsNudgedAwayFromAnAlmostCoincidingStationPin() {
+        // The nearest station is often almost exactly where the user is standing (e.g. at the
+        // pump); the blue dot must not disappear underneath that pin.
+        let stationPoint = CGPoint(x: 100, y: 100)
+        let userPoint = CGPoint(x: 101, y: 100.5) // sub-pixel apart before decluttering
+        let result = NearbyE85MapRegion.declutteredUserPoint(userPoint, avoiding: [stationPoint], minimumSeparation: 24)
+        let dx = result.x - stationPoint.x, dy = result.y - stationPoint.y
+        #expect((dx * dx + dy * dy).squareRoot() >= 23.99)
+    }
+
+    @Test func userMarkerIsLeftAloneWhenAlreadyWellSeparated() {
+        let stationPoint = CGPoint(x: 100, y: 100)
+        let userPoint = CGPoint(x: 160, y: 160)
+        let result = NearbyE85MapRegion.declutteredUserPoint(userPoint, avoiding: [stationPoint], minimumSeparation: 24)
+        #expect(result == userPoint)
+    }
 }
