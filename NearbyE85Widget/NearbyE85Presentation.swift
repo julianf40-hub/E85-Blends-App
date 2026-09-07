@@ -258,7 +258,7 @@ struct NearbyE85WidgetView: View {
 /// Overlays the user/station pins onto a pre-rendered MKMapSnapshotter image. The marker points
 /// were computed once, in the same point-space as the image, so this never needs its own
 /// coordinate math or a live MKMapView.
-private struct NearbyE85MapView: View {
+struct NearbyE85MapView: View {
     let render: NearbyE85MapRender
 
     var body: some View {
@@ -276,7 +276,11 @@ private struct NearbyE85MapView: View {
         .frame(width: render.size.width, height: render.size.height)
     }
 
-    @ViewBuilder private func markerView(_ marker: NearbyE85MapMarker) -> some View {
+    // Not private: NearbyE85MapMarkerAnchorTests (dual-compiled into this same target via
+    // NEARBY_WIDGET_TESTING) constructs marker views directly to verify decorations like the
+    // price badge never change a marker's own layout size — and therefore never move the
+    // geographic anchor `.position(marker.point)` uses above.
+    @ViewBuilder func markerView(_ marker: NearbyE85MapMarker) -> some View {
         switch marker.kind {
         case .user:
             ZStack {
@@ -285,20 +289,28 @@ private struct NearbyE85MapView: View {
             }
             .shadow(radius: 1)
         case .nearestStation:
-            VStack(spacing: 2) {
-                if let priceLabel = marker.priceLabel {
-                    Text(priceLabel)
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 2)
-                        .background(Color.green, in: Capsule())
+            // The circle's own center is the geographic anchor `.position(marker.point)` uses
+            // below — the price badge is attached via `.overlay` so it never contributes to this
+            // view's layout size. A VStack containing both would shift the circle's center away
+            // from `marker.point` whenever a badge is shown, offsetting the visible pin from its
+            // true coordinate.
+            Image(systemName: "fuelpump.fill")
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                .padding(5)
+                .background(Color.green, in: Circle())
+                .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                .shadow(radius: 1)
+                .overlay(alignment: .top) {
+                    if let priceLabel = marker.priceLabel {
+                        Text(priceLabel)
+                            .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.green, in: Capsule())
+                            .shadow(radius: 1)
+                            .fixedSize()
+                            .alignmentGuide(.top) { dimensions in dimensions.height + 2 }
+                    }
                 }
-                Image(systemName: "fuelpump.fill")
-                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                    .padding(5)
-                    .background(Color.green, in: Circle())
-                    .overlay(Circle().stroke(.white, lineWidth: 1.5))
-            }
-            .shadow(radius: 1)
         case .station:
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 8, weight: .semibold)).foregroundStyle(.white)

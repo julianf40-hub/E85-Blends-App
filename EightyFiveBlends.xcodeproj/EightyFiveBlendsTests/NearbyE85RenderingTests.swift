@@ -166,6 +166,10 @@ final class NearbyE85RenderingTests: XCTestCase {
             stations: stations, size: size, scale: 2) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
+        // MKMapSnapshotter's image must come back in the exact point-space it was asked to
+        // render at — this is the invariant that lets marker.point (computed against `size`)
+        // line up with the image the widget displays, with no separate scale step anywhere.
+        XCTAssertEqual(mapRender.image.size, size)
         let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
         let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
@@ -183,10 +187,64 @@ final class NearbyE85RenderingTests: XCTestCase {
             stations: stations, size: size, scale: 2) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
+        XCTAssertEqual(mapRender.image.size, size)
         let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
         let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
         let image = try render(entry, family: .systemLarge, size: Self.largeSize)
         attach(image, name: "nearby-large-map-real-snapshot")
+    }
+}
+
+/// `NearbyE85MapView.markerView` — the geographic-anchor fix. `.position(marker.point)` centers
+/// a marker view on its coordinate using that view's own layout size, so any decoration (the
+/// nearest station's price badge) that grows the view's reported size would silently drag the
+/// visible pin away from `marker.point`. These compare the marker's ideal (unconstrained) size
+/// with and without a badge — bug regresses the instant they diverge, no MapKit or pixel
+/// inspection required.
+@MainActor
+final class NearbyE85MapMarkerAnchorTests: XCTestCase {
+    private func idealSize(of view: some View) -> CGSize {
+        let renderer = ImageRenderer(content: view)
+        return renderer.uiImage?.size ?? .zero
+    }
+    private var blankMapView: NearbyE85MapView {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { _ in }
+        return NearbyE85MapView(render: NearbyE85MapRender(image: image, size: CGSize(width: 1, height: 1), markers: []))
+    }
+
+    func testNearestStationMarkerSizeIsIdenticalWithAndWithoutAPriceBadge() {
+        let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: nil)
+        let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
+        let sizeWithoutBadge = idealSize(of: blankMapView.markerView(withoutBadge))
+        let sizeWithBadge = idealSize(of: blankMapView.markerView(withBadge))
+        XCTAssertEqual(sizeWithoutBadge.width, sizeWithBadge.width, accuracy: 0.5)
+        XCTAssertEqual(sizeWithoutBadge.height, sizeWithBadge.height, accuracy: 0.5)
+    }
+
+    func testNearestStationMarkerSizeIsStableAcrossDifferentPriceLabelLengths() {
+        let short = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
+        let long = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$12,345.67")
+        let sizeShort = idealSize(of: blankMapView.markerView(short))
+        let sizeLong = idealSize(of: blankMapView.markerView(long))
+        // The badge can grow wider/taller for a longer label, but only via the size-neutral
+        // overlay — the marker's own (circle) footprint used for `.position()` never changes.
+        XCTAssertEqual(sizeShort.width, sizeLong.width, accuracy: 0.5)
+        XCTAssertEqual(sizeShort.height, sizeLong.height, accuracy: 0.5)
+    }
+
+    func testUserMarkerSizeMatchesItsOuterRing() {
+        let user = NearbyE85MapMarker(id: "user", kind: .user, point: .zero, priceLabel: nil)
+        let size = idealSize(of: blankMapView.markerView(user))
+        XCTAssertEqual(size.width, 16, accuracy: 0.5)
+        XCTAssertEqual(size.height, 16, accuracy: 0.5)
+    }
+
+    func testPlainStationMarkerNeverCarriesAPriceLabel() {
+        // .station (non-nearest) markers never receive a priceLabel from the renderer, so their
+        // anchor can't be affected by the same badge-decoration failure mode at all.
+        let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, priceLabel: nil)
+        XCTAssertNil(station.priceLabel)
+        XCTAssertGreaterThan(idealSize(of: blankMapView.markerView(station)).width, 0)
     }
 }

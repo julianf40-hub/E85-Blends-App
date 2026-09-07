@@ -216,3 +216,40 @@ struct NearbyE85MapRegionTests {
         #expect(result == userPoint)
     }
 }
+
+/// `NearbyE85MapRenderer.mapSize` — the snapshot's requested size, in the exact same point-space
+/// the widget later displays it at. Medium and large deliberately request different fractions of
+/// the widget's canvas; both must stay purely a function of the family's own displaySize, with no
+/// separate scale/crop step introduced later that could desync the image from marker points.
+struct NearbyE85MapRendererTests {
+    @Test func mediumOccupiesTheFullDisplaySizeWithNoScaling() {
+        let displaySize = CGSize(width: 329, height: 155)
+        #expect(NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 1.0) == displaySize)
+    }
+
+    @Test func largeScalesOnlyHeightNeverWidth() {
+        let displaySize = CGSize(width: 329, height: 345)
+        let size = NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 0.6)
+        #expect(size.width == displaySize.width)
+        #expect(abs(size.height - displaySize.height * 0.6) < 0.001)
+    }
+
+    @Test func differentFamiliesProduceDifferentMapFramesFromTheSameWidth() {
+        let displaySize = CGSize(width: 329, height: 345)
+        let mediumLike = NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 1.0)
+        let largeLike = NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 0.6)
+        #expect(mediumLike.width == largeLike.width)
+        #expect(mediumLike.height > largeLike.height)
+    }
+
+    @Test func heightFractionIsClampedAndFloored() {
+        let displaySize = CGSize(width: 300, height: 500)
+        #expect(NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 0.01).height == 80)
+        #expect(NearbyE85MapRenderer.mapSize(for: displaySize, heightFraction: 5.0).height == displaySize.height)
+    }
+
+    @Test func degenerateDisplaySizeFallsBackToANonZeroDefault() {
+        let size = NearbyE85MapRenderer.mapSize(for: .zero, heightFraction: 1.0)
+        #expect(size.width > 0 && size.height > 0)
+    }
+}
