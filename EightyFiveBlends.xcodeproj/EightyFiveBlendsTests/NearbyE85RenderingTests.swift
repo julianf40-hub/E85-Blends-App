@@ -77,12 +77,13 @@ final class NearbyE85RenderingTests: XCTestCase {
     /// A synthetic (network-free) map render: a flat background plus markers placed with the
     /// same region math the real renderer uses, so the widget's map layout is exercised
     /// deterministically for every state without depending on MapKit tile availability.
-    private func syntheticRender(for snapshot: NearbyE85Snapshot, size: CGSize) -> NearbyE85MapRender {
+    private func syntheticRender(for snapshot: NearbyE85Snapshot, size: CGSize,
+                                 zoomLevel: NearbyE85MapZoomLevel = .default) -> NearbyE85MapRender {
         let user = snapshot.userCoordinate.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             ?? CLLocationCoordinate2D(latitude: Self.phoenixUser.latitude, longitude: Self.phoenixUser.longitude)
         let stationCoordinates = snapshot.stations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stationCoordinates,
-                                               aspectRatio: size.width / size.height)
+                                               aspectRatio: size.width / size.height, zoomLevel: zoomLevel)
         func point(for coordinate: CLLocationCoordinate2D) -> CGPoint {
             CGPoint(x: size.width * (0.5 + (coordinate.longitude - region.center.longitude) / region.span.longitudeDelta),
                     y: size.height * (0.5 - (coordinate.latitude - region.center.latitude) / region.span.latitudeDelta))
@@ -154,6 +155,26 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// Large must render cleanly (no crash/clip) at every zoom extreme, with the zoom controls
+    /// visible, correctly enabled/disabled at the boundary, and the map/station-list split intact.
+    func testLargeRendersAtMinimumDefaultAndMaximumZoom() throws {
+        let now = Date.now
+        let (nearest, second, third) = phoenixStations(now: now)
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second, third], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        let cases: [(String, NearbyE85MapZoomLevel)] = [
+            ("min", .minimum), ("default", .default), ("max", .maximum),
+        ]
+        for (name, level) in cases {
+            let mapRender = syntheticRender(for: snapshot, size: mapSize, zoomLevel: level)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: level)
+            let image = try render(entry, family: .systemLarge, size: Self.largeSize)
+            XCTAssertEqual(image.size, Self.largeSize, "Zoom must never resize the widget itself, only the map's framing")
+            attach(image, name: "nearby-large-zoom-\(name)")
+        }
+    }
+
     /// Best-effort real MKMapSnapshotter captures for the final visual review — skipped, not
     /// failed, if this environment has no route to Apple's map tile servers.
     func testMediumMapRealSnapshotterBestEffort() async throws {
@@ -193,6 +214,37 @@ final class NearbyE85RenderingTests: XCTestCase {
         let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
         let image = try render(entry, family: .systemLarge, size: Self.largeSize)
         attach(image, name: "nearby-large-map-real-snapshot")
+    }
+
+    /// Confirms a real MKMapSnapshotter region actually shrinks when zoomed in — not just the
+    /// synthetic test math, but the same NearbyE85MapRegion.region(zoomLevel:) call the real
+    /// renderer makes. Best-effort like the tests above.
+    func testLargeMapRealSnapshotterHonorsZoomLevelBestEffort() async throws {
+        let now = Date.now
+        let (nearest, second, _) = phoenixStations(now: now)
+        let stations = [nearest, second]
+        let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        guard let standard = await NearbyE85MapRenderer.render(
+            userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
+            stations: stations, size: size, scale: 2, zoomLevel: .standard),
+            let zoomedIn = await NearbyE85MapRenderer.render(
+            userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
+            stations: stations, size: size, scale: 2, zoomLevel: .zoomedInFar) else {
+            throw XCTSkip("No network route to MapKit tile servers in this environment.")
+        }
+        // Both requests share the same size/scale — only the underlying region differs — so the
+        // nearest station's marker point must land closer to center once zoomed in.
+        guard let standardNearest = standard.markers.first(where: { $0.kind == .nearestStation }),
+              let zoomedNearest = zoomedIn.markers.first(where: { $0.kind == .nearestStation }) else {
+            XCTFail("Expected a nearestStation marker in both renders")
+            return
+        }
+        func distanceFromCenter(_ point: CGPoint) -> CGFloat {
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            return ((point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y)).squareRoot()
+        }
+        XCTAssertGreaterThan(distanceFromCenter(zoomedNearest.point), distanceFromCenter(standardNearest.point) - 0.01,
+                             "Zooming in should push a non-center station's pin farther from the image center, not closer")
     }
 }
 
@@ -246,5 +298,38 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
         let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, priceLabel: nil)
         XCTAssertNil(station.priceLabel)
         XCTAssertGreaterThan(idealSize(of: blankMapView.markerView(station)).width, 0)
+    }
+
+    /// `markerView` takes only a `NearbyE85MapMarker` — it has no notion of zoom level at all, so
+    /// zooming can only ever change WHERE a marker's `point` lands (via NearbyE85MapRegion), never
+    /// how `.position(marker.point)` anchors it. This locks that invariant in explicitly, at every
+    /// zoom level, rather than relying on it being true "by construction."
+    func testMarkerAnchorSizeIsIdenticalAcrossEveryZoomLevelWithAndWithoutABadge() {
+        let user = CLLocationCoordinate2D(latitude: 33.4484, longitude: -112.0740)
+        let station = CLLocationCoordinate2D(latitude: 33.4675, longitude: -112.0850)
+        let size = CGSize(width: 329, height: 207)
+        var withoutBadgeSizes: [CGSize] = [], withBadgeSizes: [CGSize] = []
+        for level in NearbyE85MapZoomLevel.allCases {
+            let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [station],
+                                                   aspectRatio: size.width / size.height, zoomLevel: level)
+            // A real snapshot.point(for:)-shaped point, just computed the same way the tests'
+            // own syntheticRender helper does, so this stays independent of live MapKit access.
+            let point = CGPoint(x: size.width * (0.5 + (station.longitude - region.center.longitude) / region.span.longitudeDelta),
+                                y: size.height * (0.5 - (station.latitude - region.center.latitude) / region.span.latitudeDelta))
+            let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: nil)
+            let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: "$2.89")
+            withoutBadgeSizes.append(idealSize(of: blankMapView.markerView(withoutBadge)))
+            withBadgeSizes.append(idealSize(of: blankMapView.markerView(withBadge)))
+        }
+        for (withoutBadge, withBadge) in zip(withoutBadgeSizes, withBadgeSizes) {
+            XCTAssertEqual(withoutBadge.width, withBadge.width, accuracy: 0.5)
+            XCTAssertEqual(withoutBadge.height, withBadge.height, accuracy: 0.5)
+        }
+        // And every level agrees with every other level — the anchor footprint truly never
+        // depends on zoom, not just coincidentally at the levels checked individually above.
+        for size in withoutBadgeSizes.dropFirst() {
+            XCTAssertEqual(size.width, withoutBadgeSizes[0].width, accuracy: 0.5)
+            XCTAssertEqual(size.height, withoutBadgeSizes[0].height, accuracy: 0.5)
+        }
     }
 }

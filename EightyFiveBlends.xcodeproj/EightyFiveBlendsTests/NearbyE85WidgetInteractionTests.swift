@@ -5,6 +5,30 @@ import Testing
 import WidgetKit
 @testable import EightyFiveBlends
 
+/// Confirms the zoom buttons stay fully outside the deep-link/routing system: zooming can only
+/// ever mutate the zoom preference (a separate UserDefaults suite from the station cache), and
+/// never produces or depends on a `NearbyE85DeepLink` destination, matching this pass's "plus/
+/// minus must not open Stations" and "zoom must not refetch stations" requirements.
+struct NearbyE85ZoomInteractionIsolationTests {
+    @Test func zoomingNeverTouchesTheStationSnapshotCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cacheFile = directory.appendingPathComponent("snapshot.json")
+        let cache = NearbyE85Cache(fileURL: cacheFile)
+        let now = Date.now
+        let station = NearbyE85Station(id: "a", name: "E85 station", address: "123 Main St",
+                                       latitude: 33.45, longitude: -112.07, distanceMiles: 1, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now)
+        try cache.write(snapshot, now: now)
+
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-isolation-\(UUID().uuidString)"))
+        NearbyE85ZoomAction.zoomIn.apply(using: zoomStore)
+        NearbyE85ZoomAction.zoomOut.apply(using: zoomStore)
+
+        #expect(cache.read(now: now) == snapshot)
+    }
+}
+
 /// `NearbyE85WidgetURLResolver` picks the single default tap destination per family — pure,
 /// no rendering required.
 struct NearbyE85WidgetURLResolverTests {

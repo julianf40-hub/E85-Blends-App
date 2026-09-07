@@ -10,15 +10,26 @@ nonisolated enum NearbyE85MapRegion {
     static let maximumSpanMiles: Double = 20
     /// Leaves visible margin around the outermost pin instead of pinning it to the frame edge.
     static let paddingFactor: Double = 1.5
+    /// Widened bounds the zoom multiplier is still clamped to below — looser than
+    /// `minimumSpanMiles`/`maximumSpanMiles` so zooming in/out can actually go beyond the base
+    /// region's own protection, while still never reaching an unusable street-level crop or a
+    /// whole-metro view.
+    static let zoomedMinimumSpanMiles: Double = 1.0
+    static let zoomedMaximumSpanMiles: Double = 30.0
     private static let milesPerDegreeLatitude: Double = 69.0
 
     /// - Parameters:
     ///   - userCoordinate: The user's cached/recorded location.
     ///   - stationCoordinates: The stations to keep in frame (already capped/selected upstream).
     ///   - aspectRatio: width / height of the map area the region will be rendered into.
+    ///   - zoomLevel: Applied as a span multiplier after the base region below — `.default`
+    ///     reproduces the exact base framing, since its 1.0x multiplier combined with the wider
+    ///     zoomed clamp above is a no-op whenever the base span already satisfies its own
+    ///     (tighter) min/max protection.
     static func region(userCoordinate: CLLocationCoordinate2D,
                         stationCoordinates: [CLLocationCoordinate2D],
-                        aspectRatio: Double) -> MKCoordinateRegion {
+                        aspectRatio: Double,
+                        zoomLevel: NearbyE85MapZoomLevel = .default) -> MKCoordinateRegion {
         var minLatitude = userCoordinate.latitude, maxLatitude = userCoordinate.latitude
         var minLongitude = userCoordinate.longitude, maxLongitude = userCoordinate.longitude
         for coordinate in stationCoordinates {
@@ -45,6 +56,13 @@ nonisolated enum NearbyE85MapRegion {
         } else {
             latitudeSpanMiles = longitudeSpanMiles / aspectRatio
         }
+
+        // Zoom is a presentation-only adjustment applied strictly after the base algorithm above
+        // — it never touches the user/station bounding box, the aspect-ratio correction, or the
+        // outlier/min-max protection that produced this span.
+        let multiplier = zoomLevel.spanMultiplier
+        latitudeSpanMiles = min(max(latitudeSpanMiles * multiplier, zoomedMinimumSpanMiles), zoomedMaximumSpanMiles)
+        longitudeSpanMiles = min(max(longitudeSpanMiles * multiplier, zoomedMinimumSpanMiles), zoomedMaximumSpanMiles)
 
         return MKCoordinateRegion(
             center: center,

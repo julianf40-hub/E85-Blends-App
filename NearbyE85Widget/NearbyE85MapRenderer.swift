@@ -43,12 +43,12 @@ enum NearbyE85MapRenderer {
 
     @MainActor
     static func render(userLatitude: Double, userLongitude: Double, stations: [NearbyE85Station],
-                        size: CGSize, scale: CGFloat) async -> NearbyE85MapRender? {
+                        size: CGSize, scale: CGFloat, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
         guard size.width >= 1, size.height >= 1 else { return nil }
         let userCoordinate = CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude)
         let stationCoordinates = stations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         let region = NearbyE85MapRegion.region(userCoordinate: userCoordinate, stationCoordinates: stationCoordinates,
-                                               aspectRatio: size.width / size.height)
+                                               aspectRatio: size.width / size.height, zoomLevel: zoomLevel)
         let options = MKMapSnapshotter.Options()
         options.region = region
         options.size = size

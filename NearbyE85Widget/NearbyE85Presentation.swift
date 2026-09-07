@@ -1,5 +1,6 @@
 import SwiftUI
 import WidgetKit
+import AppIntents
 #if NEARBY_WIDGET_TESTING
 @testable import EightyFiveBlends
 #endif
@@ -8,6 +9,9 @@ nonisolated struct NearbyE85Entry: TimelineEntry {
     let date: Date
     let snapshot: NearbyE85Snapshot?
     var mapRender: NearbyE85MapRender? = nil
+    // Only meaningful for .systemLarge — Medium/Small always render at .default regardless of
+    // this value (see NearbyE85Provider.mapRender).
+    var zoomLevel: NearbyE85MapZoomLevel = .default
 }
 
 /// The single default tap destination for a whole widget — used as-is for small (one action,
@@ -108,11 +112,19 @@ struct NearbyE85WidgetView: View {
         if let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
             VStack(spacing: 0) {
                 if let mapRender = entry.mapRender {
-                    Link(destination: NearbyE85DeepLink.stationsURL()) {
-                        mapArea(mapRender, snapshot: snapshot)
+                    // Zoom controls are a SIBLING overlay on top of the map's Link, not nested
+                    // inside it — each stays its own independent tap target, so a tap on + / -
+                    // invokes that button's AppIntent instead of falling through to the map's
+                    // "open Stations" Link underneath.
+                    ZStack(alignment: .trailing) {
+                        Link(destination: NearbyE85DeepLink.stationsURL()) {
+                            mapArea(mapRender, snapshot: snapshot)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(stationsAccessibilityLabel)
+                        NearbyE85ZoomControls(currentLevel: entry.zoomLevel)
+                            .padding(.trailing, 8)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(stationsAccessibilityLabel)
                 } else {
                     // No map yet — still lead with something other than blank space.
                     HStack { header; Spacer(minLength: 0) }
@@ -177,6 +189,39 @@ struct NearbyE85WidgetView: View {
     }
 
     private var stationsAccessibilityLabel: String { "Open Nearby E85 stations" }
+
+    // MARK: - Large's zoom controls
+
+    /// Independent + / - tap targets stacked on the map's trailing edge — a sibling overlay of
+    /// the map's Link (see largeContent), never nested inside it, so each button's AppIntent
+    /// fires on its own tap instead of the map's "open Stations" Link firing underneath it.
+    /// Medium never shows these and never reads/writes the zoom preference this drives.
+    private struct NearbyE85ZoomControls: View {
+        let currentLevel: NearbyE85MapZoomLevel
+
+        var body: some View {
+            VStack(spacing: 8) {
+                zoomButton(systemImage: "plus", intent: NearbyE85ZoomInIntent(),
+                          isDisabled: currentLevel.isAtMaximum, label: "Zoom in nearby E85 map")
+                zoomButton(systemImage: "minus", intent: NearbyE85ZoomOutIntent(),
+                          isDisabled: currentLevel.isAtMinimum, label: "Zoom out nearby E85 map")
+            }
+        }
+
+        private func zoomButton(systemImage: String, intent: some AppIntent, isDisabled: Bool, label: String) -> some View {
+            Button(intent: intent) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(isDisabled ? .secondary : .primary)
+                    .frame(width: 44, height: 44)
+                    .background(.thinMaterial, in: Circle())
+                    .shadow(radius: 1)
+            }
+            .buttonStyle(.plain)
+            .disabled(isDisabled)
+            .accessibilityLabel(label)
+        }
+    }
 
     private func directionsAccessibilityLabel(for station: NearbyE85Station) -> String {
         "Get directions to \(station.name), approximately \(String(format: "%.1f", station.distanceMiles)) miles away"

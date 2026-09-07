@@ -215,6 +215,74 @@ struct NearbyE85MapRegionTests {
         let result = NearbyE85MapRegion.declutteredUserPoint(userPoint, avoiding: [stationPoint], minimumSeparation: 24)
         #expect(result == userPoint)
     }
+
+    // MARK: - Zoom multiplier (applied strictly after the base algorithm above)
+
+    @Test func defaultZoomLevelExactlyMatchesTheUnzoomedRegion() {
+        let stations = [offset(user, latitude: 0.01, longitude: 0.01), offset(user, latitude: -0.01, longitude: -0.02)]
+        let unzoomed = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0)
+        let defaulted = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: .default)
+        #expect(abs(unzoomed.span.latitudeDelta - defaulted.span.latitudeDelta) < 1e-9)
+        #expect(abs(unzoomed.span.longitudeDelta - defaulted.span.longitudeDelta) < 1e-9)
+        #expect(unzoomed.center.latitude == defaulted.center.latitude)
+        #expect(unzoomed.center.longitude == defaulted.center.longitude)
+    }
+
+    @Test func zoomingInShrinksTheSpanBelowDefault() {
+        let stations = [offset(user, latitude: 0.02, longitude: 0.02)]
+        let standard = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: .standard)
+        let zoomedIn = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: .zoomedInFar)
+        #expect(zoomedIn.span.latitudeDelta < standard.span.latitudeDelta)
+        #expect(zoomedIn.span.longitudeDelta < standard.span.longitudeDelta)
+    }
+
+    @Test func zoomingOutGrowsTheSpanAboveDefault() {
+        let stations = [offset(user, latitude: 0.02, longitude: 0.02)]
+        let standard = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: .standard)
+        let zoomedOut = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: .zoomedOutFar)
+        #expect(zoomedOut.span.latitudeDelta > standard.span.latitudeDelta)
+        #expect(zoomedOut.span.longitudeDelta > standard.span.longitudeDelta)
+    }
+
+    @Test func zoomNeverMovesTheRegionCenter() {
+        let stations = [offset(user, latitude: 0.02, longitude: -0.03)]
+        for level in NearbyE85MapZoomLevel.allCases {
+            let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: level)
+            #expect(abs(region.center.latitude - (user.latitude + stations[0].latitude) / 2) < 0.0001)
+            #expect(abs(region.center.longitude - (user.longitude + stations[0].longitude) / 2) < 0.0001)
+        }
+    }
+
+    @Test func extremeZoomStaysWithinTheWidenedSafeBounds() {
+        // A single very-close station (base region floors to minimumSpanMiles) zoomed all the
+        // way in must not collapse to an unusably tight street-level crop.
+        let closeStation = offset(user, latitude: 0.0005)
+        let zoomedIn = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [closeStation],
+                                                 aspectRatio: 2.0, zoomLevel: .zoomedInFar)
+        #expect(zoomedIn.span.latitudeDelta * 69.0 >= NearbyE85MapRegion.zoomedMinimumSpanMiles - 0.05)
+
+        // A distant outlier (base region ceilings to maximumSpanMiles) zoomed all the way out
+        // must not balloon into a whole-metro view.
+        let farOutlier = offset(user, longitude: 1.0)
+        let zoomedOut = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: [farOutlier],
+                                                   aspectRatio: 2.0, zoomLevel: .zoomedOutFar)
+        let longitudeSpanMiles = zoomedOut.span.longitudeDelta * milesPerDegreeLongitude(at: zoomedOut.center.latitude)
+        #expect(longitudeSpanMiles <= NearbyE85MapRegion.zoomedMaximumSpanMiles + 0.5)
+    }
+
+    @Test func userAndStationCoordinatesRemainWithinFrameAtEveryZoomLevelThatIsNotZoomedInPastThem() {
+        // Zooming out must never push the user/stations out of frame; zooming in past the base
+        // framing legitimately can (that's the point of zooming in), so this only asserts the
+        // non-magnifying levels.
+        let stations = [offset(user, latitude: 0.01, longitude: 0.01), offset(user, latitude: -0.01, longitude: -0.02)]
+        for level in [NearbyE85MapZoomLevel.zoomedOutFar, .zoomedOutSlightly, .standard] {
+            let region = NearbyE85MapRegion.region(userCoordinate: user, stationCoordinates: stations, aspectRatio: 2.0, zoomLevel: level)
+            for coordinate in stations + [user] {
+                #expect(abs(coordinate.latitude - region.center.latitude) <= region.span.latitudeDelta / 2 + 0.0001)
+                #expect(abs(coordinate.longitude - region.center.longitude) <= region.span.longitudeDelta / 2 + 0.0001)
+            }
+        }
+    }
 }
 
 /// `NearbyE85MapRenderer.mapSize` — the snapshot's requested size, in the exact same point-space
@@ -251,5 +319,118 @@ struct NearbyE85MapRendererTests {
     @Test func degenerateDisplaySizeFallsBackToANonZeroDefault() {
         let size = NearbyE85MapRenderer.mapSize(for: .zero, heightFraction: 1.0)
         #expect(size.width > 0 && size.height > 0)
+    }
+}
+
+/// `NearbyE85MapZoomLevel` — the pure step/clamp logic each zoom AppIntent (and NearbyE85MapRegion)
+/// relies on. No UserDefaults, no WidgetKit, no rendering.
+struct NearbyE85MapZoomLevelTests {
+    @Test func defaultLevelHasNoEffectOnSpan() {
+        #expect(NearbyE85MapZoomLevel.default == .standard)
+        #expect(NearbyE85MapZoomLevel.default.spanMultiplier == 1.0)
+    }
+
+    @Test func stepsIncrementAndDecrementByExactlyOne() {
+        #expect(NearbyE85MapZoomLevel.standard.zoomedInOneStep() == .zoomedIn)
+        #expect(NearbyE85MapZoomLevel.standard.zoomedOutOneStep() == .zoomedOutSlightly)
+    }
+
+    @Test func clampsAtMaximumAndRepeatedTapsAreHarmless() {
+        #expect(NearbyE85MapZoomLevel.maximum.zoomedInOneStep() == .maximum)
+        // Simulates repeated "+" taps once already at max.
+        var level = NearbyE85MapZoomLevel.maximum
+        for _ in 0..<5 { level = level.zoomedInOneStep() }
+        #expect(level == .maximum)
+        #expect(level.isAtMaximum)
+    }
+
+    @Test func clampsAtMinimumAndRepeatedTapsAreHarmless() {
+        #expect(NearbyE85MapZoomLevel.minimum.zoomedOutOneStep() == .minimum)
+        var level = NearbyE85MapZoomLevel.minimum
+        for _ in 0..<5 { level = level.zoomedOutOneStep() }
+        #expect(level == .minimum)
+        #expect(level.isAtMinimum)
+    }
+
+    @Test func multipliersAreMonotonicallyDecreasingFromZoomedOutToZoomedIn() {
+        let ordered = NearbyE85MapZoomLevel.allCases.sorted { $0.rawValue < $1.rawValue }
+        for (a, b) in zip(ordered, ordered.dropFirst()) {
+            #expect(a.spanMultiplier > b.spanMultiplier)
+        }
+    }
+
+    @Test func fullZoomInThenFullZoomOutRoundTripsToTheSameLevel() {
+        var level = NearbyE85MapZoomLevel.zoomedOutSlightly
+        for _ in 0..<10 { level = level.zoomedInOneStep() }
+        #expect(level == .maximum)
+        for _ in 0..<10 { level = level.zoomedOutOneStep() }
+        #expect(level == .minimum)
+    }
+}
+
+/// `NearbyE85MapZoomStore` — App-Group-backed persistence, exercised through an injected
+/// UserDefaults suite so it never touches the real app group or requires the entitlement.
+struct NearbyE85MapZoomStoreTests {
+    private func store() -> NearbyE85MapZoomStore {
+        NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-test-\(UUID().uuidString)"))
+    }
+
+    @Test func defaultsToStandardWhenNothingStoredYet() {
+        #expect(store().read() == .default)
+    }
+
+    @Test func writeThenReadRoundTrips() {
+        let subject = store()
+        subject.write(.zoomedInFar)
+        #expect(subject.read() == .zoomedInFar)
+        subject.write(.zoomedOutFar)
+        #expect(subject.read() == .zoomedOutFar)
+    }
+
+    @Test func missingAppGroupFallsBackToDefaultRatherThanCrashing() {
+        let subject = NearbyE85MapZoomStore(defaults: nil)
+        subject.write(.zoomedInFar) // no-op: nothing to write to
+        #expect(subject.read() == .default)
+    }
+
+    @Test func corruptedOutOfRangeStoredValueFallsBackToDefault() {
+        let defaults = UserDefaults(suiteName: "nearby-e85-zoom-test-\(UUID().uuidString)")
+        defaults?.set(999, forKey: NearbyE85MapZoomStore.key)
+        #expect(NearbyE85MapZoomStore(defaults: defaults).read() == .default)
+    }
+
+    @Test func wrongTypeStoredValueFallsBackToDefault() {
+        let defaults = UserDefaults(suiteName: "nearby-e85-zoom-test-\(UUID().uuidString)")
+        defaults?.set("not-an-int", forKey: NearbyE85MapZoomStore.key)
+        #expect(NearbyE85MapZoomStore(defaults: defaults).read() == .default)
+    }
+}
+
+/// `NearbyE85ZoomAction` — the pure step each AppIntent's `perform()` delegates to.
+struct NearbyE85ZoomActionTests {
+    private func store() -> NearbyE85MapZoomStore {
+        NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-action-test-\(UUID().uuidString)"))
+    }
+
+    @Test func zoomInAdvancesAndPersistsOneStep() {
+        let subject = store()
+        let result = NearbyE85ZoomAction.zoomIn.apply(using: subject)
+        #expect(result == .zoomedIn)
+        #expect(subject.read() == .zoomedIn)
+    }
+
+    @Test func zoomOutRetreatsAndPersistsOneStep() {
+        let subject = store()
+        let result = NearbyE85ZoomAction.zoomOut.apply(using: subject)
+        #expect(result == .zoomedOutSlightly)
+        #expect(subject.read() == .zoomedOutSlightly)
+    }
+
+    @Test func repeatedZoomInEventuallyClampsAtMaximumAndPersistsThat() {
+        let subject = store()
+        var last: NearbyE85MapZoomLevel = .default
+        for _ in 0..<10 { last = NearbyE85ZoomAction.zoomIn.apply(using: subject) }
+        #expect(last == .maximum)
+        #expect(subject.read() == .maximum)
     }
 }
