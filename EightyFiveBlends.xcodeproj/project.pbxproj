@@ -34,6 +34,10 @@
 		44E16BB0304E6C180032D909 /* NearbyE85MapZoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BAE304E6C180032D909 /* NearbyE85MapZoom.swift */; };
 		44E16BB2304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */; };
 		44E16BB3304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */; };
+		44E16BB5304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */; };
+		44E16BB6304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */; };
+		44E16BB8304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
+		44E16BB9304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
 		4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */; };
@@ -92,6 +96,8 @@
 		44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85MapRenderer.swift; sourceTree = "<group>"; };
 		44E16BAE304E6C180032D909 /* NearbyE85MapZoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85MapZoom.swift; sourceTree = "<group>"; };
 		44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85ZoomIntent.swift; sourceTree = "<group>"; };
+		44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85RefreshRequest.swift; sourceTree = "<group>"; };
+		44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85RefreshIntent.swift; sourceTree = "<group>"; };
 		71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StationDataValidation.swift; path = EightyFiveBlends/StationDataValidation.swift; sourceTree = SOURCE_ROOT; };
 		B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Snapshot.swift; sourceTree = "<group>"; };
 		C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EightyFiveBlendsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -208,6 +214,7 @@
 				EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */,
 				44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */,
 				44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */,
+				44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */,
 			);
 			path = NearbyE85Widget;
 			sourceTree = "<group>";
@@ -227,6 +234,7 @@
 				71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */,
 				44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */,
 				44E16BAE304E6C180032D909 /* NearbyE85MapZoom.swift */,
+				44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */,
 			);
 			path = SharedNearbyE85;
 			sourceTree = "<group>";
@@ -382,6 +390,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				44E16BA2304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
+				44E16BB8304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */,
 				44E16BB2304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */,
 				2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */,
 			);
@@ -403,6 +412,7 @@
 				44A838522FA1EAAB00D200DA /* StationLocationManager.swift in Sources */,
 				44E16BB0304E6C180032D909 /* NearbyE85MapZoom.swift in Sources */,
 				44E16BA0304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
+				44E16BB6304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */,
 				44CB8A462FB0592300A1C097 /* CostCalculatorView.swift in Sources */,
 				44A838542FA1EB1100D200DA /* NRELStationService.swift in Sources */,
 				41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */,
@@ -418,8 +428,10 @@
 				7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */,
 				44E16B9F304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
 				44E16BA3304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
+				44E16BB9304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */,
 				2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */,
 				44E16BB3304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */,
+				44E16BB5304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */,
 				C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

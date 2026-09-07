@@ -59,6 +59,27 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// The manual refresh button, present on every family, must render alongside the map/zoom
+    /// controls without clipping the widget's canvas or crashing — Large in particular now
+    /// stacks three controls (+/-/refresh) on the map's trailing edge.
+    func testRefreshButtonRendersAlongsideMapAndZoomControlsOnEveryFamily() throws {
+        let now = Date.now
+        let station = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4,
+            price: .init(dollarsPerGallon: 2.89, reportedAt: now, source: .community))
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.4484, userLongitude: -112.0740)
+        for (familyName, family, size) in Self.familySizes {
+            let heightFraction = family == .systemLarge ? 0.6 : 1.0
+            let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
+            let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedInFar)
+            let image = try render(entry, family: family, size: size)
+            XCTAssertEqual(image.size, size, "The refresh/zoom overlay must never resize the widget's own canvas")
+            attach(image, name: "nearby-\(familyName)-with-refresh-button")
+        }
+    }
+
     // Phoenix-area fixture coordinates so the map region/marker placement is realistic rather
     // than degenerate (e.g. all points identical).
     private static let phoenixUser = (latitude: 33.4484, longitude: -112.0740)

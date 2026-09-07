@@ -2183,25 +2183,48 @@ struct StationsView: View {
     /// Whether the ordinary `latestCoordinate` `.onChange` above should treat this fix as
     /// meaningful travel, not GPS jitter, and trigger a live re-fetch — the "app active"
     /// half of the Nearby E85 widget's location-follow behavior (the background half is
-    /// NearbyE85LocationRefreshCoordinator, which applies the exact same acceptance rule
-    /// against the same cached snapshot). Deliberately compares against the widget's own
-    /// last-published coordinate (not any StationsView-local state) so both paths agree on
-    /// what "meaningfully moved" means, and deliberately skips when a typed-location search
-    /// is active or a fetch is already in flight — identical guards to
-    /// shouldPerformAutomaticNearbySearch() below, minus its time-based cooldown (distance/age
-    /// acceptance already rate-limits this on its own).
+    /// NearbyE85LocationRefreshCoordinator, which applies the exact same hybrid policy against
+    /// the same cached snapshot). Deliberately compares against the widget's own last-published
+    /// coordinate (not any StationsView-local state) so both paths agree on what's worth a
+    /// refresh, and deliberately skips when a typed-location search is active or a fetch is
+    /// already in flight — identical guards to shouldPerformAutomaticNearbySearch() below.
+    ///
+    /// Reuses NearbyE85LocationRefreshCoordinator.reposition(...) — the same cheap,
+    /// network-free distance recompute the background path uses — purely to find out what the
+    /// presentation *would* look like from here with the currently-known stations, so this can
+    /// apply the exact same nearest-station/cluster/distance-change rules before deciding
+    /// whether a full authoritative live re-fetch is actually worth doing.
     private func shouldRefreshNearbyE85ForLocationChange(_ coordinate: StationCoordinate) -> Bool {
         guard stationSearchSource == .currentLocation else { return false }
         guard isSearchingLive == false, pendingLiveSearchReason == nil else { return false }
         let now = Date.now
         let cached = NearbyE85Cache().read(now: now)
-        let decision = NearbyE85LocationAcceptance.decision(
+        let quality = NearbyE85LocationAcceptance.fixQuality(
             newLatitude: coordinate.latitude, newLongitude: coordinate.longitude,
             newHorizontalAccuracyMeters: locationManager.latestHorizontalAccuracyMeters ?? -1,
             newTimestamp: locationManager.latestFixTimestamp ?? now,
             previousLatitude: cached?.userLatitude, previousLongitude: cached?.userLongitude,
             previousAcceptedAt: cached?.locationAt, now: now)
-        return decision == .accept
+        guard quality == .acceptable else { return false }
+        guard let cached, cached.state == .ready else { return true } // nothing published yet — worth a first search
+        guard let repositioned = NearbyE85LocationRefreshCoordinator.reposition(
+            cached: cached, newLatitude: coordinate.latitude, newLongitude: coordinate.longitude,
+            locationAt: locationManager.latestFixTimestamp ?? now) else {
+            return true // moved out of range of every previously-known station — worth a full re-search
+        }
+        let movedMiles = cached.userCoordinate.map {
+            NearbyE85LocationAcceptance.distanceMiles(fromLatitude: $0.latitude, longitude: $0.longitude,
+                                                       toLatitude: coordinate.latitude, longitude: coordinate.longitude)
+        }
+        let decision = NearbyE85LocationAcceptance.publishDecision(
+            movedMiles: movedMiles,
+            timeSinceLastAccepted: cached.locationAt.map { now.timeIntervalSince($0) },
+            timeSinceLastPublish: now.timeIntervalSince(cached.updatedAt),
+            previousNearestStationID: cached.stations.first?.id, newNearestStationID: repositioned.stations.first?.id,
+            previousNearestDistanceMiles: cached.stations.first?.distanceMiles,
+            newNearestDistanceMiles: repositioned.stations.first?.distanceMiles,
+            previousStationIDs: Set(cached.stations.map(\.id)), newStationIDs: Set(repositioned.stations.map(\.id)))
+        return decision == .publish
     }
 
     /// Whether the tab-open auto-trigger (see performAutomaticNearbySearchIfNeeded()) should

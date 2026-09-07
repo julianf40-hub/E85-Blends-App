@@ -27,6 +27,27 @@ nonisolated enum NearbyE85WidgetURLResolver {
     }
 }
 
+/// One shared button style for every interactive widget control (Large's zoom pair, and the
+/// refresh action on every family) — a single definition so a future style tweak, or the
+/// refresh action itself, never has to be duplicated per family. `size`/`iconSize` default to
+/// the 44pt tap target Large's zoom buttons already shipped with; Small/Medium's standalone
+/// refresh button asks for a smaller footprint since it's sharing space with actual content
+/// rather than floating over an otherwise-empty map edge.
+private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, isDisabled: Bool = false,
+                                  size: CGFloat = 44, iconSize: CGFloat = 13, label: String) -> some View {
+    Button(intent: intent) {
+        Image(systemName: systemImage)
+            .font(.system(size: iconSize, weight: .bold))
+            .foregroundStyle(isDisabled ? .secondary : .primary)
+            .frame(width: size, height: size)
+            .background(.thinMaterial, in: Circle())
+            .shadow(radius: 1)
+    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled)
+    .accessibilityLabel(label)
+}
+
 struct NearbyE85WidgetView: View {
     let entry: NearbyE85Entry
     let family: WidgetFamily
@@ -73,6 +94,10 @@ struct NearbyE85WidgetView: View {
         }
         .padding(widgetMargins)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // A sibling overlay, not nested inside the directions tap target above — the refresh
+        // button is its own independent Button(intent:), so tapping it fires only the refresh
+        // AppIntent instead of falling through to the whole-widget directions widgetURL.
+        .overlay(alignment: .topTrailing) { refreshButton.padding(4) }
     }
 
     // MARK: - Medium — map-only: "Where am I, and where is E85 around me?"
@@ -83,6 +108,9 @@ struct NearbyE85WidgetView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(stationsAccessibilityLabel)
+                // Sibling overlay of the map, not nested inside its tap region — see
+                // smallContent's identical comment above.
+                .overlay(alignment: .topTrailing) { refreshButton.padding(4) }
         } else if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
             // No map yet (offline first render, or an older cached snapshot with no user
             // coordinate) — degrade to the small-style information card rather than a blank map.
@@ -97,6 +125,7 @@ struct NearbyE85WidgetView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(stationsAccessibilityLabel)
+            .overlay(alignment: .topTrailing) { refreshButton.padding(4) }
         } else {
             smallContent
         }
@@ -122,7 +151,7 @@ struct NearbyE85WidgetView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(stationsAccessibilityLabel)
-                        NearbyE85ZoomControls(currentLevel: entry.zoomLevel)
+                        NearbyE85MapControls(currentZoomLevel: entry.zoomLevel)
                             .padding(.trailing, 8)
                     }
                 } else {
@@ -181,7 +210,10 @@ struct NearbyE85WidgetView: View {
         NearbyE85MapView(render: mapRender)
             .frame(maxWidth: .infinity)
             .frame(height: mapRender.size.height)
-            .overlay(alignment: .topTrailing) {
+            // Top-leading, not top-trailing: the refresh button (Medium) and the zoom/refresh
+            // control stack (Large) both live on the trailing side — see mediumContent/
+            // largeContent — so this stays clear of both rather than overlapping either.
+            .overlay(alignment: .topLeading) {
                 if snapshot.isStale(at: entry.date) {
                     freshnessBadge("Older location")
                 }
@@ -190,36 +222,32 @@ struct NearbyE85WidgetView: View {
 
     private var stationsAccessibilityLabel: String { "Open Nearby E85 stations" }
 
-    // MARK: - Large's zoom controls
+    /// Small/Medium's standalone refresh button — Large gets the same action via
+    /// NearbyE85MapControls' stack instead, alongside its zoom buttons.
+    private var refreshButton: some View {
+        nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(),
+                            size: 30, iconSize: 12, label: "Refresh Nearby E85 data")
+    }
 
-    /// Independent + / - tap targets stacked on the map's trailing edge — a sibling overlay of
-    /// the map's Link (see largeContent), never nested inside it, so each button's AppIntent
-    /// fires on its own tap instead of the map's "open Stations" Link firing underneath it.
-    /// Medium never shows these and never reads/writes the zoom preference this drives.
-    private struct NearbyE85ZoomControls: View {
-        let currentLevel: NearbyE85MapZoomLevel
+    // MARK: - Large's map controls (zoom + refresh)
+
+    /// Independent tap targets stacked on the map's trailing edge — a sibling overlay of the
+    /// map's Link (see largeContent), never nested inside it, so each button's AppIntent fires
+    /// on its own tap instead of the map's "open Stations" Link firing underneath it. Medium
+    /// never shows these and never reads/writes the zoom preference the first two drive; all
+    /// three families share the exact same refresh action via the third button.
+    private struct NearbyE85MapControls: View {
+        let currentZoomLevel: NearbyE85MapZoomLevel
 
         var body: some View {
             VStack(spacing: 8) {
-                zoomButton(systemImage: "plus", intent: NearbyE85ZoomInIntent(),
-                          isDisabled: currentLevel.isAtMaximum, label: "Zoom in nearby E85 map")
-                zoomButton(systemImage: "minus", intent: NearbyE85ZoomOutIntent(),
-                          isDisabled: currentLevel.isAtMinimum, label: "Zoom out nearby E85 map")
+                nearbyE85IconButton(systemImage: "plus", intent: NearbyE85ZoomInIntent(),
+                                    isDisabled: currentZoomLevel.isAtMaximum, label: "Zoom in nearby E85 map")
+                nearbyE85IconButton(systemImage: "minus", intent: NearbyE85ZoomOutIntent(),
+                                    isDisabled: currentZoomLevel.isAtMinimum, label: "Zoom out nearby E85 map")
+                nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(),
+                                    label: "Refresh Nearby E85 data")
             }
-        }
-
-        private func zoomButton(systemImage: String, intent: some AppIntent, isDisabled: Bool, label: String) -> some View {
-            Button(intent: intent) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(isDisabled ? .secondary : .primary)
-                    .frame(width: 44, height: 44)
-                    .background(.thinMaterial, in: Circle())
-                    .shadow(radius: 1)
-            }
-            .buttonStyle(.plain)
-            .disabled(isDisabled)
-            .accessibilityLabel(label)
         }
     }
 

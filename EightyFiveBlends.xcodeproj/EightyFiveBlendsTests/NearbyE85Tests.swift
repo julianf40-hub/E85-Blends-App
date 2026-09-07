@@ -434,3 +434,69 @@ struct NearbyE85ZoomActionTests {
         #expect(subject.read() == .maximum)
     }
 }
+
+/// `NearbyE85RefreshRequestStore` — the pending-manual-refresh flag the widget's refresh
+/// AppIntent sets and the app-active handler consumes exactly once. Same injectable-UserDefaults
+/// shape as NearbyE85MapZoomStore, for the same testability reason.
+struct NearbyE85RefreshRequestStoreTests {
+    private func store() -> NearbyE85RefreshRequestStore {
+        NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-test-\(UUID().uuidString)"))
+    }
+
+    @Test func noPendingRequestByDefault() {
+        #expect(store().pendingRequestDate() == nil)
+    }
+
+    @Test func markThenReadRoundTripsToWithinRoundingOfTheOriginalTimestamp() {
+        let subject = store()
+        let requestedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        subject.markRequested(at: requestedAt)
+        #expect(abs((subject.pendingRequestDate() ?? .distantPast).timeIntervalSince(requestedAt)) < 1)
+    }
+
+    @Test func clearRemovesThePendingRequest() {
+        let subject = store()
+        subject.markRequested(at: .now)
+        #expect(subject.pendingRequestDate() != nil)
+        subject.clear()
+        #expect(subject.pendingRequestDate() == nil)
+    }
+
+    @Test func missingAppGroupFallsBackToNoPendingRequestRatherThanCrashing() {
+        let subject = NearbyE85RefreshRequestStore(defaults: nil)
+        subject.markRequested(at: .now) // no-op: nothing to write to
+        #expect(subject.pendingRequestDate() == nil)
+        subject.clear() // also a harmless no-op
+    }
+}
+
+/// The manual-refresh request and the Large-widget zoom preference are two independent App
+/// -Group-backed values — marking/clearing one must never read or write the other.
+struct NearbyE85RefreshAndZoomIndependenceTests {
+    @Test func markingARefreshRequestNeverTouchesTheZoomPreference() {
+        let suite = "nearby-e85-independence-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)
+        let zoomStore = NearbyE85MapZoomStore(defaults: defaults)
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: defaults)
+
+        zoomStore.write(.zoomedInFar)
+        refreshStore.markRequested(at: .now)
+        refreshStore.clear()
+
+        #expect(zoomStore.read() == .zoomedInFar)
+    }
+
+    @Test func writingTheZoomPreferenceNeverTouchesAPendingRefreshRequest() {
+        let suite = "nearby-e85-independence-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)
+        let zoomStore = NearbyE85MapZoomStore(defaults: defaults)
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: defaults)
+
+        let requestedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        refreshStore.markRequested(at: requestedAt)
+        zoomStore.write(.zoomedOutFar)
+        zoomStore.write(.standard)
+
+        #expect(abs((refreshStore.pendingRequestDate() ?? .distantPast).timeIntervalSince(requestedAt)) < 1)
+    }
+}

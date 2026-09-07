@@ -29,6 +29,30 @@ struct NearbyE85ZoomInteractionIsolationTests {
     }
 }
 
+/// Confirms the manual refresh button stays fully outside the deep-link/routing system too:
+/// marking a refresh request can only ever touch its own UserDefaults key, never the station
+/// cache directly (the widget-side intent never publishes anything itself — see
+/// NearbyE85RefreshIntent's doc comment) and never the Large zoom preference.
+struct NearbyE85RefreshInteractionIsolationTests {
+    @Test func markingARefreshRequestNeverTouchesTheStationSnapshotCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cacheFile = directory.appendingPathComponent("snapshot.json")
+        let cache = NearbyE85Cache(fileURL: cacheFile)
+        let now = Date.now
+        let station = NearbyE85Station(id: "a", name: "E85 station", address: "123 Main St",
+                                       latitude: 33.45, longitude: -112.07, distanceMiles: 1, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now)
+        try cache.write(snapshot, now: now)
+
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-isolation-\(UUID().uuidString)"))
+        refreshStore.markRequested(at: now)
+        refreshStore.clear()
+
+        #expect(cache.read(now: now) == snapshot)
+    }
+}
+
 /// `NearbyE85WidgetURLResolver` picks the single default tap destination per family — pure,
 /// no rendering required.
 struct NearbyE85WidgetURLResolverTests {

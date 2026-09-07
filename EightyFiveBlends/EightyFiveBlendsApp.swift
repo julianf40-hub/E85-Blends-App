@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import CoreLocation
 
 // @MainActor so init() below can wire AutomaticPumpDetectionService (itself @MainActor)
 // synchronously — see the comment on that call for why this matters for background pump
@@ -205,6 +206,8 @@ struct EightyFiveBlendsApp: App {
                         ) == false {
                             locationManager.prewarmLocationIfAuthorized()
                         }
+
+                        attemptPendingNearbyE85RefreshIfNeeded()
                     }
                 }
                 .onChange(of: locationManager.authorizationStatus) { _, _ in
@@ -223,6 +226,31 @@ struct EightyFiveBlendsApp: App {
                 }
         }
         .modelContainer(sharedModelContainer)
+    }
+
+    /// The active-app half of the Nearby E85 widget's manual refresh button. The widget
+    /// extension itself cannot reliably obtain a fresh Core Location fix (see
+    /// NearbyE85RefreshIntent's doc comment) — it only marks that a refresh was requested and
+    /// reloads with whatever is already cached. This is the "optional active-app assist" the
+    /// task called for: when the app is next opened/foregrounded and finds that pending request,
+    /// it performs the SAME one-shot fresh-location fetch Automatic Pump Detection's Stage-B
+    /// confirmation already uses (no new Core Location capability, no continuous updates, no new
+    /// authorization request), then routes the result through the exact same
+    /// NearbyE85LocationRefreshCoordinator pipeline every other fix already goes through — just
+    /// with `isManualRefresh: true` so an explicit user tap isn't silently swallowed by the
+    /// ordinary rate limit. Consumed exactly once regardless of outcome: a request that can't be
+    /// fulfilled this launch (denied, unauthorized, or Core Location simply times out) is not
+    /// retried indefinitely.
+    private func attemptPendingNearbyE85RefreshIfNeeded() {
+        guard NearbyE85RefreshRequestStore().pendingRequestDate() != nil else { return }
+        NearbyE85RefreshRequestStore().clear()
+        Task {
+            guard let fresh = await locationManager.requestFreshLocationAsync() else { return }
+            let location = CLLocation(coordinate: fresh.coordinate.clCoordinate, altitude: 0,
+                                      horizontalAccuracy: fresh.horizontalAccuracyMeters, verticalAccuracy: -1,
+                                      timestamp: fresh.timestamp)
+            NearbyE85LocationRefreshCoordinator.handle(location: location, isManualRefresh: true)
+        }
     }
 
     private var degradedStorageBanner: some View {
