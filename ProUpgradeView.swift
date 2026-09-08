@@ -104,6 +104,15 @@ struct ProUpgradeView: View {
             // Load (or re-fetch for freshness) on every paywall presentation.
             await manager.loadProducts()
         }
+        // 85Blends 2.4.0 — centralized paywall-presentation signal for the App Store
+        // review-request system (see SubscriptionManager.isPaywallPresented's header). Reporting
+        // this here, rather than at each of the four call sites that present this view, means
+        // every current and future paywall entry point is covered automatically. Fires
+        // identically for both `.modal` (sheet) and `.pushed` (NavigationLink) presentation —
+        // onAppear/onDisappear are called by SwiftUI either way. Purely a presentation flag;
+        // never touches entitlement or purchasing state.
+        .onAppear { manager.setPaywallPresented(true) }
+        .onDisappear { manager.setPaywallPresented(false) }
     }
 
     // MARK: - Header

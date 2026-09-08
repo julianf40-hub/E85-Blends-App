@@ -517,4 +517,42 @@ struct MapsRoutingHelperTests {
         #expect(result != nil)
         #expect(opened == false)
     }
+
+    // MARK: - 85Blends 2.4.0 review-request signal
+    //
+    // MapsRoutingHelper.openDirections calls the real ReviewRequestManager.shared singleton
+    // (backed by UserDefaults.standard) at its single success path — there is no injectable
+    // seam for this (matching the task's "do not weaken production architecture merely to
+    // satisfy a test"), so these assert on the DELTA in stationDirectionsCount across the call,
+    // never an absolute value, so they remain correct regardless of what other tests or launches
+    // have already recorded.
+
+    @Test func successfulHandoffIncrementsReviewStationDirectionsCountExactlyOnce() {
+        withPreferredMapsApp(.appleMaps) {
+            let before = ReviewRequestManager.shared.stationDirectionsCount
+            _ = MapsRoutingHelper.openDirections(
+                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+        }
+    }
+
+    @Test func failedHandoffDoesNotIncrementReviewStationDirectionsCount() {
+        let empty = MapsRoutingDestination(name: "", streetAddress: "", city: "", state: "", zip: "", latitude: nil, longitude: nil)
+        let before = ReviewRequestManager.shared.stationDirectionsCount
+        let result = MapsRoutingHelper.openDirections(
+            to: empty, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+        #expect(result != nil) // confirms this is genuinely the failure path
+        #expect(ReviewRequestManager.shared.stationDirectionsCount == before)
+    }
+
+    @Test func multipleSeparateSuccessesIncrementIndividually() {
+        withPreferredMapsApp(.appleMaps) {
+            let before = ReviewRequestManager.shared.stationDirectionsCount
+            for _ in 0..<3 {
+                _ = MapsRoutingHelper.openDirections(
+                    to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            }
+            #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 3)
+        }
+    }
 }

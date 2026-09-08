@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import StoreKit
 
 struct ContentView: View {
     // Internal (not private) so AppExperienceNavigation's pure tab-visibility/selection rules —
@@ -23,6 +24,12 @@ struct ContentView: View {
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
     @AppStorage(AppPreferenceKey.lastPresentedWhatsNewVersion) private var lastPresentedWhatsNewVersion = ""
     @Environment(AutomaticPumpDetectionService.self) private var pumpDetectionService
+    // 85Blends 2.4.0 review-request system — see attemptAutomaticReviewRequestIfNeeded() below.
+    // Read independently from EightyFiveBlendsApp's own scenePhase handling (which owns session
+    // COUNTING via ReviewRequestManager); this one only decides whether it's a calm moment to
+    // actually invoke the review-request API.
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.requestReview) private var requestReview
     // Stations is the default launch tab (2.3.2) — the initial selection only; this is never
     // persisted/remembered (no @AppStorage, no last-tab memory), so every fresh ContentView
     // still starts here regardless of what was last viewed. Explicit navigation still overrides
@@ -157,6 +164,17 @@ struct ContentView: View {
                     if pendingWidgetURL != nil { openPendingWidgetLink() }
                     else { attemptWhatsNewPresentation() }
                 }
+                // 85Blends 2.4.0 review-request system — the "next calm foreground moment"
+                // this feature waits for. A successful Directions launch typically backgrounds
+                // 85Blends for the external maps app handoff, so the return-to-.active
+                // transition that follows is a natural, already-instrumented point to check —
+                // never fired synchronously from the Directions tap itself. See
+                // attemptAutomaticReviewRequestIfNeeded() below for the full safety gate.
+                .onChange(of: scenePhase) { _, newPhase in
+                    if newPhase == .active {
+                        attemptAutomaticReviewRequestIfNeeded()
+                    }
+                }
                 .sheet(
                     isPresented: $isShowingWhatsNew,
                     onDismiss: {
@@ -254,6 +272,34 @@ struct ContentView: View {
             onboardingJustCompletedThisLaunch: onboardingJustCompletedThisLaunch,
             isRequiredConsentPresentationPending: isConsentPending
         )
+    }
+
+    /// 85Blends 2.4.0 App Store review-request system. Called only on a return to `.active`
+    /// (never synchronously from a Directions tap or any other user action) — see this method's
+    /// call site above. Building `hasConflictingPresentation` from What's New, the widget detail
+    /// sheet, and any not-yet-resolved widget deep link means this never competes with any of
+    /// ContentView's other existing presentations, on top of the onboarding/consent/paywall/
+    /// purchase checks. `ReviewRequestManager.attemptReviewRequestIfAppropriate` is the only
+    /// place engagement eligibility + cooldown are actually evaluated; this method only supplies
+    /// the presentation-safety half of the gate and, if both pass, is the one place in the app
+    /// that invokes the system review-request action.
+    private func attemptAutomaticReviewRequestIfNeeded() {
+        let hasConflictingPresentation = isShowingWhatsNew || widgetStation != nil || pendingWidgetURL != nil
+        let isSafeToPresent = ReviewRequestEligibility.isSafeToPresent(
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            isConsentResolutionPending: AdManager.shared.isInitialConsentResolutionPending,
+            hasConflictingPresentation: hasConflictingPresentation,
+            isPaywallPresented: SubscriptionManager.shared.isPaywallPresented,
+            isPurchaseActive: SubscriptionManager.shared.purchaseState != .idle,
+            isAppActive: scenePhase == .active
+        )
+
+        guard ReviewRequestManager.shared.attemptReviewRequestIfAppropriate(
+            isSafeToPresent: isSafeToPresent,
+            currentVersion: ReleaseNotes.currentAppVersion
+        ) else { return }
+
+        requestReview()
     }
 }
 

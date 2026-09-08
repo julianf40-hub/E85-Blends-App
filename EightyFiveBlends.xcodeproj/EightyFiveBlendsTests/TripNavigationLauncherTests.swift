@@ -264,4 +264,56 @@ struct TripNavigationLauncherTests {
         #expect(url.scheme == "waze")
         #expect(url.host == nil || url.host == "")
     }
+
+    // MARK: - 7. 85Blends 2.4.0 review-request signal
+    //
+    // Each launcher call goes through the real ReviewRequestManager.shared singleton (backed by
+    // UserDefaults.standard) — no injectable seam exists for this (matching the sibling
+    // MapsRoutingHelperTests reasoning), so these assert on the DELTA in
+    // stationDirectionsCount across the call, not an absolute value.
+
+    @Test("A successful native Google Maps launch increments the review station-directions count exactly once")
+    func openGoogleMaps_nativeSuccess_incrementsReviewCountOnce() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = ["comgooglemapsurl"]
+        TripNavigationLauncher.urlOpener = opener
+
+        let before = ReviewRequestManager.shared.stationDirectionsCount
+        await TripNavigationLauncher.openGoogleMaps(for: .singleStop(fuelStop, name: "Stop")).value
+        #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+    }
+
+    @Test("A Google Maps HTTPS fallback (native not installed) still increments the review count exactly once")
+    func openGoogleMaps_fallback_incrementsReviewCountOnce() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = []
+        TripNavigationLauncher.urlOpener = opener
+
+        let before = ReviewRequestManager.shared.stationDirectionsCount
+        await TripNavigationLauncher.openGoogleMaps(for: .singleStop(fuelStop, name: "Stop")).value
+        #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+    }
+
+    @Test("A native launch that reports installed but fails to open still increments the review count exactly once (native attempt + fallback together count as one intentional action)")
+    func openGoogleMaps_nativeInstalledButFails_incrementsReviewCountOnceNotTwice() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = ["comgooglemapsurl"]
+        opener.failingLaunchSchemes = ["comgooglemapsurl"]
+        TripNavigationLauncher.urlOpener = opener
+
+        let before = ReviewRequestManager.shared.stationDirectionsCount
+        await TripNavigationLauncher.openGoogleMaps(for: .singleStop(fuelStop, name: "Stop")).value
+        #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+    }
+
+    @Test("A successful Waze launch increments the review station-directions count exactly once")
+    func openWaze_incrementsReviewCountOnce() async {
+        let opener = FakeURLOpener()
+        opener.installedSchemes = ["waze"]
+        TripNavigationLauncher.urlOpener = opener
+
+        let before = ReviewRequestManager.shared.stationDirectionsCount
+        await TripNavigationLauncher.openWaze(for: .singleStop(fuelStop, name: "Stop")).value
+        #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+    }
 }

@@ -204,6 +204,24 @@ final class SubscriptionManager {
     }
     private(set) var purchaseState: PurchaseState = .idle
 
+    /// 85Blends 2.4.0 — true whenever the single 85Blends Pro paywall (`ProUpgradeView`) is
+    /// currently on screen, in either presentation style (`.modal` sheet or `.pushed`
+    /// NavigationLink). Set/cleared centrally from `ProUpgradeView`'s own onAppear/onDisappear —
+    /// see that view's header — so every existing and future paywall call site (currently
+    /// `ProFeatureLockView`, `ProLimitBannerView`, `GarageView`, and `MoreView`) reports this
+    /// automatically with no per-call-site wiring. Read-only outside this file. Exists purely as
+    /// a presentation signal for the App Store review-request system (see
+    /// ReviewRequestManager/ContentView) to avoid ever prompting for a review while the paywall
+    /// is visible — it has no effect on entitlement, purchasing, or the paywall itself.
+    private(set) var isPaywallPresented = false
+
+    /// Called only by `ProUpgradeView`. Not private so that view (a separate file) can call it,
+    /// but deliberately not part of the "Public API" section below — this is presentation
+    /// bookkeeping, not an entitlement or purchasing action.
+    func setPaywallPresented(_ presented: Bool) {
+        isPaywallPresented = presented
+    }
+
     private init() {
         #if DEBUG || INTERNAL_BUILD
         // Restore any persisted internal/dev override before entitlement refresh runs, so a

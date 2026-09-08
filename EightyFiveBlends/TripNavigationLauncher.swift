@@ -126,6 +126,11 @@ enum TripNavigationLauncher {
             namedMapItem(coordinate, name: name.isEmpty ? "Station" : name)
                 .openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
         }
+        // 85Blends 2.4.0 review-request signal: MKMapItem.openMaps/.openInMaps give no
+        // success/failure callback (unlike Google/Waze's URL-based path below), so per the
+        // review-request design this deliberate, explicit handoff itself counts as the
+        // intentional action — see ReviewRequestManager's header.
+        ReviewRequestManager.shared.recordStationDirection()
     }
 
     private static func namedMapItem(_ coordinate: CLLocationCoordinate2D, name: String) -> MKMapItem {
@@ -244,9 +249,24 @@ enum TripNavigationLauncher {
     private static func openNativeThenFallback(native: URL?, webFallback: URL) async {
         if let native, urlOpener.canOpen(native) {
             let opened = await urlOpener.launch(native)
-            if opened { return }
+            if opened {
+                recordStationDirection()
+                return
+            }
         }
         await urlOpener.launch(webFallback)
+        // The web fallback always succeeds as an action (Universal Link or browser — see this
+        // function's own header comment on `openNativeThenFallback`), so it counts as the
+        // completed intentional action exactly like a successful native launch above. Shared by
+        // both openGoogleMaps and openWaze, so a single user tap is counted exactly once here,
+        // never separately at each call site.
+        recordStationDirection()
+    }
+
+    /// 85Blends 2.4.0 review-request signal — see ReviewRequestManager's header for why
+    /// instrumentation lives centrally in this file rather than at each TripPlannerView button.
+    private static func recordStationDirection() {
+        ReviewRequestManager.shared.recordStationDirection()
     }
 
     private static func coordinateString(_ coordinate: CLLocationCoordinate2D) -> String {

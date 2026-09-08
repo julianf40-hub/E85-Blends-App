@@ -182,6 +182,13 @@ struct EightyFiveBlendsApp: App {
                     async let revenueCatConfigure: Void = RevenueCatSubscriptionService.shared.configureIfNeeded()
                     async let adMobConfigure: Void = AdManager.shared.configureIfNeeded()
                     _ = await (revenueCatConfigure, adMobConfigure)
+
+                    // 85Blends 2.4.0 review-request system — establishes the first-use
+                    // timestamp (if this is truly the first launch ever) and counts this launch
+                    // as session 1. Fires exactly once per process launch, same as the
+                    // RevenueCat/AdMob configuration above. Subsequent sessions are counted by
+                    // recordSceneBecameActive() in the scenePhase handling below.
+                    ReviewRequestManager.shared.recordLaunch()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,
@@ -208,6 +215,16 @@ struct EightyFiveBlendsApp: App {
                         }
 
                         attemptPendingNearbyE85RefreshIfNeeded()
+
+                        // 85Blends 2.4.0 review-request system — only counts a NEW session if
+                        // the app was genuinely backgrounded long enough (see
+                        // ReviewRequestEligibility.shouldCountNewSession); a brief .inactive blip
+                        // (Control Center, a permission dialog, a quick Maps handoff) never
+                        // inflates the count. Launch #1 is already handled by recordLaunch() in
+                        // the .task above, not here.
+                        ReviewRequestManager.shared.recordSceneBecameActive()
+                    } else if newPhase == .background {
+                        ReviewRequestManager.shared.recordSceneBackgrounded()
                     }
                 }
                 .onChange(of: locationManager.authorizationStatus) { _, _ in

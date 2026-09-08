@@ -58,6 +58,14 @@ enum AppPreferenceKey {
     // Single "last event" background-detection diagnostic snapshot — see
     // BackgroundDetectionDiagnosticSnapshot. Never a history.
     static let automaticPumpDetectionLastBackgroundDiagnostic = "automaticPumpDetectionLastBackgroundDiagnostic"
+    // App Store review-request system (85Blends 2.4.0) — all local-only, never sent remotely.
+    // See ReviewRequestEligibility.swift/ReviewRequestManager.swift for the policy these back.
+    static let reviewFirstLaunchDate = "reviewFirstLaunchDate"
+    static let reviewSessionCount = "reviewSessionCount"
+    static let reviewStationDirectionsCount = "reviewStationDirectionsCount"
+    static let reviewLastRequestAttemptDate = "reviewLastRequestAttemptDate"
+    static let reviewLastRequestAppVersion = "reviewLastRequestAppVersion"
+    static let reviewEligibilityReachedAt = "reviewEligibilityReachedAt"
 }
 
 enum MapsAppOption: String, CaseIterable {
@@ -299,6 +307,13 @@ enum MapsRoutingHelper {
                 openAppleMaps(to: destination, open: open, openMapItem: openMapItem)
             }
         }
+
+        // 85Blends 2.4.0 review-request signal: this is the one, centralized success path for
+        // every "Get Directions to a station" call site (Stations tab, premium map, and the
+        // widget deep-link handoff all funnel through here) — see ReviewRequestManager's header
+        // for why instrumentation lives here rather than at each individual button. Never
+        // reached on the early-return error path above.
+        ReviewRequestManager.shared.recordStationDirection()
 
         return nil
     }

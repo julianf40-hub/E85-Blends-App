@@ -14,6 +14,7 @@ struct MoreView: View {
 
     @State private var sponsorLinkMessage: String?
     @State private var supportContactMessage: String?
+    @State private var rateAppStoreMessage: String?
 
     private var appExperienceMode: AppExperienceMode {
         .resolved(from: appExperienceModeRaw)
@@ -93,26 +94,6 @@ struct MoreView: View {
                             HelpFAQView()
                         }
 
-                        // 85Blends' existing, official support address (support@85blends.app,
-                        // already the contact used on 85blends.app's own Support page) — verified
-                        // reachable during the 2.3.2 release-readiness correction pass; not a
-                        // guessed or invented address. An action row, not a NavigationLink, since
-                        // it opens Mail rather than an in-app screen — see MoreActionRow below.
-                        MoreActionRow(
-                            title: "Contact Support",
-                            subtitle: "Email us with a question, issue, or feedback.",
-                            systemImage: "envelope",
-                            tint: AppTheme.Colors.accentGreen,
-                            action: openSupportEmail
-                        )
-
-                        if let supportContactMessage {
-                            Text(supportContactMessage)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.Colors.textMuted)
-                                .padding(.horizontal, 4)
-                        }
-
                         MoreNavigationRow(
                             title: "Advanced Guide",
                             subtitle: "Blend strategy, pump order, and practical cautions.",
@@ -159,6 +140,10 @@ struct MoreView: View {
                         }
                     }
 
+                    // Always visible regardless of App Experience Mode — rating, contacting
+                    // support, and sharing the app are never Normal-Mode-only concerns.
+                    supportSection
+
                     // Trip Planner, Advanced Fuel Analytics, and Station Price Alerts are
                     // Normal Mode feature navigation — not offered through the Simple Mode
                     // More screen. Nothing here is deleted; a Pro subscriber who switches back
@@ -174,6 +159,78 @@ struct MoreView: View {
             .navigationBarHidden(true)
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
+    }
+
+    // 85Blends 2.4.0 — App Store review-request system's permanent, user-initiated Settings
+    // entry points. Deliberately independent of ReviewRequestManager's automatic eligibility
+    // system: Rate 85Blends always opens the App Store review page regardless of engagement
+    // state, cooldown, or app version, and never records/consumes/resets any automatic-review
+    // counter. Contact Support (previously a standalone row above) moves here so every "get in
+    // touch / tell others" action lives in one place; nothing about it changes otherwise.
+    private var supportSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(
+                title: "Support 85Blends",
+                subtitle: "Rate us, tell us what you think, or share 85Blends with someone else."
+            )
+
+            VStack(spacing: 12) {
+                MoreActionRow(
+                    title: "Rate 85Blends",
+                    subtitle: "Enjoying the app? A quick App Store rating helps a lot.",
+                    systemImage: "star.fill",
+                    tint: AppTheme.Colors.stationYellow,
+                    action: openRateAppStorePage
+                )
+
+                if let rateAppStoreMessage {
+                    Text(rateAppStoreMessage)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .padding(.horizontal, 4)
+                }
+
+                // 85Blends' existing, official support address (support@85blends.app,
+                // already the contact used on 85blends.app's own Support page) — verified
+                // reachable during the 2.3.2 release-readiness correction pass; not a
+                // guessed or invented address.
+                MoreActionRow(
+                    title: "Contact Support",
+                    subtitle: "Email us with a question, issue, or feedback.",
+                    systemImage: "envelope",
+                    tint: AppTheme.Colors.accentGreen,
+                    action: openSupportEmail
+                )
+
+                if let supportContactMessage {
+                    Text(supportContactMessage)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .padding(.horizontal, 4)
+                }
+
+                ShareLink(item: AppStoreDestination.share) {
+                    MoreRowLabel(
+                        title: "Share 85Blends",
+                        subtitle: "Tell a friend where to find nearby E85.",
+                        systemImage: "square.and.arrow.up",
+                        tint: AppTheme.Colors.accentYellow
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // support@85blends.app is 85Blends' existing, official support address — see this row's own
+    // call-site comment above.
+    private func openRateAppStorePage() {
+        rateAppStoreMessage = nil
+        openURL(AppStoreDestination.writeReview) { accepted in
+            if accepted == false {
+                rateAppStoreMessage = "Unable to open the App Store right now."
+            }
+        }
     }
 
     // 85Blends Pro feature entry points. Free users see locked preview cards (tapping opens
@@ -359,9 +416,54 @@ private struct MoreNavigationRow<Destination: View>: View {
     }
 }
 
-// Same visual chrome as MoreNavigationRow, but performs an action (opening Mail, a URL, etc.)
-// instead of pushing a NavigationLink destination — trailing "arrow.up.forward.square" instead
-// of "chevron.right" signals "this leaves the app" rather than "this navigates within it".
+// Shared visual chrome for a "leaves the app" row — extracted so both MoreActionRow (a Button)
+// and the Share 85Blends row (a ShareLink) render identically without duplicating this layout.
+// Trailing "arrow.up.forward.square" (vs. MoreNavigationRow's "chevron.right") signals "this
+// leaves the app" rather than "this navigates within it".
+private struct MoreRowLabel: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 42, height: 42)
+                .background(tint.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Image(systemName: "arrow.up.forward.square")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+// Performs an action (opening Mail, a URL, etc.) instead of pushing a NavigationLink
+// destination. See MoreRowLabel above for the shared visual chrome.
 private struct MoreActionRow: View {
     let title: String
     let subtitle: String
@@ -371,38 +473,7 @@ private struct MoreActionRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundStyle(tint)
-                    .frame(width: 42, height: 42)
-                    .background(tint.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "arrow.up.forward.square")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.surfaceElevated)
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            MoreRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, tint: tint)
         }
         .buttonStyle(.plain)
     }
