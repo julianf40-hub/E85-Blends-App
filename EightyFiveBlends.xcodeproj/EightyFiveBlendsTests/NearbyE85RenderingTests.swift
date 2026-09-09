@@ -80,6 +80,43 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// 85Blends 2.4.0 widget polish — the refresh control's in-progress appearance must render
+    /// cleanly alongside the map/zoom controls, on every family, without resizing or clipping
+    /// the widget's own canvas (mirrors testRefreshButtonRendersAlongsideMapAndZoomControlsOnEveryFamily
+    /// above, with `isRefreshing: true` instead).
+    func testRefreshingStateRendersAlongsideMapAndZoomControlsOnEveryFamily() throws {
+        let now = Date.now
+        let station = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4,
+            price: .init(dollarsPerGallon: 2.89, reportedAt: now, source: .community))
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.4484, userLongitude: -112.0740)
+        for (familyName, family, size) in Self.familySizes {
+            let heightFraction = family == .systemLarge ? 0.6 : 1.0
+            let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
+            let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedInFar, isRefreshing: true)
+            let image = try render(entry, family: family, size: size)
+            XCTAssertEqual(image.size, size, "The in-progress refresh appearance must never resize the widget's own canvas")
+            attach(image, name: "nearby-\(familyName)-refreshing")
+        }
+    }
+
+    /// 85Blends 2.4.0 widget polish — the refresh control's inset from the widget edge must be
+    /// larger than the pre-polish values (4pt for Small/Medium's overlay, 8pt for Large's
+    /// control-stack trailing padding) but still comfortably inside a Home Screen widget's own
+    /// bounds, on the smallest family this app ships (Small, ~155x155pt).
+    func testRefreshControlInsetIsGreaterThanBeforeAndWithinSafeBounds() {
+        XCTAssertGreaterThan(NearbyE85WidgetLayout.smallMediumRefreshInset, 4,
+                              "Small/Medium's refresh button must sit farther from the edge than the pre-polish 4pt")
+        XCTAssertLessThan(NearbyE85WidgetLayout.smallMediumRefreshInset, Self.smallSize.width / 4,
+                           "The inset must stay well within even the smallest widget's bounds")
+        XCTAssertGreaterThan(NearbyE85WidgetLayout.largeControlsTrailingInset, 8,
+                              "Large's control stack must sit farther from the edge than the pre-polish 8pt")
+        XCTAssertLessThan(NearbyE85WidgetLayout.largeControlsTrailingInset, Self.largeSize.width / 4,
+                           "The inset must stay well within the Large widget's own bounds")
+    }
+
     // Phoenix-area fixture coordinates so the map region/marker placement is realistic rather
     // than degenerate (e.g. all points identical).
     private static let phoenixUser = (latitude: 33.4484, longitude: -112.0740)

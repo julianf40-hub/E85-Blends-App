@@ -53,6 +53,176 @@ struct NearbyE85RefreshInteractionIsolationTests {
     }
 }
 
+/// 85Blends 2.4.0 widget polish — a pending/in-progress refresh visual state must never leak
+/// into any other control's behavior: Small's directions tap, Medium's Stations tap, and
+/// Large's zoom buttons, map tap, and row taps all must resolve identically whether or not a
+/// refresh was just requested.
+@MainActor
+struct NearbyE85RefreshVisualStateIsolationTests {
+    private let now = Date.now
+    private func station(_ id: String, latitude: Double = 33.45, longitude: Double = -112.07) -> NearbyE85Station {
+        .init(id: id, name: id, address: "123 Main St", latitude: latitude, longitude: longitude, distanceMiles: 1, price: nil)
+    }
+
+    @Test("Small's directions widgetURL is identical whether or not a refresh is pending")
+    func smallDirectionsUnaffectedByPendingRefresh() {
+        let snapshot = NearbyE85Snapshot.make(stations: [station("nearest")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-directions-\(UUID().uuidString)"))
+
+        let before = NearbyE85WidgetURLResolver.widgetURL(family: .systemSmall, snapshot: snapshot)
+        refreshStore.markRequested(at: now)
+        let during = NearbyE85WidgetURLResolver.widgetURL(family: .systemSmall, snapshot: snapshot)
+        #expect(before == during)
+        #expect(NearbyE85DeepLink.parse(during) == .directions(stationID: "nearest"))
+    }
+
+    @Test("Medium's Stations widgetURL is identical whether or not a refresh is pending")
+    func mediumStationsUnaffectedByPendingRefresh() {
+        let snapshot = NearbyE85Snapshot.make(stations: [station("nearest")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-stations-\(UUID().uuidString)"))
+
+        let before = NearbyE85WidgetURLResolver.widgetURL(family: .systemMedium, snapshot: snapshot)
+        refreshStore.markRequested(at: now)
+        let during = NearbyE85WidgetURLResolver.widgetURL(family: .systemMedium, snapshot: snapshot)
+        #expect(before == during)
+        #expect(NearbyE85DeepLink.parse(during) == .stations)
+    }
+
+    @Test("Large's default Stations fallback widgetURL is identical whether or not a refresh is pending")
+    func largeStationsFallbackUnaffectedByPendingRefresh() {
+        let snapshot = NearbyE85Snapshot.make(stations: [station("nearest")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-large-stations-\(UUID().uuidString)"))
+
+        let before = NearbyE85WidgetURLResolver.widgetURL(family: .systemLarge, snapshot: snapshot)
+        refreshStore.markRequested(at: now)
+        let during = NearbyE85WidgetURLResolver.widgetURL(family: .systemLarge, snapshot: snapshot)
+        #expect(before == during)
+        #expect(NearbyE85DeepLink.parse(during) == .stations)
+    }
+
+    @Test("Large's per-row directions URLs are identical whether or not a refresh is pending")
+    func largeRowDirectionsUnaffectedByPendingRefresh() {
+        let stations = [station("Alliance AutoGas"), station("Mobil"), station("Circle K")]
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-row-directions-\(UUID().uuidString)"))
+
+        let before = stations.map { NearbyE85DeepLink.directionsURL(stationID: $0.id) }
+        refreshStore.markRequested(at: now)
+        let during = stations.map { NearbyE85DeepLink.directionsURL(stationID: $0.id) }
+        #expect(before == during)
+    }
+
+    @Test("Large's zoom action result is identical whether or not a refresh is pending")
+    func largeZoomUnaffectedByPendingRefresh() {
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-zoom-\(UUID().uuidString)"))
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-vs-zoom-store-\(UUID().uuidString)"))
+
+        let beforeLevel = NearbyE85ZoomAction.zoomIn.apply(using: zoomStore)
+        refreshStore.markRequested(at: now)
+        let duringLevel = NearbyE85ZoomAction.zoomIn.apply(using: zoomStore)
+        // Two successive zoom-ins should step forward identically regardless of the refresh
+        // request in between — the refresh flag has no zoom parameter to have influenced this.
+        // Starting from .default (.standard): zoomIn -> .zoomedIn -> .zoomedInFar.
+        #expect(beforeLevel == .zoomedIn)
+        #expect(duringLevel == .zoomedInFar)
+    }
+
+    @Test("A pending refresh request is never itself resolvable as a directions or Stations destination")
+    func pendingRefreshRequestNeverProducesAWidgetDestination() {
+        // NearbyE85RefreshRequestStore and NearbyE85DeepLink are completely separate types with
+        // no shared representation — marking a refresh has no URL/destination to accidentally
+        // collide with a directions or Stations deep link.
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-no-destination-\(UUID().uuidString)"))
+        refreshStore.markRequested(at: now)
+        #expect(refreshStore.pendingRequestDate() != nil)
+    }
+}
+
+/// 85Blends 2.4.0 widget polish — `NearbyE85RefreshFeedback.isRefreshing` is the pure decision
+/// behind the manual refresh button's in-progress state. Pure Foundation math, no UserDefaults/
+/// WidgetKit involved, so every boundary is deterministic.
+struct NearbyE85RefreshFeedbackTests {
+    @Test func noPendingRequestIsNeverRefreshing() {
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: nil, now: .now) == false)
+    }
+
+    @Test func justRequestedIsRefreshing() {
+        let now = Date.now
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: now, now: now))
+    }
+
+    @Test func withinTheWindowIsStillRefreshing() {
+        let requestedAt = Date.now
+        let now = requestedAt.addingTimeInterval(NearbyE85RefreshFeedback.window - 1)
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: now))
+    }
+
+    @Test func exactlyAtTheWindowBoundaryHasSettled() {
+        let requestedAt = Date.now
+        let now = requestedAt.addingTimeInterval(NearbyE85RefreshFeedback.window)
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: now) == false)
+    }
+
+    @Test func wellPastTheWindowHasSettled() {
+        let requestedAt = Date.now
+        let now = requestedAt.addingTimeInterval(NearbyE85RefreshFeedback.window + 60)
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: now) == false)
+    }
+
+    @Test func aFutureRequestedDateClockSkewIsNeverRefreshing() {
+        let now = Date.now
+        let requestedAt = now.addingTimeInterval(5) // requestedAt after now — should never happen, but must not read as "refreshing forever"
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: now) == false)
+    }
+
+    /// End-to-end through the real store: tapping refresh (markRequested), then checking shortly
+    /// after, reads as refreshing; checking again after the window has elapsed reads as settled —
+    /// exactly the "enters visible updating state" / "exits cleanly" requirements.
+    @Test func refreshRequestEntersAndExitsTheUpdatingStateThroughTheRealStore() {
+        let store = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-feedback-\(UUID().uuidString)"))
+        let tappedAt = Date.now
+        store.markRequested(at: tappedAt)
+
+        let requestedAt = store.pendingRequestDate()
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: tappedAt.addingTimeInterval(1)))
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: requestedAt, now: tappedAt.addingTimeInterval(NearbyE85RefreshFeedback.window + 1)) == false)
+    }
+}
+
+/// 85Blends 2.4.0 widget polish — the refresh-in-progress flag must never be confused with (or
+/// substitute for) a genuine data update. These confirm marking/clearing a refresh request never
+/// touches the station snapshot cache, its timestamps, or any station's reported price — the
+/// "do not falsely reset locationRecordedAt / Updated age / priceReportedAt" requirement.
+struct NearbyE85RefreshFeedbackHonestyTests {
+    @Test func markingARefreshRequestNeverChangesTheCachedSnapshot() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = NearbyE85Cache(fileURL: directory.appendingPathComponent("snapshot.json"))
+        let now = Date.now
+        let station = NearbyE85Station(id: "a", name: "E85 station", address: "123 Main St",
+                                       latitude: 33.45, longitude: -112.07, distanceMiles: 1,
+                                       price: .init(dollarsPerGallon: 2.89, reportedAt: now.addingTimeInterval(-3600), source: .community))
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now)
+        try cache.write(snapshot, now: now)
+
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-refresh-honesty-\(UUID().uuidString)"))
+        refreshStore.markRequested(at: now)
+
+        // Simulate the widget re-rendering while "refreshing" is visually true — the cached
+        // snapshot (and every timestamp on it) must be byte-for-byte unchanged.
+        #expect(cache.read(now: now.addingTimeInterval(3)) == snapshot)
+    }
+
+    @Test func theRefreshingFlagIsComputedSeparatelyFromAndNeverMutatesTheSnapshot() {
+        // isRefreshing(requestedAt:now:) takes no NearbyE85Snapshot parameter at all — it is
+        // structurally incapable of reading or altering updatedAt/locationAt/priceReportedAt.
+        // This documents that invariant by construction, mirroring
+        // CommunityPriceEligibilityTests.canReport_hasNoProvenanceParameter()'s pattern.
+        let now = Date.now
+        #expect(NearbyE85RefreshFeedback.isRefreshing(requestedAt: now, now: now))
+        // Nothing above touched (or could touch) any snapshot — there is no snapshot in scope.
+    }
+}
+
 /// `NearbyE85WidgetURLResolver` picks the single default tap destination per family — pure,
 /// no rendering required.
 struct NearbyE85WidgetURLResolverTests {

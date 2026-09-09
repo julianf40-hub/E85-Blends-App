@@ -9,12 +9,17 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (NearbyE85Entry) -> Void) {
         if context.isPreview { completion(placeholder(in: context)); return }
         Task { @MainActor in
+            let now = Date.now
             let snapshot = readAuthorizedSnapshot()
             // Read once per timeline, same as the snapshot itself — zoom is presentation-only,
             // never a reason to touch location or refetch stations.
             let zoomLevel = context.family == .systemLarge ? NearbyE85MapZoomStore().read() : .default
             let mapRender = await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
-            completion(.init(date: .now, snapshot: snapshot, mapRender: mapRender, zoomLevel: zoomLevel))
+            // 85Blends 2.4.0 widget polish — see getTimeline's identical computation below for
+            // why this reads the pending-refresh timestamp rather than faking anything.
+            let pendingRefreshAt = NearbyE85RefreshRequestStore().pendingRequestDate()
+            let isRefreshing = NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: now)
+            completion(.init(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: zoomLevel, isRefreshing: isRefreshing))
         }
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<NearbyE85Entry>) -> Void) {
@@ -25,6 +30,12 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             // The map only ever needs one render per timeline: the region and pins it depicts
             // don't change across the stale/expiry entries below, only the copy around them.
             let mapRender = await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+            // 85Blends 2.4.0 widget polish — the manual refresh button's "in progress" feedback.
+            // Read once, same as everything else above: this never claims new data arrived (the
+            // snapshot/its timestamps below are completely untouched by this), it only tracks
+            // how recently the user tapped refresh so the control can show, and then honestly
+            // clear, an in-progress appearance. See NearbyE85RefreshFeedback's header.
+            let pendingRefreshAt = NearbyE85RefreshRequestStore().pendingRequestDate()
             // Schedule the stale and expiry states up front: budgeted reloads are not timers.
             var dates = [now, now.addingTimeInterval(30 * 60)]
             if let snapshot, snapshot.state != .permissionRequired {
@@ -36,9 +47,19 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
                     dates.append(midnight)
                 }
             }
+            // A follow-up date exactly when the in-progress window ends, so the control settles
+            // back to normal on its own — without this, a refresh tap with no genuinely new data
+            // to publish (and no later WidgetCenter reload to trigger a re-render) would leave
+            // the spinner showing until the next unrelated timeline boundary above, which could
+            // be many minutes away.
+            if let pendingRefreshAt {
+                let settleDate = pendingRefreshAt.addingTimeInterval(NearbyE85RefreshFeedback.window)
+                if settleDate > now { dates.append(settleDate) }
+            }
             let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date in
                 NearbyE85Entry(date: date, snapshot: snapshot.flatMap { $0.isValid(at: date) ? $0 : nil },
-                              mapRender: mapRender, zoomLevel: zoomLevel)
+                              mapRender: mapRender, zoomLevel: zoomLevel,
+                              isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date))
             }
             completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60))))
         }

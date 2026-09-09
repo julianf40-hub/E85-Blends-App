@@ -38,3 +38,32 @@ nonisolated struct NearbyE85RefreshRequestStore {
         defaults?.removeObject(forKey: Self.key)
     }
 }
+
+/// 85Blends 2.4.0 widget polish — pure, testable rule for how long the manual-refresh button
+/// shows its "in progress" appearance after a tap, before settling back to normal on its own if
+/// nothing new has arrived by then. Deliberately separate from NearbyE85RefreshRequestStore's
+/// own persistence: the timing math has no dependency on UserDefaults/App Group access, so it's
+/// directly unit-testable, and it never touches — or needs to know about — the station snapshot,
+/// its timestamps, or whether a genuinely fresh location was ever obtained. This is honest by
+/// construction: it can only ever say "a refresh was recently requested," never "new data
+/// arrived" (that remains entirely up to whether a new NearbyE85Snapshot was actually published).
+nonisolated enum NearbyE85RefreshFeedback {
+    /// Long enough to be noticed on a glance back at the Home Screen after tapping refresh;
+    /// short enough that the control never looks permanently "stuck" if the app is never
+    /// reopened to attempt the actual location refresh (see NearbyE85RefreshIntent's header —
+    /// the widget extension alone cannot obtain a fresh fix).
+    static let window: TimeInterval = 8
+
+    /// True when `requestedAt` (the most recent manual-refresh tap, from
+    /// `NearbyE85RefreshRequestStore.pendingRequestDate()`) is recent enough, relative to `now`,
+    /// that the refresh control should still show its in-progress appearance. `now` is normally
+    /// a specific timeline entry's own `date` (not wall-clock time), so this produces the correct
+    /// answer for every entry a single timeline computation schedules. Negative elapsed time
+    /// (a clock-skew/future timestamp, which should never happen in practice) is treated as "not
+    /// refreshing" rather than indefinitely true.
+    static func isRefreshing(requestedAt: Date?, now: Date) -> Bool {
+        guard let requestedAt else { return false }
+        let elapsed = now.timeIntervalSince(requestedAt)
+        return elapsed >= 0 && elapsed < window
+    }
+}
