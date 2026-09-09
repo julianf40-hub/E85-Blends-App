@@ -53,6 +53,107 @@ struct NearbyE85RefreshInteractionIsolationTests {
     }
 }
 
+/// 85Blends 2.4.0 zoom-boundary tap-through fix — a real on-device bug where the Large widget's
+/// Zoom In button, once `.disabled(true)` at max zoom, let taps fall through to the map's
+/// underlying "open Stations" `Link` in 6 of 8 real taps. The fix keeps zoom's boundary state
+/// visually dimmed only, never actually `.disabled()` — these tests lock in the invariant that
+/// makes that safe, and confirm nothing about zoom's own clamping/isolation regressed.
+struct NearbyE85IconButtonInteractivityTests {
+    @Test("Zoom's boundary/dimmed state is never itself a reason to disable a button")
+    func dimmedAloneNeverDisables() {
+        // isRefreshing is the ONLY input shouldActuallyDisable accepts — there is no
+        // isVisuallyDimmed/isDisabled parameter for it to read, so a boundary zoom button
+        // (which never passes isRefreshing: true) can never be actually disabled by construction.
+        #expect(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: false) == false)
+    }
+
+    @Test("A refresh already in flight is the one state that actually disables its button")
+    func refreshingActuallyDisables() {
+        #expect(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: true))
+    }
+}
+
+/// 85Blends 2.4.0 zoom-boundary tap-through fix — repeated boundary taps (the exact real-world
+/// scenario that mis-fired into Stations before this fix) must remain harmless no-ops that never
+/// touch the station cache and never resolve to any widget destination. Zoom's own clamping math
+/// is already covered by NearbyE85MapZoomLevelTests/NearbyE85ZoomActionTests (NearbyE85Tests.swift)
+/// — these tests focus specifically on isolation from Stations/directions at the boundary.
+struct NearbyE85ZoomBoundaryIsolationTests {
+    private let now = Date.now
+    private func station(_ id: String) -> NearbyE85Station {
+        .init(id: id, name: id, address: "123 Main St", latitude: 33.45, longitude: -112.07, distanceMiles: 1, price: nil)
+    }
+
+    @Test("Repeated Zoom In taps at max never touch the station snapshot cache")
+    func repeatedZoomInAtMaxNeverTouchesTheStationCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = NearbyE85Cache(fileURL: directory.appendingPathComponent("snapshot.json"))
+        let snapshot = NearbyE85Snapshot.make(stations: [station("a")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        try cache.write(snapshot, now: now)
+
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-max-\(UUID().uuidString)"))
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomIn.apply(using: zoomStore) } // reach and sit at max
+
+        #expect(cache.read(now: now) == snapshot)
+        #expect(zoomStore.read() == .maximum)
+    }
+
+    @Test("Repeated Zoom Out taps at min never touch the station snapshot cache")
+    func repeatedZoomOutAtMinNeverTouchesTheStationCache() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = NearbyE85Cache(fileURL: directory.appendingPathComponent("snapshot.json"))
+        let snapshot = NearbyE85Snapshot.make(stations: [station("a")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        try cache.write(snapshot, now: now)
+
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-min-\(UUID().uuidString)"))
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomOut.apply(using: zoomStore) } // reach and sit at min
+
+        #expect(cache.read(now: now) == snapshot)
+        #expect(zoomStore.read() == .minimum)
+    }
+
+    @Test("Repeated boundary zoom taps never change the map's Stations widgetURL")
+    func repeatedBoundaryZoomNeverChangesTheStationsWidgetURL() {
+        let snapshot = NearbyE85Snapshot.make(stations: [station("nearest")], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-url-\(UUID().uuidString)"))
+
+        let before = NearbyE85WidgetURLResolver.widgetURL(family: .systemLarge, snapshot: snapshot)
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomIn.apply(using: zoomStore) }
+        let afterMax = NearbyE85WidgetURLResolver.widgetURL(family: .systemLarge, snapshot: snapshot)
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomOut.apply(using: zoomStore) }
+        let afterMin = NearbyE85WidgetURLResolver.widgetURL(family: .systemLarge, snapshot: snapshot)
+
+        #expect(before == afterMax)
+        #expect(before == afterMin)
+        #expect(NearbyE85DeepLink.parse(before) == .stations)
+    }
+
+    @Test("Repeated boundary zoom taps never change a station row's directions URL")
+    func repeatedBoundaryZoomNeverChangesRowDirectionsURLs() {
+        let stations = [station("Alliance AutoGas"), station("Mobil"), station("Circle K")]
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-rows-\(UUID().uuidString)"))
+
+        let before = stations.map { NearbyE85DeepLink.directionsURL(stationID: $0.id) }
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomIn.apply(using: zoomStore) }
+        let after = stations.map { NearbyE85DeepLink.directionsURL(stationID: $0.id) }
+        #expect(before == after)
+    }
+
+    @Test("Marking a refresh request while sitting at a zoom boundary never touches the zoom preference, and vice versa")
+    func refreshAndBoundaryZoomRemainIndependent() {
+        let zoomStore = NearbyE85MapZoomStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-refresh-independence-\(UUID().uuidString)"))
+        let refreshStore = NearbyE85RefreshRequestStore(defaults: UserDefaults(suiteName: "nearby-e85-zoom-boundary-refresh-independence-store-\(UUID().uuidString)"))
+        for _ in 0..<10 { NearbyE85ZoomAction.zoomIn.apply(using: zoomStore) }
+
+        refreshStore.markRequested(at: now)
+
+        #expect(zoomStore.read() == .maximum)
+        #expect(refreshStore.pendingRequestDate() != nil)
+    }
+}
+
 /// 85Blends 2.4.0 widget polish — a pending/in-progress refresh visual state must never leak
 /// into any other control's behavior: Small's directions tap, Medium's Stations tap, and
 /// Large's zoom buttons, map tap, and row taps all must resolve identically whether or not a

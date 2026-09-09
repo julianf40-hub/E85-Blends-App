@@ -44,6 +44,26 @@ nonisolated enum NearbyE85WidgetURLResolver {
     }
 }
 
+/// 85Blends 2.4.0 zoom-boundary tap-through fix — WidgetKit does not guarantee a `.disabled()`
+/// `Button` consumes its own tap region; a disabled interactive element can let the tap fall
+/// through to a sibling/underlying `Link` instead. Confirmed on-device: before this fix, the
+/// Large widget's Zoom In button at max zoom (`.disabled(true)`) mis-fired into the map's
+/// "open Stations" `Link` underneath in 6 of 8 real taps.
+///
+/// Only a genuinely transient, re-entrancy-guarding state may ever actually disable a button
+/// here — the refresh button while a refresh is already in flight, so a second tap can't queue a
+/// redundant one. A boundary state that can persist indefinitely (zoom sitting at min/max,
+/// possibly for the widget's entire lifetime) must NEVER actually disable the button — it stays
+/// visually dimmed only (`isVisuallyDimmed`), remaining a real, always-tappable AppIntent target.
+/// This is safe because `NearbyE85ZoomAction`'s underlying step function is already a clamped,
+/// harmless no-op at the boundary (see NearbyE85MapZoomLevelTests/NearbyE85ZoomActionTests) — so
+/// letting the tap actually reach the intent again costs nothing.
+enum NearbyE85IconButtonInteractivity {
+    /// Whether a button built via `nearbyE85IconButton` should actually be `.disabled()`.
+    /// Deliberately ignores any "visually dimmed" state — only `isRefreshing` may disable.
+    static func shouldActuallyDisable(isRefreshing: Bool) -> Bool { isRefreshing }
+}
+
 /// One shared button style for every interactive widget control (Large's zoom pair, and the
 /// refresh action on every family) — a single definition so a future style tweak, or the
 /// refresh action itself, never has to be duplicated per family. `size`/`iconSize` default to
@@ -51,15 +71,13 @@ nonisolated enum NearbyE85WidgetURLResolver {
 /// refresh button asks for a smaller footprint since it's sharing space with actual content
 /// rather than floating over an otherwise-empty map edge.
 ///
-/// `isRefreshing` (85Blends 2.4.0) is a separate, refresh-only concept from `isDisabled` (which
-/// zoom uses at its min/max boundary) — passing it swaps the static icon for a compact
-/// `ProgressView` and forces the disabled/dimmed appearance for the duration, so a second tap
-/// can't queue a redundant refresh while one is already visually in flight. Only ever passed
-/// `true` by the refresh button itself; zoom's own `isDisabled` usage is completely unaffected.
-private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, isDisabled: Bool = false,
+/// `isVisuallyDimmed` (zoom's min/max boundary) and `isRefreshing` (refresh's in-flight state)
+/// both dim the icon's foreground style, but only `isRefreshing` ever reaches
+/// `.disabled(...)` — see `NearbyE85IconButtonInteractivity` above for why that split matters.
+private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, isVisuallyDimmed: Bool = false,
                                   isRefreshing: Bool = false, size: CGFloat = 44, iconSize: CGFloat = 13,
                                   label: String) -> some View {
-    let effectivelyDisabled = isDisabled || isRefreshing
+    let isVisuallyInactive = isVisuallyDimmed || isRefreshing
     return Button(intent: intent) {
         Group {
             if isRefreshing {
@@ -70,13 +88,13 @@ private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, is
                     .font(.system(size: iconSize, weight: .bold))
             }
         }
-        .foregroundStyle(effectivelyDisabled ? .secondary : .primary)
+        .foregroundStyle(isVisuallyInactive ? .secondary : .primary)
         .frame(width: size, height: size)
         .background(.thinMaterial, in: Circle())
         .shadow(radius: 1)
     }
     .buttonStyle(.plain)
-    .disabled(effectivelyDisabled)
+    .disabled(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: isRefreshing))
     .accessibilityLabel(isRefreshing ? "Refreshing Nearby E85 data" : label)
 }
 
@@ -279,10 +297,13 @@ struct NearbyE85WidgetView: View {
 
         var body: some View {
             VStack(spacing: 8) {
+                // isVisuallyDimmed only — never .disabled() — so a tap at the boundary is still
+                // captured by this button instead of falling through to the map's Stations Link
+                // underneath. See NearbyE85IconButtonInteractivity's header for why.
                 nearbyE85IconButton(systemImage: "plus", intent: NearbyE85ZoomInIntent(),
-                                    isDisabled: currentZoomLevel.isAtMaximum, label: "Zoom in nearby E85 map")
+                                    isVisuallyDimmed: currentZoomLevel.isAtMaximum, label: "Zoom in nearby E85 map")
                 nearbyE85IconButton(systemImage: "minus", intent: NearbyE85ZoomOutIntent(),
-                                    isDisabled: currentZoomLevel.isAtMinimum, label: "Zoom out nearby E85 map")
+                                    isVisuallyDimmed: currentZoomLevel.isAtMinimum, label: "Zoom out nearby E85 map")
                 nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(),
                                     isRefreshing: isRefreshing, label: "Refresh Nearby E85 data")
             }
