@@ -44,7 +44,7 @@ import Foundation
 /// Records call counts/flags across multiple MockURLProtocol invocations, safely, without any
 /// request-handler closure needing to mutate a captured local `var`. See the file-level
 /// concurrency note above for why that distinction matters here.
-private final class TestCallTracker: @unchecked Sendable {
+nonisolated private final class TestCallTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
     private var flags: Set<String> = []
@@ -103,7 +103,7 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
             return
         }
         do {
-            let (statusCode, data) = try handler(request)
+            let (statusCode, data) = try handler(Self.requestWithMaterializedBody(request))
             let response = HTTPURLResponse(
                 url: request.url ?? URL(string: "https://example.invalid")!,
                 statusCode: statusCode,
@@ -119,6 +119,31 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    /// `URLSession` frequently hands `startLoading()` a request whose body was moved from
+    /// `httpBody` into `httpBodyStream` during task construction, even though the caller only
+    /// ever set `httpBody` — a well-known `URLProtocol` interception gotcha. Handlers that need
+    /// to inspect the POST body (see `priceReport_usesResolvedStationID`) would otherwise see a
+    /// silently empty body with no thrown error. Drains the stream back into `httpBody` so every
+    /// handler sees the body regardless of which one `URLSession` chose to populate.
+    nonisolated private static func requestWithMaterializedBody(_ request: URLRequest) -> URLRequest {
+        guard request.httpBody == nil, let stream = request.httpBodyStream else {
+            return request
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while stream.hasBytesAvailable {
+            let read = stream.read(&buffer, maxLength: bufferSize)
+            guard read > 0 else { break }
+            data.append(buffer, count: read)
+        }
+        var materialized = request
+        materialized.httpBody = data
+        return materialized
+    }
 }
 
 private func makeMockedService() throws -> CommunityPriceService {
@@ -130,27 +155,35 @@ private func makeMockedService() throws -> CommunityPriceService {
 /// A minimal, real-shape Supabase REST response body for one community_stations row — matches
 /// the actual production column names (normalized_key, address, created_at, updated_at), not an
 /// idealized/simplified stand-in.
-private func stationJSON(id: UUID, normalizedKey: String, name: String = "Test Station") -> Data {
+nonisolated private func stationJSON(id: UUID, normalizedKey: String, name: String = "Test Station") -> Data {
     """
     {"id":"\(id.uuidString)","normalized_key":"\(normalizedKey)","name":"\(name)","address":"1 Test St","city":"Testville","state":"CO","zip":"80000","latitude":39.0,"longitude":-104.0,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}
     """.data(using: .utf8)!
 }
 
-private func reportJSON(id: UUID, stationID: UUID, price: Double, reporterID: String) -> Data {
+/// Wraps `stationJSON`'s single-row body in a JSON array, matching the shape PostgREST returns
+/// for a `GET` (every `fetchCommunityStation` existence check/fallback re-fetch decodes strictly
+/// as `[CommunityStation]`, unlike a POST response which tolerates a bare object).
+nonisolated private func stationArrayJSON(id: UUID, normalizedKey: String, name: String = "Test Station") -> Data {
+    let object = String(data: stationJSON(id: id, normalizedKey: normalizedKey, name: name), encoding: .utf8)!
+    return "[\(object)]".data(using: .utf8)!
+}
+
+nonisolated private func reportJSON(id: UUID, stationID: UUID, price: Double, reporterID: String) -> Data {
     """
     {"id":"\(id.uuidString)","station_id":"\(stationID.uuidString)","price":\(price),"reported_at":"2026-01-01T00:00:00Z","anonymous_reporter_id":"\(reporterID)","created_at":"2026-01-01T00:00:00Z"}
     """.data(using: .utf8)!
 }
 
-private let emptyArrayJSON = "[]".data(using: .utf8)!
+nonisolated private let emptyArrayJSON = "[]".data(using: .utf8)!
 
 /// Distinguishes the two REST endpoints this service calls, and (for community_stations) GET
 /// vs. POST, without depending on exact query-string formatting.
-private func isCommunityStationsRequest(_ request: URLRequest) -> Bool {
+nonisolated private func isCommunityStationsRequest(_ request: URLRequest) -> Bool {
     request.url?.path.contains("community_stations") == true
 }
 
-private func isPriceReportsRequest(_ request: URLRequest) -> Bool {
+nonisolated private func isPriceReportsRequest(_ request: URLRequest) -> Bool {
     request.url?.path.contains("e85_price_reports") == true
 }
 
@@ -207,7 +240,8 @@ struct CommunityStationUpsertSecurityTests {
             }
             if request.httpMethod == "POST" { tracker.setFlag("post") }
             // Existence check (and, if ever reached, any POST) both find the row already there.
-            return (200, stationJSON(id: stationID, normalizedKey: key))
+            // Array-wrapped since the existence check (a GET) decodes strictly as [CommunityStation].
+            return (200, stationArrayJSON(id: stationID, normalizedKey: key))
         }
 
         let service = try makeMockedService()
@@ -245,7 +279,7 @@ struct CommunityStationUpsertSecurityTests {
                 return (201, emptyArrayJSON)
             case "GET":
                 // Fallback re-fetch after the empty POST response: the winner's row is now visible.
-                return (200, stationJSON(id: stationID, normalizedKey: key, name: "Winner's Name"))
+                return (200, stationArrayJSON(id: stationID, normalizedKey: key, name: "Winner's Name"))
             default:
                 Issue.record("Unexpected method \(request.httpMethod ?? "nil")")
                 return (500, Data())
@@ -388,7 +422,7 @@ struct CommunityStationUpsertSecurityTests {
             switch (request.httpMethod, call) {
             case ("GET", 1): return (200, emptyArrayJSON)
             case ("POST", _): return (201, "not json at all".data(using: .utf8)!)
-            case ("GET", _): return (200, stationJSON(id: stationID, normalizedKey: key))
+            case ("GET", _): return (200, stationArrayJSON(id: stationID, normalizedKey: key))
             default:
                 Issue.record("Unexpected method")
                 return (500, Data())

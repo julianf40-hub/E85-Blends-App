@@ -168,11 +168,8 @@ struct WhatsNewPresentationTests {
     @Test("CASE A — brand-new 2.3.0 user: does not get What's New on launch 2")
     func scenario_brandNewUser_doesNotGetWhatsNewOnLaunch2() {
         // Launch 1: onboarding completes this launch under 2.3.0.
-        var lastPresented = ""
         let onboardingJustCompletedThisLaunch = true
-        lastPresented = onboardingJustCompletedThisLaunch
-            ? WhatsNewPresentation.versionToPersistOnDismiss(currentAppVersion: "2.3.0")
-            : lastPresented
+        let lastPresented = WhatsNewPresentation.versionToPersistOnDismiss(currentAppVersion: "2.3.0")
         let launch1ShouldPresent = WhatsNewPresentation.shouldPresent(
             currentAppVersion: "2.3.0",
             lastPresentedVersion: lastPresented,

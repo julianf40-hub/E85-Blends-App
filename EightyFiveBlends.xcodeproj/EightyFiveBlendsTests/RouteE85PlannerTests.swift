@@ -63,7 +63,7 @@ struct RouteE85PlannerTests {
     // that produced the reported bug (a 14 mi / 1.2 gal "stop" presented as the plan,
     // followed by an unreachable 270 mi leg).
     @Test("Sparse-corridor route does not recommend a useless early E85 top-off")
-    func phoenixToLasVegas_noUselessEarlyTopOff() {
+    func phoenixToLasVegas_noUselessEarlyTopOff() throws {
         let stations = [
             station(name: "Phoenix Metro E85 A", distanceAlongRouteMiles: 8),
             station(name: "Phoenix Metro E85 B", distanceAlongRouteMiles: 14),
@@ -92,8 +92,8 @@ struct RouteE85PlannerTests {
 
         // The destination reserve reflects the true no-stop shortfall (~-28%), not the
         // partially-masked ~-21% the old buggy 14 mi stop produced.
-        let reserve = try? #require(result.destinationReserveFraction)
-        #expect(abs((reserve ?? 0) - (-0.279)) < 0.01)
+        let reserve = try #require(result.destinationReserveFraction)
+        #expect(abs(reserve - (-0.279)) < 0.01)
     }
 
     @Test("Same sparse corridor in E85-Required mode also suppresses the useless stop")
@@ -120,7 +120,7 @@ struct RouteE85PlannerTests {
     // MARK: - Confirms the fix prefers a materially useful stop when one exists
 
     @Test("A materially useful stop further along the route is still recommended")
-    func materiallyUsefulStop_isSelected_overTrivialEarlyCluster() {
+    func materiallyUsefulStop_isSelected_overTrivialEarlyCluster() throws {
         let stations = [
             station(name: "Phoenix Metro E85 A", distanceAlongRouteMiles: 8),
             station(name: "Phoenix Metro E85 B", distanceAlongRouteMiles: 14),
@@ -146,8 +146,8 @@ struct RouteE85PlannerTests {
         #expect(result.planSatisfiesTarget)
         #expect(result.outcome == .e85StopRequired)
 
-        let destReserve = try? #require(result.destinationReserveFraction)
-        #expect(abs((destReserve ?? 0) - 0.577) < 0.01)
+        let destReserve = try #require(result.destinationReserveFraction)
+        #expect(abs(destReserve - 0.577) < 0.01)
     }
 
     // MARK: - Gasoline fallback: true switch-over when E85 alone can't complete the trip
@@ -159,7 +159,7 @@ struct RouteE85PlannerTests {
     // later on the route, or (as here, since none exists) switch to a required gasoline
     // backup route, with a stop around Kingman.
     @Test("E85 finds nothing useful, but a full gasoline-fallback re-plan succeeds around Kingman")
-    func phoenixToLasVegas_e30_gasFallbackSucceeds() {
+    func phoenixToLasVegas_e30_gasFallbackSucceeds() throws {
         let context = RouteFuelContext(
             tankSizeGallons: 18.5,
             mpg: 12,
@@ -196,8 +196,8 @@ struct RouteE85PlannerTests {
         #expect(fallback.stops.count == 1)
         #expect(fallback.stops.first?.station.name == "Kingman Gas Stop")
 
-        let destReserve = try? #require(fallback.destinationReserveFraction)
-        #expect(abs((destReserve ?? 0) - 0.396) < 0.01)
+        let destReserve = try #require(fallback.destinationReserveFraction)
+        #expect(abs(destReserve - 0.396) < 0.01)
     }
 
     @Test("Gasoline fallback is never attempted when gas backup is not allowed")
@@ -540,7 +540,7 @@ struct RouteE85PlannerTests {
     // corridor's exact geocoded distances, which aren't available to this test) chosen so
     // the greedy walk's station-by-station math is fully hand-verifiable below.
     @Test("A negative no-stop baseline can coexist with a healthy planned destination reserve — not a contradiction")
-    func noStopBaseline_canBeNegative_whilePlannedRouteSucceeds() {
+    func noStopBaseline_canBeNegative_whilePlannedRouteSucceeds() throws {
         let stations = [
             station(name: "Stop 1 Station", distanceAlongRouteMiles: 60),
             station(name: "Stop 2 Station", distanceAlongRouteMiles: 160),
@@ -567,8 +567,8 @@ struct RouteE85PlannerTests {
         #expect(result.planComplete)
         #expect(result.planSatisfiesTarget)
         #expect(result.stops.count == 3)
-        let destReserve = try? #require(result.destinationReserveFraction)
-        #expect(abs((destReserve ?? 0) - 0.7207) < 0.001)
+        let destReserve = try #require(result.destinationReserveFraction)
+        #expect(abs(destReserve - 0.7207) < 0.001)
 
         // The outcome the UI keys its banner off of — a stop was required to make an
         // otherwise-unreachable trip work, exactly the "E85 Stop Required" case the reported

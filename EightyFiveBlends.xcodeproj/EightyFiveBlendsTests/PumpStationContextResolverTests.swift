@@ -236,41 +236,41 @@ struct RecentLiveStationCacheTests {
 
     @Test("An expired live-result cache is ignored")
     func expiredCacheIsIgnored() async {
-        let cache = await RecentLiveStationCache()
-        await cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-(RecentLiveStationCache.cacheLifetime + 1)))
-        let entries = await cache.currentEntries(now: now)
+        let cache = RecentLiveStationCache()
+        cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-(RecentLiveStationCache.cacheLifetime + 1)))
+        let entries = cache.currentEntries(now: now)
         #expect(entries.isEmpty)
     }
 
     @Test("A recent live-result cache is eligible")
     func recentCacheIsEligible() async {
-        let cache = await RecentLiveStationCache()
-        await cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-60))
-        let entries = await cache.currentEntries(now: now)
+        let cache = RecentLiveStationCache()
+        cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-60))
+        let entries = cache.currentEntries(now: now)
         #expect(entries.count == 1)
         #expect(entries.first?.name == "Cached Station")
     }
 
     @Test("Cache at the exact lifetime boundary is still eligible")
     func cacheAtExactLifetimeBoundaryIsEligible() async {
-        let cache = await RecentLiveStationCache()
-        await cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-RecentLiveStationCache.cacheLifetime))
-        let entries = await cache.currentEntries(now: now)
+        let cache = RecentLiveStationCache()
+        cache.replace(with: [liveStation()], fetchedAt: now.addingTimeInterval(-RecentLiveStationCache.cacheLifetime))
+        let entries = cache.currentEntries(now: now)
         #expect(entries.count == 1)
     }
 
     @Test("An empty cache (nothing ever fetched) yields no entries")
     func emptyCacheYieldsNoEntries() async {
-        let cache = await RecentLiveStationCache()
-        let entries = await cache.currentEntries(now: now)
+        let cache = RecentLiveStationCache()
+        let entries = cache.currentEntries(now: now)
         #expect(entries.isEmpty)
     }
 
     @Test("A live station with invalid coordinates is excluded when caching")
     func excludesInvalidCoordinatesFromCache() async {
-        let cache = await RecentLiveStationCache()
-        await cache.replace(with: [liveStation(latitude: 0, longitude: 0)], fetchedAt: now)
-        let entries = await cache.currentEntries(now: now)
+        let cache = RecentLiveStationCache()
+        cache.replace(with: [liveStation(latitude: 0, longitude: 0)], fetchedAt: now)
+        let entries = cache.currentEntries(now: now)
         #expect(entries.isEmpty)
     }
 }
