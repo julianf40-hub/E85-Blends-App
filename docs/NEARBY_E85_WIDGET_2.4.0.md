@@ -2,9 +2,9 @@
 
 ## Scope and baseline
 
-Work is confined to `/Users/julianfigueroa/Desktop/EightyFiveBlends-Latest`, on `codex/2.4.0-nearby-e85-widget`, branched from clean `codex/local-2.3.2` at `20b8d89e61222c314d2a6b0a085dc016837da9c2`. At audit time the baseline also matched the local `origin/main` reference and `v2.3.2` tag. No remote update is needed to branch from the explicitly requested baseline. The original older checkout is not modified. No push, merge, archive, or upload is part of this work.
+Work is confined to `/Users/julianfigueroa/Desktop/EightyFiveBlends-Latest`, on `codex/2.4.0-nearby-e85-widget-clean`, branched from clean `codex/local-2.3.2` at `20b8d89e61222c314d2a6b0a085dc016837da9c2`. At audit time the baseline also matched the local `origin/main` reference and `v2.3.2` tag. No remote update is needed to branch from the explicitly requested baseline. The original older checkout is not modified. No push, merge, archive, or upload is part of this work.
 
-This document originally described the first slice (Small/Medium information cards only, no map, no zoom, no manual refresh). It now covers the full 2.4.0 feature as implemented across ten commits: the initial widget, the MapKit redesign, the Small/Medium/Large split with per-size tap behavior, the marker-alignment fix, Large's zoom controls, the hybrid location-refresh policy with manual refresh, the refresh-control feedback/inset polish, and the zoom-boundary tap-through fix. See "Merge audit — 2.4.0" below for the exact commit list and current validation status. The branch also carries one unrelated feature (App Store review requests, `ReviewRequestEligibility`/`ReviewRequestManager`) added separately on the same branch — not part of this widget and not described further here.
+This document originally described the first slice (Small/Medium information cards only, no map, no zoom, no manual refresh). It now covers the full 2.4.0 feature as implemented across eleven commits: the initial widget, the MapKit redesign, the Small/Medium/Large split with per-size tap behavior, the marker-alignment fix, Large's zoom controls, the hybrid location-refresh policy with manual refresh, the refresh-control feedback/inset polish, and the zoom-boundary tap-through fix. See "Merge audit — 2.4.0" below for the exact commit list and current validation status. This branch (`codex/2.4.0-nearby-e85-widget-clean`) contains only Nearby E85 widget work — it was cherry-picked from `codex/2.4.0-nearby-e85-widget` specifically to exclude that branch's separate, unrelated App Store review-request feature (`ReviewRequestEligibility`/`ReviewRequestManager`), which remains on the original branch only.
 
 This is a **last-app-location widget**, not autonomous background navigation. It updates when the app completes its existing current-location station search, when available app price previews refresh, when the significant-location-change/hybrid refresh policy below decides a reposition is worth publishing, or when the user taps the widget's own manual refresh button. Opening the app normally selects Stations and runs its existing automatic search. Tapping a station opens directions (Small, Large rows) or the Stations tab (Medium, Large map/fallback); a missing/expired station link falls back to the Stations tab. There is no Pro gating.
 
@@ -97,23 +97,25 @@ Manual release validation still needed on a **physical device**, since simulator
 
 ## Merge audit — 2.4.0
 
-Full commit list since the `20b8d89` baseline, in order, with classification:
+This branch, `codex/2.4.0-nearby-e85-widget-clean`, was constructed specifically to contain **only** Nearby E85 widget work. It was built by cherry-picking from the original development branch (`codex/2.4.0-nearby-e85-widget`), in chronological order, every commit that implements this feature — and nothing else:
 
-| Commit | Belongs to |
-| --- | --- |
-| `85e3117` Add Nearby E85 Home Screen widget | Nearby E85 |
-| `a4947ec` Redesign Nearby E85 widget with MapKit | Nearby E85 |
-| `bf443d7` Add location-aware refresh for the Nearby E85 widget | Nearby E85 |
-| `8b1130b` Split Nearby E85 widget into distinct small/medium/large layouts | Nearby E85 |
-| `9999d00` Give each Nearby E85 widget size its own tap behavior | Nearby E85 |
-| `5f12e25` Fix geographic offset of Nearby E85 widget station markers | Nearby E85 |
-| `6970f8a` Add zoom controls to the Large Nearby E85 widget's map | Nearby E85 |
-| `1b78d56` Add hybrid location-refresh policy and manual refresh to Nearby E85 widget | Nearby E85 |
-| `b1f0845` Restore AppIconInternalV2 assets accidentally swept into the previous commit | **Unrelated** — corrective only; see below |
-| `30b77c0` Add App Store review request flow | **App Store review requests** (separate feature) |
-| `5b55817` Polish Nearby E85 widget refresh control feedback and inset | Nearby E85 |
-| `50ab515` Fix Large widget zoom-boundary tap falling through to Stations | Nearby E85 |
+| Commit (this branch) | Original commit | Description |
+| --- | --- | --- |
+| `946e235` | `85e3117` | Add Nearby E85 Home Screen widget |
+| `51066ec` | `a4947ec` | Redesign Nearby E85 widget with MapKit |
+| `a275ca2` | `bf443d7` | Add location-aware refresh for the Nearby E85 widget |
+| `d7a37b7` | `8b1130b` | Split Nearby E85 widget into distinct small/medium/large layouts |
+| `9ad1d1e` | `9999d00` | Give each Nearby E85 widget size its own tap behavior |
+| `831f782` | `5f12e25` | Fix geographic offset of Nearby E85 widget station markers |
+| `54c7cce` | `6970f8a` | Add zoom controls to the Large Nearby E85 widget's map |
+| `a9ad754` | `1b78d56` (adjusted) | Add hybrid location-refresh policy and manual refresh to Nearby E85 widget |
+| `4b0f511` | `5b55817` | Polish Nearby E85 widget refresh control feedback and inset |
+| `f3d02c4` | `50ab515` | Fix Large widget zoom-boundary tap falling through to Stations |
+| (this commit) | `ad23bc7` | Update Nearby E85 widget doc to reflect final 2.4.0 implementation |
 
-`b1f0845` is neither Nearby E85 nor review-request work — it exists only because commit `1b78d56` accidentally finalized a deletion of unrelated, pre-existing staged `AppIconInternalV2` assets that had been sitting uncommitted on this branch since before this feature started; `b1f0845` restores those files back to their prior staged-but-uncommitted state. The same asset deletion is, as of this audit, staged again in the working tree — a pre-existing, unrelated, in-progress icon change that no Nearby E85 or review-request commit should absorb. It is the sole reason the Internal build configuration fails; the Debug configuration (used by App Store/TestFlight-facing builds and this document's own validation) is unaffected. Three other pre-existing, unrelated, unstaged edits remain in the working tree throughout this branch's history and were never touched by any commit described here: a one-line `import Foundation` fix in `AppExperienceNavigationTests.swift`, a test-determinism fix in `NearbyE85LocationTests.swift` (`monitoringNeverStartsWithoutAuthorization` now forces `authorizationStatus = .notDetermined` instead of relying on ambient Simulator permission state), and cosmetic Xcode-driven reformatting of `Info.plist` and `xcschememanagement.plist` (key reordering/whitespace and scheme-order-hint bookkeeping — no semantic change).
+Two commits from the original branch were deliberately **excluded**:
 
-**The App Store review-request feature (`30b77c0`) is intentionally separate 2.4.0 work, not part of Nearby E85.** It touches entirely different files (`ReviewRequestEligibility.swift`, `ReviewRequestManager.swift`, `SubscriptionManager.swift`, `MoreView.swift`, `ContentView.swift`, `EightyFiveBlendsApp.swift`, `ProUpgradeView.swift`, `TripNavigationLauncher.swift`, `AppPreferences.swift`) and shares no code path with the widget beyond both incrementing a shared `stationDirectionsCount` signal when the user gets directions to a station (widget-originated directions included). Whether it should merge together with or split from this branch is a product/release-sequencing decision, not a technical blocker in either direction — see the final report for the recommendation.
+- **`30b77c0` "Add App Store review request flow"** — an entirely separate 2.4.0 feature (`ReviewRequestEligibility`/`ReviewRequestManager`, plus paywall-presentation and Settings changes) that happens to live on the same original branch but shares no functional dependency with this widget. The one point of contact on the original branch — `MapsRoutingHelper.openDirections` (in `AppPreferences.swift`) calling `ReviewRequestManager.shared.recordStationDirection()` — is review-request instrumentation reading a widget-adjacent success path, not something the widget needs for its own correctness; this branch's `AppPreferences.swift` has directions routing fully intact without that line, and without `ReviewRequestManager` existing at all. Confirmed absent from this branch's entire source tree (no `ReviewRequest*` symbol anywhere in code).
+- **`b1f0845` "Restore AppIconInternalV2 assets accidentally swept into the previous commit"** — a corrective commit that exists only because the original `1b78d56` accidentally finalized a deletion of unrelated, pre-existing staged `AppIconInternalV2` assets. Rather than replaying the accident-then-correction pair, this branch's equivalent of `1b78d56` (`a9ad754`) was cherry-picked with that accidental deletion stripped out directly, so `AppIconInternalV2` has **zero net diff** against the `20b8d89` baseline on this branch — verified by `git diff` producing no output for that path.
+
+The pre-existing, unrelated dirty working-tree state observed throughout this branch's history (a staged `AppIconInternalV2` deletion sitting uncommitted since before this feature began, a one-line `import Foundation` fix in `AppExperienceNavigationTests.swift`, a test-determinism fix in `NearbyE85LocationTests.swift`, and cosmetic Xcode-driven reformatting of `Info.plist`/`xcschememanagement.plist`) was preserved via `git stash` on the original branch and was never staged, committed, or otherwise included on this clean branch.
