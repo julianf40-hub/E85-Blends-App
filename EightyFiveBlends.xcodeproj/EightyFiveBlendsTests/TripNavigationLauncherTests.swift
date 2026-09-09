@@ -47,6 +47,18 @@ private final class FakeURLOpener: ExternalAppURLOpening {
     }
 }
 
+/// Serialized: every test here swaps the shared, process-global
+/// `TripNavigationLauncher.urlOpener` static for its own `FakeURLOpener`, then awaits
+/// `openGoogleMaps`/`openWaze`'s returned `Task`'s `.value`. Swift Testing runs `@Test`
+/// methods within a suite concurrently by default; without serialization, two tests' bodies
+/// can interleave at the `await` inside `openNativeThenFallback` — one test reassigns
+/// `urlOpener` to its own fake before another test's already-in-flight call reads it, so that
+/// call's `canOpen`/`launch` land on the WRONG test's `FakeURLOpener`. This is exactly what
+/// produced the observed non-deterministic `openedURLs.count` values (0, 6, 9, ...) instead of
+/// the expected 1 or 2. `urlOpener` is a deliberate, standard "swap the singleton for a test
+/// double" seam — not a production defect — so the fix is serialization here, not touching
+/// TripNavigationLauncher.swift.
+@Suite(.serialized)
 @MainActor
 struct TripNavigationLauncherTests {
     private let origin = CLLocationCoordinate2D(latitude: 33.4484, longitude: -112.0740) // Phoenix

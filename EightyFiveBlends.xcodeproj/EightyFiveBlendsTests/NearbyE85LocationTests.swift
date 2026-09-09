@@ -434,12 +434,18 @@ struct StationLocationManagerSignificantLocationTests {
     }
 
     @Test func monitoringNeverStartsWithoutAuthorization() {
-        // A freshly constructed manager in the test/simulator process has not been granted
-        // location authorization, so this must stay a no-op — the "no location authorization"
-        // case for significant-location monitoring.
-        let manager = StationLocationManager()
-        manager.startSignificantLocationMonitoringIfPossible()
-        #expect(manager.isMonitoringSignificantLocationChanges == false)
+        // Explicitly set every non-authorized status rather than relying on the ambient
+        // Simulator's real CLLocationManager authorization state (which can legitimately be
+        // .authorizedWhenInUse/.authorizedAlways on a Simulator that's already granted location
+        // access to this test bundle in a prior run) — that ambient state made this test
+        // non-deterministic. `authorizationStatus` is a plain `var`, settable here via
+        // @testable import, without touching any real permission or production code.
+        for status: CLAuthorizationStatus in [.notDetermined, .denied, .restricted] {
+            let manager = StationLocationManager()
+            manager.authorizationStatus = status
+            manager.startSignificantLocationMonitoringIfPossible()
+            #expect(manager.isMonitoringSignificantLocationChanges == false)
+        }
     }
 
     @Test func stoppingWhenNeverStartedIsHarmless() {
