@@ -19,6 +19,30 @@ import Testing
 import CoreLocation
 @testable import EightyFiveBlends
 
+/// 85Blends 2.4.0 test-isolation stabilization — serialization boundary for tests that exercise
+/// the real `ReviewRequestManager.shared` singleton (backed by `UserDefaults.standard`) through
+/// production call sites with no injectable seam: `MapsRoutingHelper.openDirections` and
+/// `TripNavigationLauncher.openGoogleMaps`/`openWaze`. Both call sites are intentionally not
+/// injectable (see each type's own header comment) — production always targets `.shared`, so
+/// these tests observe that exact singleton and assert deltas rather than absolute values.
+///
+/// `TripNavigationLauncherTests` (below) and `MapsRoutingHelperTests`
+/// (NearbyE85WidgetInteractionTests.swift) are EACH already `@Suite(.serialized)` for their own,
+/// unrelated race (the `TripNavigationLauncher.urlOpener` static swap, and the
+/// `preferredMapsApp` UserDefaults.standard key, respectively) — but per Swift Testing's
+/// documentation, `.serialized` "doesn't affect the execution of a test relative to its peers or
+/// to unrelated tests," so those two suites could still run concurrently WITH EACH OTHER and
+/// race on `stationDirectionsCount` (reproduced: a combined run intermittently failed with
+/// `stationDirectionsCount` off by exactly the other suite's in-flight increments). Nesting both
+/// under this common `.serialized` parent closes that gap — `.serialized` is recursively applied
+/// to nested suites, so this makes the two suites mutually exclusive of each other, not just
+/// internally serial. `ReviewRequestManagerTests` is deliberately NOT nested here — every one of
+/// its tests already constructs its own isolated `ReviewRequestManager` backed by a unique
+/// UserDefaults suite (see its own header), so it never touches `.shared` and was never part of
+/// this race.
+@Suite(.serialized)
+struct ReviewRequestSharedSingletonTests {}
+
 /// Records every URL the launcher asks it to open/check, and lets a test control whether a
 /// given native scheme reports as "installed" and whether launching it actually succeeds —
 /// these are the two independent seams that make "Google Maps installed" vs. "not installed"
@@ -58,6 +82,7 @@ private final class FakeURLOpener: ExternalAppURLOpening {
 /// the expected 1 or 2. `urlOpener` is a deliberate, standard "swap the singleton for a test
 /// double" seam — not a production defect — so the fix is serialization here, not touching
 /// TripNavigationLauncher.swift.
+extension ReviewRequestSharedSingletonTests {
 @Suite(.serialized)
 @MainActor
 struct TripNavigationLauncherTests {
@@ -316,4 +341,5 @@ struct TripNavigationLauncherTests {
         await TripNavigationLauncher.openWaze(for: .singleStop(fuelStop, name: "Stop")).value
         #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
     }
+}
 }

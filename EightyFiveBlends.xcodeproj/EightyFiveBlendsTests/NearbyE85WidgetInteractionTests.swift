@@ -443,6 +443,11 @@ struct NearbyE85WidgetRoutingTests {
 /// installed for a deterministic result.
 /// Serialized — these tests mutate the shared `UserDefaults.standard` preferredMapsApp key
 /// (save/restore per test), which would race under Swift Testing's default parallel execution.
+/// Also nested under `ReviewRequestSharedSingletonTests` (TripNavigationLauncherTests.swift) —
+/// see that type's header for why: this suite's own `.serialized` only protects it from itself,
+/// not from `TripNavigationLauncherTests` racing on the same `ReviewRequestManager.shared`
+/// singleton at the same time.
+extension ReviewRequestSharedSingletonTests {
 @Suite(.serialized)
 @MainActor
 struct MapsRoutingHelperTests {
@@ -555,4 +560,5 @@ struct MapsRoutingHelperTests {
             #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 3)
         }
     }
+}
 }
