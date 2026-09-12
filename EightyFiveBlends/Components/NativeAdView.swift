@@ -189,6 +189,27 @@ private struct NativeAdCard: View {
     }
 }
 
+@MainActor
+enum NativeAdTextLayout {
+    static let headlineLineLimit = 2
+    static let bodyLineLimit = 3
+
+    static func configureHeadline(_ label: UILabel) {
+        label.font = .systemFont(ofSize: 15, weight: .semibold)
+        label.numberOfLines = headlineLineLimit
+    }
+
+    static func configureBody(_ label: UILabel) {
+        label.font = .systemFont(ofSize: 13, weight: .regular)
+        label.numberOfLines = bodyLineLimit
+    }
+
+    static func applyBodyLayoutWidth(_ width: CGFloat, to label: UILabel?) {
+        guard width.isFinite, width > 0 else { return }
+        label?.preferredMaxLayoutWidth = width
+    }
+}
+
 /// UIKit bridge: Google Mobile Ads' click and impression tracking is wired through
 /// `GoogleMobileAds.NativeAdView` (a UIKit `UIView`) and its registered asset subviews — there is
 /// no pure-SwiftUI native ad renderer, so this wraps that container exactly as Google's own
@@ -622,6 +643,13 @@ private struct NativeAdContainer: UIViewRepresentable {
 
         widthConstraint?.constant = proposedWidth
         widthConstraint?.isActive = true
+        // Google requires publishers to allow body content through 90 characters. Supplying
+        // UILabel's actual bounded width before fitting lets its multiline intrinsic height
+        // participate in the root-height measurement below instead of collapsing to one line.
+        NativeAdTextLayout.applyBodyLayoutWidth(
+            proposedWidth,
+            to: uiView.bodyView as? UILabel
+        )
         // REGRESSION FIX — record the MONOTONIC "bounded width established" signal here,
         // alongside (but distinct from) the transient widthConstraint.isActive toggle above.
         // Deliberately never cleared by the nil-proposal branch — see Coordinator.
@@ -693,23 +721,21 @@ private struct NativeAdContainer: UIViewRepresentable {
         sponsoredLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 15).isActive = true
 
         let headlineLabel = UILabel()
-        headlineLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        NativeAdTextLayout.configureHeadline(headlineLabel)
         headlineLabel.textColor = UIColor(AppTheme.Colors.textPrimary)
-        headlineLabel.numberOfLines = 2
 
         let advertiserLabel = UILabel()
         advertiserLabel.font = .systemFont(ofSize: 12, weight: .regular)
         advertiserLabel.textColor = UIColor(AppTheme.Colors.textSecondary)
 
         let bodyLabel = UILabel()
-        bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        NativeAdTextLayout.configureBody(bodyLabel)
         bodyLabel.textColor = UIColor(AppTheme.Colors.textSecondary)
         // RESTORED (compliance hardening pass): PR #34's visual sizing pass trimmed this to 2
         // lines toward the ~250-320pt compact-card target, but Google's Native Advanced
         // guidelines require body text not be truncated before 90 characters — 2 lines can
         // truncate earlier than that on narrower iPhones. Restored to 3; font/other body
         // styling unchanged.
-        bodyLabel.numberOfLines = 3
 
         let iconImageView = UIImageView()
         iconImageView.contentMode = .scaleAspectFit
