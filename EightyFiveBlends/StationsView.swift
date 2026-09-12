@@ -1255,6 +1255,16 @@ struct StationsView: View {
     // fresh ad request — for no reason. "Never end the list with an ad" is enforced inside
     // StationsNativeAdPlacement.rows(_:). Free users only, and only once entitlement resolution
     // has completed — see StationsNativeAdPlacement.adSlotCount's header.
+    //
+    // AdMob Phase 4 — LazyVStack (not VStack) so rows past the visible viewport, including every
+    // downstream NativeAdView, are only constructed as the user scrolls near them. NativeAdView's
+    // own `.task` (see that file) is what actually calls loader.loadIfNeeded() — since `.task`
+    // only fires once a view is mounted, deferring construction via LazyVStack defers the ad
+    // request itself, not just its visual appearance. This still works nested one level inside
+    // stationsContent's outer eager VStack (see that property): LazyVStack negotiates laziness
+    // with the nearest ancestor ScrollView through the layout system, not through being its
+    // direct child, so header/map/filter chrome above this list stays eager while only this row
+    // sequence becomes lazy.
     @ViewBuilder
     private var stationRowsWithNativeAd: some View {
         let items = filteredUnifiedItems
@@ -1265,18 +1275,20 @@ struct StationsView: View {
             isEntitlementResolutionPending: SubscriptionManager.shared.isInitialEntitlementResolutionPending
         )
 
-        ForEach(rows) { row in
-            switch row {
-            case .station(let id):
-                if let item = itemsByID[id] {
-                    unifiedStationCard(for: item)
+        LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(rows) { row in
+                switch row {
+                case .station(let id):
+                    if let item = itemsByID[id] {
+                        unifiedStationCard(for: item)
+                    }
+                case .nativeAd(let slotIndex):
+                    // Explicit, fixed identity — independent of every station's own id, so nothing
+                    // about the stations around this slot (reordering, refreshing, growing,
+                    // shrinking) can ever cause this specific view to be torn down and recreated.
+                    NativeAdView(placement: .stations)
+                        .id("stations-native-ad-slot-\(slotIndex)")
                 }
-            case .nativeAd(let slotIndex):
-                // Explicit, fixed identity — independent of every station's own id, so nothing
-                // about the stations around this slot (reordering, refreshing, growing,
-                // shrinking) can ever cause this specific view to be torn down and recreated.
-                NativeAdView(placement: .stations)
-                    .id("stations-native-ad-slot-\(slotIndex)")
             }
         }
     }
