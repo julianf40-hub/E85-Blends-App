@@ -1241,50 +1241,54 @@ struct StationsView: View {
         }
     }
 
-    // AdMob Phase 2 — 85Blends Stations Native placement, rendered as its own stable row
-    // between the first 3 station cards and the rest — never nested inside either ForEach, so
-    // its SwiftUI identity never depends on which station happens to occupy any particular
-    // position.
+    // AdMob Phase 3 — 85Blends Stations Native placement, now repeating after every group of 3
+    // station cards instead of appearing only once. Placement math lives in the pure, testable
+    // StationsNativeAdPlacement below (see its own header) — this property only turns that
+    // result into rows.
     //
-    // FIX (validation audit): the original version emitted NativeAdView from inside a single
-    // enumerated ForEach's per-item closure (id: \.element.id), so the ad's identity was
-    // inherited from whichever station happened to sit at index 2. A filter toggle, a live
-    // search refresh, or a favorite/sort update could put a DIFFERENT station at that index,
-    // which SwiftUI reads as "new element, new closure invocation" — tearing down and
-    // recreating NativeAdLoader (and firing a fresh ad request) on every such reorder. Splitting
-    // into two ForEach blocks around one independently-identified NativeAdView removes that
-    // dependency entirely: leading/trailing station rows can reorder, refresh, or change count
-    // freely without ever touching the ad's identity. "Do not show if fewer than 4 stations
-    // exist" is preserved via the items.count check below. Free users only; Pro users never see
-    // showsNativeAd evaluate true, since isProUser is checked before NativeAdView is ever
-    // constructed.
+    // Each ad slot's SwiftUI identity is its logical position ("stations-native-ad-slot-<N>"),
+    // never a neighboring station's id (StationsNativeAdRow.id). This preserves the guarantee
+    // the original single-ad implementation established (see git history on this file for the
+    // original validation-audit fix): a filter toggle, live search refresh, or favorite/sort
+    // update can move stations around freely without SwiftUI ever reading a given ad slot as "a
+    // new element", which would tear down and recreate its NativeAdLoader — and fire an unwanted
+    // fresh ad request — for no reason. "Never end the list with an ad" is enforced inside
+    // StationsNativeAdPlacement.rows(_:). Free users only, and only once entitlement resolution
+    // has completed — see StationsNativeAdPlacement.adSlotCount's header.
+    //
+    // AdMob Phase 4 — LazyVStack (not VStack) so rows past the visible viewport, including every
+    // downstream NativeAdView, are only constructed as the user scrolls near them. NativeAdView's
+    // own `.task` (see that file) is what actually calls loader.loadIfNeeded() — since `.task`
+    // only fires once a view is mounted, deferring construction via LazyVStack defers the ad
+    // request itself, not just its visual appearance. This still works nested one level inside
+    // stationsContent's outer eager VStack (see that property): LazyVStack negotiates laziness
+    // with the nearest ancestor ScrollView through the layout system, not through being its
+    // direct child, so header/map/filter chrome above this list stays eager while only this row
+    // sequence becomes lazy.
     @ViewBuilder
     private var stationRowsWithNativeAd: some View {
         let items = filteredUnifiedItems
-        let leadingStationCount = 3 // cards rendered before the ad — "after the third station card"
-        let showsNativeAd = SubscriptionManager.shared.isProUser == false
-            && items.count > leadingStationCount // at least a 4th card to follow the ad
+        let itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        let rows = StationsNativeAdPlacement.rows(
+            stationIDs: items.map(\.id),
+            isProUser: SubscriptionManager.shared.isProUser,
+            isEntitlementResolutionPending: SubscriptionManager.shared.isInitialEntitlementResolutionPending
+        )
 
-        if showsNativeAd {
-            let leadingItems = Array(items.prefix(leadingStationCount))
-            let trailingItems = Array(items.dropFirst(leadingStationCount))
-
-            ForEach(leadingItems) { item in
-                unifiedStationCard(for: item)
-            }
-
-            // Explicit, fixed identity — independent of every station's own id, so nothing
-            // about the lists above/below this line (reordering, refreshing, growing, shrinking)
-            // can ever cause this specific view to be torn down and recreated.
-            NativeAdView(placement: .stations)
-                .id("stations-native-ad-slot")
-
-            ForEach(trailingItems) { item in
-                unifiedStationCard(for: item)
-            }
-        } else {
-            ForEach(items) { item in
-                unifiedStationCard(for: item)
+        LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(rows) { row in
+                switch row {
+                case .station(let id):
+                    if let item = itemsByID[id] {
+                        unifiedStationCard(for: item)
+                    }
+                case .nativeAd(let slotIndex):
+                    // Explicit, fixed identity — independent of every station's own id, so nothing
+                    // about the stations around this slot (reordering, refreshing, growing,
+                    // shrinking) can ever cause this specific view to be torn down and recreated.
+                    NativeAdView(placement: .stations)
+                        .id("stations-native-ad-slot-\(slotIndex)")
+                }
             }
         }
     }
@@ -3318,6 +3322,70 @@ enum StationShareContent {
         lines.append("")
         lines.append("Shared from 85Blends")
         return lines.joined(separator: "\n")
+    }
+}
+
+/// A single row in the Free Classic Stations list: either a station (by id) or a repeating
+/// native ad slot. `id` is what ForEach uses to diff the list, so it is the load-bearing piece
+/// of the "ad identity never depends on a neighboring station" guarantee described on
+/// `stationRowsWithNativeAd` — a station's id always comes from `StationDisplayItem.id` (already
+/// prefixed "s_"/"n_"), and an ad's id is always its slot index, so the two id spaces can never
+/// collide.
+enum StationsNativeAdRow: Identifiable {
+    case station(id: String)
+    case nativeAd(slotIndex: Int)
+
+    var id: String {
+        switch self {
+        case .station(let id): return id
+        case .nativeAd(let slotIndex): return "stations-native-ad-slot-\(slotIndex)"
+        }
+    }
+}
+
+/// Placement math for repeating Stations native ads: one ad slot after every complete group of
+/// `groupSize` visible station cards, but only when at least one more station follows the group
+/// — never a trailing ad with nothing after it. Pure and stateless (plain values in, plain values
+/// out), so it is exhaustively unit-testable without needing `StationDisplayItem`, which is
+/// private to this file. Deliberately internal (not private), same reasoning as
+/// StationShareContent above — see EightyFiveBlendsTests/StationsNativeAdPlacementTests.swift for
+/// the full count/ordering matrix this pins down.
+enum StationsNativeAdPlacement {
+    static let groupSize = 3
+
+    /// Number of ad slots for `stationCount` visible stations. Always 0 for Pro users and while
+    /// the initial RevenueCat entitlement read is still pending — an unresolved entitlement must
+    /// never be treated as "definitely Free" (mirrors the same rule in AdManagerTests.swift for
+    /// the centralized ad-readiness gate).
+    static func adSlotCount(stationCount: Int, isProUser: Bool, isEntitlementResolutionPending: Bool) -> Int {
+        guard stationCount > 0, !isProUser, !isEntitlementResolutionPending else { return 0 }
+        return (stationCount - 1) / groupSize
+    }
+
+    /// Interleaves `stationIDs` with native ad markers per the rule above. Each ad marker's
+    /// identity is its logical slot index only, computed from position in the input array —
+    /// never from a neighboring station's id — so a station reorder can never change which ad
+    /// slot a given `NativeAdView` instance represents.
+    static func rows(stationIDs: [String], isProUser: Bool, isEntitlementResolutionPending: Bool) -> [StationsNativeAdRow] {
+        let adSlotCount = adSlotCount(
+            stationCount: stationIDs.count,
+            isProUser: isProUser,
+            isEntitlementResolutionPending: isEntitlementResolutionPending
+        )
+        guard adSlotCount > 0 else {
+            return stationIDs.map { .station(id: $0) }
+        }
+
+        var rows: [StationsNativeAdRow] = []
+        rows.reserveCapacity(stationIDs.count + adSlotCount)
+        for (index, id) in stationIDs.enumerated() {
+            rows.append(.station(id: id))
+            let slotIndex = index / groupSize
+            if index % groupSize == groupSize - 1, slotIndex < adSlotCount {
+                rows.append(.nativeAd(slotIndex: slotIndex))
+            }
+        }
+        return rows
     }
 }
 
