@@ -1,0 +1,1 @@
+alter table public.e85_analytics_events add constraint e85_analytics_failure_category_shape check (not (properties ? 'failure_category') or (jsonb_typeof(properties -> 'failure_category') = 'string' and char_length(properties ->> 'failure_category') between 1 and 128));

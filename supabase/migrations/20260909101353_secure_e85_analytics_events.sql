@@ -1,0 +1,3 @@
+revoke all on table public.e85_analytics_events from anon, authenticated;
+grant insert (event_name, occurred_at, app_version, contributor_id, properties) on table public.e85_analytics_events to anon, authenticated;
+create policy "Public can insert analytics events" on public.e85_analytics_events for insert to anon, authenticated with check (occurred_at <= now() + interval '10 minutes' and occurred_at >= now() - interval '7 days');
