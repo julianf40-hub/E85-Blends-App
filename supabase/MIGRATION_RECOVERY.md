@@ -7,14 +7,25 @@ and this file.
 
 ## Status
 
-- **Has not passed a real `supabase db reset`.** Every file here was validated only by static,
-  non-executing analysis (structural dependency tracking, hash verification against the live
-  migration ledger) — never by actually running the SQL against a database, empty or otherwise.
-- **Must not be merged or applied to production until an empty-database replay succeeds** on a
-  machine with Docker and the Supabase CLI (`supabase start` + `supabase db reset` against this
-  exact file set, in this exact order).
+- **Passed a real empty-database replay on September 15, 2026.** The exact branch commit
+  `dcf99138b573afc06b85a1ac5c2feb22b2dbd351` was cloned into a disposable checkout on macOS
+  27.0 (`arm64`) and tested with Supabase CLI 2.117.0, Docker client 29.8.0, Docker server 29.5.2,
+  and Colima 0.10.3. `supabase start --yes` applied all 17 migrations successfully, followed by a
+  separate `supabase db reset --local --no-seed --yes` that recreated the local database and
+  applied all 17 migrations successfully a second time.
+- **The empty-database replay merge gate is satisfied.** Local migration history contained all 17
+  expected versions in order. Catalog checks found all 15 application tables with RLS enabled,
+  the expected five public policies, eight application triggers, two private helper functions,
+  constraints, indexes, role grants, and working `gen_random_uuid()`. `supabase db lint` found no
+  schema errors. `supabase db advisors` reported one warning for the intentionally unrestricted
+  `Public can insert community stations` policy documented by the founding baseline; it was not a
+  replay error or newly introduced drift.
+- No seed file exists, so both replays ran without application seed data. The local stack, data
+  volumes, container VM/images, temporary checkout, and test-only tooling were removed after
+  verification.
 - No `supabase db push`, no `supabase migration repair`, and no other live database mutation has
-  occurred as part of producing this branch. Nothing here has touched the live project.
+  occurred as part of producing or replaying this branch. Nothing here has touched the live
+  project.
 
 ## What's in `supabase/migrations/` (17 files, in replay order)
 
