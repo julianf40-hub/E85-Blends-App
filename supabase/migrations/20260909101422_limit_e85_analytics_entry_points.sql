@@ -1,0 +1,1 @@
+alter table public.e85_analytics_events add constraint e85_analytics_entry_point_values check (not (properties ? 'entry_point') or properties ->> 'entry_point' in ('station_list','station_map','at_the_pump','proximity_prompt','other'));

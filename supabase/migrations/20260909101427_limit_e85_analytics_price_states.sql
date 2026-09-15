@@ -1,0 +1,1 @@
+alter table public.e85_analytics_events add constraint e85_analytics_price_state_values check (not (properties ? 'price_state') or properties ->> 'price_state' in ('missing','fresh','check_price','stale'));

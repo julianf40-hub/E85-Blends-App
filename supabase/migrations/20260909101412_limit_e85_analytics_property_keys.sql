@@ -1,0 +1,1 @@
+alter table public.e85_analytics_events add constraint e85_analytics_properties_allowed_keys check ((properties - array['station_source','entry_point','price_state','failure_category']::text[]) = '{}'::jsonb);

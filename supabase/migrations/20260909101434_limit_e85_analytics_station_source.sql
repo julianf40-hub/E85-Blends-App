@@ -1,0 +1,1 @@
+alter table public.e85_analytics_events add constraint e85_analytics_station_source_shape check (not (properties ? 'station_source') or (jsonb_typeof(properties -> 'station_source') = 'string' and char_length(properties ->> 'station_source') between 1 and 64));
