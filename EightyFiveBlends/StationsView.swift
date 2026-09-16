@@ -82,6 +82,9 @@ struct StationsView: View {
     @State private var communityPriceSummaries: [String: CommunityPriceSummary] = [:]
     @State private var communityPriceSyncMessage: String?
     @State private var communityPriceTask: Task<Void, Never>?
+    @State private var communityEthanolSummaries: [String: CommunityEthanolSummary] = [:]
+    @State private var communityEthanolSyncMessage: String?
+    @State private var communityEthanolTask: Task<Void, Never>?
     // Dedicated presentation state for the post-submission celebration — deliberately separate
     // from `infoMessage` (the generic error/info alert) so a successful community report can
     // never be confused with, or collide with, an unrelated info/error alert. Set only at the
@@ -855,6 +858,7 @@ struct StationsView: View {
         .onDisappear {
             liveSearchTask?.cancel()
             communityPriceTask?.cancel()
+            communityEthanolTask?.cancel()
             communityReportSuccessDismissTask?.cancel()
             typedLocationSearchTask?.cancel()
             isSearchingLive = false
@@ -1204,6 +1208,10 @@ struct StationsView: View {
                 communitySyncMessageRow(communityPriceSyncMessage)
             }
 
+            if let communityEthanolSyncMessage {
+                communitySyncMessageRow(communityEthanolSyncMessage)
+            }
+
             if let liveSearchError {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -1331,6 +1339,7 @@ struct StationsView: View {
             StationRowCard(
                 station: saved,
                 communitySummary: communitySummary(for: saved),
+                communityEthanolSummary: communityEthanolSummary(for: saved),
                 directionsAction: { directionsMessage(for: saved) },
                 updatePriceAction: { beginPriceUpdate(for: saved) },
                 favoriteAction: { toggleFavorite(saved) },
@@ -1345,6 +1354,7 @@ struct StationsView: View {
                 station: live,
                 isSaved: false,
                 communitySummary: communitySummary(for: live),
+                communityEthanolSummary: communityEthanolSummary(for: live),
                 directionsAction: { directionsMessage(for: live) },
                 reportPriceAction: { beginPriceUpdate(for: live) },
                 // PR D — the Classic nearby-station action is now Favorite, matching the
@@ -1357,6 +1367,7 @@ struct StationsView: View {
                     station: live,
                     isSaved: true,
                     communitySummary: communitySummary(for: saved),
+                    communityEthanolSummary: communityEthanolSummary(for: saved),
                     directionsAction: { directionsMessage(for: live) },
                     reportPriceAction: { beginPriceUpdate(for: saved) },
                     saveAction: { }
@@ -1365,6 +1376,7 @@ struct StationsView: View {
                 StationRowCard(
                     station: saved,
                     communitySummary: communitySummary(for: saved),
+                    communityEthanolSummary: communityEthanolSummary(for: saved),
                     directionsAction: { directionsMessage(for: saved) },
                     updatePriceAction: { beginPriceUpdate(for: saved) },
                     favoriteAction: { toggleFavorite(saved) },
@@ -2843,6 +2855,16 @@ struct StationsView: View {
         return communityPriceSummaries[key]
     }
 
+    private func communityEthanolSummary(for station: FuelStation) -> CommunityEthanolSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityEthanolSummaries[key]
+    }
+
+    private func communityEthanolSummary(for station: LiveFuelStation) -> CommunityEthanolSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityEthanolSummaries[key]
+    }
+
     /// Only validated current-session, current-location results may cross into the widget.
     /// Typed searches and cold-launch provisional previews cannot relocate "nearby".
     private func publishNearbyWidgetSnapshot() {
@@ -2870,6 +2892,7 @@ struct StationsView: View {
     }
 
     private func refreshCommunityPricePreviews() {
+        refreshCommunityEthanolPreviews()
         publishNearbyWidgetSnapshot()
         communityPriceTask?.cancel()
 
@@ -2909,6 +2932,43 @@ struct StationsView: View {
         }
     }
 
+    private func refreshCommunityEthanolPreviews() {
+        communityEthanolTask?.cancel()
+
+        let keys = Set(
+            stations.compactMap(normalizedStationKey(for:)) +
+            liveStations.compactMap(normalizedStationKey(for:))
+        )
+
+        guard keys.isEmpty == false else {
+            communityEthanolSummaries = [:]
+            communityEthanolSyncMessage = nil
+            return
+        }
+
+        communityEthanolTask = Task {
+            do {
+                let service = try CommunityPriceService()
+                let summaries = try await fetchCommunityEthanolSummaries(
+                    keys: keys,
+                    service: service
+                )
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityEthanolSummaries = summaries
+                    communityEthanolSyncMessage = nil
+                }
+            } catch {
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityEthanolSummaries = [:]
+                    communityEthanolSyncMessage =
+                        "Community ethanol reports are temporarily unavailable."
+                }
+            }
+        }
+    }
+
     private func fetchCommunitySummaries(
         keys: Set<String>,
         service: CommunityPriceService
@@ -2922,6 +2982,30 @@ struct StationsView: View {
             }
 
             var summaries: [String: CommunityPriceSummary] = [:]
+            for try await (key, summary) in group {
+                if let summary {
+                    summaries[key] = summary
+                }
+            }
+            return summaries
+        }
+    }
+
+    private func fetchCommunityEthanolSummaries(
+        keys: Set<String>,
+        service: CommunityPriceService
+    ) async throws -> [String: CommunityEthanolSummary] {
+        try await withThrowingTaskGroup(of: (String, CommunityEthanolSummary?).self) { group in
+            for key in keys {
+                group.addTask {
+                    let summary = try await service.fetchLatestEthanolReport(
+                        forNormalizedStationKey: key
+                    )
+                    return (key, summary)
+                }
+            }
+
+            var summaries: [String: CommunityEthanolSummary] = [:]
             for try await (key, summary) in group {
                 if let summary {
                     summaries[key] = summary
@@ -3478,6 +3562,7 @@ private struct StationDisplayItem: Identifiable {
 private struct StationRowCard: View {
     let station: FuelStation
     let communitySummary: CommunityPriceSummary?
+    let communityEthanolSummary: CommunityEthanolSummary?
     let directionsAction: () -> String?
     let updatePriceAction: () -> Void
     let favoriteAction: () -> Void
@@ -3585,6 +3670,7 @@ private struct StationRowCard: View {
                 }
 
                 communityPricePreview
+                CommunityEthanolPreview(summary: communityEthanolSummary)
             }
 
             HStack {
@@ -3914,6 +4000,7 @@ private struct LiveStationRowCard: View {
     let station: LiveFuelStation
     let isSaved: Bool
     let communitySummary: CommunityPriceSummary?
+    let communityEthanolSummary: CommunityEthanolSummary?
     let directionsAction: () -> String?
     let reportPriceAction: () -> Void
     let saveAction: () -> Void
@@ -3968,6 +4055,7 @@ private struct LiveStationRowCard: View {
             }
 
             communityPricePreview
+            CommunityEthanolPreview(summary: communityEthanolSummary)
 
             HStack(spacing: 8) {
                 stationActionButton(
@@ -4148,6 +4236,71 @@ private struct LiveStationRowCard: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
         }
+    }
+}
+
+private struct CommunityEthanolPreview: View {
+    let summary: CommunityEthanolSummary?
+
+    var body: some View {
+        if let percentage = summary?.latestPercentage,
+           let reportedAt = summary?.latestReportedAt {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("COMMUNITY ETHANOL")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                HStack(spacing: 8) {
+                    Text(String(format: "%.1f%%", percentage))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    Text(reportedAt.communityReportedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+
+                if reportedAt.communityPriceIsStale {
+                    Text("Ethanol percentage may be outdated")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+
+                if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+                    Text("Outside the typical 51–83% E85 range")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+
+                Text("Community reported — not independently verified.")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+            .padding(.top, 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel(percentage: percentage, reportedAt: reportedAt))
+        } else {
+            Text("No community ethanol % yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .padding(.top, 2)
+        }
+    }
+
+    private func accessibilityLabel(percentage: Double, reportedAt: Date) -> String {
+        var parts = [
+            "Community reported ethanol percentage: \(String(format: "%.1f", percentage)) percent",
+            reportedAt.communityReportedText,
+            "not independently verified"
+        ]
+        if reportedAt.communityPriceIsStale {
+            parts.append("may be outdated")
+        }
+        if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+            parts.append("outside the typical 51 to 83 percent E85 range")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
