@@ -79,6 +79,10 @@ struct StationsView: View {
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
     @State private var isSubmittingCommunityPrice = false
+    @State private var ethanolInput = ""
+    @State private var ethanolValidationMessage: String?
+    @State private var isSubmittingCommunityEthanol = false
+    @State private var pendingOutOfRangeEthanolPercentage: Double?
     @State private var communityPriceSummaries: [String: CommunityPriceSummary] = [:]
     @State private var communityPriceSyncMessage: String?
     @State private var communityPriceTask: Task<Void, Never>?
@@ -965,11 +969,34 @@ struct StationsView: View {
                 isSubmittingCommunityPrice: isSubmittingCommunityPrice,
                 saveLocalAction: { savePriceUpdate(for: context, reportToCommunity: false) },
                 saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
-                cancelAction: dismissPriceUpdateSheet
+                cancelAction: dismissPriceUpdateSheet,
+                ethanolInput: $ethanolInput,
+                ethanolValidationMessage: $ethanolValidationMessage,
+                isSubmittingCommunityEthanol: isSubmittingCommunityEthanol,
+                canReportEthanol: context.canReportToCommunity,
+                submitEthanolAction: { attemptSubmitEthanolReport(for: context) }
             )
-            .presentationDetents([.medium])
+            .confirmationDialog(
+                "Confirm Ethanol Percentage",
+                isPresented: pendingOutOfRangeEthanolConfirmationBinding,
+                titleVisibility: .visible
+            ) {
+                Button("Submit Anyway") {
+                    guard let percentage = pendingOutOfRangeEthanolPercentage else { return }
+                    pendingOutOfRangeEthanolPercentage = nil
+                    submitEthanolReport(for: context, percentage: percentage)
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingOutOfRangeEthanolPercentage = nil
+                }
+            } message: {
+                if let percentage = pendingOutOfRangeEthanolPercentage {
+                    Text("\(String(format: "%.1f", percentage)) percent is outside the typical 51 to 83 percent range for E85. Submit anyway?")
+                }
+            }
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .interactiveDismissDisabled(isSubmittingCommunityPrice)
+            .interactiveDismissDisabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
         }
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
@@ -2042,6 +2069,17 @@ struct StationsView: View {
         )
     }
 
+    private var pendingOutOfRangeEthanolConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingOutOfRangeEthanolPercentage != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    pendingOutOfRangeEthanolPercentage = nil
+                }
+            }
+        )
+    }
+
     private func updateStation(_ station: FuelStation, from draft: StationDraft) {
         if draft.lastKnownE85Price != 0, StationDataValidation.isValidPrice(draft.lastKnownE85Price) == false {
             infoMessage = "Enter a valid E85 price greater than $0 (or leave it at $0 if unknown)."
@@ -3061,6 +3099,9 @@ struct StationsView: View {
         priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
         priceNoteInput = station.notes
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
         priceUpdateContext = .saved(station)
     }
 
@@ -3070,15 +3111,22 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
         priceUpdateContext = .live(station)
     }
 
     private func dismissPriceUpdateSheet() {
         isSubmittingCommunityPrice = false
+        isSubmittingCommunityEthanol = false
         priceUpdateContext = nil
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
     }
 
     /// The one and only call site for showing the celebration — invoked exactly where
@@ -3203,6 +3251,88 @@ struct StationsView: View {
                     presentCommunityReportSuccess()
                 } else if let failureMessage {
                     infoMessage = failureMessage
+                }
+            }
+        }
+    }
+
+    private func attemptSubmitEthanolReport(for context: StationPriceUpdateContext) {
+        guard isSubmittingCommunityEthanol == false else { return }
+
+        guard let percentage = CommunityEthanolValidation.parseValidPercentage(from: ethanolInput) else {
+            ethanolValidationMessage = "Enter an ethanol percentage between 0 and 100."
+            return
+        }
+
+        ethanolValidationMessage = nil
+        if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+            pendingOutOfRangeEthanolPercentage = percentage
+            return
+        }
+
+        submitEthanolReport(for: context, percentage: percentage)
+    }
+
+    private func submitEthanolReport(
+        for context: StationPriceUpdateContext,
+        percentage: Double
+    ) {
+        guard isSubmittingCommunityEthanol == false else { return }
+        guard context.canReportToCommunity else {
+            infoMessage = "This station doesn't have enough location information to report an ethanol percentage yet."
+            return
+        }
+
+        isSubmittingCommunityEthanol = true
+        let trimmedNote = priceNoteInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Task {
+            var failureMessage: String?
+
+            do {
+                let service = try CommunityPriceService()
+                let normalizedKey = normalizedStationKey(for: context)
+                let communityStation = try await service.upsertCommunityStation(
+                    normalizedStationKey: normalizedKey,
+                    name: context.stationName,
+                    streetAddress: context.optionalAddress,
+                    city: context.optionalCity,
+                    state: context.optionalState,
+                    zip: context.optionalZipCode,
+                    latitude: context.latitude,
+                    longitude: context.longitude
+                )
+
+                _ = try await service.submitEthanolReport(
+                    normalizedStationKey: normalizedKey,
+                    stationID: communityStation.id,
+                    ethanolPercentage: percentage,
+                    reportedAt: .now,
+                    notes: trimmedNote.isEmpty ? nil : trimmedNote,
+                    appVersion: appVersionString
+                )
+            } catch {
+#if DEBUG
+                print("Community ethanol report failed:", error)
+#endif
+                if let serviceError = error as? CommunityPriceServiceError,
+                   case .notConfigured = serviceError {
+                    failureMessage = "Community ethanol reporting is not available right now."
+                } else {
+                    failureMessage = "Ethanol percentage could not be submitted — please try again later."
+                }
+            }
+
+            await MainActor.run {
+                isSubmittingCommunityEthanol = false
+                if let failureMessage {
+                    infoMessage = failureMessage
+                } else {
+                    ethanolInput = ""
+                    ethanolValidationMessage = nil
+                    refreshCommunityEthanolPreviews()
+                    AppHaptics.success()
+                    infoMessage = "Ethanol percentage reported. Thanks for helping the E85 community."
                 }
             }
         }
@@ -4384,6 +4514,11 @@ private struct StationPriceUpdateSheet: View {
     let saveLocalAction: () -> Void
     let saveAndReportAction: () -> Void
     let cancelAction: () -> Void
+    @Binding var ethanolInput: String
+    @Binding var ethanolValidationMessage: String?
+    let isSubmittingCommunityEthanol: Bool
+    let canReportEthanol: Bool
+    let submitEthanolAction: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -4458,7 +4593,7 @@ private struct StationPriceUpdateSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(.plain)
-                            .disabled(isSubmittingCommunityPrice)
+                            .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
 
                             if context.canReportToCommunity {
                                 Button(action: saveAndReportAction) {
@@ -4477,7 +4612,7 @@ private struct StationPriceUpdateSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(isSubmittingCommunityPrice)
+                                .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                             } else {
                                 Text("This station doesn't have enough location information for community reporting yet.")
                                     .font(.caption)
@@ -4496,21 +4631,106 @@ private struct StationPriceUpdateSheet: View {
                             .stroke(AppTheme.Colors.border, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+                    ethanolReportCard
                 }
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationTitle("Update Price")
+            .navigationTitle("Update Station")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: cancelAction)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .disabled(isSubmittingCommunityPrice)
+                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                 }
             }
         }
         .keyboardDoneToolbar()
+    }
+
+    private var ethanolReportCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Report Ethanol Percentage")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text("Independent of the price above — report either, both, or neither.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            TextField("Ethanol percentage", text: $ethanolInput)
+                .keyboardType(.decimalPad)
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(
+                            ethanolValidationMessage == nil
+                                ? AppTheme.Colors.border
+                                : AppTheme.Colors.warningRed,
+                            lineWidth: 1
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .accessibilityLabel("Ethanol percentage")
+                .accessibilityHint("Enter a value from 0 to 100 percent")
+
+            Text("Community reported — not independently verified.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            if let ethanolValidationMessage {
+                Text(ethanolValidationMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            }
+
+            if canReportEthanol {
+                Button(action: submitEthanolAction) {
+                    HStack(spacing: 8) {
+                        if isSubmittingCommunityEthanol {
+                            ProgressView()
+                                .tint(AppTheme.Colors.textPrimary)
+                        }
+                        Text(
+                            isSubmittingCommunityEthanol
+                                ? "Reporting Ethanol Percentage…"
+                                : "Report Ethanol Percentage"
+                        )
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(AppTheme.Colors.primaryGreen)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSubmittingCommunityEthanol || isSubmittingCommunityPrice)
+            } else {
+                Text("This station doesn't have enough location information for community ethanol reporting yet.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 
