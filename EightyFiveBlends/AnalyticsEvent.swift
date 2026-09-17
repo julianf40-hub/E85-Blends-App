@@ -20,7 +20,7 @@ import Foundation
 /// Exactly the six values `e85_analytics_events.event_name`'s CHECK constraint accepts today.
 /// `stationViewed`/`communityPriceStateSeen` are declared for completeness/future use but are
 /// never transmitted by this pass — see this file's header.
-enum AnalyticsEventName: String, Sendable {
+enum AnalyticsEventName: String, Encodable, Sendable {
     case stationViewed = "station_viewed"
     case communityPriceStateSeen = "community_price_state_seen"
     case priceReportPromptShown = "price_report_prompt_shown"
