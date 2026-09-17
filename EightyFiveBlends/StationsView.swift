@@ -78,6 +78,11 @@ struct StationsView: View {
     @State private var priceInput = ""
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
+    // Pre-commit fix (validation pass) — inline "could not report to the community, try
+    // again" text for the compact post-navigation reporter only (see savePriceUpdate). The
+    // full sheet never sets this; it keeps using the existing dismiss-then-alert(infoMessage)
+    // path unchanged.
+    @State private var remoteReportFailureMessage: String?
     @State private var isSubmittingCommunityPrice = false
     @State private var ethanolInput = ""
     @State private var ethanolValidationMessage: String?
@@ -1010,7 +1015,8 @@ struct StationsView: View {
                 isSubmittingCommunityPrice: isSubmittingCommunityPrice,
                 saveLocalAction: { savePriceUpdate(for: context, reportToCommunity: false) },
                 saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
-                cancelAction: dismissPriceUpdateSheet,
+                cancelAction: { handlePriceUpdateCancel(for: context) },
+                remoteReportFailureMessage: $remoteReportFailureMessage,
                 ethanolInput: $ethanolInput,
                 ethanolValidationMessage: $ethanolValidationMessage,
                 isSubmittingCommunityEthanol: isSubmittingCommunityEthanol,
@@ -1038,6 +1044,17 @@ struct StationsView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
+        }
+        // 85Blends 2.4.0 post-navigation price-contribution prompt — the narrow bridge that
+        // lets ContentView's banner open this view's otherwise-private community-reporting
+        // sheet (see PriceContributionPresentationRequest's own header for why this pattern,
+        // not a wider access-level change or a duplicated submission pipeline). Consumed
+        // (set back to nil) the instant it's read, so a later, unrelated change to the same
+        // singleton can never re-open this sheet a second time for the same request.
+        .onChange(of: PriceContributionPresentationRequest.shared.pendingRequest) { _, newValue in
+            guard let newValue else { return }
+            PriceContributionPresentationRequest.shared.pendingRequest = nil
+            beginPriceUpdate(fromPendingContribution: newValue)
         }
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
@@ -3140,6 +3157,7 @@ struct StationsView: View {
         priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
         priceNoteInput = station.notes
         priceValidationMessage = nil
+        remoteReportFailureMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
         pendingOutOfRangeEthanolPercentage = nil
@@ -3151,11 +3169,41 @@ struct StationsView: View {
         dismissCommunityReportSuccess()
         priceInput = ""
         priceNoteInput = ""
+        remoteReportFailureMessage = nil
         priceValidationMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
         pendingOutOfRangeEthanolPercentage = nil
         priceUpdateContext = .live(station)
+    }
+
+    /// 85Blends 2.4.0 — the post-navigation entry point (see PriceContributionPresentationRequest/
+    /// ContentView's banner). Opens the exact same shared StationPriceUpdateSheet every other
+    /// Stations entry point uses, in its compact `.postNavigation` mode, built directly from the
+    /// persisted PendingPriceContribution's own scalar fields — never re-deriving or searching
+    /// for a FuelStation/LiveFuelStation object, since one may not exist yet for this station (a
+    /// not-yet-saved Nearby result the user never re-searches for is exactly the common case
+    /// here). `communityPriceSummaries` is already keyed by the same canonical station key
+    /// MapsRoutingHelper used when recording the contribution, so no new lookup logic is needed.
+    private func beginPriceUpdate(fromPendingContribution contribution: PendingPriceContribution) {
+        dismissCommunityReportSuccess()
+        priceInput = ""
+        priceNoteInput = ""
+        priceValidationMessage = nil
+        remoteReportFailureMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
+        priceUpdateContext = .postNavigation(
+            contribution,
+            existingCommunityPrice: communityPriceSummaries[contribution.stationKey]
+        )
+        // Pre-commit fix (validation pass) — entry_point is `.other`, not `.proximityPrompt`:
+        // the live e85_analytics_entry_point_values CHECK constraint accepts `proximity_prompt`
+        // but nothing in the schema/migrations documents it as meaning "post-navigation
+        // return," and this flow is not a geographic-proximity trigger. `.other` is the
+        // truthful classification until a dedicated value is worth a schema migration.
+        AnalyticsService.track(.priceReportOpened, properties: AnalyticsEventProperties(entryPoint: .other))
     }
 
     private func dismissPriceUpdateSheet() {
@@ -3165,9 +3213,23 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        remoteReportFailureMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
         pendingOutOfRangeEthanolPercentage = nil
+    }
+
+    /// 85Blends 2.4.0 — Cancel from the post-navigation compact sheet deliberately consumes the
+    /// pending contribution (same as tapping "Not Now" on the banner) rather than leaving it to
+    /// reappear later: a user who opened the reporter and then explicitly backed out has already
+    /// engaged with this exact prompt, so re-showing it again would be the "aggressive recurring
+    /// nag" this feature is required to avoid. Full-mode Cancel is completely unaffected — this
+    /// only does anything extra when context.presentationMode is .postNavigation.
+    private func handlePriceUpdateCancel(for context: StationPriceUpdateContext) {
+        if context.presentationMode == .postNavigation {
+            PendingPriceContributionStore.shared.clear()
+        }
+        dismissPriceUpdateSheet()
     }
 
     /// The one and only call site for showing the celebration — invoked exactly where
@@ -3198,6 +3260,11 @@ struct StationsView: View {
         if reportToCommunity, isSubmittingCommunityPrice {
             return
         }
+
+        // Pre-commit fix (validation pass) — clear any stale remote-failure text from a
+        // previous attempt on this same sheet before a new one starts (compact mode only ever
+        // sets this; harmless no-op otherwise).
+        remoteReportFailureMessage = nil
 
         // CommunityPriceValidation.parseValidPrice matches production Supabase's own bound on
         // `e85_price_reports.price` exactly (see that file's header) — rejecting here, before
@@ -3246,6 +3313,10 @@ struct StationsView: View {
             // nil. Everything downstream of the do/catch branches on exactly this, so the
             // celebration can only ever be triggered by a genuine, already-confirmed success.
             var failureMessage: String?
+            // 85Blends 2.4.0 — only ever set alongside failureMessage, from the same catch
+            // block; used solely for the post-navigation price_report_failed analytics event
+            // below, never for user-facing text.
+            var analyticsFailureCategory: String?
 
             do {
                 let service = try CommunityPriceService()
@@ -3273,6 +3344,7 @@ struct StationsView: View {
 #if DEBUG
                 print("Community price report failed:", error)
 #endif
+                analyticsFailureCategory = AnalyticsFailureCategory.category(for: error)
                 if let serviceError = error as? CommunityPriceServiceError,
                    case .notConfigured = serviceError {
                     failureMessage = "Price saved locally. Community reporting is not available right now."
@@ -3283,15 +3355,68 @@ struct StationsView: View {
 
             await MainActor.run {
                 refreshCommunityPricePreviews()
-                dismissPriceUpdateSheet()
-                let shouldCelebrate = CommunityReportCelebrationDecision.shouldCelebrate(
-                    reportToCommunity: reportToCommunity,
-                    submissionSucceeded: failureMessage == nil
-                )
-                if shouldCelebrate {
-                    presentCommunityReportSuccess()
-                } else if let failureMessage {
-                    infoMessage = failureMessage
+                let submissionSucceeded = failureMessage == nil
+
+                // Pre-commit fix (validation pass) — the compact post-navigation reporter
+                // stays open on a genuine remote failure so the user can retry immediately,
+                // without waiting for another foreground activation to re-offer the prompt.
+                // Every other outcome (success; any full-mode submission regardless of
+                // outcome) keeps the pre-existing "always dismiss after the attempt" behavior
+                // completely unchanged — this only ever takes the `if` branch when ALL THREE
+                // of postNavigation mode, a community attempt, and a genuine failure hold.
+                let keepsSheetOpenForRetry = context.presentationMode == .postNavigation
+                    && reportToCommunity
+                    && submissionSucceeded == false
+
+                if keepsSheetOpenForRetry {
+                    isSubmittingCommunityPrice = false
+                    remoteReportFailureMessage = failureMessage
+                } else {
+                    dismissPriceUpdateSheet()
+                    let shouldCelebrate = CommunityReportCelebrationDecision.shouldCelebrate(
+                        reportToCommunity: reportToCommunity,
+                        submissionSucceeded: submissionSucceeded
+                    )
+                    if shouldCelebrate {
+                        presentCommunityReportSuccess()
+                    } else if let failureMessage {
+                        infoMessage = failureMessage
+                    }
+                }
+
+                // 85Blends 2.4.0 — analytics for this pass are scoped to the post-navigation
+                // entry point only (see AnalyticsEvent.swift's own header for why); the
+                // pre-existing full-mode Save & Report flow is intentionally left
+                // uninstrumented here, and none of the above local-save/celebration/failure/
+                // retry behavior changes for it.
+                if context.presentationMode == .postNavigation {
+                    if submissionSucceeded {
+                        // Consumed only on a CONFIRMED successful community submission — never
+                        // merely because the sheet opened or a submission was attempted. See
+                        // handlePriceUpdateCancel for the separate Cancel/Not-Now consumption
+                        // path.
+                        PendingPriceContributionStore.shared.clear()
+                        AnalyticsService.track(
+                            .priceReportSubmitted,
+                            properties: AnalyticsEventProperties(entryPoint: .other)
+                        )
+                    } else {
+                        // Deliberately NOT cleared: a community submission failure (the local
+                        // save already succeeded, per the pipeline's existing, unchanged
+                        // semantics above) leaves the pending contribution available so a
+                        // later, still-eligible return to 85Blends can offer this same prompt
+                        // again as a retry, rather than silently losing the opportunity to a
+                        // transient network error. The sheet itself also already stayed open
+                        // above (keepsSheetOpenForRetry), so an immediate in-sheet retry works
+                        // too, without needing to wait for that later activation at all.
+                        AnalyticsService.track(
+                            .priceReportFailed,
+                            properties: AnalyticsEventProperties(
+                                entryPoint: .other,
+                                failureCategory: analyticsFailureCategory
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -4475,6 +4600,17 @@ private struct CommunityEthanolPreview: View {
     }
 }
 
+/// 85Blends 2.4.0 post-navigation price-contribution prompt — which of StationPriceUpdateSheet's
+/// two layouts a given StationPriceUpdateContext should present. `.full` (the default — every
+/// pre-existing call site is unaffected) is the original price-and-ethanol sheet, unchanged.
+/// `.postNavigation` is the compact, single-purpose price reporter opened from the "Did you
+/// visit X?" banner — see StationPriceUpdateContext.postNavigation(_:existingCommunityPrice:)
+/// and StationsView.beginPriceUpdate(fromPendingContribution:).
+private enum StationPriceUpdatePresentationMode: Equatable {
+    case full
+    case postNavigation
+}
+
 private struct StationPriceUpdateContext: Identifiable {
     let id = UUID()
     let station: FuelStation?
@@ -4485,6 +4621,13 @@ private struct StationPriceUpdateContext: Identifiable {
     let zipCode: String
     let latitude: Double?
     let longitude: Double?
+    let presentationMode: StationPriceUpdatePresentationMode = .full
+    /// Read-only context shown (never prefilled into the editable field) by the compact
+    /// `.postNavigation` layout only — see StationPriceUpdateSheet.compactReportContent. `nil`
+    /// for every `.full`-mode context, and for `.postNavigation` whenever no existing community
+    /// price is available for this station.
+    let existingCommunityPrice: Double? = nil
+    let existingCommunityPriceReportedAt: Date? = nil
 
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
         StationPriceUpdateContext(
@@ -4509,6 +4652,32 @@ private struct StationPriceUpdateContext: Identifiable {
             zipCode: station.zip,
             latitude: station.latitude == 0 ? nil : station.latitude,
             longitude: station.longitude == 0 ? nil : station.longitude
+        )
+    }
+
+    /// 85Blends 2.4.0 — built directly from a persisted PendingPriceContribution's own scalar
+    /// fields, never from a FuelStation/LiveFuelStation object: MapsRoutingHelper recorded this
+    /// contribution from a plain MapsRoutingDestination, which may not correspond to any object
+    /// currently held anywhere in this view (a not-yet-saved Nearby result is the common case).
+    /// `station: nil` here means upsertLocalStation(for:price:note:) falls back to
+    /// matchingSavedStation(for:) — exactly the same resolve-or-create path `.live(_:)` already
+    /// relies on — so no special-case handling is needed anywhere downstream.
+    static func postNavigation(
+        _ contribution: PendingPriceContribution,
+        existingCommunityPrice: CommunityPriceSummary?
+    ) -> StationPriceUpdateContext {
+        StationPriceUpdateContext(
+            station: nil,
+            stationName: contribution.stationName,
+            address: contribution.streetAddress ?? "",
+            city: contribution.city ?? "",
+            state: contribution.state ?? "",
+            zipCode: contribution.zip ?? "",
+            latitude: contribution.latitude,
+            longitude: contribution.longitude,
+            presentationMode: .postNavigation,
+            existingCommunityPrice: existingCommunityPrice?.latestPrice,
+            existingCommunityPriceReportedAt: existingCommunityPrice?.latestReportedAt
         )
     }
 
@@ -4555,14 +4724,49 @@ private struct StationPriceUpdateSheet: View {
     let saveLocalAction: () -> Void
     let saveAndReportAction: () -> Void
     let cancelAction: () -> Void
+    /// 85Blends 2.4.0 post-navigation compact mode only — set when a community submission's
+    /// local save already succeeded but the remote report failed, so the sheet can stay open
+    /// (see StationsView.savePriceUpdate's `keepsSheetOpenForRetry`) and offer an immediate
+    /// retry instead of silently dismissing. `.full` mode never sets this binding's source.
+    @Binding var remoteReportFailureMessage: String?
     @Binding var ethanolInput: String
     @Binding var ethanolValidationMessage: String?
     let isSubmittingCommunityEthanol: Bool
     let canReportEthanol: Bool
     let submitEthanolAction: () -> Void
+    /// 85Blends 2.4.0 post-navigation compact mode — scoped to ONLY that mode (see
+    /// compactReportContent's `.onAppear` below); `.full` mode never sets this, so its existing
+    /// manual-tap-to-focus behavior is completely unchanged.
+    @FocusState private var isPriceFieldFocused: Bool
 
     var body: some View {
         NavigationStack {
+            Group {
+                switch context.presentationMode {
+                case .full:
+                    fullReportContent
+                case .postNavigation:
+                    compactReportContent
+                }
+            }
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle(context.presentationMode == .full ? "Report Station" : "Report E85 Price")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: cancelAction)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
+                }
+            }
+        }
+        .keyboardDoneToolbar()
+    }
+
+    // MARK: - Full mode (unchanged behavior — every pre-existing call site uses this)
+
+    @ViewBuilder
+    private var fullReportContent: some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -4677,18 +4881,118 @@ private struct StationPriceUpdateSheet: View {
                 }
                 .padding(16)
             }
-            .background(AppTheme.Colors.charcoal)
-            .navigationTitle("Report Station")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: cancelAction)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
-                }
+    }
+
+    // MARK: - Compact post-navigation mode
+
+    /// "Did you visit X?" -> Report Price opens exactly this: station already selected, E85
+    /// price field auto-focused, no ethanol section, no note field, no Save-Locally-vs-Report
+    /// choice (see StationsView.savePriceUpdate's own submission-semantics comment) — the sole
+    /// purpose of this entry point is a community report, so its one button goes straight to
+    /// `saveAndReportAction`, the exact same closure/pipeline the full sheet's "Save & Report
+    /// Price" button already calls, never a duplicate. An existing community price, if one
+    /// exists, is shown read-only as context, never copied into the editable field — a user
+    /// should type what they actually saw, not blindly resubmit a possibly-stale prior value.
+    @ViewBuilder
+    private var compactReportContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(context.stationName.isEmpty ? "Station" : context.stationName)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(2)
+
+                Label("E85", systemImage: "fuelpump.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
             }
+
+            if let existingCommunityPrice = context.existingCommunityPrice,
+               let existingCommunityPriceReportedAt = context.existingCommunityPriceReportedAt {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CURRENT COMMUNITY PRICE")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.9)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    HStack(spacing: 8) {
+                        Text("\(existingCommunityPrice.communityPriceText)/gal")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                        Text(existingCommunityPriceReportedAt.communityReportedText)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("E85 price you saw")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                HStack(spacing: 4) {
+                    Text("$")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    TextField("0.00", text: $priceInput)
+                        .keyboardType(.decimalPad)
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .focused($isPriceFieldFocused)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("E85 price in dollars per gallon")
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(validationMessage == nil ? AppTheme.Colors.border : AppTheme.Colors.warningRed, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            }
+
+            Button(action: saveAndReportAction) {
+                HStack(spacing: 8) {
+                    if isSubmittingCommunityPrice {
+                        ProgressView()
+                            .tint(AppTheme.Colors.textPrimary)
+                    }
+                    Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Submit Price")
+                }
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.primaryGreen)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmittingCommunityPrice)
+
+            if let remoteReportFailureMessage {
+                Text(remoteReportFailureMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            }
+
+            Text("Community reported — not independently verified.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+
+            Spacer(minLength: 0)
         }
-        .keyboardDoneToolbar()
+        .padding(20)
+        .onAppear {
+            isPriceFieldFocused = true
+        }
     }
 
     private var ethanolReportCard: some View {

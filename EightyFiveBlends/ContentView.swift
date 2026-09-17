@@ -39,6 +39,15 @@ struct ContentView: View {
     @State private var widgetStation: NearbyE85Station?
     @State private var widgetSnapshot: NearbyE85Snapshot?
     @State private var pendingWidgetURL: URL?
+    // 85Blends 2.4.0 post-navigation price-contribution prompt — set only at the exact moment
+    // attemptPendingPriceContributionPromptIfNeeded() below decides to show the banner; never
+    // bound continuously to PendingPriceContributionStore.shared.current, mirroring how
+    // isShowingWhatsNew/widgetStation are likewise plain @State flipped at one decision point
+    // rather than a reactively-observed external store.
+    @State private var activePriceContribution: PendingPriceContribution?
+    // Pre-commit fix (validation pass) — guards price_report_prompt_shown against duplicate
+    // impressions for the same contribution; see recordPromptShownIfNeeded(for:) below.
+    @State private var lastPromptShownContribution: PendingPriceContribution?
     @Environment(StationLocationManager.self) private var widgetLocationManager
     @State private var selectedTab: Tab = .stations
     @State private var isShowingWhatsNew = false
@@ -170,9 +179,38 @@ struct ContentView: View {
                 // transition that follows is a natural, already-instrumented point to check —
                 // never fired synchronously from the Directions tap itself. See
                 // attemptAutomaticReviewRequestIfNeeded() below for the full safety gate.
+                //
+                // 85Blends 2.4.0 price-contribution prompt — deliberately evaluated FIRST on
+                // the exact same transition: if a pending contribution becomes eligible and
+                // safe to show, this activation shows the banner and skips the review-request
+                // attempt entirely for THIS activation only. ReviewRequestManager's own
+                // persisted state (session count, engagement eligibility, etc.) is never
+                // touched by that skip, so review-request eligibility is simply re-evaluated
+                // normally on a later qualifying activation — it is never permanently
+                // suppressed. Price information is time-sensitive; the review request can wait.
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active {
-                        attemptAutomaticReviewRequestIfNeeded()
+                        if attemptPendingPriceContributionPromptIfNeeded() == false {
+                            attemptAutomaticReviewRequestIfNeeded()
+                        }
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    if let activePriceContribution {
+                        PendingPriceContributionBannerView(
+                            stationName: activePriceContribution.stationName,
+                            onReportPrice: { handleReportPriceTapped(for: activePriceContribution) },
+                            onNotNow: { handleNotNowTapped(for: activePriceContribution) }
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        // The real "shown" boundary — see recordPromptShownIfNeeded(for:)'s own
+                        // doc comment. Fires only once this view has actually been asked to
+                        // appear, never merely because activePriceContribution was assigned.
+                        .onAppear {
+                            recordPromptShownIfNeeded(for: activePriceContribution)
+                        }
                     }
                 }
                 .sheet(
@@ -300,6 +338,100 @@ struct ContentView: View {
         ) else { return }
 
         requestReview()
+    }
+
+    /// 85Blends 2.4.0 price-contribution prompt. Called only on a return to `.active`, BEFORE
+    /// attemptAutomaticReviewRequestIfNeeded() — see this method's call site above for the
+    /// arbitration this ordering implements. Returns `true` exactly when the banner was shown
+    /// this activation (so the caller skips the review-request attempt for it), `false`
+    /// otherwise. Building `hasConflictingPresentation` identically to
+    /// attemptAutomaticReviewRequestIfNeeded()'s own means this prompt never competes with any
+    /// of ContentView's other existing presentations either — but it has no visibility into
+    /// StationsView's own private sheet state (e.g. a Classic station's StationPriceUpdateSheet
+    /// already open for something else); the banner is a non-modal `.safeAreaInset`, so such a
+    /// sheet already structurally covers/obscures it, and this method does not need to know it
+    /// exists to get that protection. An expired contribution is discarded here rather than left
+    /// to linger silently forever.
+    @discardableResult
+    private func attemptPendingPriceContributionPromptIfNeeded() -> Bool {
+        let now = Date.now
+        guard let pending = PendingPriceContributionStore.shared.current else { return false }
+
+        if PendingPriceContributionEligibility.isExpired(pending, now: now) {
+            PendingPriceContributionStore.shared.clear()
+            return false
+        }
+
+        let hasConflictingPresentation = isShowingWhatsNew || widgetStation != nil || pendingWidgetURL != nil
+        guard PendingPriceContributionEligibility.shouldPresent(
+            pending: pending,
+            now: now,
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            isConsentResolutionPending: AdManager.shared.isInitialConsentResolutionPending,
+            hasConflictingPresentation: hasConflictingPresentation,
+            isPaywallPresented: SubscriptionManager.shared.isPaywallPresented,
+            isPurchaseActive: SubscriptionManager.shared.purchaseState != .idle,
+            isAppActive: scenePhase == .active
+        ) else {
+            return false
+        }
+
+        // Pre-commit fix (validation pass) — deliberately does NOT fire
+        // price_report_prompt_shown here. Setting this @State only means "the banner is
+        // about to be asked to render" — it says nothing about whether it actually appeared
+        // on screen. The event now fires from the banner's own `.onAppear` (see
+        // recordPromptShownIfNeeded(for:) and its call site in body), the real visibility
+        // boundary a "shown" impression should mean.
+        activePriceContribution = pending
+        return true
+    }
+
+    /// "Report Price" — hides the banner, switches to the Stations tab, and hands the
+    /// contribution to StationsView (see PriceContributionPresentationRequest) to open the
+    /// compact reporter for it. Deliberately does NOT clear PendingPriceContributionStore
+    /// here: the contribution stays pending until reporting reaches a terminal state (success,
+    /// a genuine failure, or the user cancelling the sheet) — see
+    /// StationsView.savePriceUpdate/handlePriceUpdateCancel.
+    ///
+    /// Pre-commit fix (validation pass) — the user can tap "Report Price" from any tab, and a
+    /// `.sheet` presented from a TabView child that isn't the currently selected/visible tab is
+    /// not reliable. `selectedTab = .stations` is set in the SAME synchronous call as the
+    /// presentation request, deliberately without any added yield/delay: this exact shape —
+    /// one shared piece of state changing, a tab switch AND a sibling view's own reaction both
+    /// following from it in the same SwiftUI update pass — is already the proven, shipped
+    /// pattern this app uses for Automatic Pump Detection (ContentView's own
+    /// `.onChange(of: pumpDetectionService.pendingDetectedStation)` switches to `.calculator` at
+    /// the same moment CalculatorView's independent `.onChange` of that identical value opens
+    /// Pump Mode — see CalculatorView.swift:367-369). No new coordinator was introduced; this
+    /// reuses the existing `selectedTab`/`Tab` mechanism already on this view.
+    private func handleReportPriceTapped(for contribution: PendingPriceContribution) {
+        activePriceContribution = nil
+        selectedTab = .stations
+        PriceContributionPresentationRequest.shared.pendingRequest = contribution
+    }
+
+    /// The real "the user could actually see this" boundary for price_report_prompt_shown —
+    /// called from the banner's own `.onAppear` (see body), never from the moment
+    /// `activePriceContribution` is merely assigned. Guarded by `lastPromptShownContribution`
+    /// (compared via PendingPriceContribution's own Equatable conformance, which includes
+    /// `directionsOpenedAt`) so repeated body evaluations, a Dynamic Type change, or any other
+    /// unrelated re-render can never re-fire an impression for the SAME contribution — while a
+    /// genuinely new contribution (a different station, or the same station on a later visit)
+    /// still correctly counts as its own new impression. If presentation was ever unsafe, this
+    /// is simply never called at all (the banner never mounts), so no impression is recorded
+    /// for a prompt the user could never see.
+    private func recordPromptShownIfNeeded(for contribution: PendingPriceContribution) {
+        guard lastPromptShownContribution != contribution else { return }
+        lastPromptShownContribution = contribution
+        AnalyticsService.track(.priceReportPromptShown, properties: AnalyticsEventProperties(entryPoint: .other))
+    }
+
+    /// "Not Now" — hides the banner and consumes the contribution immediately so this exact
+    /// navigation event is never shown again (no cooldown/tombstone system; one pending
+    /// navigation event is enough).
+    private func handleNotNowTapped(for contribution: PendingPriceContribution) {
+        activePriceContribution = nil
+        PendingPriceContributionStore.shared.clear()
     }
 }
 
