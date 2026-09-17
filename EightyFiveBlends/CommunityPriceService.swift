@@ -105,6 +105,41 @@ struct CommunityPriceService {
         )
     }
 
+    func fetchLatestEthanolReport(
+        forNormalizedStationKey normalizedStationKey: String
+    ) async throws -> CommunityEthanolSummary? {
+        let trimmedKey = normalizedStationKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedKey.isEmpty == false else { return nil }
+
+        let station = try await fetchCommunityStation(forNormalizedStationKey: trimmedKey)
+        guard let stationID = station?.id else { return nil }
+
+        var components = try ethanolReportsEndpointComponents()
+        components.queryItems = [
+            URLQueryItem(
+                name: "select",
+                value: "id,station_id,ethanol_percentage,reported_at,anonymous_reporter_id,app_version,note,created_at"
+            ),
+            URLQueryItem(name: "station_id", value: "eq.\(stationID.uuidString)"),
+            URLQueryItem(name: "order", value: "reported_at.desc,created_at.desc"),
+            URLQueryItem(name: "limit", value: "1")
+        ]
+
+        let reports: [CommunityEthanolReport] = try await performRequest(
+            components: components,
+            method: "GET",
+            functionName: "fetchLatestEthanolReport"
+        )
+
+        guard reports.isEmpty == false else { return nil }
+
+        return CommunityEthanolSummary(
+            normalizedStationKey: trimmedKey,
+            latestReport: reports.first,
+            reportCount: reports.first == nil ? 0 : 1
+        )
+    }
+
     /// 2.3.2 community-station upsert security hardening: this used to send
     /// `Prefer: resolution=merge-duplicates`, which PostgREST turns into
     /// `INSERT ... ON CONFLICT (normalized_key) DO UPDATE ...` -- Postgres requires UPDATE
@@ -262,12 +297,86 @@ struct CommunityPriceService {
         throw CommunityPriceServiceError.invalidResponse
     }
 
+    func submitEthanolReport(
+        normalizedStationKey: String,
+        stationID: UUID? = nil,
+        ethanolPercentage: Double,
+        reportedAt: Date = .now,
+        notes: String? = nil,
+        appVersion: String? = nil
+    ) async throws -> CommunityEthanolReport {
+        let resolvedStationID: UUID
+        if let stationID {
+            resolvedStationID = stationID
+        } else {
+            let station = try await upsertCommunityStation(
+                normalizedStationKey: normalizedStationKey,
+                name: normalizedStationKey,
+                streetAddress: nil,
+                city: nil,
+                state: nil,
+                zip: nil,
+                latitude: nil,
+                longitude: nil
+            )
+            guard let stationID = station.id else {
+                throw CommunityPriceServiceError.stationLookupFailed
+            }
+            resolvedStationID = stationID
+        }
+
+        let normalizedPercentage = CommunityEthanolValidation.normalizedToOneDecimalPlace(
+            ethanolPercentage
+        )
+        let limitedNotes = Self.limitedNote(from: notes)
+        let payload = CommunityEthanolReportPayload(
+            stationID: resolvedStationID,
+            ethanolPercentage: normalizedPercentage,
+            reportedAt: reportedAt,
+            reporterID: Self.anonymousReporterID,
+            note: limitedNotes,
+            appVersion: appVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        let data = try await performRequestData(
+            components: try ethanolReportsEndpointComponents(),
+            method: "POST",
+            functionName: "submitEthanolReport",
+            payload: AnyEncodable(payload),
+            extraHeaders: [
+                "Prefer": "return=representation"
+            ]
+        )
+
+        if isResponseBodyEmpty(data) {
+            return CommunityEthanolReport(
+                id: nil,
+                stationID: resolvedStationID,
+                ethanolPercentage: normalizedPercentage,
+                reportedAt: reportedAt,
+                reporterID: Self.anonymousReporterID,
+                notes: limitedNotes,
+                createdAt: nil
+            )
+        }
+
+        if let report = try decodeSingleOrArray(CommunityEthanolReport.self, from: data) {
+            return report
+        }
+
+        throw CommunityPriceServiceError.invalidResponse
+    }
+
     private func stationsEndpointComponents() throws -> URLComponents {
         try endpointComponents(path: "community_stations")
     }
 
     private func reportsEndpointComponents() throws -> URLComponents {
         try endpointComponents(path: "e85_price_reports")
+    }
+
+    private func ethanolReportsEndpointComponents() throws -> URLComponents {
+        try endpointComponents(path: "e85_ethanol_reports")
     }
 
     private func fetchCommunityStation(forNormalizedStationKey normalizedStationKey: String) async throws -> CommunityStation? {
@@ -554,6 +663,24 @@ private struct CommunityPriceReportPayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case stationID = "station_id"
         case price
+        case reportedAt = "reported_at"
+        case reporterID = "anonymous_reporter_id"
+        case note
+        case appVersion = "app_version"
+    }
+}
+
+private struct CommunityEthanolReportPayload: Encodable {
+    let stationID: UUID
+    let ethanolPercentage: Double
+    let reportedAt: Date
+    let reporterID: String
+    let note: String?
+    let appVersion: String?
+
+    enum CodingKeys: String, CodingKey {
+        case stationID = "station_id"
+        case ethanolPercentage = "ethanol_percentage"
         case reportedAt = "reported_at"
         case reporterID = "anonymous_reporter_id"
         case note

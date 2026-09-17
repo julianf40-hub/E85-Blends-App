@@ -79,9 +79,16 @@ struct StationsView: View {
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
     @State private var isSubmittingCommunityPrice = false
+    @State private var ethanolInput = ""
+    @State private var ethanolValidationMessage: String?
+    @State private var isSubmittingCommunityEthanol = false
+    @State private var pendingOutOfRangeEthanolPercentage: Double?
     @State private var communityPriceSummaries: [String: CommunityPriceSummary] = [:]
     @State private var communityPriceSyncMessage: String?
     @State private var communityPriceTask: Task<Void, Never>?
+    @State private var communityEthanolSummaries: [String: CommunityEthanolSummary] = [:]
+    @State private var communityEthanolSyncMessage: String?
+    @State private var communityEthanolTask: Task<Void, Never>?
     // Dedicated presentation state for the post-submission celebration — deliberately separate
     // from `infoMessage` (the generic error/info alert) so a successful community report can
     // never be confused with, or collide with, an unrelated info/error alert. Set only at the
@@ -855,6 +862,7 @@ struct StationsView: View {
         .onDisappear {
             liveSearchTask?.cancel()
             communityPriceTask?.cancel()
+            communityEthanolTask?.cancel()
             communityReportSuccessDismissTask?.cancel()
             typedLocationSearchTask?.cancel()
             isSearchingLive = false
@@ -961,11 +969,34 @@ struct StationsView: View {
                 isSubmittingCommunityPrice: isSubmittingCommunityPrice,
                 saveLocalAction: { savePriceUpdate(for: context, reportToCommunity: false) },
                 saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
-                cancelAction: dismissPriceUpdateSheet
+                cancelAction: dismissPriceUpdateSheet,
+                ethanolInput: $ethanolInput,
+                ethanolValidationMessage: $ethanolValidationMessage,
+                isSubmittingCommunityEthanol: isSubmittingCommunityEthanol,
+                canReportEthanol: context.canReportToCommunity,
+                submitEthanolAction: { attemptSubmitEthanolReport(for: context) }
             )
-            .presentationDetents([.medium])
+            .confirmationDialog(
+                "Confirm Ethanol Percentage",
+                isPresented: pendingOutOfRangeEthanolConfirmationBinding,
+                titleVisibility: .visible
+            ) {
+                Button("Submit Anyway") {
+                    guard let percentage = pendingOutOfRangeEthanolPercentage else { return }
+                    pendingOutOfRangeEthanolPercentage = nil
+                    submitEthanolReport(for: context, percentage: percentage)
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingOutOfRangeEthanolPercentage = nil
+                }
+            } message: {
+                if let percentage = pendingOutOfRangeEthanolPercentage {
+                    Text("\(String(format: "%.1f", percentage)) percent is outside the typical 51 to 83 percent range for E85. Submit anyway?")
+                }
+            }
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .interactiveDismissDisabled(isSubmittingCommunityPrice)
+            .interactiveDismissDisabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
         }
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
@@ -1204,6 +1235,10 @@ struct StationsView: View {
                 communitySyncMessageRow(communityPriceSyncMessage)
             }
 
+            if let communityEthanolSyncMessage {
+                communitySyncMessageRow(communityEthanolSyncMessage)
+            }
+
             if let liveSearchError {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -1331,6 +1366,7 @@ struct StationsView: View {
             StationRowCard(
                 station: saved,
                 communitySummary: communitySummary(for: saved),
+                communityEthanolSummary: communityEthanolSummary(for: saved),
                 directionsAction: { directionsMessage(for: saved) },
                 updatePriceAction: { beginPriceUpdate(for: saved) },
                 favoriteAction: { toggleFavorite(saved) },
@@ -1345,6 +1381,7 @@ struct StationsView: View {
                 station: live,
                 isSaved: false,
                 communitySummary: communitySummary(for: live),
+                communityEthanolSummary: communityEthanolSummary(for: live),
                 directionsAction: { directionsMessage(for: live) },
                 reportPriceAction: { beginPriceUpdate(for: live) },
                 // PR D — the Classic nearby-station action is now Favorite, matching the
@@ -1357,6 +1394,7 @@ struct StationsView: View {
                     station: live,
                     isSaved: true,
                     communitySummary: communitySummary(for: saved),
+                    communityEthanolSummary: communityEthanolSummary(for: saved),
                     directionsAction: { directionsMessage(for: live) },
                     reportPriceAction: { beginPriceUpdate(for: saved) },
                     saveAction: { }
@@ -1365,6 +1403,7 @@ struct StationsView: View {
                 StationRowCard(
                     station: saved,
                     communitySummary: communitySummary(for: saved),
+                    communityEthanolSummary: communityEthanolSummary(for: saved),
                     directionsAction: { directionsMessage(for: saved) },
                     updatePriceAction: { beginPriceUpdate(for: saved) },
                     favoriteAction: { toggleFavorite(saved) },
@@ -2025,6 +2064,17 @@ struct StationsView: View {
             set: { isPresented in
                 if isPresented == false {
                     infoMessage = nil
+                }
+            }
+        )
+    }
+
+    private var pendingOutOfRangeEthanolConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { pendingOutOfRangeEthanolPercentage != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    pendingOutOfRangeEthanolPercentage = nil
                 }
             }
         )
@@ -2843,6 +2893,16 @@ struct StationsView: View {
         return communityPriceSummaries[key]
     }
 
+    private func communityEthanolSummary(for station: FuelStation) -> CommunityEthanolSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityEthanolSummaries[key]
+    }
+
+    private func communityEthanolSummary(for station: LiveFuelStation) -> CommunityEthanolSummary? {
+        guard let key = normalizedStationKey(for: station) else { return nil }
+        return communityEthanolSummaries[key]
+    }
+
     /// Only validated current-session, current-location results may cross into the widget.
     /// Typed searches and cold-launch provisional previews cannot relocate "nearby".
     private func publishNearbyWidgetSnapshot() {
@@ -2870,6 +2930,7 @@ struct StationsView: View {
     }
 
     private func refreshCommunityPricePreviews() {
+        refreshCommunityEthanolPreviews()
         publishNearbyWidgetSnapshot()
         communityPriceTask?.cancel()
 
@@ -2909,6 +2970,43 @@ struct StationsView: View {
         }
     }
 
+    private func refreshCommunityEthanolPreviews() {
+        communityEthanolTask?.cancel()
+
+        let keys = Set(
+            stations.compactMap(normalizedStationKey(for:)) +
+            liveStations.compactMap(normalizedStationKey(for:))
+        )
+
+        guard keys.isEmpty == false else {
+            communityEthanolSummaries = [:]
+            communityEthanolSyncMessage = nil
+            return
+        }
+
+        communityEthanolTask = Task {
+            do {
+                let service = try CommunityPriceService()
+                let summaries = try await fetchCommunityEthanolSummaries(
+                    keys: keys,
+                    service: service
+                )
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityEthanolSummaries = summaries
+                    communityEthanolSyncMessage = nil
+                }
+            } catch {
+                guard Task.isCancelled == false else { return }
+                await MainActor.run {
+                    communityEthanolSummaries = [:]
+                    communityEthanolSyncMessage =
+                        "Community ethanol reports are temporarily unavailable."
+                }
+            }
+        }
+    }
+
     private func fetchCommunitySummaries(
         keys: Set<String>,
         service: CommunityPriceService
@@ -2922,6 +3020,30 @@ struct StationsView: View {
             }
 
             var summaries: [String: CommunityPriceSummary] = [:]
+            for try await (key, summary) in group {
+                if let summary {
+                    summaries[key] = summary
+                }
+            }
+            return summaries
+        }
+    }
+
+    private func fetchCommunityEthanolSummaries(
+        keys: Set<String>,
+        service: CommunityPriceService
+    ) async throws -> [String: CommunityEthanolSummary] {
+        try await withThrowingTaskGroup(of: (String, CommunityEthanolSummary?).self) { group in
+            for key in keys {
+                group.addTask {
+                    let summary = try await service.fetchLatestEthanolReport(
+                        forNormalizedStationKey: key
+                    )
+                    return (key, summary)
+                }
+            }
+
+            var summaries: [String: CommunityEthanolSummary] = [:]
             for try await (key, summary) in group {
                 if let summary {
                     summaries[key] = summary
@@ -2977,6 +3099,9 @@ struct StationsView: View {
         priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
         priceNoteInput = station.notes
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
         priceUpdateContext = .saved(station)
     }
 
@@ -2986,15 +3111,22 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
         priceUpdateContext = .live(station)
     }
 
     private func dismissPriceUpdateSheet() {
         isSubmittingCommunityPrice = false
+        isSubmittingCommunityEthanol = false
         priceUpdateContext = nil
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        ethanolInput = ""
+        ethanolValidationMessage = nil
+        pendingOutOfRangeEthanolPercentage = nil
     }
 
     /// The one and only call site for showing the celebration — invoked exactly where
@@ -3119,6 +3251,88 @@ struct StationsView: View {
                     presentCommunityReportSuccess()
                 } else if let failureMessage {
                     infoMessage = failureMessage
+                }
+            }
+        }
+    }
+
+    private func attemptSubmitEthanolReport(for context: StationPriceUpdateContext) {
+        guard isSubmittingCommunityEthanol == false else { return }
+
+        guard let percentage = CommunityEthanolValidation.parseValidPercentage(from: ethanolInput) else {
+            ethanolValidationMessage = "Enter an ethanol percentage between 0 and 100."
+            return
+        }
+
+        ethanolValidationMessage = nil
+        if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+            pendingOutOfRangeEthanolPercentage = percentage
+            return
+        }
+
+        submitEthanolReport(for: context, percentage: percentage)
+    }
+
+    private func submitEthanolReport(
+        for context: StationPriceUpdateContext,
+        percentage: Double
+    ) {
+        guard isSubmittingCommunityEthanol == false else { return }
+        guard context.canReportToCommunity else {
+            infoMessage = "This station doesn't have enough location information to report an ethanol percentage yet."
+            return
+        }
+
+        isSubmittingCommunityEthanol = true
+        let trimmedNote = priceNoteInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Task {
+            var failureMessage: String?
+
+            do {
+                let service = try CommunityPriceService()
+                let normalizedKey = normalizedStationKey(for: context)
+                let communityStation = try await service.upsertCommunityStation(
+                    normalizedStationKey: normalizedKey,
+                    name: context.stationName,
+                    streetAddress: context.optionalAddress,
+                    city: context.optionalCity,
+                    state: context.optionalState,
+                    zip: context.optionalZipCode,
+                    latitude: context.latitude,
+                    longitude: context.longitude
+                )
+
+                _ = try await service.submitEthanolReport(
+                    normalizedStationKey: normalizedKey,
+                    stationID: communityStation.id,
+                    ethanolPercentage: percentage,
+                    reportedAt: .now,
+                    notes: trimmedNote.isEmpty ? nil : trimmedNote,
+                    appVersion: appVersionString
+                )
+            } catch {
+#if DEBUG
+                print("Community ethanol report failed:", error)
+#endif
+                if let serviceError = error as? CommunityPriceServiceError,
+                   case .notConfigured = serviceError {
+                    failureMessage = "Community ethanol reporting is not available right now."
+                } else {
+                    failureMessage = "Ethanol percentage could not be submitted — please try again later."
+                }
+            }
+
+            await MainActor.run {
+                isSubmittingCommunityEthanol = false
+                if let failureMessage {
+                    infoMessage = failureMessage
+                } else {
+                    ethanolInput = ""
+                    ethanolValidationMessage = nil
+                    refreshCommunityEthanolPreviews()
+                    AppHaptics.success()
+                    infoMessage = "Ethanol percentage reported. Thanks for helping the E85 community."
                 }
             }
         }
@@ -3478,6 +3692,7 @@ private struct StationDisplayItem: Identifiable {
 private struct StationRowCard: View {
     let station: FuelStation
     let communitySummary: CommunityPriceSummary?
+    let communityEthanolSummary: CommunityEthanolSummary?
     let directionsAction: () -> String?
     let updatePriceAction: () -> Void
     let favoriteAction: () -> Void
@@ -3585,6 +3800,7 @@ private struct StationRowCard: View {
                 }
 
                 communityPricePreview
+                CommunityEthanolPreview(summary: communityEthanolSummary)
             }
 
             HStack {
@@ -3914,6 +4130,7 @@ private struct LiveStationRowCard: View {
     let station: LiveFuelStation
     let isSaved: Bool
     let communitySummary: CommunityPriceSummary?
+    let communityEthanolSummary: CommunityEthanolSummary?
     let directionsAction: () -> String?
     let reportPriceAction: () -> Void
     let saveAction: () -> Void
@@ -3968,6 +4185,7 @@ private struct LiveStationRowCard: View {
             }
 
             communityPricePreview
+            CommunityEthanolPreview(summary: communityEthanolSummary)
 
             HStack(spacing: 8) {
                 stationActionButton(
@@ -4151,6 +4369,71 @@ private struct LiveStationRowCard: View {
     }
 }
 
+private struct CommunityEthanolPreview: View {
+    let summary: CommunityEthanolSummary?
+
+    var body: some View {
+        if let percentage = summary?.latestPercentage,
+           let reportedAt = summary?.latestReportedAt {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("COMMUNITY ETHANOL")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                HStack(spacing: 8) {
+                    Text(String(format: "%.1f%%", percentage))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                    Text(reportedAt.communityReportedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+
+                if reportedAt.communityPriceIsStale {
+                    Text("Ethanol percentage may be outdated")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+
+                if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+                    Text("Outside the typical 51–83% E85 range")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+
+                Text("Community reported — not independently verified.")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+            .padding(.top, 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel(percentage: percentage, reportedAt: reportedAt))
+        } else {
+            Text("No community ethanol % yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .padding(.top, 2)
+        }
+    }
+
+    private func accessibilityLabel(percentage: Double, reportedAt: Date) -> String {
+        var parts = [
+            "Community reported ethanol percentage: \(String(format: "%.1f", percentage)) percent",
+            reportedAt.communityReportedText,
+            "not independently verified"
+        ]
+        if reportedAt.communityPriceIsStale {
+            parts.append("may be outdated")
+        }
+        if CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage) {
+            parts.append("outside the typical 51 to 83 percent E85 range")
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+
 private struct StationPriceUpdateContext: Identifiable {
     let id = UUID()
     let station: FuelStation?
@@ -4231,6 +4514,11 @@ private struct StationPriceUpdateSheet: View {
     let saveLocalAction: () -> Void
     let saveAndReportAction: () -> Void
     let cancelAction: () -> Void
+    @Binding var ethanolInput: String
+    @Binding var ethanolValidationMessage: String?
+    let isSubmittingCommunityEthanol: Bool
+    let canReportEthanol: Bool
+    let submitEthanolAction: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -4305,7 +4593,7 @@ private struct StationPriceUpdateSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(.plain)
-                            .disabled(isSubmittingCommunityPrice)
+                            .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
 
                             if context.canReportToCommunity {
                                 Button(action: saveAndReportAction) {
@@ -4324,7 +4612,7 @@ private struct StationPriceUpdateSheet: View {
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(isSubmittingCommunityPrice)
+                                .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                             } else {
                                 Text("This station doesn't have enough location information for community reporting yet.")
                                     .font(.caption)
@@ -4343,21 +4631,106 @@ private struct StationPriceUpdateSheet: View {
                             .stroke(AppTheme.Colors.border, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+                    ethanolReportCard
                 }
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationTitle("Update Price")
+            .navigationTitle("Update Station")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: cancelAction)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .disabled(isSubmittingCommunityPrice)
+                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                 }
             }
         }
         .keyboardDoneToolbar()
+    }
+
+    private var ethanolReportCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Report Ethanol Percentage")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Text("Independent of the price above — report either, both, or neither.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            TextField("Ethanol percentage", text: $ethanolInput)
+                .keyboardType(.decimalPad)
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(
+                            ethanolValidationMessage == nil
+                                ? AppTheme.Colors.border
+                                : AppTheme.Colors.warningRed,
+                            lineWidth: 1
+                        )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .accessibilityLabel("Ethanol percentage")
+                .accessibilityHint("Enter a value from 0 to 100 percent")
+
+            Text("Community reported — not independently verified.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            if let ethanolValidationMessage {
+                Text(ethanolValidationMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            }
+
+            if canReportEthanol {
+                Button(action: submitEthanolAction) {
+                    HStack(spacing: 8) {
+                        if isSubmittingCommunityEthanol {
+                            ProgressView()
+                                .tint(AppTheme.Colors.textPrimary)
+                        }
+                        Text(
+                            isSubmittingCommunityEthanol
+                                ? "Reporting Ethanol Percentage…"
+                                : "Report Ethanol Percentage"
+                        )
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(AppTheme.Colors.primaryGreen)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSubmittingCommunityEthanol || isSubmittingCommunityPrice)
+            } else {
+                Text("This station doesn't have enough location information for community ethanol reporting yet.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 
