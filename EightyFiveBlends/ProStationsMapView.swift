@@ -221,6 +221,14 @@ struct ProStationsMapView: View {
     /// section 26). Favorites content itself is never a second data model — see favoriteItems
     /// below, which derives from `items` on every access, same as everything else in this view.
     @State private var isFavoritesPresented = false
+    /// Accessibility follow-up to PR #70 — the selected-station card's scrollable details block
+    /// (name/badges/price/community ethanol) reports its own measured height here via
+    /// onGeometryChange in selectedStationCard(_:availableHeight:), so that block can be given
+    /// exactly its natural height when it fits and capped/scrollable only when it doesn't,
+    /// rather than always reserving a fixed guessed height. Seeded to a reasonable compact-card
+    /// estimate so the very first card shown doesn't flash from a collapsed state before the
+    /// first real measurement arrives.
+    @State private var selectedCardDetailsHeight: CGFloat = 200
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var isSearchFieldFocused: Bool
 
@@ -512,12 +520,19 @@ struct ProStationsMapView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             } else if let selectedItem {
-                VStack {
-                    Spacer()
-                    selectedStationCard(selectedItem)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                // Accessibility follow-up to PR #70 — GeometryReader here (rather than a
+                // hardcoded device height) reports the actual space this screen has to offer,
+                // so selectedStationCard can bound its own height to what's really available
+                // instead of a guessed constant. Scoped to just this branch — the map/header/
+                // controls/Favorites panel siblings above are all unaffected.
+                GeometryReader { proxy in
+                    VStack {
+                        Spacer()
+                        selectedStationCard(selectedItem, availableHeight: proxy.size.height)
+                            .padding(.horizontal, 12)
+                            .padding(.bottom, 12)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
             }
         }
@@ -945,66 +960,82 @@ struct ProStationsMapView: View {
     // MARK: Selected station card
 
     @ViewBuilder
-    private func selectedStationCard(_ item: ProStationMapItem) -> some View {
+    private func selectedStationCard(_ item: ProStationMapItem, availableHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             // PR C section 28-34: swipe browsing lives ONLY on this details block, never on the
-            // action-button row below — attaching a drag gesture to a parent containing the
-            // Directions/Save/Favorite/Report buttons risked exactly the "buttons stop firing"
-            // failure mode section 32 explicitly forbids keeping; this block and the button row
-            // are disjoint siblings, so the gesture can never intercept a button tap.
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.displayName)
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                        if item.displayAddress.isEmpty == false {
-                            Text(item.displayAddress)
-                                .font(.caption)
+            // action-button row below — this block and the button row stay disjoint siblings, so
+            // the gesture can never intercept a button tap. Accessibility follow-up to PR #70 —
+            // the community ethanol section can make this block taller than the screen at large
+            // Dynamic Type sizes, so it's now wrapped in a ScrollView, capped to
+            // maxSelectedCardDetailsHeight(availableHeight:) below (derived from this screen's
+            // own measured viewport, never a hardcoded device height) and given exactly its
+            // measured natural height (selectedCardDetailsHeight, via onGeometryChange) whenever
+            // that's smaller — so a normal, short card looks exactly as before, with no added
+            // scrolling chrome. The swipe gesture moves from .gesture to .simultaneousGesture so
+            // it no longer competes with the ScrollView for the same drag — a plain .gesture would
+            // otherwise claim the touch and block scrolling; swipeGesture's own
+            // horizontal-dominant/60pt guard already keeps a vertical scroll drag from ever being
+            // misread as a station-browsing swipe, with or without that exclusivity.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.displayName)
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                            if item.displayAddress.isEmpty == false {
+                                Text(item.displayAddress)
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                                selectedStationID = nil
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                        }
+                        .accessibilityLabel("Close station details")
+                    }
+
+                    HStack(spacing: 12) {
+                        if let distanceMiles = item.distanceMiles {
+                            Label(String(format: "%.1f mi", distanceMiles), systemImage: "location.fill")
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(AppTheme.Colors.textSecondary)
                         }
-                    }
-                    Spacer()
-                    Button {
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                            selectedStationID = nil
+                        if item.isSaved {
+                            Label("Saved", systemImage: "bookmark.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.primaryGreen)
                         }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(AppTheme.Colors.textMuted)
+                        if item.isFavorite {
+                            Label("Favorite", systemImage: "star.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.stationYellow)
+                        }
                     }
-                    .accessibilityLabel("Close station details")
-                }
+                    .labelStyle(.titleAndIcon)
 
-                HStack(spacing: 12) {
-                    if let distanceMiles = item.distanceMiles {
-                        Label(String(format: "%.1f mi", distanceMiles), systemImage: "location.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                    }
-                    if item.isSaved {
-                        Label("Saved", systemImage: "bookmark.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.primaryGreen)
-                    }
-                    if item.isFavorite {
-                        Label("Favorite", systemImage: "star.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                    priceSection(item.price)
+                    ethanolSection(item.ethanol)
+
+                    if browsableItems.count > 1 {
+                        pageIndicator
                     }
                 }
-                .labelStyle(.titleAndIcon)
-
-                priceSection(item.price)
-                ethanolSection(item.ethanol)
-
-                if browsableItems.count > 1 {
-                    pageIndicator
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { newHeight in
+                    selectedCardDetailsHeight = newHeight
                 }
             }
+            .frame(height: min(selectedCardDetailsHeight, maxSelectedCardDetailsHeight(availableHeight: availableHeight)))
+            .scrollBounceBehavior(.basedOnSize)
             .contentShape(Rectangle())
-            .gesture(swipeGesture)
+            .simultaneousGesture(swipeGesture)
             .accessibilityAction(named: Text("Next Station")) { selectNextStation() }
             .accessibilityAction(named: Text("Previous Station")) { selectPreviousStation() }
 
@@ -1052,6 +1083,22 @@ struct ProStationsMapView: View {
         .background(AppTheme.Colors.elevatedCardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(AppTheme.Colors.borderColor, lineWidth: 1))
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+    }
+
+    /// Accessibility follow-up to PR #70 — the most the scrollable details block inside
+    /// selectedStationCard(_:availableHeight:) may occupy, leaving room in `availableHeight`
+    /// (this screen's own measured viewport, from the GeometryReader in `body`) for everything
+    /// else the floating card still needs: its own 16pt top/bottom padding, the Divider, the
+    /// action-button row (sized generously for large Dynamic Type), and a top margin so the
+    /// card can never grow up into the header bar. `reservedChromeHeight` is a fixed UI-chrome
+    /// estimate, not a per-device screen height — it applies the same on every device, and only
+    /// ever narrows the cap on genuinely small/constrained viewports. `minimumDetailsHeight`
+    /// floors the result so a degenerate/very small `availableHeight` never collapses the
+    /// scrollable area to something unusable.
+    private func maxSelectedCardDetailsHeight(availableHeight: CGFloat) -> CGFloat {
+        let reservedChromeHeight: CGFloat = 220
+        let minimumDetailsHeight: CGFloat = 120
+        return max(availableHeight - reservedChromeHeight, minimumDetailsHeight)
     }
 
     /// PR C section 35-36 — a compact "N of M" indicator plus a subtle chevron affordance,
