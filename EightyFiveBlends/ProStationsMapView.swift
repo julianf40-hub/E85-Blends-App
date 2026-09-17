@@ -60,6 +60,19 @@ struct PremiumStationPricePresentation {
     let hasNoPriceAtAll: Bool
 }
 
+/// Already-resolved community ethanol copy for one station, mirroring
+/// PremiumStationPricePresentation above — Classic's own CommunityEthanolSummary resolution
+/// (StationsView.communityEthanolSummary(for:)), never re-derived or re-fetched here. `nil` means
+/// no community ethanol report exists yet for this station (see StationsView.
+/// premiumEthanolPresentation(for:)), which the card renders as a modest empty state rather than
+/// omitting the section entirely.
+struct PremiumStationEthanolPresentation {
+    let percentageText: String
+    let freshnessText: String
+    let isStale: Bool
+    let isOutsideTypicalRange: Bool
+}
+
 /// One premium map pin/card's worth of display data — derived fresh from StationsView's own
 /// unifiedItems every time that recomputes. Never persisted, never independently stored.
 struct ProStationMapItem: Identifiable {
@@ -76,6 +89,7 @@ struct ProStationMapItem: Identifiable {
     let shareAddress: String
     let distanceMiles: Double?
     let price: PremiumStationPricePresentation
+    let ethanol: PremiumStationEthanolPresentation?
     let isSaved: Bool
     let isFavorite: Bool
     let kind: ProStationKind
@@ -983,6 +997,7 @@ struct ProStationsMapView: View {
                 .labelStyle(.titleAndIcon)
 
                 priceSection(item.price)
+                ethanolSection(item.ethanol)
 
                 if browsableItems.count > 1 {
                     pageIndicator
@@ -1023,7 +1038,12 @@ struct ProStationsMapView: View {
                     actionButtonLabel(title: "Share", systemImage: "square.and.arrow.up")
                 }
                 .accessibilityLabel("Share \(item.displayName)")
-                actionButton(title: item.isSaved ? "Update" : "Report", systemImage: "dollarsign.circle", stationName: item.displayName) {
+                actionButton(
+                    title: "Price / E%",
+                    systemImage: "square.and.pencil",
+                    stationName: item.displayName,
+                    accessibilityLabel: "Report E85 price or ethanol percentage for \(item.displayName)"
+                ) {
                     onReportPrice(item.selection)
                 }
             }
@@ -1088,6 +1108,49 @@ struct ProStationsMapView: View {
         }
     }
 
+    /// Mirrors Classic's own CommunityEthanolPreview(summary:) hierarchy (StationsView.swift) —
+    /// same "Community" sourcing, staleness, and out-of-typical-range framing, just laid out to
+    /// match this card's price section instead of a list row. Never asserts community-reported
+    /// ethanol as verified/current pump composition — the same disclaimer Classic shows.
+    @ViewBuilder
+    private func ethanolSection(_ ethanol: PremiumStationEthanolPresentation?) -> some View {
+        if let ethanol {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(ethanol.percentageText)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+                    Text("Community")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(AppTheme.Colors.cardBackground, in: Capsule())
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                Text(ethanol.freshnessText)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                if ethanol.isStale {
+                    Text("Ethanol percentage may be outdated")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+                if ethanol.isOutsideTypicalRange {
+                    Text("Outside the typical 51–83% E85 range")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+                Text("Community reported — not independently verified.")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+        } else {
+            Text("No community ethanol % yet")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+    }
+
     /// Shared visual content for every action-row control (Directions/Favorite/Share/Report) —
     /// icon over label, equal-width, matching this card's established style. Factored out of
     /// actionButton(...) so ShareLink (a distinct root view type that can't be nested inside a
@@ -1112,10 +1175,16 @@ struct ProStationsMapView: View {
         .foregroundStyle(AppTheme.Colors.textPrimary)
     }
 
-    private func actionButton(title: String, systemImage: String, stationName: String, action: @escaping () -> Void) -> some View {
+    private func actionButton(
+        title: String,
+        systemImage: String,
+        stationName: String,
+        accessibilityLabel: String? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             actionButtonLabel(title: title, systemImage: systemImage)
         }
-        .accessibilityLabel("\(title) for \(stationName)")
+        .accessibilityLabel(accessibilityLabel ?? "\(title) for \(stationName)")
     }
 }

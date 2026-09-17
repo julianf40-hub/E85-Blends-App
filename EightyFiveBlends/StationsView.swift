@@ -560,15 +560,47 @@ struct StationsView: View {
         )
     }
 
+    /// Same community ethanol identity resolution premiumPricePresentation(for:) above already
+    /// uses for community price — a merged item's ethanol comes from the saved station's
+    /// community identity (communityEthanolSummary(for: saved)), matching StationRowCard's
+    /// existing merged-item behavior in unifiedStationCard(for:). Reuses the existing
+    /// communityEthanolSummaries dictionary/communityEthanolSummary(for:) lookups verbatim — no
+    /// new network call or staleness threshold. `nil` when no report exists yet, letting the
+    /// card show its own modest empty state rather than inventing placeholder copy here.
+    private func premiumEthanolPresentation(for item: StationDisplayItem) -> PremiumStationEthanolPresentation? {
+        let summary: CommunityEthanolSummary?
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            summary = communityEthanolSummary(for: saved)
+        case .nearbyOnly(let nearby):
+            summary = communityEthanolSummary(for: nearby)
+        }
+
+        guard
+            let percentage = summary?.latestPercentage,
+            let reportedAt = summary?.latestReportedAt
+        else {
+            return nil
+        }
+
+        return PremiumStationEthanolPresentation(
+            percentageText: percentage.e85EthanolLabelText,
+            freshnessText: reportedAt.communityReportedText,
+            isStale: reportedAt.communityPriceIsStale,
+            isOutsideTypicalRange: CommunityEthanolValidation.requiresConfirmation(forPercentage: percentage)
+        )
+    }
+
     /// VoiceOver label, built conditionally so a missing price/distance never speaks as
     /// "$0.00"/"nil" junk — see PR B's accessibility requirements. Order: name, saved/favorite
-    /// state, distance, price, freshness.
+    /// state, distance, price, freshness, community ethanol (when available).
     private func premiumAccessibilityDescription(
         name: String,
         isSaved: Bool,
         isFavorite: Bool,
         distanceMiles: Double?,
-        price: PremiumStationPricePresentation
+        price: PremiumStationPricePresentation,
+        ethanol: PremiumStationEthanolPresentation?
     ) -> String {
         var parts: [String] = [name.isEmpty ? "Station" : name]
         if isFavorite {
@@ -585,6 +617,12 @@ struct StationsView: View {
         if let freshnessText = price.freshnessText {
             parts.append(freshnessText)
         }
+        if let ethanol {
+            // Deliberately never asserts verified/current pump composition — mirrors
+            // CommunityEthanolPreview's own "not independently verified" framing.
+            parts.append("Community reported ethanol \(ethanol.percentageText)")
+            parts.append(ethanol.freshnessText)
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -595,6 +633,7 @@ struct StationsView: View {
         unifiedItems.compactMap { item in
             guard let coordinate = premiumMapCoordinate(for: item) else { return nil }
             let price = premiumPricePresentation(for: item)
+            let ethanol = premiumEthanolPresentation(for: item)
             let kind: ProStationKind = item.isSaved ? (item.isNearby ? .merged : .savedOnly) : .liveOnly
             // 2.3.2 gate fix — full postal address for Share, using StationDisplayItem's own
             // per-field, saved-preferred-but-nearby-completes Share resolution (see
@@ -610,6 +649,7 @@ struct StationsView: View {
                 shareAddress: item.shareAddress,
                 distanceMiles: item.distanceMiles,
                 price: price,
+                ethanol: ethanol,
                 isSaved: item.isSaved,
                 isFavorite: item.isFavorite,
                 kind: kind,
@@ -618,7 +658,8 @@ struct StationsView: View {
                     isSaved: item.isSaved,
                     isFavorite: item.isFavorite,
                     distanceMiles: item.distanceMiles,
-                    price: price
+                    price: price,
+                    ethanol: ethanol
                 )
             )
         }
@@ -3835,7 +3876,7 @@ private struct StationRowCard: View {
                     .accessibilityLabel("Get directions to \(station.name)")
 
                     Button(action: updatePriceAction) {
-                        Label("Update Price", systemImage: "tag.fill")
+                        Label("Price / E%", systemImage: "tag.fill")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.charcoal)
                             .frame(maxWidth: .infinity)
@@ -3843,7 +3884,7 @@ private struct StationRowCard: View {
                             .background(AppTheme.Colors.stationYellow)
                             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .accessibilityLabel("Update E85 price for \(station.name)")
+                    .accessibilityLabel("Report E85 price or ethanol percentage for \(station.name)")
                 }
 
                 HStack(spacing: 8) {
@@ -4199,14 +4240,14 @@ private struct LiveStationRowCard: View {
                 .accessibilityLabel("Get directions to \(station.name)")
 
                 stationActionButton(
-                    title: "Report Price",
+                    title: "Price / E%",
                     systemImage: "tag.fill",
                     foreground: AppTheme.Colors.charcoal,
                     background: AppTheme.Colors.stationYellow,
                     borderColor: nil,
                     action: reportPriceAction
                 )
-                .accessibilityLabel("Report E85 price for \(station.name)")
+                .accessibilityLabel("Report E85 price or ethanol percentage for \(station.name)")
 
                 // PR D — unified Favorite wording/icon (saves + favorites in one tap). The
                 // disabled "Saved" state for an already-merged station shown under the Nearby
@@ -4272,7 +4313,7 @@ private struct LiveStationRowCard: View {
     // behavior/labels/colors, just sized and spaced like card actions rather than pills:
     // explicit 44pt minimum tap height, a smaller explicit icon size, tighter padding, and no
     // lineLimit/truncation on the label — at large Dynamic Type or narrow widths, the label
-    // wraps to a second line instead of clipping "Report Price"/"Save Station" into ambiguity.
+    // wraps to a second line instead of clipping "Price / E%"/"Save Station" into ambiguity.
     private func stationActionButton(
         title: String,
         systemImage: String,
@@ -4529,7 +4570,7 @@ private struct StationPriceUpdateSheet: View {
                             .font(.title3.weight(.bold))
                             .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                        Text("Save a local user-reported E85 price preview for this station, or report it to the community price feed.")
+                        Text("Update the E85 price, report the ethanol percentage, or do both.")
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -4602,7 +4643,7 @@ private struct StationPriceUpdateSheet: View {
                                             ProgressView()
                                                 .tint(AppTheme.Colors.textPrimary)
                                         }
-                                        Text(isSubmittingCommunityPrice ? "Reporting…" : "Save & Report")
+                                        Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Save & Report Price")
                                     }
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(AppTheme.Colors.textPrimary)
@@ -4637,7 +4678,7 @@ private struct StationPriceUpdateSheet: View {
                 .padding(16)
             }
             .background(AppTheme.Colors.charcoal)
-            .navigationTitle("Update Station")
+            .navigationTitle("Report Station")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -4653,7 +4694,7 @@ private struct StationPriceUpdateSheet: View {
     private var ethanolReportCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Report Ethanol Percentage")
+                Text("Report Ethanol %")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
 
@@ -4701,8 +4742,8 @@ private struct StationPriceUpdateSheet: View {
                         }
                         Text(
                             isSubmittingCommunityEthanol
-                                ? "Reporting Ethanol Percentage…"
-                                : "Report Ethanol Percentage"
+                                ? "Reporting Ethanol %…"
+                                : "Report Ethanol %"
                         )
                     }
                     .font(.subheadline.weight(.semibold))
@@ -4752,6 +4793,18 @@ private extension Double {
 
     var communityPriceText: String {
         String(format: "$%.2f", self)
+    }
+
+    /// Normal E-fuel notation for a community-reported ethanol percentage ("E75", "E72.5") —
+    /// never a trailing ".0" for a whole-number reading. Rounds the same way
+    /// CommunityEthanolValidation already normalizes a submitted percentage, so a value that
+    /// round-trips through submission and back displays identically to what was typed.
+    var e85EthanolLabelText: String {
+        let normalized = CommunityEthanolValidation.normalizedToOneDecimalPlace(self)
+        if normalized == normalized.rounded() {
+            return "E\(Int(normalized))"
+        }
+        return "E\(String(format: "%.1f", normalized))"
     }
 }
 
