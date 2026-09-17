@@ -3851,6 +3851,21 @@ private struct StationDisplayItem: Identifiable {
     }
 }
 
+/// 2.4.0 Stations readability pass — whether a local saved price and a community-reported price
+/// are the same at the precision a user actually sees at the pump ($X.XX), so
+/// StationRowCard's community supporting line can say "Community confirmed" instead of
+/// repeating an identical dollar amount. Compares through the exact same "$%.2f" formatting
+/// already used to display each value (`Double.currencyText`/`communityPriceText`) — never raw
+/// Double equality, which floating-point noise (2.789 vs. 2.79, both rendering as $2.79) could
+/// fail to match even though the two prices are visually identical to the user. Internal (not
+/// private) purely for direct test coverage — see EthanolDisplayFormattingTests.swift-style
+/// pure-formatting tests.
+enum CommunityPriceParity {
+    static func matches(local: Double, community: Double) -> Bool {
+        local.currencyText == community.communityPriceText
+    }
+}
+
 private struct StationRowCard: View {
     let station: FuelStation
     let communitySummary: CommunityPriceSummary?
@@ -4225,11 +4240,25 @@ private struct StationRowCard: View {
         return AppTheme.Colors.textMuted
     }
 
+    /// True only when a supporting community price is actually showing (see
+    /// supportingCommunityPriceText's own `localPriceIsPrimary` guard) and it matches the local
+    /// price at display precision — see CommunityPriceParity's own header for why this compares
+    /// formatted text rather than raw Doubles.
+    private var communityPriceMatchesLocal: Bool {
+        guard let communityPrice else { return false }
+        return CommunityPriceParity.matches(local: station.lastKnownE85Price, community: communityPrice.price)
+    }
+
     /// A saved price never hides a differing community price — the same "supporting line"
     /// StationsView.premiumPricePresentation(for:) already shows on the Pro map's card for the
-    /// identical case, worded for this card's own voice.
+    /// identical case, worded for this card's own voice. When the two prices are the same at
+    /// pump precision, showing the identical dollar amount twice is pure redundancy — "Community
+    /// confirmed" says the same thing without repeating it (see communityPriceMatchesLocal).
     private var supportingCommunityPriceText: String? {
         guard localPriceIsPrimary, let communityPrice else { return nil }
+        if communityPriceMatchesLocal {
+            return "Community confirmed · \(communityPrice.reportedAt.communityReportedText)"
+        }
         return "Community \(communityPrice.price.communityPriceText)/gal · \(communityPrice.reportedAt.communityReportedText)"
     }
 
@@ -4293,7 +4322,14 @@ private struct StationRowCard: View {
         if let primaryPriceCaptionText {
             parts.append(primaryPriceCaptionText)
         }
-        if let supportingCommunityPriceText {
+        if let communityPrice, localPriceIsPrimary, communityPriceMatchesLocal {
+            // A natural sentence instead of reading the visual "Community confirmed ·
+            // Reported…" shorthand verbatim — same underlying fact (the two prices match),
+            // said the way a person would say it aloud.
+            let reportedPhrase = communityPrice.reportedAt.communityReportedText
+                .replacingOccurrences(of: "Reported", with: "reported")
+            parts.append("Community price confirms the local price, \(reportedPhrase)")
+        } else if let supportingCommunityPriceText {
             parts.append(supportingCommunityPriceText)
         }
         return parts.joined(separator: ", ")
