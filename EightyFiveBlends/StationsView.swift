@@ -1023,24 +1023,31 @@ struct StationsView: View {
                 canReportEthanol: context.canReportToCommunity,
                 submitEthanolAction: { attemptSubmitEthanolReport(for: context) }
             )
-            .confirmationDialog(
-                "Confirm Ethanol Percentage",
-                isPresented: pendingOutOfRangeEthanolConfirmationBinding,
-                titleVisibility: .visible
-            ) {
-                Button("Submit Anyway") {
-                    guard let percentage = pendingOutOfRangeEthanolPercentage else { return }
-                    pendingOutOfRangeEthanolPercentage = nil
-                    submitEthanolReport(for: context, percentage: percentage)
-                }
-                Button("Cancel", role: .cancel) {
-                    pendingOutOfRangeEthanolPercentage = nil
-                }
-            } message: {
+            // Pre-commit fix (2.4.0 Stations readability pass) — a native `.confirmationDialog`
+            // here is standard system chrome: translucent/vibrancy material the app can't
+            // restyle, which device testing found made the explanatory text and the affirmative
+            // action hard to read. Replaced with the same fully-opaque overlay-card architecture
+            // DestructiveConfirmationOverlay already established for this exact class of problem
+            // — see EthanolRangeConfirmationOverlay's own header. Validation/submission
+            // semantics below are completely unchanged: still gated on the same
+            // pendingOutOfRangeEthanolPercentage state, still calls the same
+            // submitEthanolReport(for:percentage:).
+            .accessibilityHidden(pendingOutOfRangeEthanolPercentage != nil)
+            .overlay {
                 if let percentage = pendingOutOfRangeEthanolPercentage {
-                    Text("\(String(format: "%.1f", percentage)) percent is outside the typical 51 to 83 percent range for E85. Submit anyway?")
+                    EthanolRangeConfirmationOverlay(
+                        title: "\(percentage.e85EthanolLabelText) is outside the typical E85 range",
+                        message: "You entered \(percentage.e85EthanolLabelText). E85 is typically \(CommunityEthanolValidation.expectedRangeLowerBound.e85EthanolLabelText)–\(CommunityEthanolValidation.expectedRangeUpperBound.e85EthanolLabelText). Double-check your measurement before submitting.",
+                        submitActionTitle: "Submit \(percentage.e85EthanolLabelText) Anyway",
+                        cancelAction: { pendingOutOfRangeEthanolPercentage = nil },
+                        submitAction: {
+                            pendingOutOfRangeEthanolPercentage = nil
+                            submitEthanolReport(for: context, percentage: percentage)
+                        }
+                    )
                 }
             }
+            .animation(.easeInOut(duration: 0.18), value: pendingOutOfRangeEthanolPercentage != nil)
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
@@ -2122,17 +2129,6 @@ struct StationsView: View {
             set: { isPresented in
                 if isPresented == false {
                     infoMessage = nil
-                }
-            }
-        )
-    }
-
-    private var pendingOutOfRangeEthanolConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { pendingOutOfRangeEthanolPercentage != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    pendingOutOfRangeEthanolPercentage = nil
                 }
             }
         )
@@ -3875,7 +3871,11 @@ private struct StationRowCard: View {
     @State private var directionsMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
+            // MARK: Header — icon, name, favorite star, address. No separate "Saved"/"Favorite"
+            // text and no "YOUR SAVED E85" label: this card type only ever renders a station
+            // that's already saved, and the star below already carries favorite state (visually
+            // and via its own accessibility label) without a redundant text duplicate.
             HStack(alignment: .top, spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -3887,7 +3887,7 @@ private struct StationRowCard: View {
                 }
                 .frame(width: 52, height: 52)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .top, spacing: 8) {
                         Text(station.name.isEmpty ? "Unnamed Station" : station.name)
                             .font(.headline)
@@ -3920,64 +3920,78 @@ private struct StationRowCard: View {
                     Text(locationLine)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                    priceFreshnessBadge
-
-                    Text(priceStatusText)
-                        .font(.caption.weight(priceStale ? .semibold : .medium))
-                        .foregroundStyle(priceStatusColor)
                 }
+            }
 
-                if station.lastKnownE85Price > 0 {
-                    Spacer()
+            if station.notes.isEmpty == false {
+                Text(station.notes)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineLimit(2)
+            }
 
-                    VStack(alignment: .trailing, spacing: 6) {
-                        Text("YOUR SAVED E85")
-                            .font(.caption2.weight(.bold))
-                            .tracking(1.0)
+            // MARK: Price + Ethanol — one two-column, two-line-per-column section replacing the
+            // prior five-plus separate price/community/ethanol blocks. Scannable in ~1-2
+            // seconds: value first, one compact freshness/status caption underneath, a single
+            // shared community disclaimer beneath both columns instead of one per metric.
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("E85 PRICE")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.9)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+
+                    Text(primaryPriceText ?? "No price yet")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(primaryPriceText == nil ? AppTheme.Colors.textMuted : AppTheme.Colors.textPrimary)
+
+                    if let primaryPriceCaptionText {
+                        HStack(spacing: 4) {
+                            if let priceProvenanceLabel {
+                                Text(priceProvenanceLabel)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textMuted)
+                            }
+                            Text(primaryPriceCaptionText)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(primaryPriceCaptionColor)
+                        }
+                    }
+
+                    if let supportingCommunityPriceText {
+                        Text(supportingCommunityPriceText)
+                            .font(.caption2)
                             .foregroundStyle(AppTheme.Colors.textMuted)
-
-                        Text(station.lastKnownE85Price.currencyText)
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.Colors.primaryGreen)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(AppTheme.Colors.primaryGreen.opacity(0.10))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(priceAccessibilityLabel)
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("ETHANOL")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.9)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+
+                    Text(ethanolValueText ?? "No report")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(ethanolValueText == nil ? AppTheme.Colors.textMuted : AppTheme.Colors.textPrimary)
+
+                    if let ethanolCaptionText {
+                        Text(ethanolCaptionText)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ethanolCaptionColor)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(ethanolAccessibilityLabel)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                if station.lastKnownE85Price > 0 {
-                    Text(priceFreshnessText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(priceStatusColor)
-                } else {
-                    Text("No E85 price saved yet")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-
-                if station.notes.isEmpty == false {
-                    Text(station.notes)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-
-                communityPricePreview
-                CommunityEthanolPreview(summary: communityEthanolSummary)
-            }
-
-            HStack {
-                Text(station.isFavorite ? "Favorite" : "Saved")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(station.isFavorite ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
-
-                Spacer()
-
-                Text("Last updated \(station.lastUpdated.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
+            if let communityDisclaimerText {
+                Text(communityDisclaimerText)
+                    .font(.caption2)
                     .foregroundStyle(AppTheme.Colors.textMuted)
             }
 
@@ -4111,28 +4125,6 @@ private struct StationRowCard: View {
         StationDataValidation.daysSince(station.lastUpdated)
     }
 
-    private var priceFreshnessText: String {
-        if Calendar.current.isDateInToday(station.lastUpdated) {
-            return "Updated today"
-        }
-
-        let days = max(daysSincePriceUpdate, 0)
-        let baseText = "Updated \(days) day\(days == 1 ? "" : "s") ago"
-        return days > 14 ? "\(baseText) • Price may be stale" : baseText
-    }
-
-    private var priceStatusText: String {
-        station.lastKnownE85Price > 0 ? "Local E85 price available" : "No E85 price saved yet"
-    }
-
-    private var priceStale: Bool {
-        station.lastKnownE85Price > 0 && daysSincePriceUpdate > 14
-    }
-
-    private var priceStatusColor: Color {
-        priceStale ? AppTheme.Colors.stationYellow : (station.lastKnownE85Price > 0 ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
-    }
-
     private var priceFreshnessBadgeLabel: String {
         guard station.lastKnownE85Price > 0 else { return "No Price" }
 
@@ -4161,16 +4153,6 @@ private struct StationRowCard: View {
         return AppTheme.Colors.warningRed
     }
 
-    private var priceFreshnessBadge: some View {
-        Text(priceFreshnessBadgeLabel)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(AppTheme.Colors.charcoal)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(priceFreshnessBadgeColor)
-            .clipShape(Capsule())
-    }
-
     private var directionsAlertBinding: Binding<Bool> {
         Binding(
             get: { directionsMessage != nil },
@@ -4182,40 +4164,160 @@ private struct StationRowCard: View {
         )
     }
 
-    @ViewBuilder
-    private var communityPricePreview: some View {
-        if let communitySummary,
-           let latestPrice = communitySummary.latestPrice,
-           let latestReportedAt = communitySummary.latestReportedAt {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Community E85")
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.9)
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
+    // MARK: - 2.4.0 readability pass: price/ethanol column data
 
-                HStack(spacing: 8) {
-                    Text("\(latestPrice.communityPriceText)/gal")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+    /// Same saved/community price precedence StationsView.premiumPricePresentation(for:)
+    /// already established for the Pro map's card: a saved/local price is primary whenever one
+    /// exists; community is primary only when no saved price exists. Never averaged together.
+    private var localPriceIsPrimary: Bool {
+        station.lastKnownE85Price > 0
+    }
 
-                    Text(latestReportedAt.communityReportedText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.textMuted)
-                }
+    private var communityPrice: (price: Double, reportedAt: Date)? {
+        guard let latestPrice = communitySummary?.latestPrice,
+              let latestReportedAt = communitySummary?.latestReportedAt else { return nil }
+        return (latestPrice, latestReportedAt)
+    }
 
-                if latestReportedAt.communityPriceIsStale {
-                    Text("Community price may be stale")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(AppTheme.Colors.stationYellow)
-                }
-            }
-            .padding(.top, 2)
-        } else if station.lastKnownE85Price <= 0 {
-            Text("No community price yet")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.Colors.textMuted)
-                .padding(.top, 2)
+    /// `nil` only when there is no price to show at all — never shown for the ethanol column,
+    /// which has no local/saved concept (ethanol is always community-reported in this app).
+    private var priceProvenanceLabel: String? {
+        if localPriceIsPrimary { return "Local" }
+        if communityPrice != nil { return "Community" }
+        return nil
+    }
+
+    private var primaryPriceText: String? {
+        if localPriceIsPrimary {
+            return "\(station.lastKnownE85Price.currencyText)/gal"
         }
+        if let communityPrice {
+            return "\(communityPrice.price.communityPriceText)/gal"
+        }
+        return nil
+    }
+
+    /// One compact freshness/status line for whichever price is primary — reuses the exact same
+    /// 7/14-day tiers (priceFreshnessBadgeLabel) as before for a local price, and the existing
+    /// community freshness text for a community price. No new threshold. `nil` only when there
+    /// is no price at all, so the view doesn't render a redundant second "No price yet" line
+    /// underneath the "No price yet" placeholder already shown as the value.
+    private var primaryPriceCaptionText: String? {
+        if localPriceIsPrimary {
+            let dayText = Calendar.current.isDateInToday(station.lastUpdated)
+                ? "Updated today"
+                : "\(daysSincePriceUpdate) day\(daysSincePriceUpdate == 1 ? "" : "s") ago"
+            return priceFreshnessBadgeLabel == "Fresh" ? dayText : "\(dayText) · \(priceFreshnessBadgeLabel)"
+        }
+        if let communityPrice {
+            return communityPrice.reportedAt.communityReportedText
+        }
+        return nil
+    }
+
+    private var primaryPriceCaptionColor: Color {
+        if localPriceIsPrimary {
+            return priceFreshnessBadgeColor
+        }
+        if let communityPrice, communityPrice.reportedAt.communityPriceIsStale {
+            return AppTheme.Colors.stationYellow
+        }
+        return AppTheme.Colors.textMuted
+    }
+
+    /// A saved price never hides a differing community price — the same "supporting line"
+    /// StationsView.premiumPricePresentation(for:) already shows on the Pro map's card for the
+    /// identical case, worded for this card's own voice.
+    private var supportingCommunityPriceText: String? {
+        guard localPriceIsPrimary, let communityPrice else { return nil }
+        return "Community \(communityPrice.price.communityPriceText)/gal · \(communityPrice.reportedAt.communityReportedText)"
+    }
+
+    private var ethanolPercentage: Double? {
+        communityEthanolSummary?.latestPercentage
+    }
+
+    private var ethanolReportedAt: Date? {
+        communityEthanolSummary?.latestReportedAt
+    }
+
+    private var ethanolValueText: String? {
+        ethanolPercentage?.e85EthanolLabelText
+    }
+
+    /// `nil` only when there is no report at all, so the view doesn't render a redundant second
+    /// "No report" line underneath the "No report" placeholder already shown as the value.
+    private var ethanolCaptionText: String? {
+        ethanolReportedAt?.communityReportedText
+    }
+
+    private var ethanolIsOutsideTypicalRange: Bool {
+        guard let ethanolPercentage else { return false }
+        return CommunityEthanolValidation.requiresConfirmation(forPercentage: ethanolPercentage)
+    }
+
+    private var ethanolCaptionColor: Color {
+        guard let ethanolReportedAt else { return AppTheme.Colors.textMuted }
+        if ethanolIsOutsideTypicalRange || ethanolReportedAt.communityPriceIsStale {
+            return AppTheme.Colors.stationYellow
+        }
+        return AppTheme.Colors.textMuted
+    }
+
+    /// One shared disclaimer for the whole price/ethanol section, replacing a separate
+    /// "Community reported — not independently verified" line under every individual
+    /// community-sourced value. Conditionally worded so it never implies a LOCAL saved price
+    /// was itself community reported when only the ethanol reading (or a merely-supporting
+    /// community price) is.
+    private var communityDisclaimerText: String? {
+        let priceIsCommunityInvolved = (localPriceIsPrimary == false && communityPrice != nil) || supportingCommunityPriceText != nil
+        let hasEthanolReport = ethanolPercentage != nil
+
+        switch (priceIsCommunityInvolved, hasEthanolReport) {
+        case (true, true):
+            return "Community reported — not independently verified."
+        case (true, false):
+            return "Community price reported — not independently verified."
+        case (false, true):
+            return "Ethanol % community reported — not independently verified."
+        case (false, false):
+            return nil
+        }
+    }
+
+    private var priceAccessibilityLabel: String {
+        guard let primaryPriceText else { return "No E85 price saved yet" }
+        var parts = [
+            localPriceIsPrimary ? "Saved E85 price \(primaryPriceText)" : "Community reported E85 price \(primaryPriceText)"
+        ]
+        if let primaryPriceCaptionText {
+            parts.append(primaryPriceCaptionText)
+        }
+        if let supportingCommunityPriceText {
+            parts.append(supportingCommunityPriceText)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    /// Mirrors CommunityEthanolPreview's own accessibilityLabel(percentage:reportedAt:) wording
+    /// (used by LiveStationRowCard, untouched by this pass) so the same underlying data reads
+    /// identically to VoiceOver regardless of which card is showing it.
+    private var ethanolAccessibilityLabel: String {
+        guard let ethanolPercentage, let ethanolReportedAt else {
+            return "No community ethanol percentage reported yet"
+        }
+        var parts = [
+            "Community reported ethanol percentage, \(String(format: "%.1f", ethanolPercentage)) percent",
+            ethanolReportedAt.communityReportedText,
+            "not independently verified"
+        ]
+        if ethanolReportedAt.communityPriceIsStale {
+            parts.append("may be outdated")
+        }
+        if ethanolIsOutsideTypicalRange {
+            parts.append("outside the typical 51 to 83 percent E85 range")
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -4766,10 +4868,18 @@ private struct StationPriceUpdateSheet: View {
     let isSubmittingCommunityEthanol: Bool
     let canReportEthanol: Bool
     let submitEthanolAction: () -> Void
-    /// 85Blends 2.4.0 post-navigation compact mode — scoped to ONLY that mode (see
-    /// compactReportContent's `.onAppear` below); `.full` mode never sets this, so its existing
-    /// manual-tap-to-focus behavior is completely unchanged.
-    @FocusState private var isPriceFieldFocused: Bool
+    /// 2.4.0 Stations readability pass — one typed FocusState for every text-entry field in
+    /// both presentation modes, so a single Done button/tap-outside gesture reliably dismisses
+    /// whichever keyboard is active, in either mode. Wiring a field to this enum only makes its
+    /// focus queryable/settable — it never auto-focuses anything by itself. Only
+    /// compactReportContent's own `.onAppear` (below) ever assigns into this on its own;
+    /// `.full` mode's existing manual-tap-to-focus behavior is otherwise unchanged.
+    private enum FocusedReportField: Hashable {
+        case price
+        case note
+        case ethanol
+    }
+    @FocusState private var focusedField: FocusedReportField?
 
     var body: some View {
         NavigationStack {
@@ -4790,9 +4900,31 @@ private struct StationPriceUpdateSheet: View {
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                 }
+                // 2.4.0 Stations readability pass — a Done button above the numeric
+                // price/ethanol keyboards, driven by this sheet's own FocusState rather than
+                // AppKeyboard.dismiss()'s app-wide resignFirstResponder call. Replaces
+                // .keyboardDoneToolbar() (AppKeyboard.swift) for this one sheet only — every
+                // other existing call site of that shared helper is untouched.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                }
             }
         }
-        .keyboardDoneToolbar()
+        // Tap a blank area of the sheet to dismiss the active keyboard.
+        // `simultaneousGesture` (not a plain `.gesture`/`.onTapGesture` on a container) never
+        // swallows a tap meant for a button, a field, or the scroll view beneath it — the same
+        // non-interference property AppKeyboard.swift's own dismissKeyboardOnTap() already
+        // relies on at its seven other call sites across the app; this sheet clears its own
+        // typed FocusState instead of that helper's global resignFirstResponder call, since it
+        // already has one to clear.
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                focusedField = nil
+            }
+        )
     }
 
     // MARK: - Full mode (unchanged behavior — every pre-existing call site uses this)
@@ -4821,6 +4953,7 @@ private struct StationPriceUpdateSheet: View {
                                 .keyboardType(.decimalPad)
                                 .font(.headline)
                                 .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .focused($focusedField, equals: .price)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 12)
                                 .background(AppTheme.Colors.surface)
@@ -4838,6 +4971,7 @@ private struct StationPriceUpdateSheet: View {
 
                             TextField("Optional local note", text: $noteInput, axis: .vertical)
                                 .lineLimit(2...4)
+                                .focused($focusedField, equals: .note)
                                 .foregroundStyle(AppTheme.Colors.textPrimary)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 12)
@@ -4971,7 +5105,7 @@ private struct StationPriceUpdateSheet: View {
                         .keyboardType(.decimalPad)
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                        .focused($isPriceFieldFocused)
+                        .focused($focusedField, equals: .price)
                         .frame(maxWidth: .infinity)
                         .accessibilityLabel("E85 price in dollars per gallon")
                 }
@@ -5023,7 +5157,7 @@ private struct StationPriceUpdateSheet: View {
         }
         .padding(20)
         .onAppear {
-            isPriceFieldFocused = true
+            focusedField = .price
         }
     }
 
@@ -5043,6 +5177,7 @@ private struct StationPriceUpdateSheet: View {
                 .keyboardType(.decimalPad)
                 .font(.headline)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+                .focused($focusedField, equals: .ethanol)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(AppTheme.Colors.surface)
@@ -5122,12 +5257,12 @@ private struct Triangle: Shape {
     }
 }
 
-private extension Double {
-    var currencyText: String {
+extension Double {
+    fileprivate var currencyText: String {
         String(format: "$%.2f", self)
     }
 
-    var communityPriceText: String {
+    fileprivate var communityPriceText: String {
         String(format: "$%.2f", self)
     }
 
@@ -5135,6 +5270,10 @@ private extension Double {
     /// never a trailing ".0" for a whole-number reading. Rounds the same way
     /// CommunityEthanolValidation already normalizes a submitted percentage, so a value that
     /// round-trips through submission and back displays identically to what was typed.
+    /// 2.4.0 Stations readability pass — widened from `private` to module-visible (the
+    /// individual `fileprivate` members above keep their original scope) purely so this file's
+    /// own test target can exercise it directly — see EthanolDisplayFormattingTests.swift. No
+    /// other file references it; production call sites are still all within StationsView.swift.
     var e85EthanolLabelText: String {
         let normalized = CommunityEthanolValidation.normalizedToOneDecimalPlace(self)
         if normalized == normalized.rounded() {
