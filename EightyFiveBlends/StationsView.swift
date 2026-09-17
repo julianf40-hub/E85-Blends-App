@@ -4621,13 +4621,45 @@ private struct StationPriceUpdateContext: Identifiable {
     let zipCode: String
     let latitude: Double?
     let longitude: Double?
-    let presentationMode: StationPriceUpdatePresentationMode = .full
+    let presentationMode: StationPriceUpdatePresentationMode
     /// Read-only context shown (never prefilled into the editable field) by the compact
     /// `.postNavigation` layout only — see StationPriceUpdateSheet.compactReportContent. `nil`
     /// for every `.full`-mode context, and for `.postNavigation` whenever no existing community
     /// price is available for this station.
-    let existingCommunityPrice: Double? = nil
-    let existingCommunityPriceReportedAt: Date? = nil
+    let existingCommunityPrice: Double?
+    let existingCommunityPriceReportedAt: Date?
+
+    // Fix-forward (Xcode Cloud Build 174) — a `let` property with a declaration-site default
+    // value is excluded from Swift's synthesized memberwise initializer entirely, not merely
+    // given a defaulted parameter; only the 8-argument `.saved`/`.live` calls below ever matched
+    // the initializer that synthesis actually produced. This explicit initializer is what makes
+    // presentationMode/existingCommunityPrice/existingCommunityPriceReportedAt real, overridable
+    // parameters, so `.postNavigation` can supply them while `.saved`/`.live` keep omitting them.
+    private init(
+        station: FuelStation?,
+        stationName: String,
+        address: String,
+        city: String,
+        state: String,
+        zipCode: String,
+        latitude: Double?,
+        longitude: Double?,
+        presentationMode: StationPriceUpdatePresentationMode = .full,
+        existingCommunityPrice: Double? = nil,
+        existingCommunityPriceReportedAt: Date? = nil
+    ) {
+        self.station = station
+        self.stationName = stationName
+        self.address = address
+        self.city = city
+        self.state = state
+        self.zipCode = zipCode
+        self.latitude = latitude
+        self.longitude = longitude
+        self.presentationMode = presentationMode
+        self.existingCommunityPrice = existingCommunityPrice
+        self.existingCommunityPriceReportedAt = existingCommunityPriceReportedAt
+    }
 
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
         StationPriceUpdateContext(
