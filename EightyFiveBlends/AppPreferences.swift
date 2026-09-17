@@ -66,6 +66,12 @@ enum AppPreferenceKey {
     static let reviewLastRequestAttemptDate = "reviewLastRequestAttemptDate"
     static let reviewLastRequestAppVersion = "reviewLastRequestAppVersion"
     static let reviewEligibilityReachedAt = "reviewEligibilityReachedAt"
+    // 85Blends 2.4.0 post-navigation price-contribution prompt — the single persisted, JSON-
+    // encoded PendingPriceContribution (at most one at a time; a new Directions success always
+    // replaces whatever was already pending). Local-only, ephemeral (see
+    // PendingPriceContributionEligibility.maximumAge) — never synced. See
+    // PendingPriceContributionStore.swift.
+    static let pendingPriceContribution = "pendingPriceContribution"
 }
 
 enum MapsAppOption: String, CaseIterable {
@@ -315,7 +321,66 @@ enum MapsRoutingHelper {
         // reached on the early-return error path above.
         ReviewRequestManager.shared.recordStationDirection()
 
+        // 85Blends 2.4.0 post-navigation price-contribution prompt — a SIBLING action alongside
+        // the review-request bookkeeping above, never a replacement or a wrapper around it: it
+        // runs unconditionally right after that call, at the exact same successful-handoff
+        // boundary, and can never prevent, delay, or otherwise affect the Maps/Waze/Google Maps
+        // open call itself (which already happened in the switch above by the time either line
+        // here runs). See recordPendingPriceContributionIfReportable's own doc comment for the
+        // eligibility gate and failure handling.
+        recordPendingPriceContributionIfReportable(for: destination, mapsProvider: preferredMapsApp)
+
         return nil
+    }
+
+    /// Only a station that already satisfies `CommunityPriceEligibility.canReport` — the exact
+    /// same rule that gates the actual community-report submission this prompt eventually leads
+    /// to — becomes a pending contribution, so returning from Maps can never offer a report the
+    /// existing pipeline would then refuse. A persistence failure inside
+    /// `PendingPriceContributionStore.record(_:)` fails silently (see that method) and can never
+    /// surface here or affect navigation, which has already completed by the time this runs.
+    private static func recordPendingPriceContributionIfReportable(
+        for destination: MapsRoutingDestination,
+        mapsProvider: MapsAppOption
+    ) {
+        guard CommunityPriceEligibility.canReport(
+            name: destination.name,
+            streetAddress: destination.streetAddress,
+            city: destination.city,
+            state: destination.state,
+            zip: destination.zip,
+            latitude: destination.latitude,
+            longitude: destination.longitude
+        ) else {
+            return
+        }
+
+        guard let stationKey = CommunityStationKey.canonicalKey(
+            name: destination.name,
+            streetAddress: destination.streetAddress,
+            city: destination.city,
+            state: destination.state,
+            zip: destination.zip,
+            latitude: destination.latitude,
+            longitude: destination.longitude
+        ) else {
+            return
+        }
+
+        PendingPriceContributionStore.shared.record(
+            PendingPriceContribution(
+                stationKey: stationKey,
+                stationName: destination.name,
+                streetAddress: destination.streetAddress.isEmpty ? nil : destination.streetAddress,
+                city: destination.city.isEmpty ? nil : destination.city,
+                state: destination.state.isEmpty ? nil : destination.state,
+                zip: destination.zip.isEmpty ? nil : destination.zip,
+                latitude: destination.latitude,
+                longitude: destination.longitude,
+                directionsOpenedAt: .now,
+                mapsProvider: mapsProvider.rawValue
+            )
+        )
     }
 
     private static func openAppleMaps(to destination: MapsRoutingDestination, open: (URL) -> Void, openMapItem: (MKMapItem) -> Void) {

@@ -560,5 +560,93 @@ struct MapsRoutingHelperTests {
             #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 3)
         }
     }
+
+    // MARK: - 85Blends 2.4.0 post-navigation price-contribution prompt
+    //
+    // Additive to the review-request tests above — MapsRoutingHelper.openDirections also
+    // records a PendingPriceContribution as a SIBLING action, never a replacement or wrapper,
+    // alongside ReviewRequestManager.shared.recordStationDirection(). Like those tests, this
+    // hits the real PendingPriceContributionStore.shared singleton (backed by
+    // UserDefaults.standard) — there is no injectable seam for this either, matching the same
+    // "do not weaken production architecture merely to satisfy a test" tradeoff already
+    // accepted above — so each test clears the store first and asserts the exact resulting
+    // state directly, never a delta, since at most one contribution is ever pending at a time.
+
+    @Test func successfulHandoffToReportableStationRecordsExactlyOnePendingContribution() {
+        withPreferredMapsApp(.appleMaps) {
+            PendingPriceContributionStore.shared.clear()
+            _ = MapsRoutingHelper.openDirections(
+                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            let pending = PendingPriceContributionStore.shared.current
+            #expect(pending != nil)
+            #expect(pending?.stationName == destination.name)
+            #expect(pending?.mapsProvider == MapsAppOption.appleMaps.rawValue)
+            PendingPriceContributionStore.shared.clear()
+        }
+    }
+
+    @Test func successfulHandoffToUnreportableStationDoesNotRecordAPendingContribution() {
+        // Enough to open Apple Maps (a bare name resolves a non-nil addressQuery) but not
+        // enough to satisfy CommunityPriceEligibility.canReport (no coordinate, no sufficient
+        // address) — exactly the "insufficient for reporting" case
+        // recordPendingPriceContributionIfReportable must refuse, even on an otherwise
+        // successful handoff.
+        let unreportable = MapsRoutingDestination(
+            name: "Unknown Station", streetAddress: "", city: "", state: "", zip: "",
+            latitude: nil, longitude: nil)
+        withPreferredMapsApp(.appleMaps) {
+            PendingPriceContributionStore.shared.clear()
+            let result = MapsRoutingHelper.openDirections(
+                to: unreportable, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(result == nil) // confirms this genuinely reached the success path
+            #expect(PendingPriceContributionStore.shared.current == nil)
+        }
+    }
+
+    @Test func failedHandoffDoesNotRecordAPendingContribution() {
+        let empty = MapsRoutingDestination(name: "", streetAddress: "", city: "", state: "", zip: "", latitude: nil, longitude: nil)
+        PendingPriceContributionStore.shared.clear()
+        let result = MapsRoutingHelper.openDirections(
+            to: empty, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+        #expect(result != nil) // confirms this is genuinely the failure path
+        #expect(PendingPriceContributionStore.shared.current == nil)
+    }
+
+    @Test func aNewSuccessfulHandoffReplacesAnyPriorPendingContribution() {
+        let firstDestination = MapsRoutingDestination(
+            name: "First Station", streetAddress: "1 First St", city: "Phoenix", state: "AZ", zip: "85001",
+            latitude: 33.1, longitude: -112.1)
+        let secondDestination = MapsRoutingDestination(
+            name: "Second Station", streetAddress: "2 Second St", city: "Phoenix", state: "AZ", zip: "85002",
+            latitude: 33.2, longitude: -112.2)
+        withPreferredMapsApp(.appleMaps) {
+            PendingPriceContributionStore.shared.clear()
+            _ = MapsRoutingHelper.openDirections(
+                to: firstDestination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(PendingPriceContributionStore.shared.current?.stationName == "First Station")
+
+            _ = MapsRoutingHelper.openDirections(
+                to: secondDestination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(PendingPriceContributionStore.shared.current?.stationName == "Second Station")
+            PendingPriceContributionStore.shared.clear()
+        }
+    }
+
+    @Test func successfulHandoffRecordsReviewCountAndPendingContributionTogetherFromOneCall() {
+        // Non-regression: the new pending-contribution recording is a sibling, never a
+        // replacement — successfulHandoffIncrementsReviewStationDirectionsCountExactlyOnce
+        // above already proves the review counter alone; this proves both side effects happen
+        // together from the exact same single successful call, neither one suppressing or
+        // duplicating the other.
+        withPreferredMapsApp(.appleMaps) {
+            PendingPriceContributionStore.shared.clear()
+            let before = ReviewRequestManager.shared.stationDirectionsCount
+            _ = MapsRoutingHelper.openDirections(
+                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
+            #expect(PendingPriceContributionStore.shared.current != nil)
+            PendingPriceContributionStore.shared.clear()
+        }
+    }
 }
 }
