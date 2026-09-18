@@ -9,6 +9,40 @@ import SwiftUI
 import SwiftData
 import StoreKit
 
+/// 85Blends 2.4.0 review-request audit fix — the review-request system's own conflicting-
+/// presentation check, pulled out as a pure function so it's directly unit-testable (mirrors
+/// ReviewRequestEligibility/PendingPriceContributionEligibility/NearbyE85IconButtonInteractivity's
+/// own pattern of isolating a decision from the SwiftUI state that feeds it). Not folded into
+/// ReviewRequestEligibility itself, which is deliberately independent of any specific app-state
+/// shape — this one exists precisely because it IS ContentView's own specific state shape.
+///
+/// `hasActivePriceContribution` is the fix: the post-navigation price-contribution banner
+/// (`ContentView.activePriceContribution`) was missing from this check entirely before this
+/// audit. Same-activation arbitration was already correct (ContentView's scenePhase handler
+/// checks the price-contribution prompt first and short-circuits review for that activation
+/// when it wins), but a banner already on screen from an EARLIER activation was invisible to
+/// this check — so a later, separate `.active` transition could invoke Apple's system
+/// review-request sheet while 85Blends' own banner was still visibly on screen underneath it.
+/// Two concrete, ordinary paths reach this: (1) a second Directions tap to a different
+/// reportable station replaces the pending contribution in the store while the first one's
+/// banner is still showing, and the user returns from the second handoff too quickly (under 2
+/// minutes) for the new contribution to be presentable yet; (2) the user never acts on a shown
+/// banner and it ages past its 6-hour expiry, which clears the persisted store but — before
+/// this audit — never cleared the `activePriceContribution` state actually driving the banner
+/// on screen. See `attemptPendingPriceContributionPromptIfNeeded()`'s expiry branch for the
+/// matching fix that keeps that banner from lingering indefinitely once this check starts
+/// deferring to it.
+enum ReviewRequestConflictingPresentation {
+    static func isPresent(
+        isShowingWhatsNew: Bool,
+        hasWidgetStation: Bool,
+        hasPendingWidgetURL: Bool,
+        hasActivePriceContribution: Bool
+    ) -> Bool {
+        isShowingWhatsNew || hasWidgetStation || hasPendingWidgetURL || hasActivePriceContribution
+    }
+}
+
 struct ContentView: View {
     // Internal (not private) so AppExperienceNavigation's pure tab-visibility/selection rules —
     // and their tests — can reference ContentView.Tab directly.
@@ -315,14 +349,21 @@ struct ContentView: View {
     /// 85Blends 2.4.0 App Store review-request system. Called only on a return to `.active`
     /// (never synchronously from a Directions tap or any other user action) — see this method's
     /// call site above. Building `hasConflictingPresentation` from What's New, the widget detail
-    /// sheet, and any not-yet-resolved widget deep link means this never competes with any of
-    /// ContentView's other existing presentations, on top of the onboarding/consent/paywall/
-    /// purchase checks. `ReviewRequestManager.attemptReviewRequestIfAppropriate` is the only
-    /// place engagement eligibility + cooldown are actually evaluated; this method only supplies
-    /// the presentation-safety half of the gate and, if both pass, is the one place in the app
-    /// that invokes the system review-request action.
+    /// sheet, any not-yet-resolved widget deep link, AND the price-contribution banner means this
+    /// never competes with any of ContentView's other existing presentations, on top of the
+    /// onboarding/consent/paywall/purchase checks — see `ReviewRequestConflictingPresentation`'s
+    /// own header for exactly which gap this last term closes and why.
+    /// `ReviewRequestManager.attemptReviewRequestIfAppropriate` is the only place engagement
+    /// eligibility + cooldown are actually evaluated; this method only supplies the
+    /// presentation-safety half of the gate and, if both pass, is the one place in the app that
+    /// invokes the system review-request action.
     private func attemptAutomaticReviewRequestIfNeeded() {
-        let hasConflictingPresentation = isShowingWhatsNew || widgetStation != nil || pendingWidgetURL != nil
+        let hasConflictingPresentation = ReviewRequestConflictingPresentation.isPresent(
+            isShowingWhatsNew: isShowingWhatsNew,
+            hasWidgetStation: widgetStation != nil,
+            hasPendingWidgetURL: pendingWidgetURL != nil,
+            hasActivePriceContribution: activePriceContribution != nil
+        )
         let isSafeToPresent = ReviewRequestEligibility.isSafeToPresent(
             hasCompletedOnboarding: hasCompletedOnboarding,
             isConsentResolutionPending: AdManager.shared.isInitialConsentResolutionPending,
@@ -344,14 +385,17 @@ struct ContentView: View {
     /// attemptAutomaticReviewRequestIfNeeded() — see this method's call site above for the
     /// arbitration this ordering implements. Returns `true` exactly when the banner was shown
     /// this activation (so the caller skips the review-request attempt for it), `false`
-    /// otherwise. Building `hasConflictingPresentation` identically to
-    /// attemptAutomaticReviewRequestIfNeeded()'s own means this prompt never competes with any
-    /// of ContentView's other existing presentations either — but it has no visibility into
+    /// otherwise. `hasConflictingPresentation` here deliberately has no term for this banner
+    /// itself (unlike attemptAutomaticReviewRequestIfNeeded()'s own, which does — see
+    /// `ReviewRequestConflictingPresentation`'s header): a presentation can't meaningfully
+    /// conflict with itself. It otherwise means this prompt never competes with any of
+    /// ContentView's other existing presentations either — but it has no visibility into
     /// StationsView's own private sheet state (e.g. a Classic station's StationPriceUpdateSheet
     /// already open for something else); the banner is a non-modal `.safeAreaInset`, so such a
     /// sheet already structurally covers/obscures it, and this method does not need to know it
     /// exists to get that protection. An expired contribution is discarded here rather than left
-    /// to linger silently forever.
+    /// to linger silently forever — see the expiry branch below for why that discard now clears
+    /// more than just the persisted store.
     @discardableResult
     private func attemptPendingPriceContributionPromptIfNeeded() -> Bool {
         let now = Date.now
@@ -359,6 +403,14 @@ struct ContentView: View {
 
         if PendingPriceContributionEligibility.isExpired(pending, now: now) {
             PendingPriceContributionStore.shared.clear()
+            // 85Blends 2.4.0 review-request audit fix — also clear the @State actually driving
+            // the banner, not just the persisted store. Without this, a banner nobody ever acted
+            // on would keep rendering indefinitely past its own expiry (a stale, meaningless
+            // prompt) AND — now that attemptAutomaticReviewRequestIfNeeded() correctly defers to
+            // activePriceContribution being non-nil — would permanently block the automatic
+            // review request too. This is a no-op if activePriceContribution is already nil or
+            // already showing something else.
+            activePriceContribution = nil
             return false
         }
 

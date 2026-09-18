@@ -18,6 +18,15 @@
 //  ReviewRequestManager never corrupts or advances its persisted state — so a later, real
 //  attempt still behaves exactly as if the skip had never happened.
 //
+//  85Blends 2.4.0 review-request audit fix — this same view-hosting gap is exactly what let a
+//  cross-activation overlap slip through originally: a price-contribution banner already on
+//  screen from an EARLIER activation was invisible to attemptAutomaticReviewRequestIfNeeded()'s
+//  own hasConflictingPresentation, because that check never considered `activePriceContribution`
+//  at all. ContentView.swift's fix pulls that check out as `ReviewRequestConflictingPresentation`
+//  specifically so it's covered below — see that type's own header for the two concrete,
+//  ordinary paths that reached the gap (a fast-follow second Directions tap, and a banner nobody
+//  ever acted on aging past its own 6-hour expiry).
+//
 
 import Foundation
 import Testing
@@ -147,5 +156,70 @@ struct PriceContributionReviewArbitrationTests {
             now: laterDate
         )
         #expect(attempted == true)
+    }
+}
+
+/// `ReviewRequestConflictingPresentation.isPresent` — the fix for the cross-activation gap this
+/// audit found. Directly unit-testable (a pure function of four Bools) even though the @State it
+/// wraps in production (ContentView.activePriceContribution and friends) is not.
+struct ReviewRequestConflictingPresentationTests {
+    @Test("Nothing conflicting reports no conflict")
+    func allClear_isFalse() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: false, hasWidgetStation: false,
+                hasPendingWidgetURL: false, hasActivePriceContribution: false
+            ) == false
+        )
+    }
+
+    @Test("An active price-contribution banner alone counts as a conflict")
+    func activePriceContributionAlone_isTrue() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: false, hasWidgetStation: false,
+                hasPendingWidgetURL: false, hasActivePriceContribution: true
+            )
+        )
+    }
+
+    @Test("What's New alone still counts as a conflict — the fix adds a term, it doesn't replace any")
+    func whatsNewAlone_isTrue() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: true, hasWidgetStation: false,
+                hasPendingWidgetURL: false, hasActivePriceContribution: false
+            )
+        )
+    }
+
+    @Test("A widget-routed station detail sheet alone still counts as a conflict")
+    func widgetStationAlone_isTrue() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: false, hasWidgetStation: true,
+                hasPendingWidgetURL: false, hasActivePriceContribution: false
+            )
+        )
+    }
+
+    @Test("An unresolved pending widget deep link alone still counts as a conflict")
+    func pendingWidgetURLAlone_isTrue() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: false, hasWidgetStation: false,
+                hasPendingWidgetURL: true, hasActivePriceContribution: false
+            )
+        )
+    }
+
+    @Test("Every combination of two or more simultaneous conflicts still reports a conflict")
+    func multipleSimultaneousConflicts_isTrue() {
+        #expect(
+            ReviewRequestConflictingPresentation.isPresent(
+                isShowingWhatsNew: true, hasWidgetStation: true,
+                hasPendingWidgetURL: true, hasActivePriceContribution: true
+            )
+        )
     }
 }
