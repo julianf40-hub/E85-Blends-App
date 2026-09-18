@@ -222,9 +222,9 @@ struct NearbyE85RefreshVisualStateIsolationTests {
         let duringLevel = NearbyE85ZoomAction.zoomIn.apply(using: zoomStore)
         // Two successive zoom-ins should step forward identically regardless of the refresh
         // request in between — the refresh flag has no zoom parameter to have influenced this.
-        // Starting from .default (.standard): zoomIn -> .zoomedIn -> .zoomedInFar.
-        #expect(beforeLevel == .zoomedIn)
-        #expect(duringLevel == .zoomedInFar)
+        // Starting from .default (.standard): zoomIn -> .zoomedIn1 -> .zoomedIn2.
+        #expect(beforeLevel == .zoomedIn1)
+        #expect(duringLevel == .zoomedIn2)
     }
 
     @Test("A pending refresh request is never itself resolvable as a directions or Stations destination")

@@ -27,10 +27,6 @@ nonisolated struct NearbyE85MapRender {
 // image once per timeline, and marker positions are baked in via MapKit's own
 // coordinate-to-point conversion so pins land accurately without an interactive MKMapView.
 enum NearbyE85MapRenderer {
-    /// WidgetKit's Context has no displayScale; @2x is sharp enough for a map this size while
-    /// keeping the rendered image small.
-    static let defaultScale: CGFloat = 2
-
     /// - Parameter heightFraction: How much of the widget's full canvas the map should occupy —
     ///   `1.0` for the medium family's edge-to-edge map, a smaller fraction (e.g. `0.6`) for the
     ///   large family, which reserves the remainder for its station list. The map always spans
@@ -43,7 +39,7 @@ enum NearbyE85MapRenderer {
 
     @MainActor
     static func render(userLatitude: Double, userLongitude: Double, stations: [NearbyE85Station],
-                        size: CGSize, scale: CGFloat, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
+                        size: CGSize, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
         guard size.width >= 1, size.height >= 1 else { return nil }
         let userCoordinate = CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude)
         let stationCoordinates = stations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -52,7 +48,14 @@ enum NearbyE85MapRenderer {
         let options = MKMapSnapshotter.Options()
         options.region = region
         options.size = size
-        options.scale = scale
+        // 85Blends 2.4.0 widget quality pass — deliberately NOT setting `options.scale`. It was
+        // previously hardcoded to 2, which under-rendered on 3x-density hardware (the original
+        // softness complaint). `options.scale` is documented as deprecated in favor of trait-based
+        // scale resolution, and a WidgetKit TimelineProvider has no trustworthy view/trait
+        // environment to resolve that from — UITraitCollection.current isn't populated the way it
+        // would be for a live view/view-controller update. Leaving `.scale` unset lets
+        // MKMapSnapshotter fall back to its own native, device-appropriate default raster density
+        // instead of guessing at one, which is both simpler and sharper on modern hardware.
         options.mapType = .standard
         options.showsBuildings = false
 

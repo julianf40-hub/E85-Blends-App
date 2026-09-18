@@ -73,7 +73,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             let heightFraction = family == .systemLarge ? 0.6 : 1.0
             let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
             let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedInFar)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedIn4)
             let image = try render(entry, family: family, size: size)
             XCTAssertEqual(image.size, size, "The refresh/zoom overlay must never resize the widget's own canvas")
             attach(image, name: "nearby-\(familyName)-with-refresh-button")
@@ -95,7 +95,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             let heightFraction = family == .systemLarge ? 0.6 : 1.0
             let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
             let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedInFar, isRefreshing: true)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedIn4, isRefreshing: true)
             let image = try render(entry, family: family, size: size)
             XCTAssertEqual(image.size, size, "The in-progress refresh appearance must never resize the widget's own canvas")
             attach(image, name: "nearby-\(familyName)-refreshing")
@@ -242,7 +242,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         let size = NearbyE85MapRenderer.mapSize(for: Self.mediumSize, heightFraction: 1.0)
         guard let mapRender = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
-            stations: stations, size: size, scale: 2) else {
+            stations: stations, size: size) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
         // MKMapSnapshotter's image must come back in the exact point-space it was asked to
@@ -263,7 +263,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
         guard let mapRender = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
-            stations: stations, size: size, scale: 2) else {
+            stations: stations, size: size) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
         XCTAssertEqual(mapRender.image.size, size)
@@ -284,13 +284,13 @@ final class NearbyE85RenderingTests: XCTestCase {
         let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
         guard let standard = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
-            stations: stations, size: size, scale: 2, zoomLevel: .standard),
+            stations: stations, size: size, zoomLevel: .standard),
             let zoomedIn = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
-            stations: stations, size: size, scale: 2, zoomLevel: .zoomedInFar) else {
+            stations: stations, size: size, zoomLevel: .zoomedIn4) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
-        // Both requests share the same size/scale — only the underlying region differs — so the
+        // Both requests share the same size — only the underlying region differs — so the
         // nearest station's marker point must land closer to center once zoomed in.
         guard let standardNearest = standard.markers.first(where: { $0.kind == .nearestStation }),
               let zoomedNearest = zoomedIn.markers.first(where: { $0.kind == .nearestStation }) else {
