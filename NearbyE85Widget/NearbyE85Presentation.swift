@@ -74,9 +74,20 @@ enum NearbyE85IconButtonInteractivity {
 /// `isVisuallyDimmed` (zoom's min/max boundary) and `isRefreshing` (refresh's in-flight state)
 /// both dim the icon's foreground style, but only `isRefreshing` ever reaches
 /// `.disabled(...)` — see `NearbyE85IconButtonInteractivity` above for why that split matters.
+///
+/// 85Blends 2.4.0 widget quality pass — `size` (the drawn circle) and `tapTargetSize` (the
+/// actual interactive region) are deliberately independent. Large's zoom/refresh stack wants a
+/// visibly smaller circle so it obscures less of the map, without shrinking the tappable area
+/// below Apple's ~44pt recommended minimum. `tapTargetSize` defaults to `size` — every
+/// pre-existing call site (e.g. the standalone refresh button below) is untouched by this and
+/// keeps its identical, single-size tap target. `.contentShape(Circle())` on the OUTER frame is
+/// what actually makes the full `tapTargetSize` tappable; without it SwiftUI would only
+/// hit-test the visually-drawn inner circle, silently undoing the decoupling. This is purely a
+/// hit-testing change — it never touches `.disabled(...)`, so the boundary/refresh distinction
+/// `NearbyE85IconButtonInteractivity` enforces is completely unaffected.
 private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, isVisuallyDimmed: Bool = false,
-                                  isRefreshing: Bool = false, size: CGFloat = 44, iconSize: CGFloat = 13,
-                                  label: String) -> some View {
+                                  isRefreshing: Bool = false, size: CGFloat = 44, tapTargetSize: CGFloat? = nil,
+                                  iconSize: CGFloat = 13, label: String) -> some View {
     let isVisuallyInactive = isVisuallyDimmed || isRefreshing
     return Button(intent: intent) {
         Group {
@@ -92,6 +103,8 @@ private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, is
         .frame(width: size, height: size)
         .background(.thinMaterial, in: Circle())
         .shadow(radius: 1)
+        .frame(width: tapTargetSize ?? size, height: tapTargetSize ?? size)
+        .contentShape(Circle())
     }
     .buttonStyle(.plain)
     .disabled(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: isRefreshing))
@@ -295,17 +308,27 @@ struct NearbyE85WidgetView: View {
         // are completely independent AppIntents/state and are never disabled or altered by it.
         var isRefreshing: Bool = false
 
+        // 85Blends 2.4.0 widget quality pass — real-device feedback was that this stack covered
+        // too much of the map. Each button keeps its full 44pt tap target (`tapTargetSize: 44`,
+        // Apple's recommended minimum — real-device feedback was about visual bulk, not
+        // difficulty tapping, so the target itself must not shrink) while the drawn circle
+        // itself shrinks to 36pt and the stack packs tighter (`spacing: 4`, down from 8) — both
+        // reduce how much of the map is visually covered without reducing tappable area or
+        // moving any button's center point.
         var body: some View {
-            VStack(spacing: 8) {
+            VStack(spacing: 4) {
                 // isVisuallyDimmed only — never .disabled() — so a tap at the boundary is still
                 // captured by this button instead of falling through to the map's Stations Link
                 // underneath. See NearbyE85IconButtonInteractivity's header for why.
                 nearbyE85IconButton(systemImage: "plus", intent: NearbyE85ZoomInIntent(),
-                                    isVisuallyDimmed: currentZoomLevel.isAtMaximum, label: "Zoom in nearby E85 map")
+                                    isVisuallyDimmed: currentZoomLevel.isAtMaximum, size: 36, tapTargetSize: 44,
+                                    label: "Zoom in nearby E85 map")
                 nearbyE85IconButton(systemImage: "minus", intent: NearbyE85ZoomOutIntent(),
-                                    isVisuallyDimmed: currentZoomLevel.isAtMinimum, label: "Zoom out nearby E85 map")
+                                    isVisuallyDimmed: currentZoomLevel.isAtMinimum, size: 36, tapTargetSize: 44,
+                                    label: "Zoom out nearby E85 map")
                 nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(),
-                                    isRefreshing: isRefreshing, label: "Refresh Nearby E85 data")
+                                    isRefreshing: isRefreshing, size: 36, tapTargetSize: 44,
+                                    label: "Refresh Nearby E85 data")
             }
         }
     }
@@ -395,7 +418,21 @@ struct NearbyE85MapView: View {
 
     var body: some View {
         ZStack {
-            Image(uiImage: render.image).resizable()
+            // 85Blends 2.4.0 widget quality pass — `render.image` is already produced at exactly
+            // `render.size` points (MKMapSnapshotter.Options.size is what was requested;
+            // NearbyE85MapRendererTests/testMediumMapRealSnapshotterBestEffort's own
+            // `image.size == size` assertion already locks this in), so `.resizable()` has
+            // nothing to actually resize today — kept anyway as a safety net against any future
+            // edge case where the returned image's point-size doesn't land exactly on `size`
+            // (that would only ever cost a cosmetic crop/gap; marker `.position(marker.point)`
+            // below is anchored to this ZStack's own `.frame`, never to the image's own
+            // dimensions, so it can never desync from this). The actual sharpness fix is letting
+            // MKMapSnapshotter pick its own native device-appropriate raster scale (see
+            // NearbyE85MapRenderer.render) — `.interpolation(.high)` here is just cheap insurance
+            // that any future resample (e.g. if `.resizable()` above ever actually has to resize)
+            // uses the sharpest filter available rather than the system default; it does nothing
+            // for a same-size image like today's.
+            Image(uiImage: render.image).resizable().interpolation(.high)
             // Stations draw first, the user dot last, so a station pin sitting almost on top of
             // the user's own point never hides the blue marker underneath it.
             ForEach(render.markers.filter { $0.kind != .user }) { marker in

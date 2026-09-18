@@ -87,9 +87,12 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         }
         guard let snapshot, snapshot.state == .ready, let user = snapshot.userCoordinate else { return nil }
         let size = NearbyE85MapRenderer.mapSize(for: context.displaySize, heightFraction: heightFraction)
+        // 85Blends 2.4.0 widget quality pass — no longer passes a `scale` at all (see
+        // NearbyE85MapRenderer.render's own comment): MKMapSnapshotter now picks its own native,
+        // device-appropriate raster density instead of a hardcoded/manually-resolved one. Both
+        // families share this; only the logical point-space `size` above still differs between them.
         return await NearbyE85MapRenderer.render(userLatitude: user.latitude, userLongitude: user.longitude,
                                                   stations: snapshot.stations, size: size,
-                                                  scale: NearbyE85MapRenderer.defaultScale,
                                                   zoomLevel: context.family == .systemLarge ? zoomLevel : .default)
     }
     static var example: NearbyE85Snapshot {
