@@ -73,7 +73,7 @@ touch.
 
 ## RevenueCat entitlement tables are private and server-only
 
-`20260823055527_revenuecat_entitlement_foundation.sql` adds a **new, non-exposed `private`
+`20260823060735_revenuecat_entitlement_foundation.sql` adds a **new, non-exposed `private`
 schema** with three tables:
 
 - `private.revenuecat_customers` — one normalized row per canonical RevenueCat customer +
@@ -113,25 +113,35 @@ automated process — applying them is a deliberate, separate, manual step.
 
 ## Phase A schema status
 
-`20260823055527_revenuecat_entitlement_foundation.sql` has been reviewed AND applied to the live
-project (`private.revenuecat_customers`, `private.revenuecat_aliases`,
-`private.revenuecat_webhook_events`, `private.set_updated_at()` all exist live, RLS enabled, zero
-client policies, zero `anon`/`authenticated` privileges). A second, additive migration,
-`20260823062025_revenuecat_webhook_ledger_nullable_identity.sql`, relaxes the ledger's
+`20260823060735_revenuecat_entitlement_foundation.sql` (checked in under this, its authoritative
+live version number — see `MIGRATION_RECOVERY.md`; earlier revisions of this file cited it under a
+stale local-only timestamp) has been reviewed AND applied to the live project
+(`private.revenuecat_customers`, `private.revenuecat_aliases`, `private.revenuecat_webhook_events`,
+`private.set_updated_at()` all exist live, RLS enabled, zero client policies, zero
+`anon`/`authenticated` privileges). A second, additive migration,
+`20260823073614_revenuecat_webhook_ledger_nullable_identity.sql`, relaxes the ledger's
 `app_user_id`/`environment` columns to nullable (see that migration file's own header for why —
 short version: `TRANSFER` and `TEMPORARY_ENTITLEMENT_GRANT` events don't carry those fields the
 same way a normal purchase/renewal/expiration event does, and the ledger must not fabricate values
-to satisfy a constraint that assumed every event looks like the latter). **That second migration
-has NOT been applied to the live project as of Phase B1** — see the Phase B1 final report for
-confirmation.
+to satisfy a constraint that assumed every event looks like the latter). **Confirmed applied to the
+live project** (`list_migrations` against `zefkbtscieokkdenvnkg`, re-verified 2026-09-19, as part of
+85Blends 2.4.0's referral foundation work) — corrected here; an earlier revision of this file said
+it had not been, which was accurate when written but is stale now.
 
-## Phase B1 — RevenueCat webhook Edge Function (source only, NOT deployed)
+## Phase B1 — RevenueCat webhook Edge Function (source deployed live)
 
-`supabase/functions/revenuecat-webhook/` and `supabase/functions/_shared/` contain a complete,
-reviewed, but **undeployed** implementation of the webhook receiver described below. Nothing in
-this section has been run against the live project, a live RevenueCat webhook, or a live Deno
-runtime — see the Phase B1 final report for exactly what validation was and wasn't possible in
-that implementation environment.
+`supabase/functions/revenuecat-webhook/` and `supabase/functions/_shared/` implement the webhook
+receiver described below. **Confirmed deployed and ACTIVE on the live project** (`slug
+"revenuecat-webhook"`, version 6, re-verified via `list_edge_functions` against `zefkbtscieokkdenvnkg`
+on 2026-09-19, as part of 85Blends 2.4.0's referral foundation work) — corrected here; earlier
+revisions of this file and of `index.ts`'s own header said "source only, NOT deployed," which was
+accurate when Phase B1 completed but is stale now. Nothing in *this* implementation environment has
+ever run this file against a live Deno runtime, deployed it, or observed a real RevenueCat delivery
+first-hand — someone deployed the version now live outside any process this repository's own git
+history records (see "Migration ledger and deployed-function drift beyond this repo's tracked
+history" below) — so treat "it's live" as a confirmed fact and "it behaves correctly against real
+traffic" as still only as validated as the Phase B1 final report and each module's own
+`*.test.ts` describe.
 
 **Why `verify_jwt = false` for this one function** (`supabase/config.toml`): RevenueCat cannot
 send a Supabase user JWT on webhook delivery, so Supabase's default per-function JWT gate would
@@ -191,23 +201,92 @@ independent of Deno, a live Postgres connection, or a live RevenueCat API. Only
 Deno-runtime-specific glue, deliberately kept thin, and were validated by static
 review/type-checking only — see the Phase B1 final report for exactly how.
 
-**Known limitations to close before Phase C deployment:**
+**Known limitations:**
 - The exact RevenueCat API v2 response shape (`gives_access`, `entitlements.items[].lookup_key`,
   `ends_at`/`current_period_ends_at` field formats, pagination via `next_page`) was implemented
   from the task spec's description, not verified against a live API response or live
-  documentation fetch (no internet access in the implementation environment) — re-verify before
-  relying on it in production.
-- `supabase/migrations/20260823062025_revenuecat_webhook_ledger_nullable_identity.sql` has not
-  been applied to the live project.
+  documentation fetch in the Phase B1 implementation environment — re-verify against real traffic
+  if it hasn't been already.
+- `supabase/migrations/20260823073614_revenuecat_webhook_ledger_nullable_identity.sql` — see
+  "Phase A schema status" above; confirmed applied, not a remaining limitation.
 
-## What comes next (Phase C and later)
+## Referral paid-qualification + repeatable milestone foundation (85Blends 2.4.0)
 
-1. **Phase C** — apply the Phase B1 migration to the live project; provision the four RevenueCat
-   webhook secrets in Supabase's own secret management (`supabase secrets set`, never in this
-   repo); deploy the Edge Function (`supabase functions deploy revenuecat-webhook`); configure the
-   webhook URL + Authorization header value in the RevenueCat dashboard.
-2. **Phase D** — sandbox webhook validation against the deployed function: purchase → active,
-   expiration → inactive, renewal → active, plus a RevenueCat-dashboard-triggered `TEST` event to
-   confirm auth/HMAC/delivery independent of any real customer data.
-3. Installation identity, push-device registration, and Station Price Alerts backend/UI — all
-   later, all depending on Phase C–D being green first.
+Backend-only foundation for referral rewards: every 5 qualified PAID referrals earns one
+`reward_type = 'one_month_pro'` reward, repeatable forever. Builds on the four
+`private.referral_*` tables `20260910000000_referral_backend_baseline.sql` describes (see that
+file and "Migration ledger and deployed-function drift" above for why that migration itself is a
+synthetic reconstruction, not something applied here) — confirmed live, empty (zero rows in all
+four tables), with `private.generate_referral_code`/`create_or_get_referral_participant`/
+`apply_referral_code` also already live, granted only to `service_role`/`postgres`, exactly like
+the RevenueCat tables above.
+
+`supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql` (in this
+repository, **NOT applied to the live project**) adds, purely additively:
+- A fix for a real, confirmed bug in `create_or_get_referral_participant`: it could silently
+  no-op — no error, no signal — when an alias was already attached to a different participant.
+- `qualifying_transaction_id` / `qualifying_original_transaction_id` (unique) /
+  `qualifying_environment` on `private.referral_attributions`, so a later refund reverses the
+  correct purchase.
+- `private.process_referral_subscription_event(...)`, a single `service_role`-only function that
+  atomically qualifies a paid referral (INITIAL_PURCHASE, PRODUCTION, `period_type = NORMAL`, one
+  of the three current paid product IDs, attribution applied before purchase, canonical RevenueCat
+  confirmation required), reverses it on a `CUSTOMER_SUPPORT`-reasoned refund matching the
+  original transaction, restores it on a matching `REFUND_REVERSED`, and reconciles
+  `private.referral_rewards` milestones (`floor(qualified_count / 5)`) inside the same transaction.
+
+`supabase/functions/_shared/referral-classification.ts` / `referral-milestones.ts` hold the pure,
+Node-tested decision logic (event classification, the milestone formula); `database.ts`/`index.ts`
+call the new database function from inside the SAME transaction the existing entitlement mirror
+already uses, reusing that same canonical RevenueCat refresh — no second RevenueCat API call.
+
+**Deployment ordering matters here specifically:** the migration must be applied to the live
+project BEFORE this revision of `revenuecat-webhook`/`database.ts` is ever deployed. Deploying the
+code first would make every INITIAL_PURCHASE/CANCELLATION/REFUND_REVERSED event try to call a
+function that doesn't exist yet — `applyReferralAction` in `database.ts` specifically detects that
+(Postgres `42883`/`42P01`) and degrades to a clean skip rather than rolling back the entitlement
+mirror, but that is a safety net for an ordering mistake, not a substitute for applying the
+migration first.
+
+Explicitly not built yet (next phase, not this one): the client bridge (installation identity,
+referral-code entry UI, a client-facing Edge Function) and Apple promotional-offer reward
+redemption. `referral_rewards.status = 'fulfilled'` stays reserved for that future system — nothing
+in this foundation ever sets it.
+
+## What comes next
+
+Phase C (apply the Phase B1 migrations, provision secrets, deploy the Edge Function, configure the
+RevenueCat dashboard webhook) and Phase D (sandbox validation) are described in the Phase B1 final
+report as the next steps *at the time that report was written*. Live inspection during 85Blends
+2.4.0's referral foundation work confirms Phase C's deployment steps have since happened — the
+function is live (see above) — but this repository has no record of Phase D's sandbox validation
+having been performed or its results, and no reason to assume it has. Before trusting this function
+against real production traffic, confirm Phase D was actually done (or do it) rather than assuming
+deployed implies validated.
+
+Next for the referral system specifically: a client bridge (installation identity, Keychain,
+referral-code entry UI, a client-facing Edge Function) and Apple promotional-offer reward
+redemption — both explicitly out of scope for 85Blends 2.4.0's referral paid-qualification
+foundation (see that report) and not started.
+
+## Migration ledger and deployed-function drift beyond this repo's tracked history
+
+Re-verified live on 2026-09-19 (85Blends 2.4.0 referral foundation work), beyond what
+`MIGRATION_RECOVERY.md` already documents (that file covers only the two synthetic baseline
+versions missing from the live ledger): the live project's migration ledger
+(`supabase_migrations.schema_migrations`, 27 versions as of this check) also contains **11
+migrations with no corresponding file anywhere in this repository's git history, on any branch** —
+`20260917231933_harden_community_report_insert_grants` through
+`20260918001857_community_report_rate_limit_role_fix` (the full list is in the referral
+foundation report). None of their SQL text mentions anything referral-related (checked directly
+against `supabase_migrations.schema_migrations.statements`) — by name and content they appear to
+be Price Alerts backend work and Community Report rate-limiting hardening, applied directly to the
+live project without ever being committed here. Consistent with that: `list_edge_functions` shows
+two live, ACTIVE Edge Functions — `price-alerts-api` (version 2) and `price-alerts-worker` (version
+1, `verify_jwt: true`) — with no corresponding `supabase/functions/` source anywhere in this
+repository either.
+
+This is a real gap in what this repository can tell you about the live project's actual state, not
+something the referral foundation work caused or has attempted to fix. Nothing here was applied,
+altered, or reconciled as part of that work — read-only live inspection only, per that task's own
+constraints.
