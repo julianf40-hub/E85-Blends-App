@@ -70,3 +70,11 @@ enabled = false
 # authentication replacing it.
 [functions.revenuecat-webhook]
 verify_jwt = false
+
+# 85Blends 2.4.0 — Referral client API. 85Blends does not use Supabase Auth sessions, so there is
+# no Supabase user JWT for the iOS app to send here either. `verify_jwt = false` is scoped to this
+# one function only, same as revenuecat-webhook above — the function performs its own independent
+# authentication instead (a client-safe Supabase API key AND a valid per-installation credential,
+# both required — see supabase/functions/referral-api/index.ts).
+[functions.referral-api]
+verify_jwt = false

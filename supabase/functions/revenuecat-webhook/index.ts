@@ -17,12 +17,12 @@
 // 85Blends 2.4.0 — the referral paid-qualification/milestone additions in this revision (see
 // handleNormalEvent's call to determineReferralAction/applyRefreshPlansAndMarkProcessed) depend on
 // private.process_referral_subscription_event, added by
-// supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql. That migration
-// has NOT been applied to the live project as of this revision — see this function's own
-// deployment order requirement: the migration MUST be applied before this revision is ever
-// deployed. database.ts's applyReferralAction degrades to a clean skip (never a rollback) if the
-// referral schema is missing specifically, but that guard is a safety net for an ordering mistake,
-// not a substitute for applying the migration first.
+// supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql. That migration IS
+// live on the production project (applied and verified 2026-09-19) and this revision (referral
+// processing included) is itself deployed live — ACTIVE, version 7. database.ts's
+// applyReferralAction still degrades to a clean skip (never a rollback) if the referral schema is
+// ever missing on some other environment; that guard remains a safety net for a deploy-before-
+// migration ordering mistake, not a sign that ordering mistake is the current state here.
 
 import { resolveEnvConfig, type WebhookEnvConfig } from "../_shared/env.ts";
 import { verifyWebhookAuth } from "../_shared/auth.ts";

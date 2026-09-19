@@ -218,13 +218,12 @@ Backend-only foundation for referral rewards: every 5 qualified PAID referrals e
 synthetic reconstruction (see `MIGRATION_RECOVERY.md`), since corrected to also include the three
 `private.referral_*` helper functions this foundation itself calls, and now tracked in production's
 migration history via `migration repair --status applied` (tracking-only, no schema change —
-completed as part of PR #79's migration-history reconciliation, merged into `main`) — confirmed
-live, empty (zero rows in all four tables), with
+completed as part of PR #79's migration-history reconciliation, merged into `main`) — with
 `private.generate_referral_code`/`create_or_get_referral_participant`/`apply_referral_code` also
-already live, granted only to `service_role`/`postgres`, exactly like the RevenueCat tables above.
+live, granted only to `service_role`/`postgres`, exactly like the RevenueCat tables above.
 
-`supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql` (in this
-repository, **NOT applied to the live project**) adds, purely additively:
+`supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql` — **live on the
+production project** (applied and verified) — adds, purely additively:
 - A fix for a real, confirmed bug in `create_or_get_referral_participant`: it could silently
   no-op — no error, no signal — when an alias was already attached to a different participant.
 - `qualifying_transaction_id` / `qualifying_original_transaction_id` (unique) /
@@ -242,18 +241,75 @@ Node-tested decision logic (event classification, the milestone formula); `datab
 call the new database function from inside the SAME transaction the existing entitlement mirror
 already uses, reusing that same canonical RevenueCat refresh — no second RevenueCat API call.
 
-**Deployment ordering matters here specifically:** the migration must be applied to the live
-project BEFORE this revision of `revenuecat-webhook`/`database.ts` is ever deployed. Deploying the
-code first would make every INITIAL_PURCHASE/CANCELLATION/REFUND_REVERSED event try to call a
-function that doesn't exist yet — `applyReferralAction` in `database.ts` specifically detects that
-(Postgres `42883`/`42P01`) and degrades to a clean skip rather than rolling back the entitlement
-mirror, but that is a safety net for an ordering mistake, not a substitute for applying the
-migration first.
+**Deployment ordering mattered here specifically:** the migration had to be applied to the live
+project BEFORE this revision of `revenuecat-webhook`/`database.ts` was ever deployed, which is the
+order that was followed — deploying the code first would have made every
+INITIAL_PURCHASE/CANCELLATION/REFUND_REVERSED event try to call a function that didn't exist yet.
+`applyReferralAction` in `database.ts` still specifically detects that case (Postgres
+`42883`/`42P01`) and degrades to a clean skip rather than rolling back the entitlement mirror, but
+that guard is a safety net for an ordering mistake, not a sign one occurred here.
 
-Explicitly not built yet (next phase, not this one): the client bridge (installation identity,
-referral-code entry UI, a client-facing Edge Function) and Apple promotional-offer reward
-redemption. `referral_rewards.status = 'fulfilled'` stays reserved for that future system — nothing
-in this foundation ever sets it.
+Explicitly not built by this foundation: Apple promotional-offer reward redemption.
+`referral_rewards.status = 'fulfilled'` stays reserved for that future system — nothing here ever
+sets it. The client-facing half — installation identity/credentials, applying someone else's code,
+and reading referral progress — is the **Referral client API**, described in its own section below
+(85Blends 2.4.0, backend-only; iOS UI is a separate, later phase).
+
+## Referral client API (85Blends 2.4.0)
+
+`supabase/functions/referral-api` is the **only** path the iOS app is ever allowed to use to reach
+the `private.referral_*` foundation described above — none of those tables/functions are exposed
+through PostgREST, and the app must never hold a service-role credential. Client source
+(installation identity/Keychain storage, referral-code entry UI) is a separate, later phase and is
+**not** part of this backend addition.
+
+**Custom auth model** — mirrors the pattern already established for Station Price Alerts
+(`private.price_alert_installations`): `verify_jwt = false` (85Blends does not use Supabase Auth
+sessions), replaced by two independent checks on every request — (1) a valid client-safe Supabase
+API key (the same `SUPABASE_ANON_KEY` already shipped in the iOS app), proving "this is the
+85Blends app," and (2) a valid `(client_installation_id, installation_secret)` pair, proving which
+installation. Only `SHA-256(secret)` is ever stored (`private.referral_client_installations`,
+`installation_secret_hash` `check`ed to look like one); the raw secret is never logged or returned.
+An existing installation's secret can never be replaced by a different one — a mismatched secret
+against a known `client_installation_id` is a flat `401`, never a silent takeover. Both new tables
+(`referral_client_installations`, and `referral_apply_attempts` backing a per-installation
+apply-code rate limit) are RLS-enabled, zero-policy, `service_role`-only — no `anon`/`authenticated`
+grant, same as every other `private.referral_*` object.
+
+**Actions** (single POST-only endpoint, JSON body with `action`):
+- `bootstrap` — create-or-get this installation's referral participant/code, bind it to the
+  caller's current RevenueCat app-user identity, and issue/verify its credential. Safe to call
+  again later (e.g. after a RevenueCat identity change) — a new alias can attach to the same
+  participant, but an alias already bound to a *different* participant fails closed
+  (`409 revenuecat_identity_conflict`), it is never silently reassigned.
+- `status` — this installation's own referral/reward progress. Never returns participant/
+  attribution/reward UUIDs, another installation's identity, or any RevenueCat identifier —
+  only counts, this installation's own referral code, and its own attribution status.
+- `apply_code` — apply someone else's referral code, once, ever. Immutable: there is no
+  remove/replace endpoint, and a second *different* code after one is already attached is a hard
+  `409`, regardless of that attribution's current status (pending/qualified/reversed/
+  disqualified). The database's own `private.apply_referral_code` remains the sole authority for
+  self-referral/format/existence checks — this endpoint only adds safe UX-level pre-checks and
+  idempotent re-application of the *same* code.
+
+Next-milestone progress (`next_milestone_number`/`next_reward_at`/`referrals_needed`) is computed
+from reward **history**, not `qualified_count % 5` — a fulfilled milestone is never clawed back
+(see the foundation above), so the next target is always the first milestone after the highest one
+ever earned or fulfilled, skipping past any milestone that was only ever `revoked`. Computed
+server-side (`_shared/referral-milestones.ts`'s `computeNextMilestoneProgress`) so the iOS client
+never duplicates this rule.
+
+**Reward redemption is out of scope here**, same as the foundation above — this API only ever
+*reads* `private.referral_rewards`; it never sets `status = 'fulfilled'`, never touches RevenueCat
+entitlements, and never grants Pro.
+
+**Deployment order** (none of these steps have happened yet as of this addition):
+1. merge this source to `main`
+2. apply the new `referral_client_api_foundation` migration to production
+3. verify the new tables/grants live
+4. deploy `referral-api`
+5. verify the endpoint against production
+6. only then wire/ship the iOS client
 
 ## What comes next
 
@@ -266,10 +322,9 @@ having been performed or its results, and no reason to assume it has. Before tru
 against real production traffic, confirm Phase D was actually done (or do it) rather than assuming
 deployed implies validated.
 
-Next for the referral system specifically: a client bridge (installation identity, Keychain,
-referral-code entry UI, a client-facing Edge Function) and Apple promotional-offer reward
-redemption — both explicitly out of scope for 85Blends 2.4.0's referral paid-qualification
-foundation (see that report) and not started.
+Next for the referral system specifically: the client-facing Edge Function now exists (see
+"Referral client API" above), but installation identity/Keychain storage and referral-code entry
+UI on the iOS side, plus Apple promotional-offer reward redemption, remain not started.
 
 ## Migration history: reconciled. Edge Function source drift: still real.
 
@@ -281,10 +336,11 @@ ledger's `supabase_migrations.schema_migrations.statements` and are now committe
 `supabase/migrations/`, on `main`. Production's migration ledger is now aligned **29/29** with
 `main`, including both previously-synthetic baselines: `20260427000000` and the corrected
 `20260910000000` are both tracked via `migration repair --status applied` (tracking-only, no
-schema change). See `MIGRATION_RECOVERY.md` for the full recovery and reconciliation record. As of
-this note, `20260919150000_referral_paid_qualification_foundation.sql` is the one remaining
-unapplied migration — validated by repeated local replay, still genuinely not applied to
-production.
+schema change). See `MIGRATION_RECOVERY.md` for the full recovery and reconciliation record.
+`20260919150000_referral_paid_qualification_foundation.sql` — validated by repeated local replay
+before being applied — is now also live on production, bringing the ledger to **30/30**. This
+revision adds one further migration, `referral_client_api_foundation` (see "Referral client API"
+above), not yet applied as of this addition.
 
 **Edge Function source drift remains real and unresolved.** `list_edge_functions` shows two live,
 ACTIVE Edge Functions — `price-alerts-api` (version 2) and `price-alerts-worker` (version 1,
