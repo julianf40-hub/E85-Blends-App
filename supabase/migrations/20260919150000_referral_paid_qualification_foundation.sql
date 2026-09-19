@@ -1,24 +1,25 @@
 -- 85Blends 2.4.0 — Referral paid-qualification + repeatable milestone foundation.
 --
--- NOT APPLIED to the live project as part of producing this migration. Written against the live
--- schema verified read-only on 2026-09-19 (private.referral_participants/
+-- NOT APPLIED to the live project as part of producing or hardening this migration. Originally
+-- written against the live schema verified read-only on 2026-09-19 (private.referral_participants/
 -- referral_participant_aliases/referral_attributions/referral_rewards, all currently zero rows;
 -- private.generate_referral_code/create_or_get_referral_participant/apply_referral_code) — see the
 -- referral paid-qualification foundation report for the exact verification queries. Purely
 -- additive to that live schema: ALTER/CREATE OR REPLACE only, no table recreation, no data
 -- migration (there is none to migrate — every referral table is empty live).
 --
--- MIGRATION-LEDGER STATUS (read this before ever applying): the live migration ledger
--- (supabase_migrations.schema_migrations, confirmed via list_migrations on 2026-09-19) does NOT
--- contain 20260910000000_referral_backend_baseline — that migration is a synthetic reconstruction
--- of already-live tables, never actually applied as a tracked migration (see that file's own
--- header and supabase/MIGRATION_RECOVERY.md). This migration's ALTER/CREATE OR REPLACE statements
--- below assume the OBJECTS that baseline describes already exist live (they do, verified) but this
--- repository's migration history does not yet know that. Applying THIS migration before that
--- ledger gap is reconciled (`supabase migration repair --status applied 20260910000000`, only
--- after its own empty-database replay + explicit authorization, per MIGRATION_RECOVERY.md) would
--- leave the local/live ledgers further out of sync, not less — see the foundation report's
--- "safe order of operations" for the exact sequencing this needs.
+-- MIGRATION-LEDGER STATUS (current as of this hardening pass, 2026-09-19): migration-history
+-- reconciliation is COMPLETE. PR #79 recovered the 11 previously-untracked historical migrations
+-- and merged into main; production's migration ledger is now aligned 29/29 with main, including
+-- both previously-synthetic baselines — 20260427000000_community_pricing_founding_baseline and
+-- 20260910000000_referral_backend_baseline (the latter now also corrected to include the three
+-- private.referral_* helper functions this migration builds on) are both tracked in production's
+-- migration history (`supabase migration repair --status applied <version>`, tracking-only, no
+-- schema change, already performed and confirmed). This migration, 20260919150000, is the next
+-- and only unapplied migration in the full 30-file sequence — it has been validated by two
+-- independent clean local replays of the complete 30-migration chain and a full local DB behavior
+-- test matrix (see MIGRATION_RECOVERY.md and PR #78's own description for the exact validation
+-- record), but remains genuinely unapplied to production, pending its own separate authorization.
 --
 -- No client, no Edge Function, and no reward-redemption code calls anything in this migration yet
 -- — see supabase/functions/_shared/referral-classification.ts / referral-milestones.ts for the
@@ -145,6 +146,10 @@ end $$;
 -- match key private.process_referral_subscription_event uses to find the right attribution for a
 -- refund/REFUND_REVERSED event — never qualifying_event_id, which stays anchored to the ORIGINAL
 -- qualifying purchase event across any later reversal/requalification cycle (see that function).
+-- As of this hardening pass, that function additionally requires referred_participant_id to match
+-- the participant identity independently resolved from the SAME event's own alias set — the
+-- transaction id alone is no longer trusted as sufficient (see that function's refund_reversal/
+-- refund_reversed branches).
 do $$
 begin
   alter table private.referral_attributions
@@ -202,8 +207,9 @@ create or replace function private.process_referral_subscription_event(
 )
 returns table (
   outcome text,                   -- no_participant | identity_conflict | canonical_not_active |
-                                   -- no_attribution | already_processed | too_late | qualified |
-                                   -- reversed | requalified
+                                   -- no_attribution | already_processed | too_late |
+                                   -- missing_transaction_identity | qualified | reversed |
+                                   -- requalified
   attribution_id uuid,
   referrer_participant_id uuid,
   qualified_count integer
@@ -282,6 +288,19 @@ begin
     end if;
     v_purchased_at := to_timestamp(p_purchased_at_ms::double precision / 1000.0);
 
+    -- Transaction-identity hardening: the classifier layer (referral-classification.ts,
+    -- isReferralQualifyingEvent) already requires both ids before ever calling this function, so
+    -- this is a defensive backstop, not the primary gate — but qualifying_original_transaction_id
+    -- is the ONLY key a later refund/REFUND_REVERSED event can use to find this attribution again
+    -- (see its own column comment below), so a qualification recorded without it would be
+    -- permanently unreversible/unrequalifiable. Never overload too_late for this — it is a
+    -- distinct, explicit no-op, not a timing failure.
+    if p_transaction_id is null or btrim(p_transaction_id) = ''
+       or p_original_transaction_id is null or btrim(p_original_transaction_id) = '' then
+      return query select 'missing_transaction_identity'::text, v_attribution.id, v_attribution.referrer_participant_id, null::integer;
+      return;
+    end if;
+
     -- Attribution Timing Rule: attributed_at (set once by private.apply_referral_code at the
     -- moment the code was applied — not created_at/updated_at, which are generic audit columns)
     -- must be <= the purchase timestamp. No grace window in v1.
@@ -303,16 +322,33 @@ begin
     v_referrer_id := v_attribution.referrer_participant_id;
 
   elsif p_action = 'refund_reversal' then
+    -- Explicit, early fail-closed guard: the classifier layer (isReferralRefundReversalEvent)
+    -- already requires this id before ever calling this function, so this is a defensive
+    -- backstop — never rely on `qualifying_original_transaction_id = NULL` alone to fail closed
+    -- implicitly (true, but not auditable/explicit as a deliberate check).
+    if p_original_transaction_id is null or btrim(p_original_transaction_id) = '' then
+      return query select 'no_attribution'::text, null::uuid, null::uuid, null::integer;
+      return;
+    end if;
+
+    -- Participant-binding hardening: match on BOTH the transaction id AND the participant identity
+    -- already resolved from THIS event's own alias set (v_participant_id, above) — trusting the
+    -- transaction id alone would let a refund event whose alias set happens to resolve to the
+    -- WRONG participant (a malformed/unexpected payload, an identity-resolution bug upstream, or
+    -- any other cross-wiring) reverse an unrelated referrer's qualification. Both signals must
+    -- agree; if they don't, this is a clean no_attribution no-op, never a guess.
     select * into v_attribution
     from private.referral_attributions
     where qualifying_original_transaction_id = p_original_transaction_id
+      and referred_participant_id = v_participant_id
       and status = 'qualified'
     for update;
 
     if v_attribution.id is null then
-      -- No currently-qualified attribution matches this exact original_transaction_id — either
-      -- this was never a referral-qualifying purchase, or it's already reversed/never qualified.
-      -- Clean no-op either way; never guess which attribution a refund meant.
+      -- No currently-qualified attribution matches both this exact original_transaction_id AND
+      -- this event's resolved participant — either this was never a referral-qualifying purchase,
+      -- it's already reversed/never qualified, or the two signals disagree. Clean no-op either
+      -- way; never guess which attribution a refund meant.
       return query select 'no_attribution'::text, null::uuid, null::uuid, null::integer;
       return;
     end if;
@@ -331,9 +367,18 @@ begin
       return;
     end if;
 
+    -- Same explicit fail-closed guard as refund_reversal, above.
+    if p_original_transaction_id is null or btrim(p_original_transaction_id) = '' then
+      return query select 'no_attribution'::text, null::uuid, null::uuid, null::integer;
+      return;
+    end if;
+
+    -- Same participant-binding hardening as refund_reversal, above — both the transaction id and
+    -- this event's resolved participant identity must agree before re-qualifying anything.
     select * into v_attribution
     from private.referral_attributions
     where qualifying_original_transaction_id = p_original_transaction_id
+      and referred_participant_id = v_participant_id
       and status = 'reversed'
     for update;
 

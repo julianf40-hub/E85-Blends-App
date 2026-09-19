@@ -179,6 +179,14 @@ test("isReferralQualifyingEvent: price fields are never required — a fully qua
   assert.equal(isReferralQualifyingEvent(baseQualifyingFields()), true);
 });
 
+test("isReferralQualifyingEvent: missing transaction_id -> false (integrity hardening: unreversible without it)", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ transactionId: null })), false);
+});
+
+test("isReferralQualifyingEvent: missing original_transaction_id -> false (integrity hardening: unreversible without it)", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ originalTransactionId: null })), false);
+});
+
 // MARK: isReferralRefundReversalEvent — Phase 17
 
 function baseRefundFields(overrides: Partial<ReferralWebhookFields> = {}): ReferralWebhookFields {
@@ -217,6 +225,10 @@ test("isReferralRefundReversalEvent: SANDBOX CUSTOMER_SUPPORT -> no production r
 
 test("isReferralRefundReversalEvent: non-CANCELLATION event type -> false even with CUSTOMER_SUPPORT reason", () => {
   assert.equal(isReferralRefundReversalEvent(baseRefundFields({ eventType: "EXPIRATION" })), false);
+});
+
+test("isReferralRefundReversalEvent: missing original_transaction_id -> false (no possible match, no referral action)", () => {
+  assert.equal(isReferralRefundReversalEvent(baseRefundFields({ originalTransactionId: null })), false);
 });
 
 // This module only classifies the EVENT; matching against the stored qualifying_original_transaction_id
@@ -263,6 +275,22 @@ test("isReferralRequalificationEvent: other event types -> false", () => {
   assert.equal(
     isReferralRequalificationEvent({
       eventType: "RENEWAL",
+      environment: "PRODUCTION",
+      periodType: null,
+      productId: null,
+      cancelReason: null,
+      transactionId: null,
+      originalTransactionId: null,
+      purchasedAtMs: null,
+    }),
+    false,
+  );
+});
+
+test("isReferralRequalificationEvent: missing original_transaction_id -> false (no possible match, no requalification action)", () => {
+  assert.equal(
+    isReferralRequalificationEvent({
+      eventType: "REFUND_REVERSED",
       environment: "PRODUCTION",
       periodType: null,
       productId: null,
@@ -334,6 +362,8 @@ test("determineReferralAction: canonicalProIsActive is passed through verbatim, 
       environment: "PRODUCTION",
       period_type: "NORMAL",
       product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_1",
+      original_transaction_id: "orig_txn_1",
     },
   };
   const result = determineReferralAction(context(), envelope, false);

@@ -138,8 +138,8 @@ revisions of this file and of `index.ts`'s own header said "source only, NOT dep
 accurate when Phase B1 completed but is stale now. Nothing in *this* implementation environment has
 ever run this file against a live Deno runtime, deployed it, or observed a real RevenueCat delivery
 first-hand — someone deployed the version now live outside any process this repository's own git
-history records (see "Migration ledger and deployed-function drift beyond this repo's tracked
-history" below) — so treat "it's live" as a confirmed fact and "it behaves correctly against real
+history records (see "Migration history: reconciled. Edge Function source drift: still real."
+below) — so treat "it's live" as a confirmed fact and "it behaves correctly against real
 traffic" as still only as validated as the Phase B1 final report and each module's own
 `*.test.ts` describe.
 
@@ -214,12 +214,14 @@ review/type-checking only — see the Phase B1 final report for exactly how.
 
 Backend-only foundation for referral rewards: every 5 qualified PAID referrals earns one
 `reward_type = 'one_month_pro'` reward, repeatable forever. Builds on the four
-`private.referral_*` tables `20260910000000_referral_backend_baseline.sql` describes (see that
-file and "Migration ledger and deployed-function drift" above for why that migration itself is a
-synthetic reconstruction, not something applied here) — confirmed live, empty (zero rows in all
-four tables), with `private.generate_referral_code`/`create_or_get_referral_participant`/
-`apply_referral_code` also already live, granted only to `service_role`/`postgres`, exactly like
-the RevenueCat tables above.
+`private.referral_*` tables `20260910000000_referral_backend_baseline.sql` describes — originally a
+synthetic reconstruction (see `MIGRATION_RECOVERY.md`), since corrected to also include the three
+`private.referral_*` helper functions this foundation itself calls, and now tracked in production's
+migration history via `migration repair --status applied` (tracking-only, no schema change —
+completed as part of PR #79's migration-history reconciliation, merged into `main`) — confirmed
+live, empty (zero rows in all four tables), with
+`private.generate_referral_code`/`create_or_get_referral_participant`/`apply_referral_code` also
+already live, granted only to `service_role`/`postgres`, exactly like the RevenueCat tables above.
 
 `supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql` (in this
 repository, **NOT applied to the live project**) adds, purely additively:
@@ -269,24 +271,24 @@ referral-code entry UI, a client-facing Edge Function) and Apple promotional-off
 redemption — both explicitly out of scope for 85Blends 2.4.0's referral paid-qualification
 foundation (see that report) and not started.
 
-## Migration ledger and deployed-function drift beyond this repo's tracked history
+## Migration history: reconciled. Edge Function source drift: still real.
 
-Re-verified live on 2026-09-19 (85Blends 2.4.0 referral foundation work), beyond what
-`MIGRATION_RECOVERY.md` already documents (that file covers only the two synthetic baseline
-versions missing from the live ledger): the live project's migration ledger
-(`supabase_migrations.schema_migrations`, 27 versions as of this check) also contains **11
-migrations with no corresponding file anywhere in this repository's git history, on any branch** —
+**Migration-history reconciliation is COMPLETE** (PR #79, merged into `main` 2026-09-19). The 11
+migrations this section previously described as untracked —
 `20260917231933_harden_community_report_insert_grants` through
-`20260918001857_community_report_rate_limit_role_fix` (the full list is in the referral
-foundation report). None of their SQL text mentions anything referral-related (checked directly
-against `supabase_migrations.schema_migrations.statements`) — by name and content they appear to
-be Price Alerts backend work and Community Report rate-limiting hardening, applied directly to the
-live project without ever being committed here. Consistent with that: `list_edge_functions` shows
-two live, ACTIVE Edge Functions — `price-alerts-api` (version 2) and `price-alerts-worker` (version
-1, `verify_jwt: true`) — with no corresponding `supabase/functions/` source anywhere in this
-repository either.
+`20260918001857_community_report_rate_limit_role_fix` — were recovered verbatim from the live
+ledger's `supabase_migrations.schema_migrations.statements` and are now committed in
+`supabase/migrations/`, on `main`. Production's migration ledger is now aligned **29/29** with
+`main`, including both previously-synthetic baselines: `20260427000000` and the corrected
+`20260910000000` are both tracked via `migration repair --status applied` (tracking-only, no
+schema change). See `MIGRATION_RECOVERY.md` for the full recovery and reconciliation record. As of
+this note, `20260919150000_referral_paid_qualification_foundation.sql` is the one remaining
+unapplied migration — validated by repeated local replay, still genuinely not applied to
+production.
 
-This is a real gap in what this repository can tell you about the live project's actual state, not
-something the referral foundation work caused or has attempted to fix. Nothing here was applied,
-altered, or reconciled as part of that work — read-only live inspection only, per that task's own
-constraints.
+**Edge Function source drift remains real and unresolved.** `list_edge_functions` shows two live,
+ACTIVE Edge Functions — `price-alerts-api` (version 2) and `price-alerts-worker` (version 1,
+`verify_jwt: true`) — with no corresponding `supabase/functions/` source anywhere in this
+repository. This is a real gap in what this repository can tell you about the live project's
+actual state, not something any of the referral-foundation or migration-reconciliation work caused
+or has attempted to fix.

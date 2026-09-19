@@ -105,6 +105,14 @@ export const REFERRAL_QUALIFYING_PRODUCT_IDS: readonly string[] = [
  * RevenueCat subscriber refresh confirming active `pro` before ever calling the database
  * qualification function (Phase 9 of the referral task — no "best effort" qualification from the
  * webhook payload alone).
+ *
+ * Also requires `transactionId`/`originalTransactionId` to both be present (integrity hardening):
+ * `originalTransactionId` is the sole match key a later refund/REFUND_REVERSED event uses to find
+ * this exact attribution again (see the migration's `process_referral_subscription_event`) — an
+ * event missing either id can never be reversed or re-confirmed later, so it must never qualify in
+ * the first place, regardless of how otherwise-eligible it looks. RevenueCat documents both ids as
+ * always present on a genuine INITIAL_PURCHASE; a qualifying-shaped event missing one is treated as
+ * malformed, not as eligible.
  */
 export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolean {
   return (
@@ -112,7 +120,9 @@ export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolea
     fields.environment === "PRODUCTION" &&
     fields.periodType === "NORMAL" &&
     fields.productId !== null &&
-    REFERRAL_QUALIFYING_PRODUCT_IDS.includes(fields.productId)
+    REFERRAL_QUALIFYING_PRODUCT_IDS.includes(fields.productId) &&
+    fields.transactionId !== null &&
+    fields.originalTransactionId !== null
   );
 }
 
@@ -122,14 +132,23 @@ export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolea
  * support-issued refund, as distinct from a voluntary UNSUBSCRIBE, a BILLING_ERROR lapse, or any
  * other cancellation reason, none of which reverse a qualification (see the referral task's Refund
  * / Reversal Rule). This function only classifies the EVENT; matching it to the correct attribution
- * by qualifying_original_transaction_id happens in the database function (Phase 10/12), since only
- * the database has the attribution's stored transaction identity to compare against.
+ * by qualifying_original_transaction_id (AND, as of this hardening pass, the participant identity
+ * resolved from this same event's alias set — see the migration) happens in the database function
+ * (Phase 10/12), since only the database has the attribution's stored transaction identity to
+ * compare against.
+ *
+ * Also requires `originalTransactionId` to be present: with no id there is nothing for the database
+ * function to match against, and "no referral action" (this classifier returning false, so the
+ * caller never invokes the database function at all) is the correct, explicit no-op — not a bare
+ * `qualifying_original_transaction_id = NULL` comparison relied on to fail closed implicitly. The
+ * existing entitlement mirror is entirely unaffected either way.
  */
 export function isReferralRefundReversalEvent(fields: ReferralWebhookFields): boolean {
   return (
     fields.eventType === "CANCELLATION" &&
     fields.environment === "PRODUCTION" &&
-    fields.cancelReason === "CUSTOMER_SUPPORT"
+    fields.cancelReason === "CUSTOMER_SUPPORT" &&
+    fields.originalTransactionId !== null
   );
 }
 
@@ -137,12 +156,20 @@ export function isReferralRefundReversalEvent(fields: ReferralWebhookFields): bo
  * TRUE only for a PRODUCTION `REFUND_REVERSED` event — RevenueCat's signal that a previously
  * refunded transaction has been un-refunded. A candidate only, exactly like the reversal
  * classifier above: matching it against the correct, currently-`reversed` attribution by
- * qualifying_original_transaction_id, and re-confirming canonical Pro state, both happen in the
- * database function (Phase 13) — this function only answers "is this event's TYPE the kind that
- * could ever re-qualify a referral," never "should it."
+ * qualifying_original_transaction_id AND participant identity, and re-confirming canonical Pro
+ * state, both happen in the database function (Phase 13) — this function only answers "is this
+ * event's TYPE the kind that could ever re-qualify a referral," never "should it."
+ *
+ * Also requires `originalTransactionId` to be present, for the same reason as the reversal
+ * classifier above — no id means no possible match, so this is a clean no-op, not a database call
+ * relying on `= NULL` never matching.
  */
 export function isReferralRequalificationEvent(fields: ReferralWebhookFields): boolean {
-  return fields.eventType === "REFUND_REVERSED" && fields.environment === "PRODUCTION";
+  return (
+    fields.eventType === "REFUND_REVERSED" &&
+    fields.environment === "PRODUCTION" &&
+    fields.originalTransactionId !== null
+  );
 }
 
 /**
