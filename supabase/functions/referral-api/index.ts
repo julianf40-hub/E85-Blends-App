@@ -14,12 +14,16 @@
 // SUPABASE_DB_URL connection (see _shared/database.ts's createDatabaseClient, reused as-is here),
 // not the PostgREST Data API.
 //
-// AUTHENTICATION — two independent layers, both required on every request:
-//   A. a valid client-safe Supabase API key (the same SUPABASE_ANON_KEY already shipped inside the
-//      iOS app) — proves "this is the 85Blends app," not "this is a specific installation."
-//   B. a valid (client_installation_id, installation_secret) pair — proves which installation.
+// AUTHENTICATION — two independent gates, both required on every request:
+//   A. a valid client-safe Supabase API key (a modern publishable key from SUPABASE_PUBLISHABLE_KEYS,
+//      or the legacy SUPABASE_ANON_KEY — see _shared/referral-api-env.ts) — a PUBLIC, project-scoped
+//      credential, the same value already shipped inside the iOS app. This is a first-gate
+//      routing/project-identity check, NOT app attestation and NOT proof of a human/user — it does
+//      not identify which installation is calling.
+//   B. a valid (client_installation_id, installation_secret) pair — THIS is the actual possession
+//      credential that identifies a specific installation (see authenticateInstallation below).
 // verify_jwt = false (see supabase/config.toml) because 85Blends does not use Supabase Auth
-// sessions; layer A above replaces the platform JWT gate that setting would otherwise remove.
+// sessions; gate A above replaces the platform JWT gate that setting would otherwise remove.
 //
 // OUT OF SCOPE for this revision (see the referral-api task spec): reward redemption, granting
 // Pro, marking any reward `fulfilled`, and any RevenueCat entitlement mutation. This function only
@@ -29,6 +33,7 @@
 
 import { createDatabaseClient, type Sql } from "../_shared/database.ts";
 import { resolveReferralApiEnvConfig } from "../_shared/referral-api-env.ts";
+import { extractBearerToken, matchesAnyApiKey } from "../_shared/referral-api-auth.ts";
 import { constantTimeEqual } from "../_shared/hmac.ts";
 import { sha256Hex } from "../_shared/hash.ts";
 import { logWebhookEvent } from "../_shared/logging.ts";
@@ -55,12 +60,6 @@ function jsonResponse(status: number, body: Record<string, unknown>): Response {
 
 function errorResponse(status: number, code: string): Response {
   return jsonResponse(status, { error: code });
-}
-
-function bearerToken(authorizationHeader: string | null): string | null {
-  if (!authorizationHeader) return null;
-  const match = /^Bearer\s+(.+)$/i.exec(authorizationHeader.trim());
-  return match ? match[1] : null;
 }
 
 async function hashSecret(secret: string): Promise<string> {
@@ -177,9 +176,13 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
       `;
 
       if (existingCredential) {
+        // app_version: update it when the request supplied one; `coalesce` preserves whatever was
+        // already stored when it didn't (request.appVersion is null for "not supplied" — see
+        // referral-api-validation.ts — never for "clear it", there is no way to clear it).
         await tx`
           update private.referral_client_installations
-          set last_seen_at = now()
+          set last_seen_at = now(),
+              app_version = coalesce(${request.appVersion}, app_version)
           where installation_id = ${request.clientInstallationId}
         `;
       } else {
@@ -190,8 +193,8 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
         // and the verify-read below will see THEIR hash, not ours — correctly reported as a
         // takeover conflict rather than a false success.
         await tx`
-          insert into private.referral_client_installations (installation_id, installation_secret_hash)
-          values (${request.clientInstallationId}, ${secretHash})
+          insert into private.referral_client_installations (installation_id, installation_secret_hash, app_version)
+          values (${request.clientInstallationId}, ${secretHash}, ${request.appVersion})
           on conflict (installation_id) do nothing
         `;
         const [verifyRow] = await tx<{ installation_secret_hash: string }[]>`
@@ -342,10 +345,11 @@ Deno.serve(async (req: Request) => {
   }
   const env = envResult.config;
 
-  // Layer A — client-safe API key, required independent of installation auth. See this module's
-  // header comment.
-  const apiKey = req.headers.get("apikey") ?? bearerToken(req.headers.get("authorization"));
-  if (apiKey === null || !constantTimeEqual(apiKey, env.supabaseAnonKey)) {
+  // Gate A — a client-safe (public, project-scoped, non-secret) API key, required independent of
+  // installation auth. See this module's header comment. Accepted if it matches ANY configured
+  // key (publishable and/or legacy anon) — never logged, whichever it is.
+  const apiKey = req.headers.get("apikey") ?? extractBearerToken(req.headers.get("authorization"));
+  if (!matchesAnyApiKey(apiKey, env.clientApiKeys)) {
     return errorResponse(401, "invalid_api_key");
   }
 
@@ -377,6 +381,8 @@ Deno.serve(async (req: Request) => {
     });
     return errorResponse(500, "internal_error");
   } finally {
-    await sql.end({ timeout: 5 });
+    // Guarded exactly like revenuecat-webhook/index.ts: a connection-close failure here must
+    // never replace an already-computed, otherwise-valid response with an unhandled error.
+    await sql.end({ timeout: 5 }).catch(() => {});
   }
 });

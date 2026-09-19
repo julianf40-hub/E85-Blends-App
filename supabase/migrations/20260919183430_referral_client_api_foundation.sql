@@ -12,10 +12,13 @@
 --   1. verify_jwt = false on the Edge Function (see supabase/config.toml) — RevenueCat-style
 --      webhooks aside, 85Blends does not use Supabase Auth sessions, so the platform JWT gate is
 --      replaced with this function's own authentication.
---   2. every request must present a valid client-safe Supabase API key (anon/publishable) — proves
---      "this is the 85Blends app," not "this is a specific installation."
+--   2. every request must present a valid client-safe Supabase API key (a publishable key, or the
+--      legacy anon key) — a PUBLIC, project-scoped credential, not app attestation and not proof
+--      of a human/user. It is a first-gate routing/project-identity check only.
 --   3. every request must ALSO present a per-installation secret, generated client-side and never
---      transmitted anywhere except this one authentication check.
+--      transmitted anywhere except this one authentication check — THIS is the actual possession
+--      credential that identifies a specific installation; the API key from (2) never substitutes
+--      for it.
 --   4. only SHA-256(secret) is ever stored — the raw secret is never persisted, logged, or
 --      returned by any endpoint.
 --   5. stored hashes are compared using a constant-time comparison (see
@@ -39,10 +42,18 @@
 create table private.referral_client_installations (
   installation_id uuid primary key references private.referral_participants(installation_id) on delete cascade,
   installation_secret_hash text not null,
+  -- Client-reported app version at last bootstrap, for diagnostics only — never part of
+  -- authentication, never returned by any endpoint (see referral-api/index.ts's status response,
+  -- which deliberately never includes it). Nullable: a client may omit it, and an existing
+  -- installation's previously-stored value is preserved (never cleared) when a later bootstrap
+  -- call doesn't supply one.
+  app_version text,
   created_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
   constraint referral_client_installations_secret_hash_check
-    check (installation_secret_hash ~ '^[0-9a-f]{64}$')
+    check (installation_secret_hash ~ '^[0-9a-f]{64}$'),
+  constraint referral_client_installations_app_version_check
+    check (app_version is null or length(app_version) between 1 and 64)
 );
 
 comment on table private.referral_client_installations is

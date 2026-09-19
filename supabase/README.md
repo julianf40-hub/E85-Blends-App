@@ -266,11 +266,15 @@ through PostgREST, and the app must never hold a service-role credential. Client
 **Custom auth model** — mirrors the pattern already established for Station Price Alerts
 (`private.price_alert_installations`): `verify_jwt = false` (85Blends does not use Supabase Auth
 sessions), replaced by two independent checks on every request — (1) a valid client-safe Supabase
-API key (the same `SUPABASE_ANON_KEY` already shipped in the iOS app), proving "this is the
-85Blends app," and (2) a valid `(client_installation_id, installation_secret)` pair, proving which
-installation. Only `SHA-256(secret)` is ever stored (`private.referral_client_installations`,
-`installation_secret_hash` `check`ed to look like one); the raw secret is never logged or returned.
-An existing installation's secret can never be replaced by a different one — a mismatched secret
+API key (a modern publishable key from `SUPABASE_PUBLISHABLE_KEYS`, and/or the legacy
+`SUPABASE_ANON_KEY` — either works, both already ship in the iOS app), and (2) a valid
+`(client_installation_id, installation_secret)` pair. These two checks are not equivalent: the API
+key is a **public, project-scoped credential** — a first-gate routing/project-identity check, never
+app attestation and never proof of a human/user — while the per-installation secret is the actual
+**possession credential** that identifies a specific installation. Only `SHA-256(secret)` is ever
+stored (`private.referral_client_installations`, `installation_secret_hash` `check`ed to look like
+one, secret itself bounded to 32–512 characters); the raw secret is never logged or returned. An
+existing installation's secret can never be replaced by a different one — a mismatched secret
 against a known `client_installation_id` is a flat `401`, never a silent takeover. Both new tables
 (`referral_client_installations`, and `referral_apply_attempts` backing a per-installation
 apply-code rate limit) are RLS-enabled, zero-policy, `service_role`-only — no `anon`/`authenticated`

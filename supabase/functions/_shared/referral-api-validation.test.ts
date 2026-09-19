@@ -9,9 +9,12 @@ import {
   isValidRevenueCatAppUserId,
   isValidRevenueCatEnvironment,
   isValidReferralCodeFormat,
+  isValidAppVersion,
   normalizeReferralCode,
   parseApiRequest,
   MIN_INSTALLATION_SECRET_LENGTH,
+  MAX_INSTALLATION_SECRET_LENGTH,
+  MAX_APP_VERSION_LENGTH,
 } from "./referral-api-validation.ts";
 
 const VALID_UUID = "0d5b1e2a-4f3c-4a1b-9e2d-6c7a8b9c0d1e";
@@ -34,6 +37,16 @@ test("isValidInstallationSecret: enforces the minimum length", () => {
   assert.equal(isValidInstallationSecret("a".repeat(MIN_INSTALLATION_SECRET_LENGTH - 1)), false);
   assert.equal(isValidInstallationSecret(""), false);
   assert.equal(isValidInstallationSecret(12345), false);
+});
+
+test("isValidInstallationSecret: 31 chars rejected, 32 accepted (lower boundary)", () => {
+  assert.equal(isValidInstallationSecret("a".repeat(31)), false);
+  assert.equal(isValidInstallationSecret("a".repeat(32)), true);
+});
+
+test("isValidInstallationSecret: 512 accepted, 513 rejected (upper boundary)", () => {
+  assert.equal(isValidInstallationSecret("a".repeat(MAX_INSTALLATION_SECRET_LENGTH)), true);
+  assert.equal(isValidInstallationSecret("a".repeat(MAX_INSTALLATION_SECRET_LENGTH + 1)), false);
 });
 
 test("isValidRevenueCatAppUserId: rejects empty/whitespace-only and oversized values", () => {
@@ -179,5 +192,94 @@ test("parseApiRequest: apply_code with empty referral_code -> invalid_request_bo
     installation_secret: VALID_SECRET,
     referral_code: "   ",
   });
+  assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
+});
+
+// 85Blends 2.4.0 hardening pass — isValidAppVersion + parseApiRequest's app_version handling.
+
+test("isValidAppVersion: accepts 1-64 chars after trimming", () => {
+  assert.equal(isValidAppVersion("2.4.0"), true);
+  assert.equal(isValidAppVersion("  2.4.0  "), true);
+  assert.equal(isValidAppVersion("a".repeat(MAX_APP_VERSION_LENGTH)), true);
+});
+
+test("isValidAppVersion: rejects an empty or whitespace-only string, and non-strings", () => {
+  assert.equal(isValidAppVersion(""), false);
+  assert.equal(isValidAppVersion("   "), false);
+  assert.equal(isValidAppVersion(123), false);
+  assert.equal(isValidAppVersion(null), false);
+  assert.equal(isValidAppVersion(undefined), false);
+});
+
+test("isValidAppVersion: rejects >64 chars — this is a rejection, not a truncation point", () => {
+  assert.equal(isValidAppVersion("a".repeat(MAX_APP_VERSION_LENGTH + 1)), false);
+});
+
+function bootstrapBody(extra: Record<string, unknown>): Record<string, unknown> {
+  return {
+    action: "bootstrap",
+    client_installation_id: VALID_UUID,
+    installation_secret: VALID_SECRET,
+    revenuecat_app_user_id: "user_123",
+    revenuecat_environment: "PRODUCTION",
+    ...extra,
+  };
+}
+
+test("parseApiRequest: bootstrap with absent app_version -> appVersion null", () => {
+  const result = parseApiRequest(bootstrapBody({}));
+  assert.equal(result.ok, true);
+  if (result.ok && result.request.action === "bootstrap") {
+    assert.equal(result.request.appVersion, null);
+  } else {
+    assert.fail("expected a parsed bootstrap request");
+  }
+});
+
+test("parseApiRequest: bootstrap with explicit null app_version -> appVersion null", () => {
+  const result = parseApiRequest(bootstrapBody({ app_version: null }));
+  assert.equal(result.ok, true);
+  if (result.ok && result.request.action === "bootstrap") {
+    assert.equal(result.request.appVersion, null);
+  } else {
+    assert.fail("expected a parsed bootstrap request");
+  }
+});
+
+test("parseApiRequest: bootstrap with a valid app_version is trimmed and kept", () => {
+  const result = parseApiRequest(bootstrapBody({ app_version: "  2.4.0  " }));
+  assert.equal(result.ok, true);
+  if (result.ok && result.request.action === "bootstrap") {
+    assert.equal(result.request.appVersion, "2.4.0");
+  } else {
+    assert.fail("expected a parsed bootstrap request");
+  }
+});
+
+test("parseApiRequest: bootstrap with an empty-string app_version is rejected, NOT treated as absent", () => {
+  const result = parseApiRequest(bootstrapBody({ app_version: "" }));
+  assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
+});
+
+test("parseApiRequest: bootstrap with app_version >64 chars is rejected, never silently truncated", () => {
+  const tooLong = "a".repeat(MAX_APP_VERSION_LENGTH + 1);
+  const result = parseApiRequest(bootstrapBody({ app_version: tooLong }));
+  assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
+});
+
+test("parseApiRequest: bootstrap with app_version at exactly 64 chars is accepted in full", () => {
+  const exactly64 = "a".repeat(MAX_APP_VERSION_LENGTH);
+  const result = parseApiRequest(bootstrapBody({ app_version: exactly64 }));
+  assert.equal(result.ok, true);
+  if (result.ok && result.request.action === "bootstrap") {
+    assert.equal(result.request.appVersion, exactly64);
+    assert.equal(result.request.appVersion?.length, MAX_APP_VERSION_LENGTH);
+  } else {
+    assert.fail("expected a parsed bootstrap request");
+  }
+});
+
+test("parseApiRequest: bootstrap with a non-string app_version is rejected", () => {
+  const result = parseApiRequest(bootstrapBody({ app_version: 240 }));
   assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
 });

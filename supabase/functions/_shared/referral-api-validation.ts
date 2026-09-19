@@ -11,11 +11,17 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const REFERRAL_CODE_PATTERN = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/;
 
 export const MIN_INSTALLATION_SECRET_LENGTH = 32;
+// Matches the established price-alert client credential pattern (private.price_alert_installations'
+// own secret handling) — an upper bound exists so a client bug can't submit an unbounded string
+// into the hashing path; the hash itself is always a fixed 64 hex chars regardless, but nothing
+// downstream should have to tolerate an arbitrarily large request body field.
+export const MAX_INSTALLATION_SECRET_LENGTH = 512;
 
 // Generous headroom over any real RevenueCat app_user_id (typically a UUID or a short opaque
 // string) without allowing pathological input into a text column with no other length bound.
 export const MAX_REVENUECAT_APP_USER_ID_LENGTH = 256;
 
+export const MIN_APP_VERSION_LENGTH = 1;
 export const MAX_APP_VERSION_LENGTH = 64;
 
 export function isValidUuid(value: unknown): value is string {
@@ -24,9 +30,15 @@ export function isValidUuid(value: unknown): value is string {
 
 /** Length-only check — the secret is client-generated opaque entropy, never a format this backend
  *  interprets. Raw value is never logged; see referral-api/index.ts, which only ever handles it
- *  long enough to hash it. */
+ *  long enough to hash it. Bounded on both ends: too short isn't enough entropy to trust as a
+ *  possession credential, too long is rejected outright rather than silently truncated (see
+ *  MAX_INSTALLATION_SECRET_LENGTH). */
 export function isValidInstallationSecret(value: unknown): value is string {
-  return typeof value === "string" && value.length >= MIN_INSTALLATION_SECRET_LENGTH;
+  return (
+    typeof value === "string" &&
+    value.length >= MIN_INSTALLATION_SECRET_LENGTH &&
+    value.length <= MAX_INSTALLATION_SECRET_LENGTH
+  );
 }
 
 export function isValidRevenueCatAppUserId(value: unknown): value is string {
@@ -39,6 +51,17 @@ export type RevenueCatEnvironment = "SANDBOX" | "PRODUCTION";
 
 export function isValidRevenueCatEnvironment(value: unknown): value is RevenueCatEnvironment {
   return value === "SANDBOX" || value === "PRODUCTION";
+}
+
+/** `app_version` is diagnostics-only (see the migration's column comment) but is still validated
+ *  strictly: 1–64 characters after trimming. Does NOT accept an empty string — an explicitly
+ *  empty value is treated as malformed input (`invalid_request_body`), not as "absent"; only a
+ *  genuinely missing/`null` field means "no version supplied" — see parseApiRequest's bootstrap
+ *  branch, which checks for that separately before ever calling this. */
+export function isValidAppVersion(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return trimmed.length >= MIN_APP_VERSION_LENGTH && trimmed.length <= MAX_APP_VERSION_LENGTH;
 }
 
 export function isValidReferralCodeFormat(value: unknown): value is string {
@@ -138,11 +161,18 @@ export function parseApiRequest(body: unknown): ParsedApiRequest {
     return { ok: false, code: "invalid_request_body" };
   }
 
+  // Absent or explicit null: "no version supplied" -> null, always allowed. Anything else must be
+  // a valid 1-64-char string (after trimming) or the request is rejected outright — never
+  // silently truncated to fit.
   const rawAppVersion = record.app_version;
-  const appVersion =
-    typeof rawAppVersion === "string" && rawAppVersion.trim().length > 0
-      ? rawAppVersion.trim().slice(0, MAX_APP_VERSION_LENGTH)
-      : null;
+  let appVersion: string | null;
+  if (rawAppVersion === undefined || rawAppVersion === null) {
+    appVersion = null;
+  } else if (isValidAppVersion(rawAppVersion)) {
+    appVersion = rawAppVersion.trim();
+  } else {
+    return { ok: false, code: "invalid_request_body" };
+  }
 
   return {
     ok: true,
