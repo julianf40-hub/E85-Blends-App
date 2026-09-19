@@ -139,8 +139,13 @@ trigger helper used by the RevenueCat/referral backend."` — not a table or fun
 the exact fact this repository's synthetic referral baseline already claimed; today's pass independently
 re-derives it rather than taking it on faith. All four `private.referral_*` tables and all three
 `private.referral_*` functions were re-verified live on 2026-09-19 (columns, constraints, indexes,
-grants, RLS, and full function bodies) and still match the baseline file exactly; all four tables are
+grants, RLS, and full function bodies) and still match what is live today; all four tables are
 still empty (0 rows — no referral activity has ever occurred, consistent with no client existing yet).
+**Correction, same day, after an executed replay (see the dated section near the end of this file):**
+"match the baseline file" above described the three functions' *live* definitions, not this file's
+contents — the file itself did not yet define any of the three at the time this paragraph was written.
+That gap was only caught once this baseline was actually replayed against an empty database instead of
+only being compared column-by-column against live catalog metadata. Corrected below.
 
 **Community pricing baseline (`20260427000000`) re-verified against CURRENT live schema, not just
 schema as of this baseline's own authoring.** `public.community_stations`/`public.e85_price_reports`
@@ -191,3 +196,86 @@ replay of the full 29-file sequence runs, exactly as this document already says.
 paid-qualification and milestone foundation") is explicitly held in draft pending this migration-history
 reconciliation, among its own other gates, and is untouched by this update — no commit, rebase, or merge
 of any kind. See that PR's own description for its full blocker list.
+
+## 2026-09-19 update (continued) — executed fresh-database replay, referral baseline corrected
+
+The static-only check described above (two independent read-only reviews, no ordering defect found)
+has now been superseded by an **actually executed** empty-database replay, closing the gate the rest of
+this document has left open since September 15. Tooling: Supabase CLI 2.117.0, Docker 29.3.1, local
+Postgres/Supabase image major version 17 (matching production's own major version) — project label
+`eightyfiveblends`. **Two independent replays, each from a genuinely fresh state** (`supabase stop
+--no-backup` removing every local container and volume before each `supabase start`, not a reset on
+top of an already-migrated database): both applied **all 29 files, in order, 29/29, with zero SQL
+errors**. The only warning either run produced — `no files matched pattern: supabase/seed.sql` — is
+benign and expected; this repository has no seed file, as this document's September 15 section already
+notes.
+
+**The first replay exposed a real gap, not a false pass.** Comparing the resulting local schema against
+production found `private.generate_referral_code`, `private.create_or_get_referral_participant`, and
+`private.apply_referral_code` — three helper functions this document's own text above says were
+"re-verified live" — **completely absent** from the replayed database: not merely different, never
+created. Confirmed two ways: `grep` across every `.sql` file in `supabase/migrations/` for all three
+names (zero matches, any file) and a direct `pg_proc` query against the fresh local database (zero
+rows). The synthetic referral baseline (`20260910000000_referral_backend_baseline.sql`) had correctly
+reconstructed the four `private.referral_*` tables — this document's live-schema comparisons of *those*
+were accurate — but never reconstructed these three functions, which, like the tables, predate every
+tracked migration and are created nowhere in this repository's history.
+
+**Fix applied to that same file, then re-verified, not taken on faith.** All three function bodies were
+retrieved via `pg_get_functiondef(oid)` against the live project and appended to
+`20260910000000_referral_backend_baseline.sql`, re-styled only to this repository's lowercase-keyword
+SQL convention (a cosmetic transform Postgres treats identically to the canonical uppercase form
+`pg_get_functiondef` returns — no logic, identifier, or literal changed). Grants were set to match the
+live grantee set exactly (`information_schema.routine_privileges`): `postgres` (owner) and
+`service_role` only, via explicit `revoke ... from public, anon, authenticated` followed by
+`grant ... to postgres, service_role` for each function — the same pattern every other private-schema
+function in this project already uses. **After the fix, a second fresh replay (from another genuinely
+empty state) re-confirmed 29/29 applied, and both the function bodies and their grants matched
+production exactly** — verified twice: once via direct comparison against the local replay, and again
+via a fresh, independent read-only re-query of production run specifically to confirm this write-up.
+`anon`, `authenticated`, and `PUBLIC` hold no execute privilege on any of the three, matching production
+exactly; the fix grants no access beyond what already exists live.
+
+One intentional non-correction: `create_or_get_referral_participant`'s `on conflict ... do update ...
+where ...` clause silently no-ops (no error) when an alias already belongs to a different participant.
+This is reproduced exactly as it exists live, not fixed here — it is the same known issue PR #78's
+`20260919150000` migration (not part of this branch) separately corrects going forward with an
+insert-then-verify pattern. Faithfully reconstructing the pre-fix historical behavior in this baseline
+is the point; fixing it is that other migration's job, not this document's.
+
+**Final schema comparison result: functionally EXACT**, across columns, RLS enablement, policies
+(including the final hardened `"Public can insert price reports"`/`"Public can insert ethanol reports"`
+with_check clauses), indexes, triggers, all 16 `private`-schema function definitions, installed
+extensions (`pg_cron` lands in `pg_catalog` locally too, matching production's own placement exactly —
+not the `extensions` schema the migration text requests, which is Supabase's own platform behavior, not
+drift), and the live `85blends-price-alert-job-prepare` cron job (schedule, command, and active state
+all match).
+
+**One difference remains, environment-only and harmless, left uncorrected.** Locally,
+`public.community_stations` and `public.e85_price_reports` carry ten extra table-level grant rows for
+`anon`/`authenticated` (DELETE/REFERENCES/TRIGGER/TRUNCATE/UPDATE) that production does not have.
+Root-caused, not just observed: these are Postgres/Supabase's own default public-schema privileges,
+auto-applied when a table is created, that the founding baseline (`20260427000000`) never explicitly
+revokes — unlike the two later report-table migrations (`20260909101353_secure_e85_analytics_events`,
+`20260917150403_community_ethanol_reports`), which each defensively `revoke all ... from public, anon,
+authenticated` before granting narrowly (the ethanol migration's own comment: *"Existing Supabase
+projects can still apply default public-schema privileges automatically. Start from an explicit deny
+state..."*). Because RLS is enabled on both tables with only INSERT and SELECT policies defined for
+`anon`/`authenticated` — no UPDATE, DELETE, TRUNCATE, TRIGGER, or REFERENCES policy exists for those
+roles on either table — none of the ten extra grant rows can actually be exercised: RLS blocks every
+one of those operations regardless of the underlying GRANT. No migration change was made for this
+difference; it has no functional or security effect.
+
+**Repair readiness, updated:**
+
+- `20260427000000` — schema effect already verified live; now also proven by two independent clean
+  replays. **Ready for `supabase migration repair --status applied 20260427000000`, pending explicit
+  authorization. Not executed.**
+- `20260910000000` — was **not** repair-ready before this update (the baseline was schema-incomplete).
+  With the fix above applied, it is now held to the same standard and **ready for
+  `supabase migration repair --status applied 20260910000000`, pending explicit authorization. Not
+  executed.**
+
+Neither command has been run. No `supabase db push`, no Edge Function deployment, and no write of any
+kind reached production while producing this update — every production fact above came from read-only
+SQL and read-only Supabase API calls.

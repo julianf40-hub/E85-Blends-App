@@ -147,3 +147,153 @@ grant select, insert, update, delete on table private.referral_rewards to servic
 -- anon/authenticated/PUBLIC. Zero RLS policies exist on any of the four (confirmed via
 -- pg_policies), consistent with and harmless given zero grants to any role RLS would apply to --
 -- the same "RLS enabled, no policy" pattern already established for the RevenueCat tables.
+
+-- CORRECTION (2026-09-19, found during fresh-database replay validation of the full 29-migration
+-- sequence): this baseline's original reconstruction captured the four tables above but omitted
+-- three helper functions that also predate all tracked migration history and, like the tables
+-- above, are created by no migration anywhere in this repository. A truly empty-database replay of
+-- all 29 files (Supabase CLI 2.117.0 + Docker, local project "eightyfiveblends") confirmed these
+-- three functions are completely absent afterward -- not just different, but never created -- while
+-- production has all three live. Bodies below are reproduced verbatim from
+-- pg_get_functiondef(oid) against the live project, re-styled to this repository's lowercase-
+-- keyword convention only (a cosmetic, meaning-preserving transform Postgres treats identically);
+-- no logic, identifier, or literal was altered. Grants match the exact live grantee set
+-- (information_schema.routine_privileges): postgres (owner) and service_role only -- no
+-- anon/authenticated/PUBLIC, consistent with every other private-schema function in this project.
+--
+-- Note: create_or_get_referral_participant's on-conflict clause below silently no-ops (no error)
+-- when an alias is already attached to a different participant -- reproduced exactly as it exists
+-- live, not corrected here. This is the same bug PR #78's 20260919150000 migration (not part of
+-- this branch) separately fixes going forward with an insert-then-verify pattern; faithfully
+-- reconstructing the pre-fix behavior here is intentional, not an oversight.
+
+create or replace function private.generate_referral_code()
+returns text
+language plpgsql
+set search_path to 'pg_catalog', 'private', 'extensions'
+as $$
+declare
+  alphabet constant text := '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  bytes bytea := gen_random_bytes(8);
+  result text := '';
+  i integer;
+begin
+  for i in 0..7 loop
+    result := result || substr(alphabet, (get_byte(bytes, i) % length(alphabet)) + 1, 1);
+  end loop;
+  return result;
+end;
+$$;
+
+create or replace function private.create_or_get_referral_participant(
+  p_installation_id uuid,
+  p_app_user_id text default null::text,
+  p_environment text default 'PRODUCTION'::text
+)
+returns table(participant_id uuid, referral_code text)
+language plpgsql
+set search_path to 'pg_catalog', 'private'
+as $$
+declare
+  v_participant private.referral_participants%rowtype;
+  v_code text;
+  v_attempt integer := 0;
+begin
+  if p_installation_id is null then
+    raise exception 'installation_id_required';
+  end if;
+  if p_environment not in ('SANDBOX','PRODUCTION') then
+    raise exception 'invalid_environment';
+  end if;
+
+  select * into v_participant
+  from private.referral_participants rp
+  where rp.installation_id = p_installation_id;
+
+  if v_participant.id is null then
+    loop
+      v_attempt := v_attempt + 1;
+      v_code := private.generate_referral_code();
+      begin
+        insert into private.referral_participants (installation_id, referral_code)
+        values (p_installation_id, v_code)
+        returning * into v_participant;
+        exit;
+      exception when unique_violation then
+        if v_attempt >= 10 then
+          raise;
+        end if;
+      end;
+    end loop;
+  end if;
+
+  if p_app_user_id is not null and length(btrim(p_app_user_id)) > 0 then
+    insert into private.referral_participant_aliases (app_user_id, environment, participant_id)
+    values (btrim(p_app_user_id), p_environment, v_participant.id)
+    on conflict (app_user_id, environment) do update
+      set participant_id = excluded.participant_id
+      where private.referral_participant_aliases.participant_id = excluded.participant_id;
+  end if;
+
+  return query select v_participant.id, v_participant.referral_code;
+end;
+$$;
+
+create or replace function private.apply_referral_code(
+  p_referred_participant_id uuid,
+  p_referral_code text
+)
+returns uuid
+language plpgsql
+set search_path to 'pg_catalog', 'private'
+as $$
+declare
+  v_code text := upper(btrim(p_referral_code));
+  v_referrer_id uuid;
+  v_attribution_id uuid;
+begin
+  if p_referred_participant_id is null then
+    raise exception 'referred_participant_required';
+  end if;
+  if v_code !~ '^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$' then
+    raise exception 'invalid_referral_code';
+  end if;
+
+  select id into v_referrer_id
+  from private.referral_participants
+  where referral_code = v_code;
+
+  if v_referrer_id is null then
+    raise exception 'referral_code_not_found';
+  end if;
+  if v_referrer_id = p_referred_participant_id then
+    raise exception 'self_referral_not_allowed';
+  end if;
+
+  insert into private.referral_attributions (
+    referrer_participant_id,
+    referred_participant_id,
+    referral_code_used,
+    status
+  ) values (
+    v_referrer_id,
+    p_referred_participant_id,
+    v_code,
+    'pending'
+  )
+  returning id into v_attribution_id;
+
+  return v_attribution_id;
+exception
+  when unique_violation then
+    raise exception 'referral_already_attributed';
+end;
+$$;
+
+revoke execute on function private.generate_referral_code() from public, anon, authenticated;
+revoke execute on function private.create_or_get_referral_participant(uuid, text, text) from public, anon, authenticated;
+revoke execute on function private.apply_referral_code(uuid, text) from public, anon, authenticated;
+
+grant execute on function private.generate_referral_code() to postgres, service_role;
+grant execute on function private.create_or_get_referral_participant(uuid, text, text) to postgres, service_role;
+grant execute on function private.apply_referral_code(uuid, text) to postgres, service_role;
