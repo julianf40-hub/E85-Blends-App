@@ -40,6 +40,7 @@ import {
   type MatchedAliasRow,
 } from "./customer-resolution.ts";
 import type { EntitlementCalculationResult } from "./entitlement.ts";
+import type { ReferralActionInput, ReferralActionResult } from "./referral-classification.ts";
 import { maskIdentifier, logWebhookEvent } from "./logging.ts";
 
 export type Sql = ReturnType<typeof postgres>;
@@ -290,29 +291,98 @@ async function applyIdentityRefresh(tx: Sql, plan: RefreshPlan): Promise<void> {
   }
 }
 
+/**
+ * 85Blends 2.4.0 — invokes private.process_referral_subscription_event(...) using the
+ * TRANSACTION-scoped `tx` handle, so a qualification/reversal/re-qualification and its milestone
+ * reconciliation land in the SAME transaction as the entitlement-mirror write and the ledger
+ * `processed` mark (see applyRefreshPlansAndMarkProcessed below). This is a deliberate departure
+ * from this file's own "throw on conflict, never return one" rule for identity conflicts: a
+ * REFERRAL identity conflict (see referral-classification.ts's header) is a normal, expected,
+ * NON-fatal outcome of that database function — it must never roll back the entitlement mirror
+ * this transaction is also writing (see the referral migration's own header and Phase 15 of the
+ * referral task). Only a genuine thrown error from this call (a real infrastructure/SQL failure,
+ * not a structured "nothing to do" result) propagates and rolls back the transaction, exactly like
+ * any other genuine error already does elsewhere in this same transaction.
+ */
+async function applyReferralAction(tx: Sql, input: ReferralActionInput): Promise<ReferralActionResult> {
+  type Row = { outcome: string; attribution_id: string | null; referrer_participant_id: string | null; qualified_count: number | null };
+  let rows: Row[];
+  try {
+    rows = await tx<Row[]>`
+      select * from private.process_referral_subscription_event(
+        ${input.action},
+        ${tx.array(input.appUserIdSet)},
+        ${input.environment},
+        ${input.eventId},
+        ${input.purchasedAtMs},
+        ${input.productId},
+        ${input.transactionId},
+        ${input.originalTransactionId},
+        ${input.canonicalProIsActive}
+      )
+    `;
+  } catch (error) {
+    // Deployment-ordering guard: the referral migration (private.process_referral_subscription_event
+    // and its supporting schema) must be applied to the live project BEFORE this updated function
+    // code is ever deployed — see the referral foundation report's "safe order of operations." If
+    // it somehow isn't yet — Postgres 42883 undefined_function / 42P01 undefined_table — referral
+    // processing degrades to a clean skip rather than rolling back the entitlement-mirror write
+    // this same transaction is also making (Phase 15's "referral is secondary" priority, applied to
+    // the one failure mode a deployment-ordering mistake could actually cause). Any OTHER error —
+    // a real bug once the schema does exist — still propagates and rolls back, exactly as before;
+    // this catch is deliberately narrow, not a blanket swallow.
+    const code = (error as { code?: string } | null)?.code;
+    if (code === "42883" || code === "42P01") {
+      logWebhookEvent("warn", "referral schema not yet deployed — skipping referral processing for this event", {});
+      return { outcome: "referral_schema_unavailable", attributionId: null, referrerParticipantId: null, qualifiedCount: null };
+    }
+    throw error;
+  }
+  const row = rows[0];
+  return {
+    outcome: row.outcome,
+    attributionId: row.attribution_id,
+    referrerParticipantId: row.referrer_participant_id,
+    qualifiedCount: row.qualified_count,
+  };
+}
+
 export type ApplyRefreshResult =
-  | { kind: "applied" }
+  | { kind: "applied"; referralResult?: ReferralActionResult }
   | { kind: "conflict"; detail: string };
 
 /**
- * Applies EVERY plan in `plans` and marks the ledger row `processed`, all inside ONE transaction
- * (Phase B1 review Finding 4). For a normal event, `plans` has exactly one entry. For a TRANSFER
- * event, callers must have already fetched RevenueCat's canonical state for every group/
- * environment combination BEFORE calling this — this function performs no RevenueCat API calls of
- * its own, only database writes, so nothing here ever blocks on outbound HTTP.
+ * Applies EVERY plan in `plans`, optionally processes ONE referral action, and marks the ledger
+ * row `processed` — all inside ONE transaction (Phase B1 review Finding 4; referral processing
+ * extends this same guarantee, 85Blends 2.4.0). For a normal event, `plans` has exactly one entry.
+ * For a TRANSFER event, callers must have already fetched RevenueCat's canonical state for every
+ * group/environment combination BEFORE calling this — this function performs no RevenueCat API
+ * calls of its own, only database writes, so nothing here ever blocks on outbound HTTP.
  *
- * If ANY plan hits an identity conflict, the ENTIRE transaction rolls back — including any earlier
- * plan in the same batch that had already written its customer/alias rows within this same call.
+ * `referralAction` is omitted entirely for TRANSFER events and for any normal event that isn't
+ * referral-relevant (see referral-classification.ts's isReferralRelevantEventType) — when
+ * omitted, this function's behavior is byte-for-byte identical to before 85Blends 2.4.0.
+ *
+ * If ANY plan hits an identity conflict, OR the referral action throws a genuine error, the ENTIRE
+ * transaction rolls back — including any earlier plan in the same batch that had already written
+ * its customer/alias rows within this same call. A referral action's own NORMAL outcomes (no
+ * participant, no attribution, identity conflict, too late, already processed, …) are never
+ * errors and never roll back anything — see applyReferralAction's header.
  */
 export async function applyRefreshPlansAndMarkProcessed(
   sql: Sql,
   eventId: string,
   plans: RefreshPlan[],
+  referralAction?: ReferralActionInput,
 ): Promise<ApplyRefreshResult> {
   try {
+    let referralResult: ReferralActionResult | undefined;
     await sql.begin(async (tx) => {
       for (const plan of plans) {
         await applyIdentityRefresh(tx, plan);
+      }
+      if (referralAction) {
+        referralResult = await applyReferralAction(tx, referralAction);
       }
       await tx`
         update private.revenuecat_webhook_events
@@ -322,7 +392,7 @@ export async function applyRefreshPlansAndMarkProcessed(
         where event_id = ${eventId}
       `;
     });
-    return { kind: "applied" };
+    return { kind: "applied", referralResult };
   } catch (error) {
     if (error instanceof IdentityConflictError) {
       return { kind: "conflict", detail: error.message };

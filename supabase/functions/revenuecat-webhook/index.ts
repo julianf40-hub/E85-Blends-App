@@ -7,10 +7,22 @@
 // under Node where it doesn't depend on Deno or a live Postgres/RevenueCat connection — see each
 // module's own header comment and supabase/functions/_shared/*.test.ts.
 //
-// NOT DEPLOYED — see supabase/README.md and the Phase B1 final report. This file has not been
-// run against a live Deno runtime in this environment (no `deno` binary available here); it has
-// only been statically reviewed. Re-verify with `supabase functions serve` / a real deployment
-// before relying on it.
+// DEPLOYED LIVE as of 85Blends 2.4.0's referral foundation work (confirmed via live inspection:
+// slug "revenuecat-webhook", status ACTIVE, version 6, project zefkbtscieokkdenvnkg) — the
+// "not deployed" note in earlier revisions of this file and supabase/README.md predates that and
+// is stale; someone deployed it outside this repository's own git history. This environment still
+// has no `deno` binary and has not itself run this file against a live Deno runtime — verification
+// here remains static review plus the Node-tested _shared/*.test.ts modules this file composes.
+//
+// 85Blends 2.4.0 — the referral paid-qualification/milestone additions in this revision (see
+// handleNormalEvent's call to determineReferralAction/applyRefreshPlansAndMarkProcessed) depend on
+// private.process_referral_subscription_event, added by
+// supabase/migrations/20260919150000_referral_paid_qualification_foundation.sql. That migration
+// has NOT been applied to the live project as of this revision — see this function's own
+// deployment order requirement: the migration MUST be applied before this revision is ever
+// deployed. database.ts's applyReferralAction degrades to a clean skip (never a rollback) if the
+// referral schema is missing specifically, but that guard is a safety net for an ordering mistake,
+// not a substitute for applying the migration first.
 
 import { resolveEnvConfig, type WebhookEnvConfig } from "../_shared/env.ts";
 import { verifyWebhookAuth } from "../_shared/auth.ts";
@@ -22,6 +34,7 @@ import {
 import { calculatePro } from "../_shared/entitlement.ts";
 import { toApiEnvironment, type RevenueCatWebhookEnvironment } from "../_shared/revenuecat-types.ts";
 import { fetchCustomerSubscriptions } from "../_shared/revenuecat-api.ts";
+import { determineReferralAction } from "../_shared/referral-classification.ts";
 import {
   applyRefreshPlansAndMarkProcessed,
   claimLedgerEvent,
@@ -126,6 +139,7 @@ async function handleNormalEvent(
   sql: Sql,
   env: WebhookEnvConfig,
   parsed: Extract<ParsedWebhookEvent, { kind: "normal" }>,
+  envelope: unknown,
 ): Promise<Response> {
   const queryAppUserId = parsed.appUserId ?? parsed.originalAppUserId ?? parsed.aliasSet[0];
   const preferredAnchor = parsed.originalAppUserId ?? parsed.appUserId ?? parsed.aliasSet[0];
@@ -143,9 +157,21 @@ async function handleNormalEvent(
     return jsonResponse(500, { error: "revenuecat_api_failure" });
   }
 
-  // ONE transaction: resolve/insert-or-update the customer, verify/insert aliases, and mark the
-  // ledger row processed, all atomically (Phase B1 review Finding 4).
-  const outcome = await applyRefreshPlansAndMarkProcessed(sql, parsed.core.id, [built.plan]);
+  // 85Blends 2.4.0 — referral paid-qualification. Reuses THIS SAME canonical refresh
+  // (built.plan.entitlement.proIsActive) as the Phase 9 canonical-confirmation gate — no second
+  // RevenueCat API call. `undefined` for any event that isn't referral-relevant at all (see
+  // isReferralRelevantEventType), which applyRefreshPlansAndMarkProcessed treats as "do not touch
+  // the referral tables for this event," byte-for-byte the pre-2.4.0 behavior.
+  const referralAction = determineReferralAction(
+    { eventType: parsed.core.type, environment: parsed.environment, aliasSet: parsed.aliasSet, eventId: parsed.core.id },
+    envelope,
+    built.plan.entitlement.proIsActive,
+  );
+
+  // ONE transaction: resolve/insert-or-update the customer, verify/insert aliases, optionally
+  // process one referral action, and mark the ledger row processed, all atomically (Phase B1
+  // review Finding 4; referral processing extends this same guarantee, 85Blends 2.4.0).
+  const outcome = await applyRefreshPlansAndMarkProcessed(sql, parsed.core.id, [built.plan], referralAction);
 
   if (outcome.kind === "conflict") {
     await markLedgerError(sql, parsed.core.id, `identity conflict: ${outcome.detail}`);
@@ -158,6 +184,17 @@ async function handleNormalEvent(
     environment: parsed.environment,
     proIsActive: built.plan.entitlement.proIsActive,
   });
+
+  if (outcome.referralResult) {
+    logWebhookEvent("info", "referral action processed", {
+      eventId: maskIdentifier(parsed.core.id),
+      action: referralAction?.action ?? "unknown",
+      outcome: outcome.referralResult.outcome,
+      referrerParticipantId: maskIdentifier(outcome.referralResult.referrerParticipantId),
+      qualifiedCount: outcome.referralResult.qualifiedCount,
+    });
+  }
+
   return jsonResponse(200, { status: "processed" });
 }
 
@@ -346,7 +383,7 @@ Deno.serve(async (req) => {
         return jsonResponse(200, { status: "recorded_no_mutation" });
 
       case "normal":
-        return await handleNormalEvent(sql, env, parsed);
+        return await handleNormalEvent(sql, env, parsed, envelope);
 
       case "transfer":
         return await handleTransferEvent(sql, env, parsed);
