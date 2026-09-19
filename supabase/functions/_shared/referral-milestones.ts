@@ -29,3 +29,50 @@ export function desiredEarnedMilestones(qualifiedReferralCount: number): number 
   if (qualifiedReferralCount <= 0) return 0;
   return Math.floor(qualifiedReferralCount / REFERRALS_PER_MILESTONE);
 }
+
+/** One reward row's milestone-relevant shape — deliberately just the two fields the progress
+ *  calculation below needs, not the full private.referral_rewards row (no UUIDs, no timestamps). */
+export interface RewardMilestoneRow {
+  milestoneNumber: number;
+  status: "earned" | "fulfilled" | "revoked";
+}
+
+export interface NextMilestoneProgress {
+  nextMilestoneNumber: number;
+  nextRewardAt: number;
+  referralsNeeded: number;
+}
+
+/**
+ * 85Blends 2.4.0 referral client API — the next milestone a referrer is working toward, computed
+ * from reward HISTORY rather than the raw qualified-referral count. A fulfilled reward is never
+ * clawed back (see the SQL migration's shrink logic in
+ * private.process_referral_subscription_event), so a later refund that drops the qualified count
+ * back below a PAST milestone's threshold must never make that milestone look reachable again —
+ * simple `qualified_count % REFERRALS_PER_MILESTONE` arithmetic would get this wrong. The next
+ * target is always the first milestone number strictly after the highest one this referrer has
+ * ever earned or had fulfilled; a 'revoked' milestone is deliberately excluded from that "highest"
+ * calculation. Worked examples (see the referral-api task's own "Phase 8" spec):
+ *   - no rewards: next = 1, next_reward_at = 5
+ *   - milestone 1 fulfilled: next = 2, next_reward_at = 10
+ *   - milestone 2 revoked, milestone 1 still fulfilled: next = 2, next_reward_at = 10 (does NOT
+ *     fall back to re-targeting milestone 1)
+ *   - milestones 1 fulfilled + 2 earned: next = 3, next_reward_at = 15
+ */
+export function computeNextMilestoneProgress(
+  rewards: readonly RewardMilestoneRow[],
+  qualifiedReferralCount: number,
+): NextMilestoneProgress {
+  let highestEarnedOrFulfilled = 0;
+  for (const reward of rewards) {
+    if (reward.status === "earned" || reward.status === "fulfilled") {
+      highestEarnedOrFulfilled = Math.max(highestEarnedOrFulfilled, reward.milestoneNumber);
+    }
+  }
+
+  const nextMilestoneNumber = highestEarnedOrFulfilled + 1;
+  const nextRewardAt = nextMilestoneNumber * REFERRALS_PER_MILESTONE;
+  const referralsNeeded = Math.max(0, nextRewardAt - qualifiedReferralCount);
+
+  return { nextMilestoneNumber, nextRewardAt, referralsNeeded };
+}

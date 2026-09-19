@@ -1,0 +1,72 @@
+// 85Blends 2.4.0 — Tests for referral-api-auth.ts.
+// Run under Node — see hmac.test.ts's header comment.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { extractBearerToken, matchesAnyApiKey, hasMatchingClientApiKey } from "./referral-api-auth.ts";
+
+test("extractBearerToken: extracts the token from a well-formed Authorization header", () => {
+  assert.equal(extractBearerToken("Bearer abc123"), "abc123");
+  assert.equal(extractBearerToken("bearer abc123"), "abc123"); // case-insensitive scheme
+});
+
+test("extractBearerToken: null for missing/malformed headers", () => {
+  assert.equal(extractBearerToken(null), null);
+  assert.equal(extractBearerToken(""), null);
+  assert.equal(extractBearerToken("Basic abc123"), null);
+  assert.equal(extractBearerToken("Bearer"), null); // no token
+});
+
+test("matchesAnyApiKey: accepted when it matches any configured key", () => {
+  assert.equal(matchesAnyApiKey("key-b", ["key-a", "key-b", "key-c"]), true);
+});
+
+test("matchesAnyApiKey: rejected when it matches none", () => {
+  assert.equal(matchesAnyApiKey("key-z", ["key-a", "key-b", "key-c"]), false);
+});
+
+test("matchesAnyApiKey: rejected when supplied key is null", () => {
+  assert.equal(matchesAnyApiKey(null, ["key-a"]), false);
+});
+
+test("matchesAnyApiKey: rejected when no keys are configured at all", () => {
+  assert.equal(matchesAnyApiKey("key-a", []), false);
+});
+
+test("matchesAnyApiKey: exact match required, no partial/prefix match", () => {
+  assert.equal(matchesAnyApiKey("key-a-extra", ["key-a"]), false);
+  assert.equal(matchesAnyApiKey("key-a", ["key-a-extra"]), false);
+});
+
+// 85Blends 2.4.0 hardening pass — hasMatchingClientApiKey's exact required truth table: no
+// precedence between the apikey header and the Authorization Bearer token.
+
+const KEYS = ["configured-key"];
+
+test("hasMatchingClientApiKey: valid apikey + no bearer -> true", () => {
+  assert.equal(hasMatchingClientApiKey("configured-key", null, KEYS), true);
+});
+
+test("hasMatchingClientApiKey: no apikey + valid bearer -> true", () => {
+  assert.equal(hasMatchingClientApiKey(null, "Bearer configured-key", KEYS), true);
+});
+
+test("hasMatchingClientApiKey: valid apikey + invalid bearer -> true", () => {
+  assert.equal(hasMatchingClientApiKey("configured-key", "Bearer wrong-key", KEYS), true);
+});
+
+test("hasMatchingClientApiKey: invalid apikey + valid bearer -> true (the precedence bug this fixes)", () => {
+  assert.equal(hasMatchingClientApiKey("wrong-key", "Bearer configured-key", KEYS), true);
+});
+
+test("hasMatchingClientApiKey: both invalid -> false", () => {
+  assert.equal(hasMatchingClientApiKey("wrong-key", "Bearer also-wrong", KEYS), false);
+});
+
+test("hasMatchingClientApiKey: both absent -> false", () => {
+  assert.equal(hasMatchingClientApiKey(null, null, KEYS), false);
+});
+
+test("hasMatchingClientApiKey: no configured keys at all -> false regardless of input", () => {
+  assert.equal(hasMatchingClientApiKey("configured-key", "Bearer configured-key", []), false);
+});
