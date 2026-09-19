@@ -73,6 +73,17 @@ private func settleScheduler(iterations: Int = 20) async {
     }
 }
 
+/// A test-only, thread-safe boolean flag — used where a test needs to assert "this Task has NOT
+/// finished yet" without actually awaiting it (awaiting would itself block until it finishes,
+/// defeating the point). A wrapping `Task` sets this to `true` as its very last action, so
+/// checking it after `settleScheduler()` deterministically answers "has it finished, or is it
+/// still genuinely blocked" — never a `Task.sleep`-based guess.
+actor TestFlag {
+    private var value = false
+    func set(_ newValue: Bool) { value = newValue }
+    func get() -> Bool { value }
+}
+
 // MARK: - Fakes
 
 final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
@@ -795,6 +806,149 @@ struct ReferralManagerTests {
         }
         // The SECOND (logically later) call's result is what's left standing.
         #expect(finalStatus.referredByCode == secondResponse.status.referredByCode)
+    }
+
+    // MARK: REQUEST-ORDER EDGE CASE — refresh dedup must not span an intervening apply
+
+    /// Reproduces (and then proves fixed) a narrower race than the earlier stale-refresh tests:
+    /// refresh A starts and is held open; apply B is requested and correctly queues behind A;
+    /// refresh C is THEN requested while A is still in flight. Before this fix, refresh()'s dedup
+    /// check only looked at `inFlightRefreshTask != nil` — since that was still A (A hasn't
+    /// finished), C would dedupe directly onto A and could return as soon as A finished, WITHOUT
+    /// ever waiting for B — even though B was requested before C. C's own `await` would resolve
+    /// with A's stale result while B was still pending, violating request-order semantics (C is
+    /// logically the last of the three operations and must reflect B's effect, not skip past it).
+    /// After the fix, C detects that the operation queue has moved on since A claimed it (an apply
+    /// is now the tail) and enqueues itself as a genuinely NEW refresh behind B instead.
+    @Test("A refresh requested after an apply has already queued behind an older in-flight refresh must not dedupe onto that stale refresh")
+    func refreshAfterQueuedApply_doesNotDedupeOntoStaleRefresh() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        // A: start refresh, let it reach (and suspend inside) a gated status call returning a
+        // STALE value.
+        let statusGate = TestGate()
+        service.statusGate = statusGate
+        service.statusResult = .success(ReferralStatus(canApply: true))
+        let refreshATask = Task { await manager.refresh() }
+        while service.statusCallCount == 0 { await Task.yield() }
+
+        // B: request apply while A is still in flight — must queue behind A (already proven by
+        // the earlier stale-refresh tests; re-confirmed here as this test's own setup).
+        let applyCodeGate = TestGate()
+        service.applyCodeGate = applyCodeGate
+        service.applyCodeResult = .success(
+            ReferralApplyCodeResponse(
+                status: ReferralStatus(
+                    referralCode: "ABCD2345", qualifiedReferrals: 1, pendingReferrals: 0,
+                    earnedMonthsAvailable: 0, fulfilledMonths: 0, nextMilestoneNumber: 1,
+                    nextRewardAt: 5, referralsNeeded: 4, canApplyReferralCode: false,
+                    referredByCode: "POSTAPPLY", referredStatus: "pending"
+                ),
+                applyStatus: "applied"
+            )
+        )
+        let applyBTask = Task { try await manager.applyReferralCode("POSTAPPLY") }
+        await settleScheduler()
+        #expect(service.applyCodeCallCount == 0)
+
+        // C: request another refresh AFTER B was queued, while A is STILL in flight (A's gate has
+        // not been opened yet). `refreshCFinished` lets this test observe "has C's own call to
+        // refresh() returned yet" without awaiting it directly (which would itself block).
+        let refreshCFinished = TestFlag()
+        let refreshCTask = Task {
+            await manager.refresh()
+            await refreshCFinished.set(true)
+        }
+        await settleScheduler()
+
+        // Release A's stale response. A correct coordinator lets ONLY A (and, transitively, B —
+        // which was genuinely queued behind A) proceed; C must remain behind B.
+        statusGate.open()
+        await settleScheduler()
+
+        #expect(service.applyCodeCallCount == 1) // B is now running, unblocked by A finishing
+        // THE key assertion: C must NOT have completed yet — it is still queued behind B, not
+        // resolved merely because stale A finished. (Before the fix, C's dedup bound directly to
+        // A's task, so it would already be `true` here — this is exactly what this test catches.)
+        #expect(await refreshCFinished.get() == false)
+        _ = await refreshATask.value
+
+        // A fresh, distinct status value for C's OWN later call — proves C performs its own,
+        // SECOND status request rather than ever reusing A's cached result.
+        service.statusResult = .success(ReferralStatus(
+            referralCode: "ABCD2345", qualifiedReferrals: 99, pendingReferrals: 0,
+            earnedMonthsAvailable: 0, fulfilledMonths: 0, nextMilestoneNumber: 1,
+            nextRewardAt: 5, referralsNeeded: 4, canApplyReferralCode: false,
+            referredByCode: "POSTAPPLY", referredStatus: "pending"
+        ))
+        applyCodeGate.open()
+
+        let applyBResult = try await applyBTask.value
+        await refreshCTask.value
+
+        #expect(applyBResult.referredByCode == "POSTAPPLY")
+        #expect(service.statusCallCount == 2) // A's + C's own — never deduped together
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        // Uniquely identifies C's OWN status response (not B's apply response, not A's stale one)
+        // as what's left standing — proving execution order was A, then B, then C, and C observed
+        // genuinely POST-apply backend state.
+        #expect(finalStatus.qualifiedReferrals == 99)
+    }
+
+    /// The inverse composition: apply first, then two refreshes with NO mutation queued between
+    /// them — those two refreshes must still dedupe onto one status request, exactly as before
+    /// this fix (the generation check must not become overly conservative and break the ordinary
+    /// adjacent-refresh dedup case).
+    @Test("apply, then two adjacent refreshes with no intervening mutation, still dedupe onto one status request")
+    func applyThenAdjacentRefreshes_stillDeduplicate() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let applyCodeGate = TestGate()
+        service.applyCodeGate = applyCodeGate
+        service.applyCodeResult = .success(
+            ReferralApplyCodeResponse(status: ReferralStatus(canApply: false), applyStatus: "applied")
+        )
+        let applyATask = Task { try await manager.applyReferralCode("ABCD2345") }
+        while service.applyCodeCallCount == 0 { await Task.yield() }
+
+        let statusGate = TestGate()
+        service.statusGate = statusGate
+        service.statusResult = .success(sampleStatus(referralCode: "AFTERAPPLY"))
+
+        // B: first refresh, requested while apply A is still in flight — queues behind A.
+        let refreshBTask = Task { await manager.refresh() }
+        await settleScheduler()
+        // C: second refresh, requested while B is queued/running and NOTHING else has been queued
+        // in between — must dedupe onto B.
+        let refreshCTask = Task { await manager.refresh() }
+        await settleScheduler()
+
+        applyCodeGate.open()
+        _ = try await applyATask.value
+
+        while service.statusCallCount == 0 { await Task.yield() }
+        statusGate.open()
+        await refreshBTask.value
+        await refreshCTask.value
+
+        // Exactly ONE status request for both B and C combined — the generation check only
+        // prevents dedup across an intervening MUTATION (apply); it must not prevent ordinary
+        // adjacent-refresh dedup.
+        #expect(service.statusCallCount == 1)
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        #expect(finalStatus.referralCode == "AFTERAPPLY")
     }
 
     // MARK: 25/26. RevenueCat identity boundary

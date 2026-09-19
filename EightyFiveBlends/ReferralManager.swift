@@ -54,6 +54,18 @@
 //  ReferralManagerTests.swift's own "STATE-CONSISTENCY HARDENING PASS" section for the tests that
 //  reproduce the original race and verify this fix.
 //
+//  REQUEST-ORDER EDGE CASE (2.4.0): the dedup above was originally keyed on nothing but
+//  `inFlightRefreshTask != nil`, which was too broad — a refresh requested AFTER an apply had
+//  already queued behind an older, still-in-flight refresh would dedupe directly onto that OLDER
+//  refresh, and could return (with the older refresh's stale result) before the apply had even
+//  run, even though it was requested after the apply. `operationGeneration` fixes this: it's
+//  incremented every time ANY operation claims `operationTail`, and refresh only dedupes onto
+//  `inFlightRefreshTask` when `operationGeneration` is STILL the value it was when that refresh
+//  claimed the tail — i.e., nothing (in particular, no apply) has been queued since. Once
+//  something else claims the tail, a later refresh always enqueues itself as a genuinely NEW
+//  operation instead, behind whatever is now current. See ReferralManagerTests.swift's own
+//  "REQUEST-ORDER EDGE CASE" section.
+//
 
 import Foundation
 import Observation
@@ -87,11 +99,20 @@ final class ReferralManager {
     /// join point — every new operation awaits this before doing its own network call, then
     /// replaces it with itself. See this type's header ("STATE-CONSISTENCY HARDENING PASS").
     private var operationTail: Task<Void, Never>?
+    /// Incremented every time ANY post-bootstrap operation (refresh or apply) claims
+    /// `operationTail` — see this type's header ("REQUEST-ORDER EDGE CASE") for why refresh's
+    /// dedup check needs this in addition to `inFlightRefreshTask`.
+    private var operationGeneration = 0
     /// Non-nil exactly while a refresh is queued or running and hasn't yet produced its result. A
-    /// refresh requested during this window is DEDUPLICATED onto this same task instead of
-    /// enqueuing a second, redundant status request. applyReferralCode never consults this: two
-    /// overlapping applies always run as separate, serialized operations.
+    /// refresh requested during this window is DEDUPLICATED onto this same task ONLY IF
+    /// `operationGeneration` still matches `inFlightRefreshGeneration` below (nothing has claimed
+    /// the tail since) — otherwise it enqueues itself as a new operation instead. applyReferralCode
+    /// never consults either of these: two overlapping applies always run as separate, serialized
+    /// operations.
     private var inFlightRefreshTask: Task<Void, Never>?
+    /// The `operationGeneration` value at the moment `inFlightRefreshTask` claimed the tail — see
+    /// `refresh()`'s dedup check and `clearInFlightRefresh(ifStillGeneration:)`.
+    private var inFlightRefreshGeneration = 0
 
     init(
         credentialStore: ReferralCredentialStoring = KeychainReferralCredentialStore(),
@@ -121,31 +142,34 @@ final class ReferralManager {
     /// do/catch.
     ///
     /// STATE-CONSISTENCY: deduplicates against another already-in-flight refresh
-    /// (`inFlightRefreshTask`), and otherwise queues itself behind whatever post-bootstrap
-    /// operation (an older refresh OR an in-flight apply) is currently running via
-    /// `operationTail` — see this type's header. The dedup check-and-claim below is entirely
-    /// synchronous (no `await` in between) so two calls made in the same instant can never both
-    /// believe they're "the first" and race to create separate tasks.
+    /// (`inFlightRefreshTask`) ONLY IF no other operation has claimed the tail of the queue since
+    /// that refresh started (`operationGeneration` — see this type's header, "REQUEST-ORDER EDGE
+    /// CASE"); otherwise it queues itself behind whatever post-bootstrap operation (an older
+    /// refresh OR an in-flight apply) is CURRENTLY running via `operationTail`. The check-and-claim
+    /// below is entirely synchronous (no `await` in between) so two calls made in the same instant
+    /// can never both believe they're "the first" and race to create separate tasks.
     func refresh() async {
-        if let inFlightRefreshTask {
+        if let inFlightRefreshTask, inFlightRefreshGeneration == operationGeneration {
             await inFlightRefreshTask.value
             return
         }
 
         let previousTail = operationTail
+        operationGeneration += 1
+        let myGeneration = operationGeneration
         let task = Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.ensureBootstrapped()
             } catch {
-                self.inFlightRefreshTask = nil
+                self.clearInFlightRefresh(ifStillGeneration: myGeneration)
                 return
             }
             guard let credential = self.credential else {
                 // Structurally unreachable — ensureBootstrapped() only returns normally after
                 // performBootstrap() has set `credential`. A guard, not a force-unwrap, so a
                 // future refactor accident fails safe instead of crashing.
-                self.inFlightRefreshTask = nil
+                self.clearInFlightRefresh(ifStillGeneration: myGeneration)
                 return
             }
             // Wait for whatever was queued before THIS refresh was requested (an older refresh or
@@ -153,11 +177,21 @@ final class ReferralManager {
             // a logically later operation's result.
             await previousTail?.value
             await self.performRefresh(credential: credential)
-            self.inFlightRefreshTask = nil
+            self.clearInFlightRefresh(ifStillGeneration: myGeneration)
         }
         inFlightRefreshTask = task
+        inFlightRefreshGeneration = myGeneration
         operationTail = task
         await task.value
+    }
+
+    /// Clears `inFlightRefreshTask` only if it still belongs to THIS refresh (identified by
+    /// `generation`) — see this type's header ("REQUEST-ORDER EDGE CASE"). A refresh that queued
+    /// behind an intervening apply claims the slot with a NEWER generation; this older refresh's
+    /// own cleanup, running later, must never clobber that newer claim once it finishes.
+    private func clearInFlightRefresh(ifStillGeneration generation: Int) {
+        guard inFlightRefreshGeneration == generation else { return }
+        inFlightRefreshTask = nil
     }
 
     private func performRefresh(credential: ReferralInstallationCredential) async {
@@ -189,6 +223,11 @@ final class ReferralManager {
     /// matters.
     func applyReferralCode(_ code: String) async throws -> ReferralStatus {
         let previousTail = operationTail
+        // Claiming the tail always advances the generation — see this type's header
+        // ("REQUEST-ORDER EDGE CASE"). This is what invalidates any refresh's dedup eligibility
+        // once an apply has been queued: a refresh checking `inFlightRefreshGeneration ==
+        // operationGeneration` afterward will see a mismatch and correctly enqueue itself anew.
+        operationGeneration += 1
         let resultTask = Task { [weak self] () async throws -> ReferralStatus in
             guard let self else { throw ReferralServiceError.notConfigured }
             try await self.ensureBootstrapped()
