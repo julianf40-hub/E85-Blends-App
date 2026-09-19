@@ -23,3 +23,23 @@ export function matchesAnyApiKey(suppliedKey: string | null, configuredKeys: rea
   if (suppliedKey === null) return false;
   return configuredKeys.some((configured) => constantTimeEqual(suppliedKey, configured));
 }
+
+/**
+ * A request is authenticated at gate A if EITHER the raw `apikey` header value OR the
+ * `Authorization: Bearer` token matches any configured key — the two credential sources have NO
+ * precedence over each other. A caller may legitimately send either one; a wrong/absent value in
+ * ONE source must never suppress a genuinely valid value in the OTHER (see referral-api's own
+ * task spec's exact truth table: apikey-only, bearer-only, valid-apikey+invalid-bearer, and
+ * invalid-apikey+valid-bearer must ALL be accepted; only both-invalid/both-absent are rejected).
+ * Deliberately does NOT use `??` between the two header values — that operator only falls through
+ * on null/undefined, so a PRESENT-but-wrong `apikey` header would otherwise permanently hide a
+ * valid bearer token from ever being checked at all.
+ */
+export function hasMatchingClientApiKey(
+  apiKeyHeader: string | null,
+  authorizationHeader: string | null,
+  configuredKeys: readonly string[],
+): boolean {
+  if (matchesAnyApiKey(apiKeyHeader, configuredKeys)) return true;
+  return matchesAnyApiKey(extractBearerToken(authorizationHeader), configuredKeys);
+}

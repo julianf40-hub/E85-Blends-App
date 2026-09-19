@@ -33,7 +33,7 @@
 
 import { createDatabaseClient, type Sql } from "../_shared/database.ts";
 import { resolveReferralApiEnvConfig } from "../_shared/referral-api-env.ts";
-import { extractBearerToken, matchesAnyApiKey } from "../_shared/referral-api-auth.ts";
+import { hasMatchingClientApiKey } from "../_shared/referral-api-auth.ts";
 import { constantTimeEqual } from "../_shared/hmac.ts";
 import { sha256Hex } from "../_shared/hash.ts";
 import { logWebhookEvent } from "../_shared/logging.ts";
@@ -45,8 +45,17 @@ import {
   type ApplyCodeRequest,
 } from "../_shared/referral-api-validation.ts";
 import { buildReferralStatusResponse, type ReferralStatusResponse } from "../_shared/referral-api-response.ts";
-import { mapReferralFunctionError } from "../_shared/referral-api-errors.ts";
+import { mapReferralFunctionError, buildSafeErrorLogMetadata } from "../_shared/referral-api-errors.ts";
 import type { RewardMilestoneRow } from "../_shared/referral-milestones.ts";
+
+/** Best-effort extraction of a Postgres SQLSTATE from a caught error, for SAFE structured
+ *  logging only (see buildSafeErrorLogMetadata) — never for response classification, which stays
+ *  on mapReferralFunctionError's message-based matching. The `postgres` npm driver sets `.code`
+ *  to the raw 5-character SQLSTATE on a PostgresError; any other shape yields `undefined`, which
+ *  buildSafeErrorLogMetadata already treats as "omit." */
+function sqlStateOf(error: unknown): unknown {
+  return error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+}
 
 const APPLY_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const APPLY_RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -148,6 +157,11 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
 }
 
 async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Response> {
+  // Fast-path ONLY: rejects the overwhelmingly common "known installation, wrong secret" case
+  // without opening a transaction or touching participant/alias state at all. This is an
+  // optimization, NOT the authoritative check — the in-transaction credential resolution below
+  // is what actually guarantees correctness under concurrency (two near-simultaneous bootstrap
+  // requests for the same installation_id can both reach this point having seen no row here yet).
   const [existingCredential] = await sql<{ installation_secret_hash: string }[]>`
     select installation_secret_hash from private.referral_client_installations
     where installation_id = ${request.clientInstallationId}
@@ -165,8 +179,18 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
   const secretHash = await hashSecret(request.installationSecret);
 
   let participantId: string;
+  let credentialCreated: boolean;
   try {
-    participantId = await sql.begin(async (tx) => {
+    const result = await sql.begin(async (tx) => {
+      // private.referral_client_installations.installation_id carries a FOREIGN KEY to
+      // private.referral_participants.installation_id — the participant row MUST exist before
+      // any credential row can reference it, which is why this call always comes first, even
+      // though it means a wrong-secret loser's alias mutation (below) executes before its
+      // credential check fails. That is safe: a throw anywhere in this callback rolls back
+      // EVERYTHING it did, participant/alias mutation included — see database.ts's own comment
+      // ("Throwing is what makes postgres.js roll back everything the callback did") — so "zero
+      // loser-side persistent mutation" is guaranteed by transactional atomicity, not by
+      // execution order.
       const [participantRow] = await tx<{ participant_id: string }[]>`
         select participant_id from private.create_or_get_referral_participant(
           ${request.clientInstallationId}::uuid,
@@ -175,39 +199,58 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
         )
       `;
 
-      if (existingCredential) {
-        // app_version: update it when the request supplied one; `coalesce` preserves whatever was
-        // already stored when it didn't (request.appVersion is null for "not supplied" — see
-        // referral-api-validation.ts — never for "clear it", there is no way to clear it).
-        await tx`
-          update private.referral_client_installations
-          set last_seen_at = now(),
-              app_version = coalesce(${request.appVersion}, app_version)
-          where installation_id = ${request.clientInstallationId}
-        `;
-      } else {
-        // Insert-if-absent, then verify — the same two-phase pattern already established
-        // elsewhere in this codebase for the identical class of problem (see this migration's own
-        // header comment). Closes a genuine concurrent-first-bootstrap race: if a different
-        // request for this SAME new installation_id committed first, our insert becomes a no-op
-        // and the verify-read below will see THEIR hash, not ours — correctly reported as a
-        // takeover conflict rather than a false success.
-        await tx`
-          insert into private.referral_client_installations (installation_id, installation_secret_hash, app_version)
-          values (${request.clientInstallationId}, ${secretHash}, ${request.appVersion})
-          on conflict (installation_id) do nothing
-        `;
-        const [verifyRow] = await tx<{ installation_secret_hash: string }[]>`
+      // Race-accurate credential resolution: never trust the pre-transaction read above alone —
+      // a concurrent request (same OR different secret) may have created this row in the
+      // meantime. Whichever transaction's INSERT actually lands the row is the only one where
+      // `credentialCreated` is true. Postgres's own row-level locking for
+      // INSERT ... ON CONFLICT guarantees a losing insert only resolves (with zero rows) once
+      // the winner's transaction has durably committed — see the migration's own
+      // create_or_get_referral_participant hardening comment for the identical reasoning.
+      const insertedRows = await tx<{ installation_id: string }[]>`
+        insert into private.referral_client_installations (installation_id, installation_secret_hash)
+        values (${request.clientInstallationId}, ${secretHash})
+        on conflict (installation_id) do nothing
+        returning installation_id
+      `;
+      const credentialCreated = insertedRows.length > 0;
+
+      if (!credentialCreated) {
+        const [existingRow] = await tx<{ installation_secret_hash: string }[]>`
           select installation_secret_hash from private.referral_client_installations
           where installation_id = ${request.clientInstallationId}
         `;
-        if (!verifyRow || verifyRow.installation_secret_hash !== secretHash) {
+        if (!existingRow) {
+          // Unreachable per the row-locking guarantee above — never assume away a defensive
+          // check on an identity-integrity path.
           throw new InstallationTakeoverConflictError();
         }
+        if (!constantTimeEqual(secretHash, existingRow.installation_secret_hash)) {
+          // Takeover rule, enforced authoritatively (not just the fast-path check above): rolls
+          // back this entire transaction, including the participant/alias step — never
+          // overwrites the existing credential. See this module's header and the referral-api
+          // task spec's "IMPORTANT TAKEOVER RULE."
+          throw new InstallationTakeoverConflictError();
+        }
+        // Secret matches: a legitimate same-secret concurrent or repeat bootstrap. Proceed to
+        // the common update below exactly as if this transaction had created the row itself.
       }
 
-      return participantRow.participant_id;
+      // Common update — reached only when this transaction created the credential row OR
+      // verified it already carries the SAME secret (never for a mismatch, which threw above).
+      // Updates app_version whenever the request supplied one, and otherwise preserves whatever
+      // was already stored, so a same-secret concurrent request never "loses" its app_version
+      // merely because a different request happened to win the INSERT race.
+      await tx`
+        update private.referral_client_installations
+        set last_seen_at = now(),
+            app_version = coalesce(${request.appVersion}, app_version)
+        where installation_id = ${request.clientInstallationId}
+      `;
+
+      return { participantId: participantRow.participant_id, credentialCreated };
     });
+    participantId = result.participantId;
+    credentialCreated = result.credentialCreated;
   } catch (error) {
     if (error instanceof InstallationTakeoverConflictError) {
       return errorResponse(401, "invalid_installation_credentials");
@@ -215,13 +258,13 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
     const message = error instanceof Error ? error.message : String(error);
     const mapping = mapReferralFunctionError(message);
     if (mapping.code === "internal_error") {
-      logWebhookEvent("error", "referral-api bootstrap failure", { message: message.slice(0, 200) });
+      logWebhookEvent("error", "referral-api bootstrap failure", buildSafeErrorLogMetadata(sqlStateOf(error)));
     }
     return errorResponse(mapping.httpStatus, mapping.code);
   }
 
   const status = await loadStatusResponse(sql, participantId);
-  return jsonResponse(200, { ...status, created: !existingCredential });
+  return jsonResponse(200, { ...status, created: credentialCreated });
 }
 
 async function handleStatus(sql: Sql, request: StatusRequest): Promise<Response> {
@@ -322,7 +365,7 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
     }
 
     if (mapping.code === "internal_error") {
-      logWebhookEvent("error", "referral-api apply_code failure", { message: message.slice(0, 200) });
+      logWebhookEvent("error", "referral-api apply_code failure", buildSafeErrorLogMetadata(sqlStateOf(error)));
     }
     return errorResponse(mapping.httpStatus, mapping.code);
   }
@@ -346,10 +389,16 @@ Deno.serve(async (req: Request) => {
   const env = envResult.config;
 
   // Gate A — a client-safe (public, project-scoped, non-secret) API key, required independent of
-  // installation auth. See this module's header comment. Accepted if it matches ANY configured
-  // key (publishable and/or legacy anon) — never logged, whichever it is.
-  const apiKey = req.headers.get("apikey") ?? extractBearerToken(req.headers.get("authorization"));
-  if (!matchesAnyApiKey(apiKey, env.clientApiKeys)) {
+  // installation auth. See this module's header comment. Accepted if EITHER the `apikey` header
+  // OR the `Authorization: Bearer` token matches ANY configured key (publishable and/or legacy
+  // anon) — no precedence between the two sources (see hasMatchingClientApiKey's own comment for
+  // why `??` between them would be wrong). Never logged, whichever credential it is.
+  const apiKeyOk = hasMatchingClientApiKey(
+    req.headers.get("apikey"),
+    req.headers.get("authorization"),
+    env.clientApiKeys,
+  );
+  if (!apiKeyOk) {
     return errorResponse(401, "invalid_api_key");
   }
 
@@ -376,9 +425,7 @@ Deno.serve(async (req: Request) => {
         return await handleApplyCode(sql, parsed.request);
     }
   } catch (error) {
-    logWebhookEvent("error", "referral-api unexpected failure", {
-      message: error instanceof Error ? error.message.slice(0, 200) : "unknown",
-    });
+    logWebhookEvent("error", "referral-api unexpected failure", buildSafeErrorLogMetadata(sqlStateOf(error)));
     return errorResponse(500, "internal_error");
   } finally {
     // Guarded exactly like revenuecat-webhook/index.ts: a connection-close failure here must

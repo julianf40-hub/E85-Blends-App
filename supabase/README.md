@@ -275,10 +275,31 @@ app attestation and never proof of a human/user — while the per-installation s
 stored (`private.referral_client_installations`, `installation_secret_hash` `check`ed to look like
 one, secret itself bounded to 32–512 characters); the raw secret is never logged or returned. An
 existing installation's secret can never be replaced by a different one — a mismatched secret
-against a known `client_installation_id` is a flat `401`, never a silent takeover. Both new tables
+against a known `client_installation_id` is a flat `401`, never a silent takeover, enforced
+authoritatively inside the bootstrap transaction (not merely a pre-transaction check, which is a
+fast-path optimization only) — see `private.create_or_get_referral_participant`'s own concurrency
+fix below for why the transactional guarantee matters. Both new tables
 (`referral_client_installations`, and `referral_apply_attempts` backing a per-installation
 apply-code rate limit) are RLS-enabled, zero-policy, `service_role`-only — no `anon`/`authenticated`
 grant, same as every other `private.referral_*` object.
+
+**Concurrency fix — `private.create_or_get_referral_participant`.** Building this client API
+exposed the first genuinely concurrent caller of this function (two near-simultaneous bootstrap
+requests for the same brand-new installation) — every earlier caller only ever reached it one
+already-existing installation at a time. Reproduced with two real concurrent Postgres connections
+(not merely sequential statements): the loser's insert failed with a raw, uncaught
+`unique_violation` on `installation_id` instead of gracefully returning the participant the winner
+had just created. Fixed via `insert ... on conflict (installation_id) do nothing returning ...`,
+which absorbs that specific race entirely (a losing transaction picks up the winner's row instead
+of retrying a doomed insert) while still retrying on a genuine `referral_code` collision, exactly
+as before. Re-verified under the identical concurrent-connection test: both requests now succeed,
+return the same participant, and exactly one row is ever created. `referral-api`'s own bootstrap
+transaction was hardened the same way — the `created` flag and `app_version` handling are now
+transaction-authoritative rather than based on a pre-transaction read, so a losing
+same-secret request never "loses" its `app_version`, and a losing different-secret request leaves
+zero persisted mutation (participant/alias/credential/`app_version` alike) via transaction
+rollback. Signature, return shape, language, `search_path`, and grants are all unchanged —
+reverified directly, not assumed.
 
 **Actions** (single POST-only endpoint, JSON body with `action`):
 - `bootstrap` — create-or-get this installation's referral participant/code, bind it to the
