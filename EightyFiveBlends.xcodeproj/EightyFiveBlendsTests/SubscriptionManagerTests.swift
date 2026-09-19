@@ -9,9 +9,19 @@
 //  RevenueCatSubscriptionService.loadOfferings()/.purchase(_:)/.restore() call — not duplicate
 //  reimplementations — so passing tests here directly verify production behavior.
 //
-//  Note: like every other file in this directory, this is not currently wired into a test
-//  target in project.pbxproj (see CLAUDE.md) — `xcodebuild test` will not run these until a
-//  test target is added. Written to compile and pass once one exists.
+//  Extended for 85Blends 2.4.0's three-plan Pro paywall (Monthly/3-Month/Annual, see ProPlan.swift):
+//  resolvePackage(...)'s tests now cover all three plans plus explicit legacy-quarterly-product
+//  rejection, and ProPlan.preferredDefault(among:) — the paywall's default-selection rule — gets
+//  its own exhaustive coverage. Sections A-D (entitlement/purchase-outcome/restore-outcome) did
+//  not change and needed no new tests — see section J below for why.
+//
+//  Note: this file lives in the `EightyFiveBlends.xcodeproj/EightyFiveBlendsTests` folder, which
+//  is a real, wired `EightyFiveBlendsTests` PBXNativeTarget (a Swift Testing bundle target) —
+//  see project.pbxproj's `PBXFileSystemSynchronizedRootGroup`/`fileSystemSynchronizedGroups` for
+//  that target, and both shared schemes' `TestAction`/`TestableReference`. Every `.swift` file
+//  placed in this folder is picked up automatically; no per-file pbxproj entry is needed. CLAUDE.
+//  md's "no test target in the pbxproj" note predates this and is stale as of this file's own
+//  current state — flagged for a documentation fix, not repeated here as fact.
 //
 //  What these tests can and cannot prove: RevenueCat's `CustomerInfo`, `Offerings`, `Package`,
 //  and `PurchaseResultData` are SDK-defined types this codebase does not construct fakes of —
@@ -169,28 +179,84 @@ struct SubscriptionManagerTests {
         #expect(state == .failed("We couldn't restore your purchases. Please try again."))
     }
 
-    // MARK: E. Offering / package resolution (items 16-18)
-    // RevenueCatSubscriptionService.resolvePackage(...) — the exact rule `loadOfferings()` calls,
-    // guarding what `SubscriptionManager.purchasePro()` is ever allowed to purchase.
+    // MARK: D2. ProPlan model — 85Blends 2.4.0 (plan identity/pricing metadata)
+    // ProPlan.swift — a plain value type with no RevenueCat/SubscriptionManager dependency. These
+    // are the exact product IDs configured live in App Store Connect / RevenueCat (see ProPlan.
+    // swift's own header) — a typo here would silently break purchasing for that plan.
+
+    @Test("Each ProPlan resolves to its own exact, distinct App Store product ID")
+    func proPlan_productIDs_areExact() {
+        #expect(ProPlan.monthly.productID == "com.85blends.subscription.monthly")
+        #expect(ProPlan.threeMonth.productID == "com.85blends.subscription.threemonth")
+        #expect(ProPlan.annual.productID == "com.85blends.subscription.annual")
+    }
+
+    @Test("ProPlan.allCases is exactly the three shipping plans — the legacy quarterly product is never one of them")
+    func proPlan_allCases_excludesLegacyQuarterly() {
+        #expect(ProPlan.allCases.count == 3)
+        #expect(Set(ProPlan.allCases) == [.monthly, .threeMonth, .annual])
+        #expect(ProPlan.allCases.map(\.productID).contains("com.85blends.subscription.quarterly") == false)
+    }
+
+    // MARK: D3. Equivalent-monthly pricing arithmetic — ProPlan.equivalentMonthlyAmount(price:plan:)
+    // Pure `Decimal` arithmetic, no RevenueCat/StoreKit dependency — see ProPlan.swift and
+    // ProUpgradeView.equivalentMonthlyLine(for:), the only call site (which always passes a real
+    // loaded `StoreProduct.price`, never a fallback marketing string). Test prices are built via
+    // `Decimal(string:)`, never a bare float literal — `Decimal`'s `ExpressibleByFloatLiteral`
+    // conformance parses the literal as a `Double` first, which would silently reintroduce the
+    // exact binary floating-point imprecision this whole feature exists to avoid. Production code
+    // never has this problem: `StoreProduct.price` is a `Decimal` straight from StoreKit, with no
+    // `Double` round-trip — only a hand-written test literal is at risk.
+
+    @Test("Monthly has no equivalent-monthly amount — nothing to compare a 1-month plan against")
+    func equivalentMonthlyAmount_monthly_isNil() {
+        let price = Decimal(string: "3.99")!
+        #expect(ProPlan.equivalentMonthlyAmount(price: price, plan: .monthly) == nil)
+    }
+
+    @Test("3-Month: $9.99 over 3 months is exactly $3.33/month")
+    func equivalentMonthlyAmount_threeMonth_isExact() {
+        let price = Decimal(string: "9.99")!
+        #expect(ProPlan.equivalentMonthlyAmount(price: price, plan: .threeMonth) == Decimal(string: "3.33")!)
+    }
+
+    @Test("Annual: $24.99 over 12 months is exactly $2.0825/month before display rounding")
+    func equivalentMonthlyAmount_annual_isExact() {
+        let price = Decimal(string: "24.99")!
+        #expect(ProPlan.equivalentMonthlyAmount(price: price, plan: .annual) == Decimal(string: "2.0825")!)
+    }
+
+    @Test("A non-U.S.-style numeric annual price still just divides by 12 — proves the arithmetic runs on real numeric price, not a hardcoded U.S. marketing constant")
+    func equivalentMonthlyAmount_annual_nonUSPrice_dividesByTwelve() {
+        let price = Decimal(string: "29.99")!
+        #expect(ProPlan.equivalentMonthlyAmount(price: price, plan: .annual) == price / Decimal(12))
+    }
+
+    // MARK: E. Offering / package resolution (items 16-18, extended for 85Blends 2.4.0's 3 plans)
+    // RevenueCatSubscriptionService.resolvePackage(...) — the exact rule `loadOfferings()` calls
+    // once per `ProPlan` (never hardcoded to Monthly), guarding what
+    // `SubscriptionManager.purchasePro(_:)` is ever allowed to purchase. Also what makes it
+    // structurally impossible for the legacy `com.85blends.subscription.quarterly` product to ever
+    // resolve as `.ready` — see the explicit rejection tests below.
 
     @Test("Offering missing → safe plans-unavailable state, never a package")
     func resolvePackage_offeringMissing_isUnavailable() {
         let resolution = RevenueCatSubscriptionService.resolvePackage(
             offeringExists: false,
-            monthlyPackageExists: false,
+            packageExists: false,
             packageProductID: nil,
-            expectedProductID: SubscriptionManager.monthlyID
+            expectedProductID: ProPlan.monthly.productID
         )
         #expect(resolution == .offeringUnavailable)
     }
 
-    @Test("Monthly package missing from an existing offering → safe plans-unavailable state")
+    @Test("Package missing from an existing offering → safe plans-unavailable state")
     func resolvePackage_packageMissing_isUnavailable() {
         let resolution = RevenueCatSubscriptionService.resolvePackage(
             offeringExists: true,
-            monthlyPackageExists: false,
+            packageExists: false,
             packageProductID: nil,
-            expectedProductID: SubscriptionManager.monthlyID
+            expectedProductID: ProPlan.monthly.productID
         )
         #expect(resolution == .packageUnavailable)
     }
@@ -199,23 +265,151 @@ struct SubscriptionManagerTests {
     func resolvePackage_unexpectedProduct_isRejected() {
         let resolution = RevenueCatSubscriptionService.resolvePackage(
             offeringExists: true,
-            monthlyPackageExists: true,
+            packageExists: true,
             packageProductID: "com.wrong.product.id",
-            expectedProductID: SubscriptionManager.monthlyID
+            expectedProductID: ProPlan.monthly.productID
         )
         #expect(resolution == .unexpectedProduct("com.wrong.product.id"))
         if case .ready = resolution { Issue.record("An unexpected product mapping must never resolve as ready-to-purchase") }
     }
 
-    @Test("Package resolves to the exact expected product ID → ready to purchase")
-    func resolvePackage_expectedProduct_isReady() {
+    @Test("Package resolves to the exact expected product ID → ready to purchase (Monthly)")
+    func resolvePackage_monthly_expectedProduct_isReady() {
         let resolution = RevenueCatSubscriptionService.resolvePackage(
             offeringExists: true,
-            monthlyPackageExists: true,
-            packageProductID: SubscriptionManager.monthlyID,
-            expectedProductID: SubscriptionManager.monthlyID
+            packageExists: true,
+            packageProductID: ProPlan.monthly.productID,
+            expectedProductID: ProPlan.monthly.productID
         )
         #expect(resolution == .ready)
+    }
+
+    @Test("Package resolves to the exact expected product ID → ready to purchase (3-Month)")
+    func resolvePackage_threeMonth_expectedProduct_isReady() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: ProPlan.threeMonth.productID,
+            expectedProductID: ProPlan.threeMonth.productID
+        )
+        #expect(resolution == .ready)
+    }
+
+    @Test("Package resolves to the exact expected product ID → ready to purchase (Annual)")
+    func resolvePackage_annual_expectedProduct_isReady() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: ProPlan.annual.productID,
+            expectedProductID: ProPlan.annual.productID
+        )
+        #expect(resolution == .ready)
+    }
+
+    @Test("3-Month's own product ID is never accepted as a match for Monthly")
+    func resolvePackage_crossPlanProductID_isRejected() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: ProPlan.threeMonth.productID,
+            expectedProductID: ProPlan.monthly.productID
+        )
+        #expect(resolution == .unexpectedProduct(ProPlan.threeMonth.productID))
+    }
+
+    // The legacy `com.85blends.subscription.quarterly` product only ever lives in RevenueCat's
+    // separate `pro_240_draft` offering (see RevenueCatSubscriptionService.swift's header) — this
+    // app's `loadOfferings()` never even queries that offering. These three tests are the second,
+    // independent layer of protection: even if it somehow appeared as one of the `default`
+    // offering's monthly/threeMonth/annual package slots, resolvePackage's product-ID equality
+    // check rejects it exactly like any other wrong product, for every plan.
+
+    @Test("Legacy quarterly product ID is explicitly rejected if ever seen where Monthly is expected")
+    func resolvePackage_legacyQuarterly_rejectedForMonthly() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: "com.85blends.subscription.quarterly",
+            expectedProductID: ProPlan.monthly.productID
+        )
+        #expect(resolution == .unexpectedProduct("com.85blends.subscription.quarterly"))
+    }
+
+    @Test("Legacy quarterly product ID is explicitly rejected if ever seen where 3-Month is expected")
+    func resolvePackage_legacyQuarterly_rejectedForThreeMonth() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: "com.85blends.subscription.quarterly",
+            expectedProductID: ProPlan.threeMonth.productID
+        )
+        #expect(resolution == .unexpectedProduct("com.85blends.subscription.quarterly"))
+    }
+
+    @Test("Legacy quarterly product ID is explicitly rejected if ever seen where Annual is expected")
+    func resolvePackage_legacyQuarterly_rejectedForAnnual() {
+        let resolution = RevenueCatSubscriptionService.resolvePackage(
+            offeringExists: true,
+            packageExists: true,
+            packageProductID: "com.85blends.subscription.quarterly",
+            expectedProductID: ProPlan.annual.productID
+        )
+        #expect(resolution == .unexpectedProduct("com.85blends.subscription.quarterly"))
+    }
+
+    // Strict-`default`-offering note (not independently runtime-testable — same class of fact as
+    // items 13/20/22 above): `loadOfferings()` reads `offerings.offering(identifier: "default")`
+    // directly, with no `?? offerings.current` fallback. RevenueCat's SDK `Offerings`/`Offering`
+    // types aren't constructible here (this file's own header explains why), so this can't be
+    // driven end-to-end without a real fetch — but the code itself has nowhere left to reach
+    // `pro_240_draft` (or any offering RevenueCat happens to mark "current") from: a missing
+    // `default` offering makes `offeringExists` false for every plan, which `resolvePackage(...)`
+    // above already proves maps to `.offeringUnavailable`, never a fallback resolution.
+
+    // MARK: E2. Default plan selection / partial availability — ProPlan.preferredDefault(among:)
+    // Pure function, no RevenueCat/SubscriptionManager dependency (see ProPlan.swift). This is
+    // what ProUpgradeView.applyDefaultPlanSelectionIfNeeded() calls once real package availability
+    // is known, so these tests exercise every possible availability combination (all 8 subsets of
+    // the 3 plans) directly, without needing to fake RevenueCat's own package-loading state.
+
+    @Test("No plan available → no default (paywall falls back to its load-error/retry state)")
+    func preferredDefault_none_isNil() {
+        #expect(ProPlan.preferredDefault(among: []) == nil)
+    }
+
+    @Test("Only Monthly available → Monthly is the default")
+    func preferredDefault_onlyMonthly_isMonthly() {
+        #expect(ProPlan.preferredDefault(among: [.monthly]) == .monthly)
+    }
+
+    @Test("Only 3-Month available → 3-Month is the default")
+    func preferredDefault_onlyThreeMonth_isThreeMonth() {
+        #expect(ProPlan.preferredDefault(among: [.threeMonth]) == .threeMonth)
+    }
+
+    @Test("Only Annual available → Annual is the default")
+    func preferredDefault_onlyAnnual_isAnnual() {
+        #expect(ProPlan.preferredDefault(among: [.annual]) == .annual)
+    }
+
+    @Test("Monthly + 3-Month available (no Annual) → 3-Month wins (better value than Monthly)")
+    func preferredDefault_monthlyAndThreeMonth_isThreeMonth() {
+        #expect(ProPlan.preferredDefault(among: [.monthly, .threeMonth]) == .threeMonth)
+    }
+
+    @Test("Monthly + Annual available (no 3-Month) → Annual wins")
+    func preferredDefault_monthlyAndAnnual_isAnnual() {
+        #expect(ProPlan.preferredDefault(among: [.monthly, .annual]) == .annual)
+    }
+
+    @Test("3-Month + Annual available (no Monthly) → Annual wins")
+    func preferredDefault_threeMonthAndAnnual_isAnnual() {
+        #expect(ProPlan.preferredDefault(among: [.threeMonth, .annual]) == .annual)
+    }
+
+    @Test("All three available → Annual wins (best value always preferred when possible)")
+    func preferredDefault_allThree_isAnnual() {
+        #expect(ProPlan.preferredDefault(among: [.monthly, .threeMonth, .annual]) == .annual)
     }
 
     // MARK: F. Refresh-failure cache behavior (item 19)
@@ -368,4 +562,30 @@ struct SubscriptionManagerTests {
     //    Their failure (`catch`) branches never call apply(_:) or touch
     //    `initialEntitlementResolutionState` at all, so a failed purchase/restore cannot regress
     //    it either.
+
+    // MARK: J. Purchase/restore/entitlement stay plan-agnostic — 85Blends 2.4.0
+    //
+    // Sections A-D above (entitlement interpretation, purchase outcome, restore outcome) did not
+    // change for this feature and needed no new tests: `PurchaseOutcome`, `RestoreOutcome`, and
+    // `isProEntitlementActive(entitlementIsActive:)` never took a product ID or plan parameter
+    // before this feature and still don't — their signatures are the proof. Concretely:
+    //   - SubscriptionManager.purchasePro(_:) resolves a plan to its Package via
+    //     RevenueCatSubscriptionService.package(for:) and then calls the SAME purchase(_:) as
+    //     before (SubscriptionManager.swift) — a missing package for the requested plan is
+    //     guarded before that call (logged, no-op; see purchasePro(_:)'s own header), so
+    //     purchase(_:) itself, and therefore purchaseOutcome(...)/state(forPurchaseOutcome:),
+    //     never receives or needs to know which plan was purchased. Cancellation still maps to
+    //     `.idle` (never an error), and a non-throwing-but-not-entitled result is still `.failed`
+    //     — never `.succeeded` — regardless of which plan was attempted (section C above).
+    //   - restorePurchases() takes no plan parameter at all and never did — a restore reactivates
+    //     whatever `pro` entitlement RevenueCat's CustomerInfo reports, regardless of which of the
+    //     three plans originally granted it (section D above).
+    //   - isProEntitlementActive(entitlementIsActive:) and every canAccess* feature gate read only
+    //     `entitlements["pro"]?.isActive` — never a product/plan identifier — so an existing
+    //     Monthly subscriber's Pro access is byte-for-byte the same check as a new 3-Month or
+    //     Annual subscriber's, both before and after this feature (section A above).
+    // Verified by code inspection (this file's header explains why RevenueCat SDK types can't be
+    // safely faked to exercise this end-to-end), the same reasoning already established for items
+    // 13/20/22 above — not a new runtime assertion, since sections A-D's existing tests already
+    // exhaustively cover these functions' actual, unchanged behavior.
 }

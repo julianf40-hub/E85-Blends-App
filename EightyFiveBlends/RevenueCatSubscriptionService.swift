@@ -3,21 +3,31 @@
 //  EightyFiveBlends
 //
 //  85Blends 2.3.0 — RevenueCat authoritative subscription cutover.
+//  85Blends 2.4.0 — extended to three plans (Monthly/3-Month/Annual, see ProPlan.swift), all
+//  granting the SAME `pro` entitlement below. See "KEY AUTHORITY INVARIANT" — that invariant is
+//  exactly what made this extension safe: nothing about entitlement resolution reads a product ID
+//  or cares which of the three plans a customer purchased.
 //
 //  RevenueCat is the application-level subscription management layer for 85Blends: it loads the
 //  subscription offering, initiates purchases, restores purchases, interprets CustomerInfo, and
 //  determines whether `pro` is active. Apple/StoreKit still performs the underlying App Store
-//  transaction (the product remains `com.85blends.subscription.monthly`) — RevenueCat is
-//  configured with `purchasesAreCompletedBy: .revenueCat`, so RevenueCat owns purchasing end to
-//  end rather than observing transactions 85Blends' own StoreKit code would otherwise complete.
+//  transaction (the products are `com.85blends.subscription.monthly`/`.threemonth`/`.annual` — see
+//  ProPlan.swift) — RevenueCat is configured with `purchasesAreCompletedBy: .revenueCat`, so
+//  RevenueCat owns purchasing end to end rather than observing transactions 85Blends' own StoreKit
+//  code would otherwise complete.
+//
+//  A fourth, LEGACY product — `com.85blends.subscription.quarterly` — remains attached to `pro`
+//  in RevenueCat but lives only in a separate, non-`default` offering (`pro_240_draft`). This file
+//  only ever queries the `default` offering (`offeringID` below, unchanged) — the legacy product
+//  is never seen, resolved, or purchasable through this code, with no special-casing required.
 //
 //  KEY AUTHORITY INVARIANT: `revenueCatIsPro` below — derived from
 //  `CustomerInfo.entitlements["pro"]?.isActive == true` — is the ONLY real subscription
 //  entitlement source in this app. `SubscriptionManager.isPro` reads it directly (Internal/Debug
 //  builds may still layer the Developer Pro Override on top — see SubscriptionManager.swift).
-//  There is no StoreKit-side entitlement authority left to agree or disagree with; see the
-//  85Blends 2.3.0 RevenueCat cutover report for the previous shadow-observation architecture this
-//  replaces.
+//  There is no StoreKit-side entitlement authority left to agree or disagree with, and NOTHING in
+//  this invariant is plan-aware — see the 85Blends 2.3.0 RevenueCat cutover report for the
+//  previous shadow-observation architecture this replaces.
 //
 //  PUBLIC vs SECRET KEYS: this file only ever uses a RevenueCat *public* SDK key (client-safe,
 //  same trust model as SUPABASE_ANON_KEY in SupabaseConfig.swift — see RevenueCatConfiguration.
@@ -47,7 +57,9 @@ import RevenueCat
 
 /// Thin boundary around the RevenueCat SDK calls this app makes, so `RevenueCatSubscriptionService`
 /// doesn't hardcode every call to the `Purchases.shared` singleton. Deliberately small — 85Blends
-/// has exactly one subscription product, so this is not a general-purpose billing abstraction.
+/// has exactly one Pro entitlement across its three plans (see ProPlan.swift), so this is not a
+/// general-purpose billing abstraction. `purchase(package:)` already takes an arbitrary `Package`,
+/// so all three plans share this exact same boundary with no per-plan change needed here.
 protocol RevenueCatClient: Sendable {
     func fetchCustomerInfo() async throws -> CustomerInfo
     func fetchOfferings() async throws -> Offerings
@@ -100,19 +112,28 @@ final class RevenueCatSubscriptionService {
         case configured
     }
 
-    /// Offering/package resolution state for the one 85Blends Pro monthly package. Kept distinct
-    /// from `notLoaded` vs `loading` vs terminal-failure states so the paywall (via
-    /// SubscriptionManager) can tell "haven't tried yet" from "tried and failed" — the same
-    /// distinction `hasAttemptedProductLoad` made for StoreKit product loading before this
-    /// cutover.
+    /// Offering/package resolution state for ONE `ProPlan`'s package. Kept distinct from
+    /// `notLoaded` vs `loading` vs terminal-failure states so the paywall (via SubscriptionManager)
+    /// can tell "haven't tried yet" from "tried and failed" — the same distinction
+    /// `hasAttemptedProductLoad` made for StoreKit product loading before the 2.3.0 RevenueCat
+    /// cutover. 85Blends 2.4.0 three-plan paywall — this enum's SHAPE is unchanged from the
+    /// single-plan era; what changed is that `packageAvailability` below now holds one of these
+    /// PER PLAN instead of a single value, so one plan failing to resolve can never affect the
+    /// other two (see `loadOfferings()`).
     enum PackageAvailability: Equatable {
         case notLoaded
         case loading
         case ready(Package)
         case offeringUnavailable
         case packageUnavailable
-        /// The resolved package's underlying Apple product ID did not match
-        /// `SubscriptionManager.monthlyID`. Never purchased — see `resolvePackage(...)`.
+        /// The resolved package's underlying Apple product ID did not match this plan's own
+        /// `ProPlan.productID`. Never purchased — see `resolvePackage(...)`. This is also what
+        /// protects against the legacy `com.85blends.subscription.quarterly` product: if it were
+        /// ever (incorrectly) assigned to one of the `default` offering's monthly/threeMonth/
+        /// annual slots, its product ID would never match any `ProPlan.productID` and this case
+        /// would reject it exactly like any other unexpected product — see this file's header for
+        /// the primary protection (querying only the `default` offering, never `pro_240_draft`,
+        /// where the legacy product actually lives).
         case unexpectedProduct(String)
 
         static func == (lhs: PackageAvailability, rhs: PackageAvailability) -> Bool {
@@ -184,7 +205,11 @@ final class RevenueCatSubscriptionService {
     private(set) var initialEntitlementResolutionState: InitialEntitlementResolutionState = .notStarted
     private(set) var customerInfoLastUpdatedAt: Date?
     private(set) var maskedAppUserID: String?
-    private(set) var packageAvailability: PackageAvailability = .notLoaded
+    /// 85Blends 2.4.0 — one resolution state per `ProPlan`, populated together by a single
+    /// `loadOfferings()` call (see that function). A plan absent from this dictionary has simply
+    /// never had a load attempted yet — `packageAvailability(for:)` below treats that identically
+    /// to `.notLoaded`, so callers never need to special-case "missing key."
+    private(set) var packageAvailability: [ProPlan: PackageAvailability] = [:]
     /// `true`/`false` once a `pro` entitlement record has been seen (active or not — RevenueCat
     /// still reports sandbox-vs-production for an expired/inactive entitlement); `nil` if no
     /// entitlement record has ever been observed. Diagnostics-only.
@@ -202,10 +227,16 @@ final class RevenueCatSubscriptionService {
         initialEntitlementResolutionState != .resolved
     }
 
-    /// The resolved, validated monthly package — non-nil only once `packageAvailability` is
-    /// `.ready`. This is what `SubscriptionManager.purchasePro()` passes to `purchase(_:)`.
-    var monthlyPackage: Package? {
-        if case .ready(let package) = packageAvailability { return package }
+    /// This plan's resolution state — `.notLoaded` if no load has ever been attempted for it yet.
+    func packageAvailability(for plan: ProPlan) -> PackageAvailability {
+        packageAvailability[plan] ?? .notLoaded
+    }
+
+    /// The resolved, validated package for this plan — non-nil only once its own
+    /// `packageAvailability(for:)` is `.ready`. This is what `SubscriptionManager.purchasePro(_:)`
+    /// passes to `purchase(_:)`.
+    func package(for plan: ProPlan) -> Package? {
+        if case .ready(let package) = packageAvailability(for: plan) { return package }
         return nil
     }
 
@@ -339,43 +370,79 @@ final class RevenueCatSubscriptionService {
 
     // MARK: - Offering / package loading
 
-    /// Resolves the `default` offering's `$rc_monthly` package and validates it maps to
-    /// `com.85blends.subscription.monthly` before it is ever eligible to purchase. Safe to call
-    /// repeatedly (e.g. every paywall presentation, for freshness).
+    /// Resolves the `default` offering's `$rc_monthly`/`$rc_three_month`/`$rc_annual` packages —
+    /// one call, one network fetch, all three plans resolved independently from the SAME
+    /// `Offerings` response. Each plan's package is validated against its own `ProPlan.productID`
+    /// before it is ever eligible to purchase — see `resolvePackage(...)`. Safe to call repeatedly
+    /// (e.g. every paywall presentation, for freshness).
+    ///
+    /// 85Blends 2.4.0 three-plan paywall — one plan failing to resolve (offering misconfigured for
+    /// just that plan, or genuinely unavailable) never affects the other two: each plan gets its
+    /// own independent `PackageAvailability` in the dictionary below, computed from the same
+    /// fetched `Offering` but never short-circuiting on another plan's failure.
     func loadOfferings() async {
         guard configurationState == .configured else { return }
-        guard packageAvailability != .loading else { return }
-        packageAvailability = .loading
+        // Any one plan still `.loading` means the whole batch is in flight — all three are always
+        // set to `.loading` together, immediately below, so checking one is equivalent to checking
+        // all three; this is just the re-entrancy guard, unchanged in spirit from the single-plan
+        // era's `guard packageAvailability != .loading`.
+        guard packageAvailability(for: .monthly) != .loading else { return }
+        for plan in ProPlan.allCases { packageAvailability[plan] = .loading }
         do {
             let offerings = try await client.fetchOfferings()
-            let offering = offerings.offering(identifier: Self.offeringID) ?? offerings.current
-            let monthlyPackage = offering?.monthly
-            let resolution = Self.resolvePackage(
-                offeringExists: offering != nil,
-                monthlyPackageExists: monthlyPackage != nil,
-                packageProductID: monthlyPackage?.storeProduct.productIdentifier,
-                expectedProductID: SubscriptionManager.monthlyID
-            )
-            switch resolution {
-            case .ready:
-                packageAvailability = .ready(monthlyPackage!)
-                lastErrorDescription = nil
-            case .offeringUnavailable:
-                packageAvailability = .offeringUnavailable
-                lastErrorDescription = "RevenueCat offering \"\(Self.offeringID)\" is unavailable."
-            case .packageUnavailable:
-                packageAvailability = .packageUnavailable
-                lastErrorDescription = "RevenueCat monthly package is unavailable in the \"\(Self.offeringID)\" offering."
-            case .unexpectedProduct(let productID):
-                packageAvailability = .unexpectedProduct(productID)
-                lastErrorDescription = "RevenueCat monthly package maps to unexpected product \"\(productID)\" (expected \(SubscriptionManager.monthlyID)) — refusing to purchase."
-                #if DEBUG || INTERNAL_BUILD
-                print("[85Blends][RevenueCat] \(lastErrorDescription ?? "")")
-                #endif
+            // Strictly `default` — no `?? offerings.current` fallback. RevenueCat's own "current
+            // offering" designation is dashboard state this app cannot verify or control, and the
+            // live project has a second, legacy offering (`pro_240_draft`, where the retired
+            // `com.85blends.subscription.quarterly` product lives) that must never be silently
+            // substituted in just because someone marked it current. Missing `default` here always
+            // means `offeringExists: false` below — every plan resolves to `.offeringUnavailable`
+            // (the normal retry/error paywall state), never a silent fallback to another offering.
+            let offering = offerings.offering(identifier: Self.offeringID)
+            var errorMessages: [String] = []
+            for plan in ProPlan.allCases {
+                let package = Self.package(for: plan, in: offering)
+                let resolution = Self.resolvePackage(
+                    offeringExists: offering != nil,
+                    packageExists: package != nil,
+                    packageProductID: package?.storeProduct.productIdentifier,
+                    expectedProductID: plan.productID
+                )
+                switch resolution {
+                case .ready:
+                    packageAvailability[plan] = .ready(package!)
+                case .offeringUnavailable:
+                    packageAvailability[plan] = .offeringUnavailable
+                    errorMessages.append("RevenueCat offering \"\(Self.offeringID)\" is unavailable.")
+                case .packageUnavailable:
+                    packageAvailability[plan] = .packageUnavailable
+                    errorMessages.append("RevenueCat \(plan.rawValue) package is unavailable in the \"\(Self.offeringID)\" offering.")
+                case .unexpectedProduct(let productID):
+                    packageAvailability[plan] = .unexpectedProduct(productID)
+                    let message = "RevenueCat \(plan.rawValue) package maps to unexpected product \"\(productID)\" (expected \(plan.productID)) — refusing to purchase."
+                    errorMessages.append(message)
+                    #if DEBUG || INTERNAL_BUILD
+                    print("[85Blends][RevenueCat] \(message)")
+                    #endif
+                }
             }
+            // The offering itself failing is reported once per plan above (each independently
+            // lands on `.offeringUnavailable`) — de-duplicated here so `lastErrorDescription`
+            // never repeats the identical offering-missing message three times.
+            lastErrorDescription = errorMessages.isEmpty ? nil : Array(Set(errorMessages)).sorted().joined(separator: " ")
         } catch {
-            packageAvailability = .offeringUnavailable
+            for plan in ProPlan.allCases { packageAvailability[plan] = .offeringUnavailable }
             lastErrorDescription = error.localizedDescription
+        }
+    }
+
+    /// The RevenueCat SDK's own standard package-identifier convenience accessor for this plan
+    /// (`$rc_monthly`/`$rc_three_month`/`$rc_annual`) — one small switch, isolated here so
+    /// `loadOfferings()` above stays a plain loop with no per-plan special-casing.
+    private static func package(for plan: ProPlan, in offering: Offering?) -> Package? {
+        switch plan {
+        case .monthly: offering?.monthly
+        case .threeMonth: offering?.threeMonth
+        case .annual: offering?.annual
         }
     }
 
@@ -433,14 +500,21 @@ final class RevenueCatSubscriptionService {
         case unexpectedProduct(String)
     }
 
+    /// 85Blends 2.4.0 — called once per `ProPlan` (see `loadOfferings()`), never hardcoded to
+    /// "monthly" — `packageExists`/`expectedProductID` are supplied fresh per call, so the exact
+    /// same validation rule (offering exists → package exists → product ID matches exactly) is
+    /// applied identically and independently to Monthly, 3-Month, and Annual. This is also the
+    /// only gate a resolved package must pass to become purchasable at all, which is what makes it
+    /// structurally impossible for the legacy `com.85blends.subscription.quarterly` product to
+    /// ever resolve as `.ready` — its product ID cannot equal any `ProPlan.productID`.
     static func resolvePackage(
         offeringExists: Bool,
-        monthlyPackageExists: Bool,
+        packageExists: Bool,
         packageProductID: String?,
         expectedProductID: String
     ) -> PackageResolution {
         guard offeringExists else { return .offeringUnavailable }
-        guard monthlyPackageExists, let packageProductID else { return .packageUnavailable }
+        guard packageExists, let packageProductID else { return .packageUnavailable }
         guard packageProductID == expectedProductID else { return .unexpectedProduct(packageProductID) }
         return .ready
     }

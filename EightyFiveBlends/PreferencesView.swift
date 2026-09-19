@@ -319,7 +319,7 @@ struct PreferencesView: View {
                 return ("Loading…", "arrow.triangle.2.circlepath", AppTheme.Colors.textMuted)
             } else if manager.isPro {
                 return ("Pro", "crown.fill", AppTheme.Colors.stationYellow)
-            } else if !manager.canPurchase {
+            } else if !manager.anyPlanPurchasable {
                 return ("Free · plans unavailable", "person.circle", AppTheme.Colors.textMuted)
             } else {
                 return ("Free", "person.circle", AppTheme.Colors.textSecondary)
@@ -458,9 +458,19 @@ struct PreferencesView: View {
                 diagnosticRow(label: "Override", value: manager.debugProOverride.rawValue)
                 diagnosticRow(label: "Customer Info", value: revenueCatCustomerInfoLabel(rc.customerInfoLastUpdatedAt))
                 diagnosticRow(label: "App User ID", value: rc.maskedAppUserID ?? "—")
-                diagnosticRow(label: "Offering", value: revenueCatOfferingLabel(rc.packageAvailability))
-                diagnosticRow(label: "Monthly Package", value: revenueCatMonthlyPackageLabel(rc.packageAvailability))
-                diagnosticRow(label: "Product", value: SubscriptionManager.monthlyID)
+                // The "default" offering is shared by all three plans and loaded together (see
+                // RevenueCatSubscriptionService.loadOfferings()), so any single plan's
+                // availability represents offering-level reachability — .monthly is picked
+                // arbitrarily here, not because it's privileged.
+                diagnosticRow(label: "Offering", value: revenueCatOfferingLabel(rc.packageAvailability(for: .monthly)))
+
+                // 85Blends 2.4.0 — independent per-plan package status, since one plan's
+                // product can fail to resolve without affecting the other two.
+                ForEach(ProPlan.allCases) { plan in
+                    diagnosticRow(label: "\(plan.title) Package", value: revenueCatMonthlyPackageLabel(rc.packageAvailability(for: plan)))
+                    diagnosticRow(label: "\(plan.title) Product", value: plan.productID)
+                }
+
                 diagnosticRow(label: "Environment", value: revenueCatEnvironmentLabel(rc.isSandboxEnvironment))
 
                 if let lastError = rc.lastErrorDescription {

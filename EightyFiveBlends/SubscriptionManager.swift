@@ -9,12 +9,17 @@ import RevenueCat
 
 /// Single source of truth for 85Blends Pro entitlement state.
 ///
-/// 85Blends Pro is one auto-renewing subscription:
-///   • 85Blends Pro — $3.99 / month (no free trial)
+/// 85Blends Pro is one entitlement (`pro`), offered as three auto-renewing plans — see
+/// ProPlan.swift for identity/pricing metadata:
+///   • Monthly — $3.99 / month
+///   • 3 Months — $9.99 / 3 months
+///   • Annual — $24.99 / year
+/// No plan grants a different feature set or a different entitlement — see
+/// RevenueCatSubscriptionService's "KEY AUTHORITY INVARIANT."
 ///
 /// Every Pro gate in the app reads the `isProUser` / `canAccess…` properties below,
 /// all of which route through `isPro` — so there is exactly one place that decides
-/// whether a user has Pro.
+/// whether a user has Pro, and it is completely plan-agnostic.
 ///
 /// As of the 85Blends 2.3.0 RevenueCat cutover, `isPro` is derived from
 /// `RevenueCatSubscriptionService.shared.revenueCatIsPro` — RevenueCat's own authoritative
@@ -23,17 +28,6 @@ import RevenueCat
 @Observable
 final class SubscriptionManager {
     static let shared = SubscriptionManager()
-
-    // MARK: - Product identifier
-    /// The one and only 85Blends Pro offering. This is the Apple App Store product ID — RevenueCat
-    /// maps it to the `pro` entitlement via the `default` offering's `$rc_monthly` package. See
-    /// RevenueCatSubscriptionService.resolvePackage(...), which refuses to purchase anything that
-    /// doesn't resolve to this exact ID.
-    static let monthlyID = "com.85blends.subscription.monthly"
-
-    /// Marketing price shown before the RevenueCat package loads (or if it never does). Once the
-    /// package loads we always prefer its localized price.
-    static let fallbackDisplayPrice = "$3.99"
 
     // MARK: - Free-tier creation limit (blocking)
     /// Vehicles a Free user may create. Pro is unlimited — see `canAccessUnlimitedVehicles`
@@ -158,39 +152,53 @@ final class SubscriptionManager {
 
     // MARK: - Package / price (sourced from RevenueCat — see RevenueCatSubscriptionService)
 
-    /// The RevenueCat-resolved, validated monthly package's underlying store product, once
-    /// loaded. `nil` while loading, on failure, or if RevenueCat's mapping didn't match
-    /// `Self.monthlyID` (see RevenueCatSubscriptionService.resolvePackage).
-    var monthlyStoreProduct: StoreProduct? {
-        RevenueCatSubscriptionService.shared.monthlyPackage?.storeProduct
+    /// The RevenueCat-resolved, validated store product for this plan, once loaded. `nil` while
+    /// loading, on failure, or if RevenueCat's mapping didn't match this plan's own
+    /// `ProPlan.productID` (see RevenueCatSubscriptionService.resolvePackage).
+    func storeProduct(for plan: ProPlan) -> StoreProduct? {
+        RevenueCatSubscriptionService.shared.package(for: plan)?.storeProduct
     }
 
-    /// Localized price for display, falling back to the marketing price before the package loads.
-    var displayPrice: String {
-        monthlyStoreProduct?.localizedPriceString ?? Self.fallbackDisplayPrice
+    /// Localized price for display, falling back to the plan's own marketing price before its
+    /// package loads.
+    func displayPrice(for plan: ProPlan) -> String {
+        storeProduct(for: plan)?.localizedPriceString ?? plan.fallbackDisplayPrice
     }
 
-    /// Whether a real, validated RevenueCat package is loaded and can actually be purchased.
-    /// The paywall's primary CTA stays disabled while this is `false`, so there is no dead
-    /// button when nothing has loaded (no internet / RevenueCat unavailable / offering
-    /// misconfigured).
-    var canPurchase: Bool {
-        monthlyStoreProduct != nil
+    /// Whether a real, validated RevenueCat package is loaded for THIS plan and it can actually
+    /// be purchased. The paywall disables selecting/purchasing a plan while this is `false` for
+    /// it, so there is no dead button for a plan that hasn't loaded (no internet / RevenueCat
+    /// unavailable / that one plan misconfigured) — independent of whether the OTHER two plans
+    /// are available.
+    func canPurchase(_ plan: ProPlan) -> Bool {
+        storeProduct(for: plan) != nil
     }
 
-    /// Mirrors RevenueCatSubscriptionService.packageAvailability's `.loading` state.
+    /// True when NOT EVEN ONE of the three plans is currently purchasable. This — not any single
+    /// plan's own `canPurchase(_:)` — is what should drive the paywall's full load-error/retry
+    /// experience; one or two plans being unavailable while at least one still works is handled
+    /// per-plan instead (see ProUpgradeView).
+    var anyPlanPurchasable: Bool {
+        ProPlan.allCases.contains { canPurchase($0) }
+    }
+
+    /// True while an offerings load is currently in flight for any plan — all three always load
+    /// together in one `RevenueCatSubscriptionService.loadOfferings()` call, so checking one is
+    /// equivalent to checking all three.
     var isLoadingProducts: Bool {
-        RevenueCatSubscriptionService.shared.packageAvailability == .loading
+        ProPlan.allCases.contains { RevenueCatSubscriptionService.shared.packageAvailability(for: $0) == .loading }
     }
 
-    /// `true` once the first `loadProducts()` has completed (success or failure) — i.e. package
-    /// availability is no longer `.notLoaded`/`.loading`. The paywall uses this to distinguish
-    /// "still loading" from "load failed" so it never shows the error message before any fetch
-    /// has actually been attempted.
+    /// `true` once the first `loadProducts()` has completed (success or failure) for every plan —
+    /// i.e. no plan's availability is still `.notLoaded`/`.loading`. The paywall uses this to
+    /// distinguish "still loading" from "load failed" so it never shows the error message before
+    /// any fetch has actually been attempted.
     var hasAttemptedProductLoad: Bool {
-        switch RevenueCatSubscriptionService.shared.packageAvailability {
-        case .notLoaded, .loading: return false
-        default: return true
+        ProPlan.allCases.allSatisfy { plan in
+            switch RevenueCatSubscriptionService.shared.packageAvailability(for: plan) {
+            case .notLoaded, .loading: return false
+            default: return true
+            }
         }
     }
 
@@ -246,16 +254,17 @@ final class SubscriptionManager {
         await RevenueCatSubscriptionService.shared.loadOfferings()
     }
 
-    /// Convenience entry point for the paywall's primary CTA.
-    /// Purchases the live `com.85blends.subscription.monthly` product via RevenueCat.
+    /// Convenience entry point for the paywall's primary CTA. Purchases exactly the given plan's
+    /// live product via RevenueCat — never a fallback to a different plan. See ProPlan.swift for
+    /// the three recognized product IDs.
     @MainActor
-    func purchasePro() async {
-        guard let package = RevenueCatSubscriptionService.shared.monthlyPackage else {
-            // The paywall's unlockButton is already disabled whenever canPurchase is false, so
-            // this guard should be unreachable from a real tap — but log it in case it's ever
+    func purchasePro(_ plan: ProPlan) async {
+        guard let package = RevenueCatSubscriptionService.shared.package(for: plan) else {
+            // The paywall's unlockButton is already disabled whenever canPurchase(plan) is false,
+            // so this guard should be unreachable from a real tap — but log it in case it's ever
             // hit anyway (e.g. a future call site that doesn't check canPurchase first), so a
             // "tap did nothing" report is never a total dead end in the console.
-            print("[85Blends][RevenueCat] Purchase requested but no package is loaded — ignoring tap (canPurchase=false).")
+            print("[85Blends][RevenueCat] Purchase requested for \(plan.rawValue) but no package is loaded — ignoring tap (canPurchase=false).")
             return
         }
         await purchase(package)
