@@ -228,10 +228,19 @@ extension ReferralAPIError {
     }
 }
 
-/// Top-level error ReferralAPIService actually throws — keeps networking/decoding failures
-/// distinct from typed backend error codes (see this feature's own task spec).
+/// Top-level error ReferralAPIService/ReferralManager actually throw — keeps networking/decoding
+/// failures distinct from typed backend error codes (see this feature's own task spec).
 enum ReferralServiceError: Error, Equatable, Sendable {
+    /// The referral system isn't ready for this operation yet — no RevenueCat identity or no
+    /// StoreKit environment signal available this instant (see ReferralManager.ensureBootstrapped),
+    /// or (pre-hardening-pass) SupabaseConfig itself failed to load. Routine and retryable, not a
+    /// hard failure.
     case notConfigured
+    /// 85Blends 2.4.0 correctness hardening pass — a durable Keychain read/write for the referral
+    /// installation credential failed (see ReferralCredentialStoreError). Never carries the raw
+    /// Keychain OSStatus. A future UI's error projection should treat this the same as
+    /// `.serviceUnavailable`/`.internalError`: ReferralUserFacingError.temporarilyUnavailable.
+    case credentialUnavailable
     case api(ReferralAPIError)
     case network(String)
     case decoding

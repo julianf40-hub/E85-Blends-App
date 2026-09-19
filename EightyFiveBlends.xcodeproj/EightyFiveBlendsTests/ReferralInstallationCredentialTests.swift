@@ -10,6 +10,7 @@
 
 import Testing
 import Foundation
+import Security
 @testable import EightyFiveBlends
 
 /// Test-only fake — never touches the real Keychain, and never syncs anywhere (it's just a
@@ -19,16 +20,23 @@ final class InMemoryReferralCredentialStore: ReferralCredentialStoring, @uncheck
     /// When non-nil, `loadCredential()` returns this raw value instead of `stored` — simulates a
     /// malformed/corrupted stored credential without needing real Keychain data corruption.
     var forcedMalformedCredential: ReferralInstallationCredential?
+    /// When set, `loadCredential()` throws this instead of returning normally — simulates a
+    /// genuine Keychain read failure (`errSecInteractionNotAllowed`, `errSecNotAvailable`, etc.),
+    /// distinct from "not found."
+    var forcedLoadError: Error?
+    /// When set, `save(_:)` throws this instead of persisting — simulates a genuine Keychain write
+    /// failure.
+    var forcedSaveError: Error?
 
-    func loadCredential() -> ReferralInstallationCredential? {
-        forcedMalformedCredential ?? stored
+    func loadCredential() throws -> ReferralInstallationCredential? {
+        if let forcedLoadError { throw forcedLoadError }
+        return forcedMalformedCredential ?? stored
     }
 
-    @discardableResult
-    func save(_ credential: ReferralInstallationCredential) -> Bool {
+    func save(_ credential: ReferralInstallationCredential) throws {
+        if let forcedSaveError { throw forcedSaveError }
         stored = credential
         forcedMalformedCredential = nil
-        return true
     }
 
     var savedCredential: ReferralInstallationCredential? { stored }
@@ -39,9 +47,9 @@ struct ReferralInstallationCredentialTests {
     // MARK: 1. Missing credential generates ID + strong secret
 
     @Test("loadOrCreate with no stored credential generates a valid new one and persists it")
-    func missingCredential_generatesAndPersists() {
+    func missingCredential_generatesAndPersists() throws {
         let store = InMemoryReferralCredentialStore()
-        let credential = ReferralInstallationCredential.loadOrCreate(using: store)
+        let credential = try ReferralInstallationCredential.loadOrCreate(using: store)
 
         #expect(ReferralInstallationCredential.isValid(credential))
         #expect(store.savedCredential == credential)
@@ -50,12 +58,12 @@ struct ReferralInstallationCredentialTests {
     // MARK: 2. Stored credential is reused
 
     @Test("loadOrCreate reuses an existing valid stored credential rather than generating a new one")
-    func existingValidCredential_isReused() {
+    func existingValidCredential_isReused() throws {
         let store = InMemoryReferralCredentialStore()
         let original = ReferralInstallationCredential.generate()
-        store.save(original)
+        try store.save(original)
 
-        let resolved = ReferralInstallationCredential.loadOrCreate(using: store)
+        let resolved = try ReferralInstallationCredential.loadOrCreate(using: store)
 
         #expect(resolved == original)
     }
@@ -63,18 +71,88 @@ struct ReferralInstallationCredentialTests {
     // MARK: 3. Malformed stored credential is safely replaced
 
     @Test("loadOrCreate replaces a malformed stored credential (secret too short) with a fresh valid one")
-    func malformedCredential_isReplaced() {
+    func malformedCredential_isReplaced() throws {
         let store = InMemoryReferralCredentialStore()
         store.forcedMalformedCredential = ReferralInstallationCredential(
             installationID: UUID(),
             installationSecret: "way_too_short"
         )
 
-        let resolved = ReferralInstallationCredential.loadOrCreate(using: store)
+        let resolved = try ReferralInstallationCredential.loadOrCreate(using: store)
 
         #expect(ReferralInstallationCredential.isValid(resolved))
         #expect(resolved.installationSecret != "way_too_short")
         #expect(store.savedCredential == resolved)
+    }
+
+    // MARK: Hardening pass — fail-closed on genuine storage failures (never "absent")
+
+    @Test("loadOrCreate propagates a genuine load failure and never generates a replacement credential")
+    func loadFailure_neverGeneratesReplacement() {
+        let store = InMemoryReferralCredentialStore()
+        store.forcedLoadError = ReferralCredentialStoreError.keychainFailure(errSecInteractionNotAllowed)
+
+        do {
+            _ = try ReferralInstallationCredential.loadOrCreate(using: store)
+            Issue.record("Expected loadOrCreate to throw")
+        } catch is ReferralCredentialStoreError {
+            // expected
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(store.savedCredential == nil)
+    }
+
+    @Test("A load failure never results in any backend-eligible credential — loadOrCreate throws before ever calling save")
+    func loadFailure_neverCallsSave() {
+        let store = InMemoryReferralCredentialStore()
+        store.forcedLoadError = ReferralCredentialStoreError.keychainFailure(errSecInteractionNotAllowed)
+        // If loadOrCreate ever called save() despite the load failure, this would flip to a
+        // non-nil value — it must stay nil for the whole call.
+        store.forcedSaveError = nil
+
+        _ = try? ReferralInstallationCredential.loadOrCreate(using: store)
+
+        #expect(store.savedCredential == nil)
+    }
+
+    @Test("loadOrCreate propagates a genuine save failure — never returns an unpersisted generated credential")
+    func saveFailure_loadOrCreateThrows() {
+        let store = InMemoryReferralCredentialStore()
+        store.forcedSaveError = ReferralCredentialStoreError.keychainFailure(errSecNotAvailable)
+
+        do {
+            _ = try ReferralInstallationCredential.loadOrCreate(using: store)
+            Issue.record("Expected loadOrCreate to throw")
+        } catch is ReferralCredentialStoreError {
+            // expected
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        #expect(store.savedCredential == nil)
+    }
+
+    @Test("A malformed stored credential whose replacement write fails leaves nothing persisted — fails closed")
+    func malformedCredential_replacementWriteFailure_failsClosed() {
+        let store = InMemoryReferralCredentialStore()
+        store.forcedMalformedCredential = ReferralInstallationCredential(
+            installationID: UUID(),
+            installationSecret: "way_too_short"
+        )
+        store.forcedSaveError = ReferralCredentialStoreError.keychainFailure(errSecNotAvailable)
+
+        do {
+            _ = try ReferralInstallationCredential.loadOrCreate(using: store)
+            Issue.record("Expected loadOrCreate to throw")
+        } catch is ReferralCredentialStoreError {
+            // expected
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+        // The malformed value was never "promoted" — save() itself is what failed, so the store's
+        // own persisted-credential slot is still untouched (forcedMalformedCredential is a
+        // read-time override only; it does not count as a save).
+        #expect(store.savedCredential == nil)
     }
 
     // MARK: 4/5. Secret length bounds
@@ -128,7 +206,7 @@ struct ReferralInstallationCredentialTests {
     // MARK: 7. Storage abstraction never syncs via CloudKit/UserDefaults
 
     @Test("The credential storing protocol has no CloudKit/UserDefaults-shaped surface — only load/save of the typed credential")
-    func storageAbstraction_hasNoSyncSurface() {
+    func storageAbstraction_hasNoSyncSurface() throws {
         // Structural guarantee, not a runtime one: ReferralCredentialStoring exposes exactly
         // loadCredential()/save(_:) — nothing resembling a CloudKit share, a UserDefaults
         // suite/key, or an NSUbiquitousKeyValueStore accessor exists on the protocol for any
@@ -137,7 +215,7 @@ struct ReferralInstallationCredentialTests {
         // than leaving it as an implicit property of the protocol's shape.
         let store: ReferralCredentialStoring = InMemoryReferralCredentialStore()
         let credential = ReferralInstallationCredential.generate()
-        #expect(store.save(credential))
-        #expect(store.loadCredential() == credential)
+        try store.save(credential)
+        #expect(try store.loadCredential() == credential)
     }
 }

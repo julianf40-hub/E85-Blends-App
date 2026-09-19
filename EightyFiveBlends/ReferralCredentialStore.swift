@@ -18,58 +18,99 @@
 //  synchronized"; this is not merely relying on a default, `ThisDeviceOnly` accessibility classes
 //  are structurally excluded from iCloud Keychain sync regardless).
 //
+//  CORRECTNESS HARDENING PASS (2.4.0): both methods now THROW instead of collapsing every failure
+//  into "absent"/`false`. `loadCredential()` distinguishes exactly three outcomes —
+//  `errSecItemNotFound` (genuinely nil, safe to treat as "no credential yet"), a decodable item
+//  (returned normally, malformed-or-not — see ReferralInstallationCredential.isValid), and ANY
+//  other OSStatus (`errSecInteractionNotAllowed`, `errSecNotAvailable`, etc. — thrown as
+//  `ReferralCredentialStoreError.keychainFailure`, NEVER treated as absence). Conflating a
+//  transient Keychain failure with "absent" would let `loadOrCreate` generate a brand-new
+//  identity while the device's real one is simply unreadable this instant — silently forking the
+//  referral participant record. `save(_:)` throws the same way on any write failure, and never
+//  logs Keychain item contents or the raw OSStatus beyond this internal error value.
+//
 
 import Foundation
 import Security
 
+/// Internal diagnostics only — see this file's header. Never surfaced to any future UI in this
+/// raw form; a future UI's error projection should treat this the same as
+/// `ReferralUserFacingError.temporarilyUnavailable` (see `ReferralServiceError.credentialUnavailable`).
+enum ReferralCredentialStoreError: Error, Equatable, Sendable {
+    case keychainFailure(OSStatus)
+}
+
 protocol ReferralCredentialStoring: Sendable {
-    func loadCredential() -> ReferralInstallationCredential?
-    @discardableResult
-    func save(_ credential: ReferralInstallationCredential) -> Bool
+    /// `nil` means genuinely absent (`errSecItemNotFound`) — safe to generate a new credential.
+    /// A thrown error means the Keychain could not be read right now for some OTHER reason and
+    /// MUST NOT be treated as absence (see this file's header).
+    func loadCredential() throws -> ReferralInstallationCredential?
+    func save(_ credential: ReferralInstallationCredential) throws
 }
 
 struct KeychainReferralCredentialStore: ReferralCredentialStoring {
     private static let service = "com.e85blends.app.referral.installation"
     private static let account = "installationCredential"
 
-    func loadCredential() -> ReferralInstallationCredential? {
-        let query: [String: Any] = [
+    private static var baseQuery: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
         ]
+    }
+
+    func loadCredential() throws -> ReferralInstallationCredential? {
+        var query = Self.baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
 
-        return try? JSONDecoder().decode(StoredCredential.self, from: data).credential
+        switch status {
+        case errSecSuccess:
+            // A successfully-read item that isn't decodable Data, or whose bytes don't decode as
+            // a StoredCredential, is content-level corruption, not a Keychain-operation failure —
+            // the read itself already succeeded, so there is no "real" credential being hidden by
+            // a transient error here. Treated the same as "absent" (nil), which lets
+            // `loadOrCreate` safely replace it, exactly like an out-of-bounds secret already does.
+            guard let data = item as? Data else { return nil }
+            return try? JSONDecoder().decode(StoredCredential.self, from: data).credential
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw ReferralCredentialStoreError.keychainFailure(status)
+        }
     }
 
-    @discardableResult
-    func save(_ credential: ReferralInstallationCredential) -> Bool {
-        guard let data = try? JSONEncoder().encode(StoredCredential(credential)) else { return false }
+    func save(_ credential: ReferralInstallationCredential) throws {
+        let data = try JSONEncoder().encode(StoredCredential(credential))
 
-        let matchQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
-        ]
+        // Update-first, add-on-not-found: never delete an existing item before knowing the
+        // replacement can actually be written (see this file's header) — a delete-then-add could
+        // leave the Keychain holding NEITHER the old nor the new credential if the add step then
+        // failed, which a plain SecItemUpdate cannot do (it only ever touches the existing item on
+        // success, or leaves it untouched on failure).
+        let updateStatus = SecItemUpdate(
+            Self.baseQuery as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess {
+            return
+        }
+        guard updateStatus == errSecItemNotFound else {
+            throw ReferralCredentialStoreError.keychainFailure(updateStatus)
+        }
 
-        // Delete-then-add rather than SecItemUpdate: this is a single, small credential written
-        // only at generation time (see ReferralInstallationCredential.loadOrCreate) — never a hot
-        // write path — so the simplicity of one code path handling both "first write" and
-        // "malformed value being replaced" outweighs the marginal cost of a delete + add.
-        SecItemDelete(matchQuery as CFDictionary)
-
-        var addQuery = matchQuery
+        var addQuery = Self.baseQuery
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        return status == errSecSuccess
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw ReferralCredentialStoreError.keychainFailure(addStatus)
+        }
     }
 }
 

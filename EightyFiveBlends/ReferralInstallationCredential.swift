@@ -50,12 +50,24 @@ extension ReferralInstallationCredential {
     /// backgrounding must never regenerate it — see this feature's own task spec), but replace a
     /// missing OR malformed one (e.g. a corrupted write, or a value from some future format this
     /// version can't validate) rather than ever sending backend-guaranteed-invalid data.
-    static func loadOrCreate(using store: ReferralCredentialStoring) -> ReferralInstallationCredential {
-        if let existing = store.loadCredential(), isValid(existing) {
+    ///
+    /// CORRECTNESS HARDENING PASS (2.4.0): throwing, and deliberately fails closed at both steps
+    /// rather than ever falling back to "just generate one":
+    ///   - if `store.loadCredential()` itself throws (a genuine Keychain failure, NOT
+    ///     "not found" — see ReferralCredentialStoring's own header), this propagates immediately
+    ///     and NEVER generates a replacement. The real credential may simply be unreadable this
+    ///     instant; generating a new one on top of it would fork the referral identity.
+    ///   - if `store.save(_:)` throws, this propagates immediately and NEVER returns the generated
+    ///     credential. A caller must not bootstrap a backend participant using a secret that never
+    ///     durably persisted — a relaunch would then generate yet another one, orphaning the
+    ///     backend record the failed attempt may still have created.
+    static func loadOrCreate(using store: ReferralCredentialStoring) throws -> ReferralInstallationCredential {
+        let existing = try store.loadCredential()
+        if let existing, isValid(existing) {
             return existing
         }
         let generated = generate()
-        store.save(generated)
+        try store.save(generated)
         return generated
     }
 

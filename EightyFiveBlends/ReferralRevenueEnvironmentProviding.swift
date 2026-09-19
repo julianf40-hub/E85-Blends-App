@@ -21,13 +21,29 @@
 //  minimum deployment targets (17.6 App Store / 26.4 Internal — see CLAUDE.md), so no
 //  availability fallback is needed.
 //
+//  CORRECTNESS HARDENING PASS (2.4.0) — VERIFIED ONLY: an `.unverified` AppTransaction is no
+//  longer treated as authoritative. `AppTransaction.shared`'s cryptographic signature check exists
+//  specifically to guard against a tampered/replayed transaction; accepting `.unverified` here
+//  would mean the SANDBOX-vs-PRODUCTION routing decision for referral attribution timing could be
+//  spoofed by exactly the same class of attack StoreKit's own verification is meant to catch. An
+//  unverified result now maps to `nil` — "try again later" — like any other unavailable signal,
+//  never a guess.
+//
+//  TestFlight still correctly maps to SANDBOX under this stricter rule: a TestFlight install's own
+//  AppTransaction verifies successfully (Apple signs it) and its `environment` reports `.sandbox`
+//  — TestFlight builds are Release-configuration but are never production App Store purchases, so
+//  this is `.verified(.sandbox)`, not `.unverified`. Requiring verification does not reintroduce
+//  the DEBUG/receipt-filename/Pro-status misclassification this file's own header already rules
+//  out — those remain unused.
+//
 
 import Foundation
 import StoreKit
 
 protocol ReferralRevenueEnvironmentProviding: Sendable {
-    /// `nil` only when no authoritative signal could be obtained this call (e.g. AppTransaction
-    /// genuinely unreachable) — callers must treat that as "try again later," never guess.
+    /// `nil` when no authoritative signal could be obtained this call — AppTransaction
+    /// unreachable, unavailable, or unverified (see this file's header). Callers must treat that
+    /// as "try again later," never guess.
     func currentEnvironment() async -> ReferralRevenueEnvironment?
 }
 
@@ -35,17 +51,9 @@ struct StoreKitReferralRevenueEnvironmentProvider: ReferralRevenueEnvironmentPro
     func currentEnvironment() async -> ReferralRevenueEnvironment? {
         guard let result = try? await AppTransaction.shared else { return nil }
 
-        let transaction: AppTransaction
-        switch result {
-        case .verified(let value):
-            transaction = value
-        case .unverified(let value, _):
-            // The device's own reported environment is still meaningful even when the JWS
-            // signature itself couldn't be locally verified — this is an environment label used
-            // to route referral attribution timing, not a purchase/entitlement grant, so the
-            // stricter `.verified`-only bar that money-relevant decisions require doesn't apply.
-            transaction = value
-        }
+        // VERIFIED ONLY — see this file's header. An unverified result is deliberately discarded
+        // here rather than read for its environment value, however plausible that value might be.
+        guard case .verified(let transaction) = result else { return nil }
 
         switch transaction.environment {
         case .production:
