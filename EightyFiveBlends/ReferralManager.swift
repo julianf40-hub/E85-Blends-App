@@ -39,6 +39,21 @@
 //      credential (see ReferralCredentialStoring's own header on why that would risk forking the
 //      referral identity).
 //
+//  STATE-CONSISTENCY HARDENING PASS (2.4.0): `refresh()` and `applyReferralCode(_:)` used to run
+//  fully independently once bootstrap was settled — each fetched/mutated `loadState` on its own
+//  timeline, so an OLDER refresh whose network response happened to arrive AFTER a newer apply's
+//  could silently clobber apply's authoritative result with stale data. `operationTail` now
+//  chains every post-bootstrap operation in REQUEST order (not network-completion order): a
+//  refresh/apply requested while another is still running waits for that one to fully finish
+//  before doing its own network call, so whichever was requested LATER always finishes — and
+//  writes `loadState` — strictly after whichever was requested earlier, regardless of which
+//  network response actually arrives first. Two overlapping refreshes deduplicate onto one status
+//  request (`inFlightRefreshTask`); two overlapping applyReferralCode calls never deduplicate —
+//  even for the same code — each always reaches the backend and gets its own authoritative
+//  answer (same-code idempotency is a backend responsibility, not this type's to invent). See
+//  ReferralManagerTests.swift's own "STATE-CONSISTENCY HARDENING PASS" section for the tests that
+//  reproduce the original race and verify this fix.
+//
 
 import Foundation
 import Observation
@@ -68,6 +83,15 @@ final class ReferralManager {
     private let identityProvider: ReferralRevenueCatIdentityProviding
     private let serviceFactory: @Sendable () throws -> ReferralAPIServicing
     private var bootstrapTask: Task<Void, Error>?
+    /// The most recently QUEUED post-bootstrap operation (refresh or apply), used purely as a
+    /// join point — every new operation awaits this before doing its own network call, then
+    /// replaces it with itself. See this type's header ("STATE-CONSISTENCY HARDENING PASS").
+    private var operationTail: Task<Void, Never>?
+    /// Non-nil exactly while a refresh is queued or running and hasn't yet produced its result. A
+    /// refresh requested during this window is DEDUPLICATED onto this same task instead of
+    /// enqueuing a second, redundant status request. applyReferralCode never consults this: two
+    /// overlapping applies always run as separate, serialized operations.
+    private var inFlightRefreshTask: Task<Void, Never>?
 
     init(
         credentialStore: ReferralCredentialStoring = KeychainReferralCredentialStore(),
@@ -95,19 +119,48 @@ final class ReferralManager {
     /// `ensureBootstrapped()`); if preparation itself can't complete yet (or fails), this stays a
     /// safe no-op — `loadState` already reflects why, and a pull-to-refresh caller never needs a
     /// do/catch.
+    ///
+    /// STATE-CONSISTENCY: deduplicates against another already-in-flight refresh
+    /// (`inFlightRefreshTask`), and otherwise queues itself behind whatever post-bootstrap
+    /// operation (an older refresh OR an in-flight apply) is currently running via
+    /// `operationTail` — see this type's header. The dedup check-and-claim below is entirely
+    /// synchronous (no `await` in between) so two calls made in the same instant can never both
+    /// believe they're "the first" and race to create separate tasks.
     func refresh() async {
-        do {
-            try await ensureBootstrapped()
-        } catch {
-            return
-        }
-        guard let credential else {
-            // Structurally unreachable — ensureBootstrapped() only returns normally after
-            // performBootstrap() has set `credential`. A guard, not a force-unwrap, so a future
-            // refactor accident fails safe instead of crashing.
+        if let inFlightRefreshTask {
+            await inFlightRefreshTask.value
             return
         }
 
+        let previousTail = operationTail
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.ensureBootstrapped()
+            } catch {
+                self.inFlightRefreshTask = nil
+                return
+            }
+            guard let credential = self.credential else {
+                // Structurally unreachable — ensureBootstrapped() only returns normally after
+                // performBootstrap() has set `credential`. A guard, not a force-unwrap, so a
+                // future refactor accident fails safe instead of crashing.
+                self.inFlightRefreshTask = nil
+                return
+            }
+            // Wait for whatever was queued before THIS refresh was requested (an older refresh or
+            // an in-flight apply) so a stale response here can never land after — and overwrite —
+            // a logically later operation's result.
+            await previousTail?.value
+            await self.performRefresh(credential: credential)
+            self.inFlightRefreshTask = nil
+        }
+        inFlightRefreshTask = task
+        operationTail = task
+        await task.value
+    }
+
+    private func performRefresh(credential: ReferralInstallationCredential) async {
         loadState = .loading
         do {
             let service = try serviceFactory()
@@ -126,15 +179,34 @@ final class ReferralManager {
     /// fails, that error propagates directly, exactly like any other failure to apply the code
     /// (never silently swallowed, and `apply_code` is never sent without a known backend
     /// participant).
+    ///
+    /// STATE-CONSISTENCY: NEVER deduplicated against another in-flight applyReferralCode call,
+    /// even for the identical code — two overlapping calls are serialized (queued behind
+    /// `operationTail`, exactly like refresh) but each always reaches the backend and returns
+    /// whatever THAT call's own backend response says (`already_applied`, a different outcome,
+    /// etc.). Same-code idempotency is the backend's own responsibility, never invented here. The
+    /// claim of `operationTail` below is synchronous — see `refresh()`'s own header for why that
+    /// matters.
     func applyReferralCode(_ code: String) async throws -> ReferralStatus {
-        try await ensureBootstrapped()
-        guard let credential else {
-            throw ReferralServiceError.notConfigured
+        let previousTail = operationTail
+        let resultTask = Task { [weak self] () async throws -> ReferralStatus in
+            guard let self else { throw ReferralServiceError.notConfigured }
+            try await self.ensureBootstrapped()
+            guard let credential = self.credential else {
+                throw ReferralServiceError.notConfigured
+            }
+            // Wait for whatever was queued before THIS apply was requested (an older apply OR an
+            // in-flight refresh) so this call's mutation always lands strictly after it.
+            await previousTail?.value
+            let service = try self.serviceFactory()
+            let response = try await service.applyCode(code, credential: credential)
+            self.loadState = .loaded(response.status)
+            return response.status
         }
-        let service = try serviceFactory()
-        let response = try await service.applyCode(code, credential: credential)
-        loadState = .loaded(response.status)
-        return response.status
+        // A Void/Never proxy so the NEXT operation (a refresh or another apply) can wait for this
+        // one to finish without caring about its throw/return type.
+        operationTail = Task { _ = try? await resultTask.value }
+        return try await resultTask.value
     }
 
     /// The single preparation gate every backend-calling entry point above goes through before

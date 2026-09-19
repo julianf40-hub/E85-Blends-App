@@ -17,6 +17,62 @@ import Security
 import RevenueCat
 @testable import EightyFiveBlends
 
+// MARK: - Deterministic test synchronization
+
+/// A test-only gate: `wait()` suspends until the test explicitly `open()`s it (once opened, it
+/// stays open — every subsequent `wait()` returns immediately). Used to deterministically control
+/// exactly when a fake service call is allowed to return, without any `Task.sleep`/timing
+/// assumption — see FakeReferralAPIService's `statusGate`/`applyCodeGate` below.
+final class TestGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let toResume = waiters
+        waiters = []
+        lock.unlock()
+        for continuation in toResume {
+            continuation.resume()
+        }
+    }
+
+    func wait() async {
+        lock.lock()
+        if isOpen {
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+}
+
+/// Repeatedly yields so the cooperative scheduler runs every currently-runnable task as far as it
+/// can go before this function returns. Used (instead of `Task.sleep`) to assert a NEGATIVE —
+/// "this call has not reached the backend yet" — after a task that should be genuinely blocked on
+/// an unresolved `Task.value` (a real data dependency, not a timing race): if the implementation
+/// under test has no actual serialization, a few yields are already enough for the blocked-looking
+/// call to slip through and be observed, so this remains a meaningful regression check rather than
+/// a tautology.
+private func settleScheduler(iterations: Int = 20) async {
+    for _ in 0..<iterations {
+        await Task.yield()
+    }
+}
+
 // MARK: - Fakes
 
 final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
@@ -26,13 +82,22 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
 
     private(set) var bootstrapCallCount = 0
     private(set) var statusCallCount = 0
+    private(set) var applyCodeCallCount = 0
     private(set) var lastAppliedCode: String?
     /// The App User ID actually received by the most recent `bootstrap(...)` call — lets tests
     /// prove the value ReferralManager forwards is exactly what its injected identityProvider
     /// reported (see `bootstrap_usesIdentityProviderValueExactly`), not some other source.
     private(set) var lastBootstrapAppUserID: String?
     /// Set to add an artificial delay before returning, to test overlapping/concurrent calls.
+    /// Retained for the pre-existing bootstrap-concurrency tests; the newer ordering tests below
+    /// use the deterministic gates instead (see this type's header and STATE-CONSISTENCY HARDENING
+    /// PASS in ReferralManagerTests).
     var bootstrapDelayNanoseconds: UInt64 = 0
+    /// When set, `status(credential:)` suspends here before returning — lets a test hold a status
+    /// call open while asserting/starting another operation, deterministically.
+    var statusGate: TestGate?
+    /// When set, `applyCode(_:credential:)` suspends here before returning.
+    var applyCodeGate: TestGate?
 
     func bootstrap(
         credential: ReferralInstallationCredential,
@@ -50,12 +115,23 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
 
     func status(credential: ReferralInstallationCredential) async throws -> ReferralStatus {
         statusCallCount += 1
-        return try statusResult.get()
+        // Captured BEFORE waiting on the gate — a test that reconfigures `statusResult` while this
+        // call is held open must never change what THIS already-in-flight call returns, only
+        // subsequent calls (see applyCode's identical pattern below for why this matters).
+        let resultToReturn = statusResult
+        await statusGate?.wait()
+        return try resultToReturn.get()
     }
 
     func applyCode(_ referralCode: String, credential: ReferralInstallationCredential) async throws -> ReferralApplyCodeResponse {
+        applyCodeCallCount += 1
         lastAppliedCode = referralCode
-        return try applyCodeResult.get()
+        // Captured BEFORE waiting on the gate — this is what lets a test hold CODE1's call open,
+        // reconfigure `applyCodeResult` for CODE2, and open the gate, without CODE1 retroactively
+        // picking up CODE2's result (see `overlappingApply_...` tests).
+        let resultToReturn = applyCodeResult
+        await applyCodeGate?.wait()
+        return try resultToReturn.get()
     }
 }
 
@@ -493,6 +569,232 @@ struct ReferralManagerTests {
         // reuse it rather than generating another; this asserts the OBSERVABLE result of that
         // (a single, unambiguous stored credential) rather than internal call counts.
         #expect(store.savedCredential != nil)
+    }
+
+    // MARK: STATE-CONSISTENCY HARDENING PASS — stale refresh must never overwrite a later apply
+
+    /// Reproduces the race this hardening pass fixes: refresh() is started first and its status
+    /// response is held open (stale, canApplyReferralCode: true); while it's still pending,
+    /// applyReferralCode() is requested and succeeds (canApplyReferralCode: false, referredByCode
+    /// set); only THEN is the stale refresh allowed to complete. Before the fix, refresh and apply
+    /// raced independently and the stale refresh's `loadState = .loaded(...)` write landed last,
+    /// clobbering apply's result. After the fix, ReferralManager's operation-serialization
+    /// coordinator ensures apply — requested LATER — always finishes (and mutates loadState)
+    /// strictly after the older, already-in-flight refresh, regardless of which network call
+    /// happens to resolve first.
+    @Test("A refresh started first, held open, must never overwrite a later successful apply")
+    func staleRefresh_neverOverwritesLaterApply() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let statusGate = TestGate()
+        service.statusGate = statusGate
+        service.statusResult = .success(ReferralStatus(canApply: true)) // the STALE value
+
+        let refreshTask = Task { await manager.refresh() }
+        // Give refresh's task a real chance to reach (and suspend inside) the gated status call
+        // before apply is requested — deterministic because statusCallCount only increments once
+        // that call has actually been entered.
+        while service.statusCallCount == 0 { await Task.yield() }
+
+        service.applyCodeResult = .success(
+            ReferralApplyCodeResponse(
+                status: ReferralStatus(
+                    referralCode: "ABCD2345", qualifiedReferrals: 1, pendingReferrals: 0,
+                    earnedMonthsAvailable: 0, fulfilledMonths: 0, nextMilestoneNumber: 1,
+                    nextRewardAt: 5, referralsNeeded: 4, canApplyReferralCode: false,
+                    referredByCode: "WXYZ6789", referredStatus: "pending"
+                ),
+                applyStatus: "applied"
+            )
+        )
+        let applyTask = Task { try await manager.applyReferralCode("WXYZ6789") }
+        // Apply must be queued behind the in-flight refresh — it cannot have reached the backend
+        // yet, since refresh hasn't been released.
+        await settleScheduler()
+        #expect(service.applyCodeCallCount == 0)
+
+        // Now let the stale refresh finish.
+        statusGate.open()
+
+        _ = await refreshTask.value
+        let applyResult = try await applyTask.value
+
+        #expect(applyResult.referredByCode == "WXYZ6789")
+        #expect(applyResult.canApplyReferralCode == false)
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        #expect(finalStatus.referredByCode == "WXYZ6789")
+        #expect(finalStatus.canApplyReferralCode == false)
+    }
+
+    /// Inverse ordering: apply starts first and is held open; refresh is requested while apply is
+    /// still in flight. Proves refresh's OWN network call does not even execute until apply
+    /// finishes (never merely "the final state happens to be right") — status is configured to a
+    /// distinct, post-apply-shaped value so a premature/parallel refresh call would be observable.
+    @Test("A refresh requested during an in-flight apply does not call status until apply completes, then sees post-apply state")
+    func refreshDuringApply_waitsThenSeesPostApplyState() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let applyCodeGate = TestGate()
+        service.applyCodeGate = applyCodeGate
+        service.applyCodeResult = .success(
+            ReferralApplyCodeResponse(status: ReferralStatus(canApply: false), applyStatus: "applied")
+        )
+
+        let applyTask = Task { try await manager.applyReferralCode("ABCD2345") }
+        while service.applyCodeCallCount == 0 { await Task.yield() }
+
+        service.statusResult = .success(ReferralStatus(canApply: false)) // post-apply-shaped
+        let refreshTask = Task { await manager.refresh() }
+        await settleScheduler()
+        // The key assertion: refresh's network call has NOT executed yet, even though refresh()
+        // has already been called and is (from the caller's point of view) in flight.
+        #expect(service.statusCallCount == 0)
+
+        applyCodeGate.open()
+
+        _ = try await applyTask.value
+        await refreshTask.value
+
+        #expect(service.statusCallCount == 1)
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        #expect(finalStatus.canApplyReferralCode == false)
+    }
+
+    /// An older refresh's FAILURE must not overwrite a later apply's success either — failure is
+    /// just another way an operation can "finish," and finishing earlier must never win.
+    @Test("A failed refresh cannot overwrite a later successful apply")
+    func failedRefresh_cannotOverwriteLaterApplySuccess() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let statusGate = TestGate()
+        service.statusGate = statusGate
+        service.statusResult = .failure(ReferralServiceError.network("offline"))
+
+        let refreshTask = Task { await manager.refresh() }
+        while service.statusCallCount == 0 { await Task.yield() }
+
+        service.applyCodeResult = .success(
+            ReferralApplyCodeResponse(status: ReferralStatus(canApply: false), applyStatus: "applied")
+        )
+        let applyTask = Task { try await manager.applyReferralCode("ABCD2345") }
+        await settleScheduler()
+        #expect(service.applyCodeCallCount == 0)
+
+        statusGate.open()
+        await refreshTask.value
+        _ = try await applyTask.value
+
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded (apply's success), got \(manager.loadState)")
+            return
+        }
+        #expect(finalStatus.canApplyReferralCode == false)
+    }
+
+    // MARK: STATE-CONSISTENCY HARDENING PASS — refresh dedup, apply serialization (never dedup)
+
+    @Test("Two simultaneous refresh() calls perform exactly one status request and share its result")
+    func simultaneousRefresh_performsOneStatusRequest() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let statusGate = TestGate()
+        service.statusGate = statusGate
+        service.statusResult = .success(sampleStatus(referralCode: "AAAA1111"))
+
+        let first = Task { await manager.refresh() }
+        while service.statusCallCount == 0 { await Task.yield() }
+        let second = Task { await manager.refresh() }
+        await settleScheduler()
+
+        statusGate.open()
+        await first.value
+        await second.value
+
+        #expect(service.statusCallCount == 1)
+        guard case .loaded(let status) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        #expect(status.referralCode == "AAAA1111")
+    }
+
+    @Test("Two overlapping applyReferralCode calls for DIFFERENT codes are serialized, never deduplicated — each reaches the backend and gets its own authoritative result")
+    func overlappingApply_differentCodes_areSerializedNotDeduplicated() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let applyCodeGate = TestGate()
+        service.applyCodeGate = applyCodeGate
+        let firstResponse = ReferralApplyCodeResponse(
+            status: ReferralStatus(
+                referralCode: "ABCD2345", qualifiedReferrals: 0, pendingReferrals: 0,
+                earnedMonthsAvailable: 0, fulfilledMonths: 0, nextMilestoneNumber: 1,
+                nextRewardAt: 5, referralsNeeded: 5, canApplyReferralCode: false,
+                referredByCode: "FIRST0001", referredStatus: "pending"
+            ),
+            applyStatus: "applied"
+        )
+        service.applyCodeResult = .success(firstResponse)
+
+        let firstTask = Task { try await manager.applyReferralCode("FIRST0001") }
+        while service.applyCodeCallCount == 0 { await Task.yield() }
+
+        let secondTask = Task { try await manager.applyReferralCode("SECOND002") }
+        await settleScheduler()
+        // The second call must NOT have reached the backend yet — it's queued behind the first,
+        // not deduplicated with it (different codes).
+        #expect(service.applyCodeCallCount == 1)
+        #expect(service.lastAppliedCode == "FIRST0001")
+
+        // Backend-authoritative response for the SECOND call — deliberately different from the
+        // first, simulating e.g. "already_applied" semantics the backend alone decides.
+        let secondResponse = ReferralApplyCodeResponse(
+            status: ReferralStatus(
+                referralCode: "ABCD2345", qualifiedReferrals: 0, pendingReferrals: 0,
+                earnedMonthsAvailable: 0, fulfilledMonths: 0, nextMilestoneNumber: 1,
+                nextRewardAt: 5, referralsNeeded: 5, canApplyReferralCode: false,
+                referredByCode: "FIRST0001", referredStatus: "pending"
+            ),
+            applyStatus: "referral_already_applied"
+        )
+        service.applyCodeResult = .success(secondResponse)
+        applyCodeGate.open()
+
+        let firstResult = try await firstTask.value
+        let secondResult = try await secondTask.value
+
+        #expect(service.applyCodeCallCount == 2)
+        #expect(service.lastAppliedCode == "SECOND002")
+        // Each call got EXACTLY its own backend-authoritative response — never invented locally,
+        // never the other call's result.
+        #expect(firstResult.referredByCode == "FIRST0001")
+        #expect(secondResult.referredByCode == "FIRST0001")
+        guard case .loaded(let finalStatus) = manager.loadState else {
+            Issue.record("Expected .loaded, got \(manager.loadState)")
+            return
+        }
+        // The SECOND (logically later) call's result is what's left standing.
+        #expect(finalStatus.referredByCode == secondResponse.status.referredByCode)
     }
 
     // MARK: 25/26. RevenueCat identity boundary
