@@ -93,10 +93,10 @@ begin
     values (v_trimmed_app_user_id, p_environment, v_participant.id)
     on conflict (app_user_id, environment) do nothing;
 
-    select participant_id into v_existing_alias_participant_id
-    from private.referral_participant_aliases
-    where app_user_id = v_trimmed_app_user_id
-      and environment = p_environment;
+    select rpa.participant_id into v_existing_alias_participant_id
+    from private.referral_participant_aliases rpa
+    where rpa.app_user_id = v_trimmed_app_user_id
+      and rpa.environment = p_environment;
 
     if v_existing_alias_participant_id is null then
       -- Unreachable in practice (the insert above either created the row itself or a concurrent
@@ -362,9 +362,9 @@ begin
   perform 1 from private.referral_participants where id = v_referrer_id for update;
 
   select count(*) into v_qualified_count
-  from private.referral_attributions
-  where referrer_participant_id = v_referrer_id
-    and status = 'qualified';
+  from private.referral_attributions ra
+  where ra.referrer_participant_id = v_referrer_id
+    and ra.status = 'qualified';
 
   -- Locked formula: floor(count / 5) — see supabase/functions/_shared/referral-milestones.ts's
   -- desiredEarnedMilestones for the Node-tested mirror of this exact expression.
@@ -376,27 +376,27 @@ begin
     -- milestone-reaching event (e.g. a retried webhook), independent of the row locking above.
     insert into private.referral_rewards (referrer_participant_id, milestone_number)
     values (v_referrer_id, v_milestone)
-    on conflict (referrer_participant_id, milestone_number) do nothing;
+    on conflict on constraint referral_rewards_unique_milestone do nothing;
 
     -- A milestone that had been revoked and is justified again by the fresh count is restored —
     -- but only from 'revoked'; a 'fulfilled' reward never matches this WHERE clause, so it can
     -- never be reset (fulfillment is a future system this migration never writes to — Phase 23).
-    update private.referral_rewards
+    update private.referral_rewards rr
     set status = 'earned', revoked_at = null, revoke_reason = null
-    where referrer_participant_id = v_referrer_id
-      and milestone_number = v_milestone
-      and status = 'revoked';
+    where rr.referrer_participant_id = v_referrer_id
+      and rr.milestone_number = v_milestone
+      and rr.status = 'revoked';
   end loop;
 
   -- Shrink: any 'earned' (never 'fulfilled') reward strictly above the recomputed desired count
   -- is revoked — what a refund-driven count drop (e.g. 10 -> 9) implements. Scoped to
   -- status = 'earned' only, so a fulfilled reward is structurally excluded, not merely
   -- discouraged by convention.
-  update private.referral_rewards
+  update private.referral_rewards rr
   set status = 'revoked', revoked_at = now(), revoke_reason = 'qualified_count_below_milestone'
-  where referrer_participant_id = v_referrer_id
-    and milestone_number > v_desired_milestones
-    and status = 'earned';
+  where rr.referrer_participant_id = v_referrer_id
+    and rr.milestone_number > v_desired_milestones
+    and rr.status = 'earned';
 
   return query select
     (case p_action
