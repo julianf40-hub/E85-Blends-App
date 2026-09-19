@@ -65,6 +65,10 @@ protocol RevenueCatClient: Sendable {
     func fetchOfferings() async throws -> Offerings
     func purchase(package: Package) async throws -> PurchaseResultData
     func restorePurchases() async throws -> CustomerInfo
+    /// 85Blends 2.4.0 referral client foundation — the REAL (unmasked) current RevenueCat App
+    /// User ID. See `RevenueCatSubscriptionService.currentRevenueCatAppUserID`'s own header for
+    /// the one narrow, explicit reason this exists and its handling rules.
+    var currentAppUserID: String { get }
 }
 
 /// Production implementation — forwards directly to the configured `Purchases.shared` singleton.
@@ -84,6 +88,8 @@ struct LiveRevenueCatClient: RevenueCatClient {
     func restorePurchases() async throws -> CustomerInfo {
         try await Purchases.shared.restorePurchases()
     }
+
+    var currentAppUserID: String { Purchases.shared.appUserID }
 }
 
 @MainActor
@@ -217,6 +223,21 @@ final class RevenueCatSubscriptionService {
     private(set) var lastErrorDescription: String?
 
     var isConfigured: Bool { configurationState == .configured }
+
+    /// 85Blends 2.4.0 referral client foundation — the REAL, unmasked current RevenueCat App User
+    /// ID, needed ONLY for supabase/functions/referral-api's `bootstrap` action (see
+    /// ReferralManager.swift). `nil` until `configureIfNeeded()` has actually configured the SDK —
+    /// callers must not synthesize a placeholder while waiting. This is deliberately the sole
+    /// accessor for the unmasked value anywhere in this file; every other consumer (diagnostics,
+    /// logging) continues to use `maskedAppUserID` above. Per this file's own "PUBLIC vs SECRET
+    /// KEYS"/"ANONYMOUS ONLY" header: this never triggers `Purchases.shared.logIn(_:)`, never
+    /// creates or changes RevenueCat's own anonymous identity — it only reads whatever ID
+    /// RevenueCat is already managing. The caller (ReferralManager) must never log, persist
+    /// outside its own request body, or display this value.
+    var currentRevenueCatAppUserID: String? {
+        guard configurationState == .configured else { return nil }
+        return client.currentAppUserID
+    }
 
     /// True until this process's FIRST authoritative CustomerInfo answer arrives (or is
     /// determined unreachable — see `InitialEntitlementResolutionState.resolved`'s own header).

@@ -189,6 +189,20 @@ struct EightyFiveBlendsApp: App {
                     // RevenueCat/AdMob configuration above. Subsequent sessions are counted by
                     // recordSceneBecameActive() in the scenePhase handling below.
                     ReviewRequestManager.shared.recordLaunch()
+
+                    // 85Blends 2.4.0 referral client foundation — best-effort, fire-and-forget
+                    // background bootstrap against supabase/functions/referral-api. Started only
+                    // now, after revenueCatConfigure above has completed, so a real (never
+                    // masked) App User ID is available — see ReferralManager.swift's own header
+                    // for why a temporary failure here must never affect launch, Stations,
+                    // entitlement resolution, the paywall, or purchasing. Wrapped in its own
+                    // Task so this doesn't extend how long this .task block itself runs (already
+                    // irrelevant to first frame — ContentView above renders regardless).
+                    if let appUserID = RevenueCatSubscriptionService.shared.currentRevenueCatAppUserID {
+                        Task {
+                            await ReferralManager.shared.bootstrapIfNeeded(revenueCatAppUserID: appUserID)
+                        }
+                    }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,
