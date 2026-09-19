@@ -26,6 +26,16 @@ struct ProUpgradeView: View {
 
     private var manager: SubscriptionManager { SubscriptionManager.shared }
 
+    // 85Blends 2.4.0 three-plan paywall. Defaults to Annual (best value) and is corrected at
+    // most once, in applyDefaultPlanSelectionIfNeeded(), to the best available plan once real
+    // package availability is known — mirroring this codebase's established "apply once, never
+    // re-arm" idiom. hasUserManuallySelectedPlan exists separately so that correction can never
+    // clobber a plan the person already tapped themselves while the initial load was still in
+    // flight (the paywall's rows are tappable immediately, before .task's load even settles).
+    @State private var selectedPlan: ProPlan = .annual
+    @State private var hasAppliedDefaultPlanSelection = false
+    @State private var hasUserManuallySelectedPlan = false
+
     // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
     // Experience. Split into two tiers so a quick scan reads "headline value" vs "everything
     // else included," rather than one flat list of equally-weighted bullets:
@@ -59,7 +69,7 @@ struct ProUpgradeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 headerSection
-                priceCard
+                planPickerCard
                 benefitsCard
                 comingSoonCard
 
@@ -103,6 +113,7 @@ struct ProUpgradeView: View {
             }
             // Load (or re-fetch for freshness) on every paywall presentation.
             await manager.loadProducts()
+            applyDefaultPlanSelectionIfNeeded()
         }
         // 85Blends 2.4.0 — centralized paywall-presentation signal for the App Store
         // review-request system (see SubscriptionManager.isPaywallPresented's header). Reporting
@@ -138,32 +149,157 @@ struct ProUpgradeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Price
+    // MARK: - Plan Picker
 
-    private var priceCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(manager.displayPrice)
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
+    private var planPickerCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Choose Your Plan", subtitle: "Every plan unlocks everything in 85Blends Pro.")
 
-                Text("/ month")
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            VStack(spacing: 10) {
+                ForEach(ProPlan.allCases) { plan in
+                    planRow(plan)
+                }
             }
 
             Text("Cancel anytime.")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textMuted)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.Colors.surfaceElevated)
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    /// One selectable row per `ProPlan`. Annual always carries the "BEST VALUE" badge —
+    /// unconditionally, never tied to whether it's the current selection — and Monthly/3-Month
+    /// are never visually diminished to make room for it. A plan whose package failed to
+    /// resolve (see SubscriptionManager.canPurchase(_:)) is dimmed and labeled "Unavailable
+    /// right now" instead of a price, so it's never presented as purchasable — but the row stays
+    /// tappable so a person can still see it selected (and see exactly why the purchase button
+    /// below is disabled) rather than the row silently doing nothing.
+    private func planRow(_ plan: ProPlan) -> some View {
+        let isSelected = selectedPlan == plan
+        let isUnavailable = manager.hasAttemptedProductLoad && !manager.isLoadingProducts && !manager.canPurchase(plan)
+
+        return Button {
+            AppHaptics.selection()
+            selectedPlan = plan
+            hasUserManuallySelectedPlan = true
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(isSelected ? AppTheme.Colors.stationYellow : AppTheme.Colors.textMuted)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(plan.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        if plan == .annual {
+                            Text("BEST VALUE")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(AppTheme.Colors.stationYellow)
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    if isUnavailable {
+                        Text("Unavailable right now")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
+                    } else {
+                        Text("\(manager.displayPrice(for: plan)) / \(billingPeriodSuffix(for: plan))")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                        if let equivalentLine = equivalentMonthlyLine(for: plan) {
+                            Text(equivalentLine)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(isUnavailable ? 0.55 : 1)
+            .background(isSelected ? AppTheme.Colors.stationYellow.opacity(0.12) : AppTheme.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? AppTheme.Colors.stationYellow.opacity(0.6) : AppTheme.Colors.border, lineWidth: isSelected ? 1.5 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    /// Natural-language billing-period suffix for a plan row's price line ("month" / "3 months" /
+    /// "year"). Prefers the real loaded StoreProduct's own subscriptionPeriod — same API this
+    /// file's existing subscriptionPeriodLabel(for:) already reads for the unlock button's
+    /// subtitle — and falls back to the plan's flat marketing label only before a package loads.
+    private func billingPeriodSuffix(for plan: ProPlan) -> String {
+        guard let product = manager.storeProduct(for: plan), let period = product.subscriptionPeriod else {
+            return plan.fallbackBillingPeriodLabel
+        }
+        switch period.unit {
+        case .month: return period.value == 1 ? "month" : "\(period.value) months"
+        case .year: return period.value == 1 ? "year" : "\(period.value) years"
+        case .week: return period.value == 1 ? "week" : "\(period.value) weeks"
+        case .day: return period.value == 1 ? "day" : "\(period.value) days"
+        @unknown default: return plan.fallbackBillingPeriodLabel
+        }
+    }
+
+    /// "≈ $X.XX/month" line for 3-Month/Annual rows (`nil` for Monthly — see
+    /// ProPlan.equivalentMonthlyAmount). Requires a REAL loaded StoreProduct: the arithmetic runs
+    /// on `product.price` (a `Decimal`, never a parsed `localizedPriceString`), and the result is
+    /// formatted with that SAME product's own `priceFormatter` — the exact `NumberFormatter`
+    /// `localizedPriceString` itself uses — so the equivalent amount always renders in the
+    /// product's actual storefront currency/locale, never a hardcoded U.S.-style fallback. `nil`
+    /// whenever a real product hasn't loaded yet, or lacks enough currency metadata to format
+    /// safely (no `priceFormatter`, or it fails to produce a string) — the row simply omits the
+    /// line rather than ever risk showing a wrong or misleading currency.
+    private func equivalentMonthlyLine(for plan: ProPlan) -> String? {
+        guard let product = manager.storeProduct(for: plan),
+              let amount = ProPlan.equivalentMonthlyAmount(price: product.price, plan: plan),
+              let formatter = product.priceFormatter,
+              let formatted = formatter.string(from: NSDecimalNumber(decimal: amount))
+        else { return nil }
+        return "≈ \(formatted)/month"
+    }
+
+    /// Called once, from `body`'s `.task`, right after the first `loadProducts()` call settles.
+    /// Leaves the Annual default alone whenever Annual is actually purchasable (the common case),
+    /// and never runs at all once the person has tapped a row themselves — see
+    /// hasUserManuallySelectedPlan's own header for why that guard has to be separate from this
+    /// one. Only steps in when Annual itself failed to resolve, moving the selection to the
+    /// best available plan per ProPlan.preferredDefault(among:) so the CTA isn't left pointed at
+    /// a plan nobody can actually buy.
+    private func applyDefaultPlanSelectionIfNeeded() {
+        guard !hasAppliedDefaultPlanSelection, !hasUserManuallySelectedPlan else { return }
+        hasAppliedDefaultPlanSelection = true
+
+        guard !manager.canPurchase(selectedPlan) else { return }
+
+        let availablePlans = Set(ProPlan.allCases.filter { manager.canPurchase($0) })
+        if let bestAvailable = ProPlan.preferredDefault(among: availablePlans) {
+            selectedPlan = bestAvailable
+        }
     }
 
     // MARK: - Benefits
@@ -339,11 +475,15 @@ struct ProUpgradeView: View {
             if manager.isProUser {
                 activeProRow
             } else {
-                // The CTA is disabled until a real RevenueCat package is loaded, so it never
-                // looks tappable when there's nothing to buy (offline / product missing).
-                unlockButton(disabled: isWorking || !manager.canPurchase)
+                // The CTA is disabled until the SELECTED plan's real RevenueCat package is
+                // loaded, so it never looks tappable when there's nothing to buy for that plan
+                // (offline / product missing). The blanket "subscriptions unavailable" note
+                // below is reserved for when EVERY plan has failed to resolve — a single
+                // unavailable plan is already communicated by that row's own "Unavailable right
+                // now" label in planRow, so it doesn't also need this global message.
+                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan))
 
-                if !manager.canPurchase {
+                if !manager.anyPlanPurchasable {
                     availabilityNote
                 }
 
@@ -394,7 +534,7 @@ struct ProUpgradeView: View {
 
     private func unlockButton(disabled: Bool) -> some View {
         Button {
-            Task { await manager.purchasePro() }
+            Task { await manager.purchasePro(selectedPlan) }
         } label: {
             VStack(spacing: 3) {
                 Text("Unlock 85Blends Pro")
@@ -402,7 +542,7 @@ struct ProUpgradeView: View {
                     .foregroundStyle(.black)
                 // Show subscription title, duration, and price once the package is loaded
                 // so the user knows exactly what they're buying before tapping.
-                if let product = manager.monthlyStoreProduct {
+                if let product = manager.storeProduct(for: selectedPlan) {
                     Text("\(product.localizedTitle) · \(subscriptionPeriodLabel(for: product)) · \(product.localizedPriceString)")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.black.opacity(0.7))
@@ -549,13 +689,27 @@ struct ProUpgradeView: View {
 
     private var footerNote: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("85Blends Pro is a $3.99/month auto-renewable subscription. Payment is charged to your Apple ID at purchase confirmation. The subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Cancel anytime in App Store settings.")
+            Text("85Blends Pro is a \(billingChargeDescription(for: selectedPlan)) auto-renewable subscription. Payment is charged to your Apple ID at purchase confirmation. The subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Cancel anytime in App Store settings.")
                 .font(.caption2)
                 .foregroundStyle(AppTheme.Colors.textMuted)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             legalLinksRow
+        }
+    }
+
+    /// The only part of footerNote's auto-renewal sentence that varies by plan — everything
+    /// else in that sentence is preserved verbatim regardless of selection. Prefers the real
+    /// loaded price (via SubscriptionManager.displayPrice(for:), which itself already falls back
+    /// to ProPlan.fallbackDisplayPrice before a package loads) so this disclosure is never out of
+    /// sync with what unlockButton's own subtitle and planRow's price line show.
+    private func billingChargeDescription(for plan: ProPlan) -> String {
+        let price = manager.displayPrice(for: plan)
+        switch plan {
+        case .monthly: return "\(price)/month"
+        case .threeMonth: return "\(price) every 3 months"
+        case .annual: return "\(price)/year"
         }
     }
 
