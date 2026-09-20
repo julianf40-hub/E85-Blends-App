@@ -37,7 +37,38 @@ enum SupabaseConfigError: LocalizedError {
 
 struct SupabaseConfig {
     let url: URL
+    /// The legacy anon JWT — remains the compatibility key CommunityPriceService's and
+    /// AnalyticsService's existing PostgREST clients depend on, in BOTH their `apikey` and
+    /// `Authorization: Bearer` headers. A modern publishable key (below) is NOT a JWT and must
+    /// never be substituted into that Bearer flow without its own separate audit — migrating those
+    /// two REST clients to the modern key model is explicitly a separate future task, not this one.
     let anonKey: String
+    /// The modern Supabase publishable client key (`sb_publishable_...`), read from
+    /// SUPABASE_PUBLISHABLE_KEY — `nil` if that key is missing/blank in Info.plist (tests, internal
+    /// configurations, and older config fixtures may not set it). Exists so the referral Edge
+    /// Function client (see `referralClientAPIKey` below) can use the modern key Supabase's current
+    /// client-key model prefers for mobile/public callers, while leaving `anonKey` and every
+    /// existing REST client completely untouched.
+    let publishableKey: String?
+
+    /// Explicit (not the auto-synthesized memberwise) initializer, specifically so any existing or
+    /// future 2-argument `SupabaseConfig(url:anonKey:)` call site keeps compiling unchanged —
+    /// `publishableKey` defaults to `nil`.
+    init(url: URL, anonKey: String, publishableKey: String? = nil) {
+        self.url = url
+        self.anonKey = anonKey
+        self.publishableKey = publishableKey
+    }
+
+    /// The API key ReferralAPIService's `apikey` header should send: the modern publishable key
+    /// when one is configured, falling back to the legacy anon key only so a configuration that
+    /// hasn't set SUPABASE_PUBLISHABLE_KEY yet (tests, an older fixture) doesn't immediately break.
+    /// Production Info.plist ships SUPABASE_PUBLISHABLE_KEY, so this deterministically resolves to
+    /// the modern key on-device. Used ONLY by ReferralAPIService — CommunityPriceService and
+    /// AnalyticsService continue reading `anonKey` directly and are unaffected by this property.
+    var referralClientAPIKey: String {
+        publishableKey ?? anonKey
+    }
 
     static func load() throws -> SupabaseConfig {
         guard
@@ -50,6 +81,13 @@ struct SupabaseConfig {
             throw SupabaseConfigError.missingConfiguration
         }
 
-        return SupabaseConfig(url: url, anonKey: anonKey)
+        // Not part of the guard above — SUPABASE_PUBLISHABLE_KEY is deliberately NOT required yet,
+        // since CommunityPriceService/AnalyticsService still depend on the legacy config loading
+        // successfully without it. Missing/blank both trim to nil, never an empty string.
+        let trimmedPublishableKey = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let publishableKey = (trimmedPublishableKey?.isEmpty == false) ? trimmedPublishableKey : nil
+
+        return SupabaseConfig(url: url, anonKey: anonKey, publishableKey: publishableKey)
     }
 }

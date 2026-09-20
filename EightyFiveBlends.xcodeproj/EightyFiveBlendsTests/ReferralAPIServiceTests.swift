@@ -96,10 +96,18 @@ struct ReferralAPIServiceTests {
         """.data(using: .utf8)!
     }
 
-    // MARK: 12. Public Supabase key sent as apikey
+    // MARK: 12. Modern publishable key sent as apikey (was the legacy anon key pre-migration)
+    //
+    // Production's real, currently-configured SUPABASE_PUBLISHABLE_KEY — an independently
+    // hand-written literal, not derived from config.publishableKey/referralClientAPIKey, so this
+    // fails loudly if Info.plist's value ever changes rather than silently agreeing with whatever
+    // the implementation computes. referralClientAPIKey's own fallback-to-anonKey behavior (when no
+    // publishable key is configured) is exhaustively covered in SupabaseConfigTests.swift instead —
+    // that scenario can't be produced here, since this test uses the real, now-populated Info.plist
+    // via SupabaseConfig.load().
 
-    @Test("Every request sends the client-safe Supabase anon key as the apikey header")
-    func request_sendsApiKeyHeader() async throws {
+    @Test("Every request sends the modern Supabase publishable key — never the legacy anon key — as the apikey header")
+    func request_sendsPublishableKeyAsApiKeyHeader() async throws {
         let service = try Self.makeService()
         CapturingURLProtocol.stubbedResponse = .success(statusCode: 200, body: Self.validStatusJSON())
 
@@ -108,7 +116,10 @@ struct ReferralAPIServiceTests {
         let sentRequest = try #require(CapturingURLProtocol.lastRequest)
         let apiKeyHeader = try #require(sentRequest.value(forHTTPHeaderField: "apikey"))
         let config = try SupabaseConfig.load()
-        #expect(apiKeyHeader == config.anonKey)
+
+        #expect(apiKeyHeader == "sb_publishable_LGN8cRrUcQJyREfCoNoTqA_nNmBqDyP")
+        #expect(apiKeyHeader == config.referralClientAPIKey)
+        #expect(apiKeyHeader != config.anonKey)
     }
 
     // MARK: 13. Correct referral-api Edge Function URL
@@ -163,7 +174,7 @@ struct ReferralAPIServiceTests {
 
     // MARK: 14. No service-role key anywhere
 
-    @Test("No service-role-shaped credential is ever sent — only the client-safe anon key, on the one expected header")
+    @Test("No service-role-shaped credential is ever sent — only the client-safe key, on the one expected header, and never an Authorization header")
     func request_neverSendsServiceRoleKey() async throws {
         let service = try Self.makeService()
         CapturingURLProtocol.stubbedResponse = .success(statusCode: 200, body: Self.validStatusJSON())
