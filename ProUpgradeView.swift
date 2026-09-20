@@ -65,6 +65,26 @@ struct ProUpgradeView: View {
         normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode) == false
     }
 
+    /// The backend's own authoritative attribution for this installation, if any — reads ONLY
+    /// `referralManager.loadState`, never `referralCodeInput`/`normalizedReferralCode`. Once a
+    /// purchase attempt applies a code (e.g. a first attempt the user then cancels in Apple's own
+    /// StoreKit sheet), this stays non-nil for the rest of the paywall session even though the
+    /// local text field is hidden and never cleared — so it, not the stale hidden field, must be
+    /// what future Unlock taps consult. See `ReferralAwareProPurchaseCoordinator.purchase`'s own
+    /// `alreadyAppliedCode` header for why this always wins over local UI state, unconditionally.
+    private var backendAppliedReferralCode: String? {
+        guard case .loaded(let status) = referralManager.loadState else {
+            return nil
+        }
+        guard
+            let code = status.referredByCode,
+            ReferralPresentation.hasAppliedReferralCode(referredByCode: status.referredByCode)
+        else {
+            return nil
+        }
+        return code
+    }
+
     // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
     // Experience. Split into two tiers so a quick scan reads "headline value" vs "everything
     // else included," rather than one flat list of equally-weighted bullets:
@@ -538,9 +558,16 @@ struct ProUpgradeView: View {
     /// applies or two purchases: the guard-check-then-set below has no `await` in between, so on
     /// @MainActor's serial executor the first call to actually run always claims the flag before a
     /// second overlapping call gets a chance to observe it as false.
+    ///
+    /// `backendAppliedReferralCode` is snapshotted HERE, at the start of the purchase action —
+    /// not read fresh mid-flight — so this one purchase attempt is judged against one consistent
+    /// view of backend attribution state, exactly like `normalizedReferralCode` is already
+    /// snapshotted by callers before this function is invoked.
     private func beginPurchase(normalizedReferralCode: String) async {
         guard isApplyingReferralBeforePurchase == false else { return }
         guard manager.purchaseState != .purchasing, manager.purchaseState != .restoring else { return }
+
+        let alreadyAppliedCode = backendAppliedReferralCode
 
         isApplyingReferralBeforePurchase = true
         referralErrorMessage = nil
@@ -548,6 +575,7 @@ struct ProUpgradeView: View {
 
         let outcome = await ReferralAwareProPurchaseCoordinator.purchase(
             normalizedCode: normalizedReferralCode,
+            alreadyAppliedCode: alreadyAppliedCode,
             applyReferralCode: { code in try await ReferralManager.shared.applyReferralCode(code) },
             purchase: { await manager.purchasePro(selectedPlan) }
         )
@@ -809,10 +837,21 @@ struct ProUpgradeView: View {
     /// confirms first: referral codes are immutable once applied (see
     /// ReferralAwareProPurchaseCoordinator's own header), so the user must explicitly opt in to
     /// spending that one-time attribution before the purchase runs, per this feature's own
-    /// "load-bearing" referral-before-purchase ordering requirement.
+    /// "load-bearing" referral-before-purchase ordering requirement. Backend attribution state
+    /// (`backendAppliedReferralCode`) is checked FIRST, before the local text field at all: once
+    /// this installation already has a confirmed referral — even from an earlier purchase attempt
+    /// the user then cancelled in Apple's own StoreKit sheet — the confirmation dialog must never
+    /// reappear, and a stale, hidden `referralCodeInput` must never re-trigger another apply call
+    /// or block a legitimate purchase retry.
     private func unlockButton(disabled: Bool) -> some View {
         Button {
-            if normalizedReferralCode.isEmpty {
+            if backendAppliedReferralCode != nil {
+                // Already immutably attributed — purchase directly. beginPurchase snapshots
+                // backendAppliedReferralCode itself and the coordinator ignores normalizedCode
+                // entirely whenever that snapshot is non-empty, so what's passed here never
+                // matters — see ReferralAwareProPurchaseCoordinator.purchase's own header.
+                Task { await beginPurchase(normalizedReferralCode: "") }
+            } else if normalizedReferralCode.isEmpty {
                 Task { await beginPurchase(normalizedReferralCode: "") }
             } else {
                 isShowingReferralConfirmation = true

@@ -48,18 +48,38 @@ enum ReferralAwareProPurchaseCoordinator {
     /// - Parameters:
     ///   - normalizedCode: Already trimmed+uppercased (see
     ///     `ReferralPresentation.normalizedReferralCode`) — an empty string means "no code," and
-    ///     purchases immediately with no referral step at all.
+    ///     purchases immediately with no referral step at all. Entirely IGNORED whenever
+    ///     `alreadyAppliedCode` is non-empty (see that parameter's own header) — this is what lets
+    ///     a stale, hidden paywall text field never re-trigger an apply call.
+    ///   - alreadyAppliedCode: The backend's own authoritative `ReferralStatus.referredByCode` for
+    ///     this installation, if any — e.g. from an apply that already succeeded earlier this
+    ///     paywall session (a first purchase attempt that was cancelled in Apple's own StoreKit
+    ///     sheet, for instance). One referrer for life is immutable, so once this is non-empty it
+    ///     WINS unconditionally: `normalizedCode` is never read, `applyReferralCode` is never
+    ///     called again, and `purchase` runs immediately — regardless of whether `normalizedCode`
+    ///     happens to be the same code, a different valid code, or malformed. The paywall's own
+    ///     code-entry field is hidden once this is non-empty, but hidden state must never be
+    ///     allowed to silently drive purchasing decisions.
     ///   - applyReferralCode: In production, exactly `ReferralManager.shared.applyReferralCode(_:)`
     ///     — awaited to completion, and its result checked, before `purchase` is ever invoked.
+    ///     Never called at all when `alreadyAppliedCode` is non-empty.
     ///   - purchase: In production, exactly the paywall's existing
     ///     `SubscriptionManager.shared.purchasePro(selectedPlan)` call — invoked at most once, and
-    ///     only after a non-empty code has been backend-confirmed (or immediately, for a blank
-    ///     code).
+    ///     only after a non-empty NEW code has been backend-confirmed, or immediately for a blank
+    ///     code or an already-applied one.
     static func purchase(
         normalizedCode: String,
+        alreadyAppliedCode: String?,
         applyReferralCode: (String) async throws -> ReferralStatus,
         purchase: () async -> Void
     ) async -> Outcome {
+        // Backend attribution state always wins over local/hidden UI state — see this
+        // parameter's own header. Checked FIRST, before normalizedCode is read at all.
+        if let alreadyAppliedCode, alreadyAppliedCode.isEmpty == false {
+            await purchase()
+            return .purchased
+        }
+
         guard normalizedCode.isEmpty == false else {
             await purchase()
             return .purchased
