@@ -323,6 +323,87 @@ struct ReferralPresentationTests {
             }
         }
     }
+
+    // MARK: - Diagnostic support codes (39+) — privacy-safe failure identification
+
+    @Test(
+        "Every top-level ReferralServiceError case (except .api, covered separately) maps to its exact support code",
+        arguments: [
+            (ReferralServiceError.notConfigured, "REF-CONFIG"),
+            (ReferralServiceError.credentialUnavailable, "REF-KEYCHAIN"),
+            (ReferralServiceError.network("irrelevant — never read, see the dedicated leak test below"), "REF-NETWORK"),
+            (ReferralServiceError.decoding, "REF-DECODE"),
+            (ReferralServiceError.invalidResponse, "REF-RESPONSE"),
+        ]
+    )
+    func diagnosticCode_topLevelCases(error: ReferralServiceError, expectedCode: String) {
+        #expect(ReferralPresentation.diagnosticCode(for: error) == expectedCode)
+    }
+
+    @Test(
+        "Every ReferralAPIError case maps to its exact support code",
+        arguments: [
+            (ReferralAPIError.invalidAPIKey, "REF-API-KEY"),
+            (ReferralAPIError.invalidInstallationCredentials, "REF-INSTALL-AUTH"),
+            (ReferralAPIError.invalidRequestBody, "REF-API-BODY"),
+            (ReferralAPIError.unknownAction, "REF-API-ACTION"),
+            (ReferralAPIError.invalidReferralCode, "REF-CODE-FORMAT"),
+            (ReferralAPIError.referralCodeNotFound, "REF-CODE-NOTFOUND"),
+            (ReferralAPIError.selfReferralNotAllowed, "REF-SELF"),
+            (ReferralAPIError.referralAlreadyApplied, "REF-ALREADY"),
+            (ReferralAPIError.revenueCatIdentityConflict, "REF-RC-CONFLICT"),
+            (ReferralAPIError.rateLimited, "REF-RATE"),
+            (ReferralAPIError.serviceUnavailable, "REF-SERVICE"),
+            (ReferralAPIError.internalError, "REF-INTERNAL"),
+            (ReferralAPIError.unrecognized(code: "irrelevant", statusCode: 599), "REF-API-OTHER"),
+        ]
+    )
+    func diagnosticCode_apiErrorCases(apiError: ReferralAPIError, expectedCode: String) {
+        #expect(ReferralPresentation.diagnosticCode(for: apiError) == expectedCode)
+    }
+
+    @Test("The top-level ReferralServiceError.api(_:) case genuinely delegates to the ReferralAPIError mapping, not a separate/stale copy of it")
+    func diagnosticCode_apiCaseDelegates() {
+        #expect(ReferralPresentation.diagnosticCode(for: .api(.rateLimited)) == ReferralPresentation.diagnosticCode(for: ReferralAPIError.rateLimited))
+        #expect(ReferralPresentation.diagnosticCode(for: .api(.rateLimited)) == "REF-RATE")
+    }
+
+    @Test("Two different .network(_:) localizedDescription values both map to the identical REF-NETWORK code — the raw description is never read")
+    func diagnosticCode_network_neverLeaksDescription() {
+        let first = ReferralPresentation.diagnosticCode(for: .network("Optional(NSError domain=NSURLErrorDomain code=-1009 \"offline\")"))
+        let second = ReferralPresentation.diagnosticCode(for: .network("A completely different transport failure string"))
+        #expect(first == "REF-NETWORK")
+        #expect(second == "REF-NETWORK")
+        #expect(first == second)
+    }
+
+    @Test("Two different .unrecognized(code:statusCode:) backend values both map to the identical REF-API-OTHER code — the raw code/status is never read")
+    func diagnosticCode_unrecognized_neverLeaksRawBackendValue() {
+        let first = ReferralPresentation.diagnosticCode(for: .unrecognized(code: "some_future_backend_error", statusCode: 418))
+        let second = ReferralPresentation.diagnosticCode(for: .unrecognized(code: "a_totally_different_code", statusCode: 502))
+        #expect(first == "REF-API-OTHER")
+        #expect(second == "REF-API-OTHER")
+        #expect(first == second)
+    }
+
+    @Test("supportCodeCopyText contains the support code and the supplied app version/build")
+    func supportCodeCopyText_containsSupportCodeAndVersion() {
+        let text = ReferralPresentation.supportCodeCopyText(diagnosticCode: "REF-NETWORK", appVersion: "2.4.0", buildNumber: "187")
+        #expect(text.contains("REF-NETWORK"))
+        #expect(text.contains("2.4.0"))
+        #expect(text.contains("187"))
+        #expect(text.contains("85Blends"))
+    }
+
+    @Test("supportCodeCopyText's only inputs are the code/version/build strings handed to it — it has no way to embed arbitrary raw error text")
+    func supportCodeCopyText_cannotContainArbitraryRawErrorText() {
+        // supportCodeCopyText(diagnosticCode:appVersion:buildNumber:) takes exactly these three
+        // plain strings and nothing else — no ReferralServiceError, no URLSession error, no
+        // backend response is ever in scope inside it. This test documents that contract by
+        // confirming a value that was never passed in is absent from the output.
+        let text = ReferralPresentation.supportCodeCopyText(diagnosticCode: "REF-NETWORK", appVersion: "2.4.0", buildNumber: "187")
+        #expect(text.contains("raw backend body this function was never given") == false)
+    }
 }
 
 private extension ReferralStatus {

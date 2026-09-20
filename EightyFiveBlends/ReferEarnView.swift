@@ -25,6 +25,7 @@ struct ReferEarnView: View {
     // computed properties, which are already @MainActor-isolated via View's own protocol
     // requirement — no default-parameter-expression ambiguity possible.
     @State private var isShowingCodeEntry = false
+    @State private var didCopySupportCode = false
 
     var body: some View {
         ScrollView {
@@ -86,8 +87,8 @@ struct ReferEarnView: View {
         switch ReferralManager.shared.loadState {
         case .idle, .loading:
             loadingSection
-        case .failed:
-            errorSection
+        case .failed(let error):
+            errorSection(error: error)
         case .loaded(let status):
             // Both read from SubscriptionManager (never RevenueCatSubscriptionService/Purchases
             // directly) — the feature-facing subscription authority. SubscriptionManager is
@@ -119,18 +120,79 @@ struct ReferEarnView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var errorSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+    /// The diagnostic support code below is display-only — never the primary message, never a
+    /// raw backend string/error description/OSStatus, and never derived from anything but the
+    /// typed `error` this card already receives (see ReferralPresentation.diagnosticCode(for:)'s
+    /// own header). "Try Again" keeps calling the exact same ReferralManager.refresh() as before
+    /// this diagnostics pass — no new retry loop, no new fallback, no new backend call.
+    private func errorSection(error: ReferralServiceError) -> some View {
+        let diagnosticCode = ReferralPresentation.diagnosticCode(for: error)
+
+        return VStack(alignment: .leading, spacing: 16) {
             WarningCard(
                 title: ReferralPresentation.referralProgressUnavailableTitle,
                 message: ReferralPresentation.referralProgressUnavailableBody,
                 systemImage: "wifi.exclamationmark"
             )
 
+            HStack(spacing: 12) {
+                Text("Support code: \(diagnosticCode)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .accessibilityLabel("Referral support code \(diagnosticCode.replacingOccurrences(of: "-", with: " "))")
+
+                Spacer(minLength: 0)
+
+                Button {
+                    copySupportCode(diagnosticCode)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: didCopySupportCode ? "checkmark" : "doc.on.doc")
+                        Text(didCopySupportCode ? "Copied" : "Copy Support Code")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(didCopySupportCode ? "Support code copied" : "Copy support code")
+            }
+
             SecondaryButton(title: "Try Again") {
                 Task { await ReferralManager.shared.refresh() }
             }
         }
+    }
+
+    /// Clipboard text is exactly ReferralPresentation.supportCodeCopyText's output — public app
+    /// metadata (version/build, already shown in AboutView.swift) plus the diagnostic code alone.
+    /// Never the installation ID, installation secret, RevenueCat App User ID, Supabase API key,
+    /// a raw URLSession error, an OSStatus, a participant/attribution/reward UUID, or any raw
+    /// backend response — none of those are reachable from this function's inputs at all.
+    private func copySupportCode(_ diagnosticCode: String) {
+        let text = ReferralPresentation.supportCodeCopyText(
+            diagnosticCode: diagnosticCode,
+            appVersion: Self.appVersionForSupportCode,
+            buildNumber: Self.buildNumberForSupportCode
+        )
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        #endif
+        AppHaptics.success()
+        withAnimation { didCopySupportCode = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            withAnimation { didCopySupportCode = false }
+        }
+    }
+
+    /// Public app metadata only — same Info.plist keys/fallback values AboutView.swift already
+    /// reads and displays to every user.
+    private static var appVersionForSupportCode: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+    }
+
+    private static var buildNumberForSupportCode: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
     }
 }
 

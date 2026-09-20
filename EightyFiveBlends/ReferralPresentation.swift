@@ -218,6 +218,60 @@ enum ReferralPresentation {
 
     private static let temporarilyUnavailableMessage = "Referral service is temporarily unavailable. Try again."
 
+    // MARK: - Diagnostic support codes (privacy-safe — never raw backend/error content)
+
+    /// Stable, non-sensitive support codes for the referral progress screen's own error card —
+    /// lets support identify WHICH typed failure occurred on a real device without ever seeing a
+    /// raw backend string, an HTTP status/body, `error.localizedDescription`, an OSStatus, or any
+    /// installation/participant/attribution/reward identifier. Pure and deterministic: the same
+    /// `ReferralServiceError` case always maps to the same code. Deliberately never reads
+    /// `.network(String)`'s associated string or `.api(.unrecognized(code:statusCode:))`'s
+    /// associated values — both collapse to one fixed code each (REF-NETWORK, REF-API-OTHER)
+    /// regardless of what they actually contain, so this can never become a second channel for
+    /// leaking arbitrary error content through a "support code."
+    static func diagnosticCode(for error: ReferralServiceError) -> String {
+        switch error {
+        case .notConfigured: "REF-CONFIG"
+        case .credentialUnavailable: "REF-KEYCHAIN"
+        case .network: "REF-NETWORK"
+        case .decoding: "REF-DECODE"
+        case .invalidResponse: "REF-RESPONSE"
+        case .api(let apiError): diagnosticCode(for: apiError)
+        }
+    }
+
+    static func diagnosticCode(for apiError: ReferralAPIError) -> String {
+        switch apiError {
+        case .invalidAPIKey: "REF-API-KEY"
+        case .invalidInstallationCredentials: "REF-INSTALL-AUTH"
+        case .invalidRequestBody: "REF-API-BODY"
+        case .unknownAction: "REF-API-ACTION"
+        case .invalidReferralCode: "REF-CODE-FORMAT"
+        case .referralCodeNotFound: "REF-CODE-NOTFOUND"
+        case .selfReferralNotAllowed: "REF-SELF"
+        case .referralAlreadyApplied: "REF-ALREADY"
+        case .revenueCatIdentityConflict: "REF-RC-CONFLICT"
+        case .rateLimited: "REF-RATE"
+        case .serviceUnavailable: "REF-SERVICE"
+        case .internalError: "REF-INTERNAL"
+        case .unrecognized: "REF-API-OTHER"
+        }
+    }
+
+    /// The optional "Copy Support Code" button's clipboard text — public app metadata
+    /// (version/build, already shown in AboutView.swift) plus the diagnostic code above, and
+    /// nothing else. `appVersion`/`buildNumber` are passed in rather than read from `Bundle.main`
+    /// here, keeping this pure/directly-testable — see this file's own header on why nothing here
+    /// performs I/O of any kind.
+    static func supportCodeCopyText(diagnosticCode: String, appVersion: String, buildNumber: String) -> String {
+        """
+        85Blends Refer & Earn
+        Support code: \(diagnosticCode)
+        App version: \(appVersion)
+        Build: \(buildNumber)
+        """
+    }
+
     // MARK: - Share text (Phase 9)
 
     /// Never includes the installation ID, RevenueCat App User ID, installation secret, or any
