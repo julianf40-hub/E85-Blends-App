@@ -1240,4 +1240,60 @@ struct FirstResultRacingTests {
         await settleScheduler()
         #expect(result == "winner")
     }
+
+    // MARK: - Loser cancellation (best-effort cleanup — see RaceTaskRegistry's own header)
+
+    @Test("When the operation wins, the timeout Task is cancelled rather than left to sleep out its full duration")
+    func operationWins_timeoutTaskIsCancelled() async {
+        let timeoutGate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: { "operation" },
+                timeout: {
+                    await timeoutGate.wait()
+                    await timeoutObservedCancellation.set(Task.isCancelled)
+                    return "timeout"
+                }
+            )
+        }
+
+        let result = await resultTask.value
+        #expect(result == "operation")
+
+        // The cancel call fires as part of the operation closure's own resume — give it a chance
+        // to land before releasing the (already-cancelled) timeout closure to observe it.
+        await settleScheduler()
+        timeoutGate.open()
+        await settleScheduler()
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("When the timeout wins, the operation Task is cancelled — the exact case that matters for a genuinely-hung AppTransaction.shared")
+    func timeoutWins_operationTaskIsCancelled() async {
+        let operationGate = TestGate()
+        let operationObservedCancellation = TestFlag()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: {
+                    await operationGate.wait()
+                    await operationObservedCancellation.set(Task.isCancelled)
+                    return "operation"
+                },
+                timeout: { "timeout" }
+            )
+        }
+
+        let result = await resultTask.value
+        #expect(result == "timeout")
+
+        await settleScheduler()
+        operationGate.open()
+        await settleScheduler()
+
+        #expect(await operationObservedCancellation.get())
+    }
 }

@@ -48,8 +48,14 @@
 //  enclosing `withTaskGroup` call cannot return until every child task has actually finished
 //  (cancellation is cooperative, and `AppTransaction.shared` is not guaranteed to observe it
 //  promptly) — so a slow/hung `AppTransaction.shared` could still block the "timed out" result from
-//  ever being returned. Racing via unstructured Tasks avoids that: the loser simply keeps running
-//  in the background, unobserved and harmless, while the winner's result is returned immediately.
+//  ever being returned. Racing via unstructured Tasks avoids that: the winner's result is returned
+//  immediately, and the loser is explicitly `.cancel()`-ed (see `RaceTaskRegistry` below) as a
+//  best-effort cleanup — cancellation is still cooperative, so this cannot force-terminate a
+//  genuinely-hung `AppTransaction.shared` that never checks `Task.isCancelled` itself, but it
+//  ensures a loser that DOES respect cancellation stops promptly instead of running to completion
+//  unobserved, and avoids one leaked, permanently-suspended Task per retry in the worst case (a
+//  real Refer & Earn "Try Again"/pull-to-refresh path re-races on every attempt while the
+//  environment stays unavailable).
 //
 
 import Foundation
@@ -108,23 +114,36 @@ struct StoreKitReferralRevenueEnvironmentProvider: ReferralRevenueEnvironmentPro
 /// StoreKit-agnostic on purpose — see this file's own "BOUNDED WAIT" header for exactly why this
 /// uses unstructured `Task`s joined by a continuation rather than a `TaskGroup` (whose enclosing
 /// call cannot return until every child finishes, even a cancelled one that never observes
-/// cancellation). The loser is never explicitly cancelled — it simply keeps running in the
-/// background; `FirstResumeGuard` ensures only the FIRST result is ever delivered to the caller,
-/// and the loser's own eventual result is silently discarded.
+/// cancellation). `FirstResumeGuard` ensures only the FIRST result is ever delivered to the
+/// caller; the loser is then explicitly `.cancel()`-ed via `RaceTaskRegistry` below — best-effort
+/// cleanup only (see this file's header), never something the caller's own result depends on.
 func firstResult<T: Sendable>(
     operation: @escaping @Sendable () async -> T,
     timeout: @escaping @Sendable () async -> T
 ) async -> T {
     await withCheckedContinuation { continuation in
         let resumeGuard = FirstResumeGuard<T>()
-        Task {
+        let registry = RaceTaskRegistry()
+
+        let operationTask = Task {
             let result = await operation()
-            await resumeGuard.resume(with: result, continuation: continuation)
+            if await resumeGuard.resume(with: result, continuation: continuation) {
+                registry.cancelTimeoutTask()
+            }
         }
-        Task {
+        let timeoutTask = Task {
             let result = await timeout()
-            await resumeGuard.resume(with: result, continuation: continuation)
+            if await resumeGuard.resume(with: result, continuation: continuation) {
+                registry.cancelOperationTask()
+            }
         }
+        // Registered synchronously, immediately after creation — before returning from this
+        // (non-async) continuation body — so a racer that resolves and wins essentially
+        // instantly still finds its sibling already registered and cancellable. RaceTaskRegistry
+        // is a plain NSLock-backed class specifically so this registration needs no `await`
+        // (this closure isn't async), matching this test target's existing TestGate/TestFlag
+        // pattern for the same reason.
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
     }
 }
 
@@ -132,13 +151,52 @@ func firstResult<T: Sendable>(
 /// unstructured `Task`s race to resume it — resuming a `CheckedContinuation` more than once is a
 /// runtime trap, and this actor's own serialized `hasResumed` check is what makes "first result
 /// wins, second is silently discarded" safe under real concurrency (not just in the common case
-/// where one result happens to arrive well before the other).
+/// where one result happens to arrive well before the other). Returns whether THIS call was the
+/// one that actually won — `firstResult` uses that to cancel the loser exactly once, never twice
+/// and never for the winner itself.
 private actor FirstResumeGuard<T: Sendable> {
     private var hasResumed = false
 
-    func resume(with value: T, continuation: CheckedContinuation<T, Never>) {
-        guard hasResumed == false else { return }
+    @discardableResult
+    func resume(with value: T, continuation: CheckedContinuation<T, Never>) -> Bool {
+        guard hasResumed == false else { return false }
         hasResumed = true
         continuation.resume(returning: value)
+        return true
+    }
+}
+
+/// Holds the two racing `Task` handles so the winner can cancel its sibling — a plain
+/// `NSLock`-backed class (not an actor) so `register(operationTask:timeoutTask:)` can be called
+/// synchronously right after both `Task`s are created, from `firstResult`'s own non-async
+/// continuation body. In the vanishingly unlikely case a racer wins before registration lands,
+/// its cancel call simply finds nothing registered yet and is a no-op — the loser then behaves
+/// exactly as it did before this cleanup existed (runs to completion, its result silently
+/// discarded by `FirstResumeGuard`), never a correctness issue, only a missed cleanup
+/// opportunity.
+private final class RaceTaskRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operationTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    func register(operationTask: Task<Void, Never>, timeoutTask: Task<Void, Never>) {
+        lock.lock()
+        self.operationTask = operationTask
+        self.timeoutTask = timeoutTask
+        lock.unlock()
+    }
+
+    func cancelOperationTask() {
+        lock.lock()
+        let task = operationTask
+        lock.unlock()
+        task?.cancel()
+    }
+
+    func cancelTimeoutTask() {
+        lock.lock()
+        let task = timeoutTask
+        lock.unlock()
+        task?.cancel()
     }
 }
