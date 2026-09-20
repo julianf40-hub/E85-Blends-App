@@ -143,7 +143,25 @@ struct ReferralAPIService: ReferralAPIServicing {
     }
 
     private func endpointURL() -> URL {
-        config.url
+        Self.edgeFunctionURL(from: config.url)
+    }
+
+    /// SUPABASE_URL historically points at PostgREST's REST endpoint (`.../rest/v1/`) — see
+    /// CommunityPriceService.normalizedRESTBaseURL()/AnalyticsService.eventsEndpointURL(), which
+    /// both detect that same suffix before APPENDING `rest/v1`. Edge Functions live at the project
+    /// root under `/functions/v1` instead, so this does the reverse: strips a trailing `rest/v1`
+    /// (with or without a trailing slash — `URL.pathComponents` ignores it) back to the project
+    /// root before appending the Edge Function path; a bare project-root URL is left unchanged. A
+    /// prior version of `endpointURL()` assumed `config.url` was already the project root, which
+    /// silently sent every referral request to `.../rest/v1/functions/v1/referral-api` in
+    /// production — see ReferralAPIServiceTests.swift's own regression tests, which independently
+    /// hardcode the expected literal rather than recomputing it from this method.
+    static func edgeFunctionURL(from configuredURL: URL) -> URL {
+        let pathComponents = configuredURL.pathComponents.filter { $0 != "/" }
+        let projectBaseURL = pathComponents.suffix(2) == ["rest", "v1"]
+            ? configuredURL.deletingLastPathComponent().deletingLastPathComponent()
+            : configuredURL
+        return projectBaseURL
             .appending(path: "functions")
             .appending(path: "v1")
             .appending(path: "referral-api")

@@ -111,9 +111,18 @@ struct ReferralAPIServiceTests {
         #expect(apiKeyHeader == config.anonKey)
     }
 
-    // MARK: 13. Correct referral-api URL
+    // MARK: 13. Correct referral-api Edge Function URL
+    //
+    // The ORIGINAL version of this test computed `expected` using
+    // `config.url.appending(path: "functions").appending(path: "v1").appending(path: "referral-api")`
+    // — the exact same construction production code used, so it could never have caught the real
+    // production bug it existed to guard against (both sides always agreed by construction,
+    // regardless of whether the result was actually correct). The real configured SUPABASE_URL
+    // (Info.plist) is a REST-base URL, `.../rest/v1/` — this now asserts the request instead lands
+    // on the Edge Function base, `.../functions/v1/referral-api`, using an independently
+    // hand-written literal rather than any helper under test.
 
-    @Test("Every request targets {SUPABASE_URL}/functions/v1/referral-api")
+    @Test("Every request targets the Edge Function base (.../functions/v1/referral-api), never the REST base SUPABASE_URL is actually configured as (.../rest/v1/...)")
     func request_targetsCorrectURL() async throws {
         let service = try Self.makeService()
         CapturingURLProtocol.stubbedResponse = .success(statusCode: 200, body: Self.validStatusJSON())
@@ -122,9 +131,34 @@ struct ReferralAPIServiceTests {
 
         let sentRequest = try #require(CapturingURLProtocol.lastRequest)
         let config = try SupabaseConfig.load()
-        let expected = config.url.appending(path: "functions").appending(path: "v1").appending(path: "referral-api")
+        // Documents exactly why the literal below is correct — if Info.plist's SUPABASE_URL form
+        // ever changes, this fails loudly here rather than silently agreeing with whatever the
+        // implementation happens to compute.
+        #expect(config.url.absoluteString == "https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/")
+        let expected = try #require(URL(string: "https://zefkbtscieokkdenvnkg.supabase.co/functions/v1/referral-api"))
         #expect(sentRequest.url == expected)
         #expect(sentRequest.httpMethod == "POST")
+    }
+
+    // MARK: Edge Function URL derivation (regression matrix for the /rest/v1/functions/v1 bug)
+    //
+    // Uses a synthetic example.supabase.co domain, independent of the real project ref, so this
+    // matrix stays meaningful even if the real project ref ever changes. Every configured form
+    // must normalize to the identical Edge Function endpoint.
+
+    @Test(
+        "edgeFunctionURL(from:) normalizes every SUPABASE_URL shape to the same Edge Function endpoint",
+        arguments: [
+            "https://example.supabase.co/rest/v1/",
+            "https://example.supabase.co/rest/v1",
+            "https://example.supabase.co/",
+            "https://example.supabase.co",
+        ]
+    )
+    func edgeFunctionURL_normalizesEveryConfiguredForm(configuredURLString: String) throws {
+        let configuredURL = try #require(URL(string: configuredURLString))
+        let expected = try #require(URL(string: "https://example.supabase.co/functions/v1/referral-api"))
+        #expect(ReferralAPIService.edgeFunctionURL(from: configuredURL) == expected)
     }
 
     // MARK: 14. No service-role key anywhere
