@@ -80,25 +80,41 @@ struct ReferralPresentationTests {
         #expect(ReferralPresentation.progressInCurrentCycle(referralsNeeded: -3) == 5)
     }
 
-    // MARK: - Entry eligibility (16-19, extended for entitlement-resolution gating)
+    // MARK: - Entry eligibility (16-19, extended for entitlement-resolution + authoritative-status gating)
 
-    @Test("canApplyReferralCode=true, entitlement resolved, not Pro allows entry")
+    @Test("canApplyReferralCode=true, entitlement resolved, authoritative, not Pro allows entry")
     func entryEligibility_freeUserCanApply_allowed() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: false, isEntitlementResolutionPending: false) == .allowed)
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: false,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .allowed
+        )
     }
 
-    @Test("canApplyReferralCode=true, entitlement resolved, Pro blocks entry with the Pro-specific reason")
+    @Test("canApplyReferralCode=true, entitlement resolved, authoritative, Pro blocks entry with the Pro-specific reason")
     func entryEligibility_proUserCanApply_blockedAlreadyPro() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: true, isEntitlementResolutionPending: false) == .blockedAlreadyPro)
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: true,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .blockedAlreadyPro
+        )
     }
 
-    @Test("canApplyReferralCode=false blocks entry regardless of Pro status or entitlement-resolution state")
+    @Test("canApplyReferralCode=false blocks entry regardless of Pro status, entitlement-resolution state, or authoritative-status")
     func entryEligibility_cannotApply_blockedRegardlessOfPro() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: false) == .blockedCannotApply)
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: true, isEntitlementResolutionPending: false) == .blockedCannotApply)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: false, hasAuthoritativeProStatus: true) == .blockedCannotApply)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: true, isEntitlementResolutionPending: false, hasAuthoritativeProStatus: true) == .blockedCannotApply)
         // The backend's own canApplyReferralCode=false is checked first and is decisive on its
-        // own — still blockedCannotApply even while entitlement resolution is pending.
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: true) == .blockedCannotApply)
+        // own — still blockedCannotApply even while entitlement resolution is pending or
+        // unresolved-and-not-authoritative.
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: true, hasAuthoritativeProStatus: false) == .blockedCannotApply)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: false, hasAuthoritativeProStatus: false) == .blockedCannotApply)
     }
 
     @Test(
@@ -110,13 +126,37 @@ struct ReferralPresentationTests {
         // resolution — this must never be trusted while resolution is still pending, in either
         // direction: .allowed would risk letting a real Pro subscriber apply a code they should
         // never be offered; .blockedAlreadyPro would risk wrongly telling a real Free user they
-        // can't enter a code.
+        // can't enter a code. hasAuthoritativeProStatus is false here too (nothing has succeeded
+        // yet at cold launch) but is irrelevant either way — isEntitlementResolutionPending is
+        // checked first and is decisive on its own.
         #expect(
             ReferralPresentation.entryEligibility(
                 canApplyReferralCode: true,
                 isCurrentlyPro: provisionalIsCurrentlyPro,
-                isEntitlementResolutionPending: true
+                isEntitlementResolutionPending: true,
+                hasAuthoritativeProStatus: false
             ) == .waitingForSubscriptionStatus
+        )
+    }
+
+    @Test(
+        "A resolution attempt that finished without ever producing a real CustomerInfo answer (a failed first fetch) is subscriptionStatusUnavailable, never allowed or blockedAlreadyPro, regardless of the stale/default isCurrentlyPro value",
+        arguments: [false, true]
+    )
+    func entryEligibility_resolvedButNotAuthoritative_isUnavailableRegardlessOfProvisionalProValue(staleIsCurrentlyPro: Bool) {
+        // This is the exact failed-first-fetch shape: RevenueCatSubscriptionService reaches
+        // .resolved (isEntitlementResolutionPending == false) on a FAILED first fetch too, on
+        // purpose, while revenueCatIsPro stays at its untouched false default — see
+        // SubscriptionManager.hasAuthoritativeProStatus's own header. Without this case, a real
+        // existing Pro subscriber whose first fetch fails would read isCurrentlyPro == false and
+        // be wrongly offered referral-code entry.
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: staleIsCurrentlyPro,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: false
+            ) == .subscriptionStatusUnavailable
         )
     }
 
@@ -126,20 +166,29 @@ struct ReferralPresentationTests {
         #expect(ReferralPresentation.hasAppliedReferralCode(referredByCode: nil) == false)
     }
 
-    @Test("hasAppliedReferralCode takes no entitlement-resolution parameter, so an applied code always wins independently of Pro-resolution state — see ReferEarnLoadedContent.referredBySection's own precedence comment")
+    @Test("hasAppliedReferralCode takes no entitlement-resolution or authoritative-status parameter, so an applied code always wins independently of both — see ReferEarnLoadedContent.referredBySection's own precedence comment")
     func hasAppliedReferralCode_isIndependentOfEntitlementResolution() {
         #expect(ReferralPresentation.hasAppliedReferralCode(referredByCode: "ABCD2345"))
-        // Confirms the separate fact this precedence relies on: with the exact same
+        // Confirms the separate facts this precedence relies on: with the exact same
         // canApplyReferralCode/isCurrentlyPro inputs, entryEligibility alone (never consulted by
-        // referredBySection once a code is applied) would have produced a waiting/blocked outcome
-        // instead — hasAppliedReferralCode being checked first is what shields the applied card
-        // from ever being replaced by it.
+        // referredBySection once a code is applied) would have produced a waiting or unavailable
+        // outcome instead — hasAppliedReferralCode being checked first is what shields the applied
+        // card from ever being replaced by either.
         #expect(
             ReferralPresentation.entryEligibility(
                 canApplyReferralCode: true,
                 isCurrentlyPro: false,
-                isEntitlementResolutionPending: true
+                isEntitlementResolutionPending: true,
+                hasAuthoritativeProStatus: false
             ) == .waitingForSubscriptionStatus
+        )
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: false,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: false
+            ) == .subscriptionStatusUnavailable
         )
     }
 

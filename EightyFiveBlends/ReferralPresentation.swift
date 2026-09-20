@@ -90,6 +90,16 @@ enum ReferralPresentation {
         /// eligible Free user or, worse, letting an existing Pro subscriber apply a code they
         /// should never be offered.
         case waitingForSubscriptionStatus
+        /// `isEntitlementResolutionPending` is already `false` (the first resolution *attempt*
+        /// finished), but no real CustomerInfo result has ever been successfully applied this
+        /// process — i.e. that attempt FAILED (or no SDK key was configured). See
+        /// `SubscriptionManager.hasAuthoritativeProStatus`'s own header: a failed first fetch
+        /// still reaches `.resolved` on purpose (so the rest of the app doesn't hang), which means
+        /// `isCurrentlyPro == false` here could just as easily mean "we never got a real answer"
+        /// as "confirmed Free." Distinct from `.waitingForSubscriptionStatus` because there is
+        /// nothing actively in flight to wait for — the UI should offer a retry instead of a
+        /// spinner.
+        case subscriptionStatusUnavailable
         /// Already Pro — referral codes must be applied BEFORE the qualifying purchase, so
         /// entry is intentionally withheld once the user is already subscribed.
         case blockedAlreadyPro
@@ -102,18 +112,23 @@ enum ReferralPresentation {
     }
 
     /// UX gating only — the backend remains authoritative on whether an apply_code call actually
-    /// succeeds. `isEntitlementResolutionPending` takes priority over `isCurrentlyPro` (checked
-    /// second, right after the backend's own `canApplyReferralCode`) specifically because a
-    /// provisional `isCurrentlyPro == false` during cold-launch RevenueCat resolution is not the
-    /// same fact as a confirmed Free entitlement — see
-    /// `SubscriptionManager.isInitialEntitlementResolutionPending`'s own header.
+    /// succeeds. Decision order: the backend's own `canApplyReferralCode` first, then whether
+    /// resolution is still in flight (`isEntitlementResolutionPending`), then whether a resolution
+    /// attempt that finished actually produced a real answer (`hasAuthoritativeProStatus`), and
+    /// only once both of those hold does `isCurrentlyPro` get trusted. Skipping the
+    /// `hasAuthoritativeProStatus` check would let a FAILED first fetch (which also sets
+    /// `isEntitlementResolutionPending = false`, by design — see
+    /// `SubscriptionManager.isInitialEntitlementResolutionPending`'s own header) be misread as a
+    /// confirmed Free result.
     static func entryEligibility(
         canApplyReferralCode: Bool,
         isCurrentlyPro: Bool,
-        isEntitlementResolutionPending: Bool
+        isEntitlementResolutionPending: Bool,
+        hasAuthoritativeProStatus: Bool
     ) -> EntryEligibility {
         guard canApplyReferralCode else { return .blockedCannotApply }
         if isEntitlementResolutionPending { return .waitingForSubscriptionStatus }
+        guard hasAuthoritativeProStatus else { return .subscriptionStatusUnavailable }
         return isCurrentlyPro ? .blockedAlreadyPro : .allowed
     }
 

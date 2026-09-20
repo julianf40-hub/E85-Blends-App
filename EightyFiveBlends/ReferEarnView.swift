@@ -97,6 +97,7 @@ struct ReferEarnView: View {
                 status: status,
                 isProUser: SubscriptionManager.shared.isProUser,
                 isEntitlementResolutionPending: SubscriptionManager.shared.isInitialEntitlementResolutionPending,
+                hasAuthoritativeProStatus: SubscriptionManager.shared.hasAuthoritativeProStatus,
                 onEnterCode: {
                     AppHaptics.selection()
                     isShowingCodeEntry = true
@@ -145,6 +146,13 @@ struct ReferEarnLoadedContent: View {
     /// can't distinguish "confirmed Free" from "not resolved yet," so this is threaded through
     /// separately and takes priority in `referredBySection` below.
     let isEntitlementResolutionPending: Bool
+    /// True only once a real CustomerInfo result has actually been applied this process — see
+    /// `SubscriptionManager.hasAuthoritativeProStatus`'s own header. Resolution finishing
+    /// (`isEntitlementResolutionPending == false`) does NOT imply this: a failed first fetch also
+    /// ends the resolution window, on purpose, without ever producing a real answer. Checked right
+    /// after `isEntitlementResolutionPending` in `referredBySection` below, before `isProUser` is
+    /// ever trusted.
+    let hasAuthoritativeProStatus: Bool
     let onEnterCode: () -> Void
 
     @State private var didCopy = false
@@ -353,12 +361,15 @@ struct ReferEarnLoadedContent: View {
             switch ReferralPresentation.entryEligibility(
                 canApplyReferralCode: status.canApplyReferralCode,
                 isCurrentlyPro: isProUser,
-                isEntitlementResolutionPending: isEntitlementResolutionPending
+                isEntitlementResolutionPending: isEntitlementResolutionPending,
+                hasAuthoritativeProStatus: hasAuthoritativeProStatus
             ) {
             case .allowed:
                 entryPromptCard
             case .waitingForSubscriptionStatus:
                 checkingProStatusCard
+            case .subscriptionStatusUnavailable:
+                subscriptionStatusUnavailableCard
             case .blockedAlreadyPro:
                 InfoCard(
                     title: "You're already subscribed to 85Blends Pro",
@@ -401,6 +412,29 @@ struct ReferEarnLoadedContent: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Checking Pro status. We're checking your 85Blends Pro status before allowing a referral code to be applied.")
+    }
+
+    /// Shown when the first resolution attempt has already finished
+    /// (`isEntitlementResolutionPending == false`) but never actually produced a real answer
+    /// (`hasAuthoritativeProStatus == false`) — i.e. that attempt failed. Distinct from
+    /// `checkingProStatusCard` above: nothing is in flight here, so a spinner would be
+    /// misleading — this offers an explicit retry instead. The retry calls ONLY
+    /// `SubscriptionManager.shared.refreshProStatus()` (itself a thin wrapper around
+    /// RevenueCat's existing manual-refresh path) — no purchase, no restore, no alert, and no
+    /// referral-backend call; a successful refresh updates `@Observable` state and this card
+    /// naturally gives way to either the entry prompt or the "already Pro" warning.
+    private var subscriptionStatusUnavailableCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            WarningCard(
+                title: "Unable to verify Pro status",
+                message: "We need to verify your 85Blends Pro status before a referral code can be applied.",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+
+            SecondaryButton(title: "Try Again") {
+                Task { await SubscriptionManager.shared.refreshProStatus() }
+            }
+        }
     }
 
     private var appliedReferralCard: some View {
@@ -544,6 +578,7 @@ private func previewStatus(
             status: previewStatus(qualifiedReferrals: 0, pendingReferrals: 0, referralsNeeded: 5),
             isProUser: false,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
@@ -557,6 +592,7 @@ private func previewStatus(
             status: previewStatus(qualifiedReferrals: 0, pendingReferrals: 0, referralsNeeded: 5),
             isProUser: true,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
@@ -570,6 +606,21 @@ private func previewStatus(
             status: previewStatus(qualifiedReferrals: 0, pendingReferrals: 0, referralsNeeded: 5),
             isProUser: false,
             isEntitlementResolutionPending: true,
+            hasAuthoritativeProStatus: false,
+            onEnterCode: {}
+        )
+        .padding(16)
+    }
+    .background(AppTheme.Colors.charcoal)
+}
+
+#Preview("Unable to verify Pro status") {
+    ScrollView {
+        ReferEarnLoadedContent(
+            status: previewStatus(qualifiedReferrals: 0, pendingReferrals: 0, referralsNeeded: 5),
+            isProUser: false,
+            isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: false,
             onEnterCode: {}
         )
         .padding(16)
@@ -583,6 +634,7 @@ private func previewStatus(
             status: previewStatus(qualifiedReferrals: 12, pendingReferrals: 2, earnedMonthsAvailable: 2, fulfilledMonths: 1, referralsNeeded: 3),
             isProUser: false,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
@@ -596,6 +648,7 @@ private func previewStatus(
             status: previewStatus(canApplyReferralCode: false, referredByCode: "WXYZ6789", referredStatus: "pending"),
             isProUser: false,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
@@ -609,6 +662,7 @@ private func previewStatus(
             status: previewStatus(canApplyReferralCode: false, referredByCode: "WXYZ6789", referredStatus: "qualified"),
             isProUser: false,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
@@ -622,6 +676,7 @@ private func previewStatus(
             status: previewStatus(canApplyReferralCode: false, referredByCode: "WXYZ6789", referredStatus: "reversed"),
             isProUser: false,
             isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
             onEnterCode: {}
         )
         .padding(16)
