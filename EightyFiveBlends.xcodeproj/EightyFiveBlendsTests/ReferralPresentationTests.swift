@@ -192,6 +192,136 @@ struct ReferralPresentationTests {
         )
     }
 
+    // MARK: - Paywall entry-gate composition (Phase 20, 2.4.0)
+    //
+    // ProUpgradeView's own `hasInvalidNonEmptyReferralCode` is a PRIVATE computed property (not
+    // reachable even via @testable import) that composes exactly
+    // `normalizedReferralCode.isEmpty == false && referralCodeIsValid(normalizedReferralCode) ==
+    // false` — deliberately never a second/duplicate validator, per this feature's own task spec.
+    // These tests pin the exact behavior of that composition's two ReferralPresentation building
+    // blocks so a future change to either one can't silently break the paywall's gating without a
+    // test failing here.
+
+    @Test("An empty or whitespace-only referral code normalizes to empty — the paywall treats this as 'no code,' optional, never as an invalid one")
+    func blankReferralCode_normalizesToEmpty_isOptionalNotInvalid() {
+        for blank in ["", "   ", "\n\t "] {
+            let normalized = ReferralPresentation.normalizedReferralCode(blank)
+            #expect(normalized.isEmpty)
+            // referralCodeIsValid(blank) is false, but the paywall never reads that alone — it
+            // only flags a code as invalid when normalizedReferralCode.isEmpty == false AND
+            // referralCodeIsValid == false. A blank/whitespace-only value fails the isEmpty
+            // check, so it can never reach the "invalid" branch — matching the composition above.
+            #expect(ReferralPresentation.referralCodeIsValid(blank) == false)
+        }
+    }
+
+    @Test(
+        "A non-empty, malformed referral code fails validation, so the paywall's isEmpty==false && !isValid gate correctly flags it as invalid",
+        arguments: ["SHORT", "ABCD234O", "TOOLONGCODE9"]
+    )
+    func nonEmptyInvalidReferralCode_failsValidation_gateFlagsInvalid(code: String) {
+        let normalized = ReferralPresentation.normalizedReferralCode(code)
+        #expect(normalized.isEmpty == false)
+        #expect(ReferralPresentation.referralCodeIsValid(code) == false)
+        // The exact boolean expression ProUpgradeView.hasInvalidNonEmptyReferralCode composes:
+        let hasInvalidNonEmptyReferralCode = normalized.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalized) == false
+        #expect(hasInvalidNonEmptyReferralCode)
+    }
+
+    @Test("A non-empty, well-formed referral code never trips the paywall's invalid-code gate")
+    func nonEmptyValidReferralCode_neverTripsInvalidGate() {
+        let normalized = ReferralPresentation.normalizedReferralCode("abcd2345")
+        let hasInvalidNonEmptyReferralCode = normalized.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalized) == false
+        #expect(hasInvalidNonEmptyReferralCode == false)
+    }
+
+    @Test("Pro-hides-entry and Free+canApply-shows-entry are the exact two paywall referral-card outcomes reused from the standalone Refer & Earn screen — no paywall-specific eligibility rule exists")
+    func paywallReusesExactStandaloneEntryEligibilityOutcomes() {
+        // Free, resolved, authoritative, backend allows it -> the paywall shows the entry field.
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: false,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .allowed
+        )
+        // Already Pro -> the paywall never shows entry (a purchase can't happen twice, and
+        // attribution must happen before the qualifying purchase).
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: true,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .blockedAlreadyPro
+        )
+    }
+
+    // MARK: - shouldBlockPurchaseForReferralInput (pre-merge pass: backend attribution must
+    // structurally dominate the paywall CTA's own invalid-input gate, not merely be assumed
+    // unreachable — see this function's own header)
+
+    @Test("No backend attribution + a malformed non-empty local code blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_malformedLocalInput_blocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: "BAD!"
+            )
+        )
+    }
+
+    @Test("No backend attribution + a blank local field never blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_blankLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: ""
+            ) == false
+        )
+    }
+
+    @Test("No backend attribution + a well-formed local code never blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_validLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: "5SDC95NB"
+            ) == false
+        )
+    }
+
+    @Test("Backend attribution already exists + a malformed stale local code must NOT block the CTA — backend state dominates")
+    func shouldBlockPurchase_backendCodeExists_malformedStaleLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "5SDC95NB",
+                normalizedReferralCode: "BAD!"
+            ) == false
+        )
+    }
+
+    @Test("Backend attribution already exists + a different valid stale local code must NOT block the CTA — backend state dominates")
+    func shouldBlockPurchase_backendCodeExists_differentValidStaleLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "5SDC95NB",
+                normalizedReferralCode: "ABCD2345"
+            ) == false
+        )
+    }
+
+    @Test("An empty-string backend-applied code is treated identically to nil — never mistaken for real attribution")
+    func shouldBlockPurchase_emptyStringBackendCode_treatedAsAbsent() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "",
+                normalizedReferralCode: "BAD!"
+            )
+        )
+    }
+
     // MARK: - Referred-status copy (20-23)
 
     @Test("referredStatus 'pending' maps to friendly Pending copy")

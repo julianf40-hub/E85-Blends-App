@@ -151,8 +151,17 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
 /// contract in ReferralManager.swift).
 final class FakeReferralEnvironmentProvider: ReferralRevenueEnvironmentProviding, @unchecked Sendable {
     var environment: ReferralRevenueEnvironment?
+    /// When set, `currentEnvironment()` suspends here before returning — lets a test observe
+    /// `loadState` mid-lookup (e.g. proving `.waitingForStoreEnvironment` is set BEFORE the lookup
+    /// resolves), deterministically, exactly like FakeReferralAPIService's own statusGate/
+    /// applyCodeGate above. `nil` (the default) means no artificial suspension — every pre-existing
+    /// test using this fake is unaffected.
+    var gate: TestGate?
     init(environment: ReferralRevenueEnvironment?) { self.environment = environment }
-    func currentEnvironment() async -> ReferralRevenueEnvironment? { environment }
+    func currentEnvironment() async -> ReferralRevenueEnvironment? {
+        await gate?.wait()
+        return environment
+    }
 }
 
 struct FakeReferralRevenueCatIdentityProvider: ReferralRevenueCatIdentityProviding {
@@ -231,27 +240,81 @@ struct ReferralManagerTests {
         #expect(stored.map(ReferralInstallationCredential.isValid) == true)
     }
 
-    @Test("bootstrapIfNeeded with no environment signal yet leaves state idle and never calls the service")
-    func bootstrap_noEnvironment_staysIdle() async {
+    @Test("bootstrapIfNeeded with no environment signal yet sets waitingForStoreEnvironment (never .idle) and never calls the service")
+    func bootstrap_noEnvironment_waitsForStoreEnvironment() async {
         let service = FakeReferralAPIService()
         let manager = makeManager(service: service, environmentProvider: FakeReferralEnvironmentProvider(environment: nil))
 
         await manager.bootstrapIfNeeded()
 
-        #expect(manager.loadState == .idle)
+        #expect(manager.loadState == .waitingForStoreEnvironment)
         #expect(service.bootstrapCallCount == 0)
         #expect(manager.hasBootstrappedThisLaunch == false)
     }
 
-    @Test("bootstrapIfNeeded with no RevenueCat identity available yet never calls the service")
-    func bootstrap_noAppUserID_neverCallsService() async {
+    @Test("bootstrapIfNeeded with no RevenueCat identity available yet sets waitingForRevenueCatIdentity (never .idle) and never calls the service")
+    func bootstrap_noAppUserID_waitsForRevenueCatIdentity() async {
         let service = FakeReferralAPIService()
         let manager = makeManager(service: service, appUserID: nil)
 
         await manager.bootstrapIfNeeded()
         await manager.bootstrapIfNeeded()
 
+        #expect(manager.loadState == .waitingForRevenueCatIdentity)
         #expect(service.bootstrapCallCount == 0)
+    }
+
+    @Test("The environment lookup sets loadState to waitingForStoreEnvironment BEFORE the lookup itself resolves, not after")
+    func bootstrap_environmentLookupInFlight_setsWaitingStateBeforeResolving() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let envProvider = FakeReferralEnvironmentProvider(environment: .production)
+        let gate = TestGate()
+        envProvider.gate = gate
+        let manager = makeManager(service: service, environmentProvider: envProvider)
+
+        let bootstrapTask = Task { await manager.bootstrapIfNeeded() }
+
+        // Let the manager run up to — and suspend inside — the gated environment lookup, without
+        // ever letting it resolve yet.
+        await settleScheduler()
+        #expect(manager.loadState == .waitingForStoreEnvironment)
+        #expect(service.bootstrapCallCount == 0)
+
+        gate.open()
+        await bootstrapTask.value
+
+        guard case .loaded = manager.loadState else {
+            Issue.record("Expected .loaded once the gate opened, got \(manager.loadState)")
+            return
+        }
+    }
+
+    @Test("A successful environment resolution after an earlier unavailable attempt lets bootstrap succeed and reach .loaded")
+    func bootstrap_environmentSucceedsOnRetry_reachesLoaded() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let envProvider = FakeReferralEnvironmentProvider(environment: nil)
+        let manager = makeManager(service: service, environmentProvider: envProvider)
+
+        await manager.bootstrapIfNeeded()
+        #expect(manager.loadState == .waitingForStoreEnvironment)
+        #expect(service.bootstrapCallCount == 0)
+
+        // A later retry (e.g. the user tapping "Try Again", or a subsequent refresh()) with the
+        // environment now available must be able to start a genuinely fresh attempt — proving
+        // ensureBootstrapped()'s `defer { bootstrapTask = nil }` cleared the prior attempt rather
+        // than leaving it permanently in flight.
+        envProvider.environment = .production
+        await manager.bootstrapIfNeeded()
+
+        guard case .loaded(let status) = manager.loadState else {
+            Issue.record("Expected .loaded after the retry, got \(manager.loadState)")
+            return
+        }
+        #expect(status.referralCode == "ABCD2345")
+        #expect(service.bootstrapCallCount == 1)
+        #expect(manager.hasBootstrappedThisLaunch)
     }
 
     @Test("bootstrapIfNeeded with an empty RevenueCat identity never calls the service")
@@ -355,7 +418,7 @@ struct ReferralManagerTests {
         #expect(service.statusCallCount == 1)
     }
 
-    @Test("refresh() when bootstrap preconditions aren't met yet is a safe no-op, leaving state idle")
+    @Test("refresh() when bootstrap preconditions aren't met yet is a safe no-op, leaving state waitingForStoreEnvironment")
     func refresh_bootstrapPreconditionsUnavailable_isNoOp() async {
         let service = FakeReferralAPIService()
         let manager = makeManager(service: service, environmentProvider: FakeReferralEnvironmentProvider(environment: nil))
@@ -363,7 +426,7 @@ struct ReferralManagerTests {
         await manager.refresh()
 
         #expect(service.statusCallCount == 0)
-        #expect(manager.loadState == .idle)
+        #expect(manager.loadState == .waitingForStoreEnvironment)
     }
 
     // MARK: 18. Environment becomes available later — deferred bootstrap on next refresh
@@ -1081,5 +1144,266 @@ struct ReferralRevenueEnvironmentTests {
         let provider = FakeReferralEnvironmentProvider(environment: environment)
         let result = await provider.currentEnvironment()
         #expect(result == environment)
+    }
+}
+
+// MARK: - Bounded-wait racer (85Blends 2.4.0 referral onboarding hardening)
+//
+// `firstResult(operation:timeout:)` is what bounds StoreKitReferralRevenueEnvironmentProvider's
+// real AppTransaction.shared wait (see that type's own "BOUNDED WAIT" header for why this races
+// two UNSTRUCTURED Tasks via a continuation rather than a TaskGroup). It's generic and
+// StoreKit-agnostic specifically so it CAN be exhaustively tested here with deterministic
+// TestGate-controlled closures — unlike the real AppTransaction-touching code path itself (see
+// `provider_roundTripsBothCases` above), nothing here needs StoreKitTest/SKTestSession.
+
+struct FirstResultRacingTests {
+    @Test("firstResult returns the operation's result when it completes before the timeout closure, without ever needing the timeout closure to finish")
+    func operationWinsWhenFaster() async {
+        let operationGate = TestGate()
+        let timeoutGate = TestGate() // intentionally never opened in this test
+
+        let resultTask = Task {
+            await firstResult(
+                operation: {
+                    await operationGate.wait()
+                    return "operation"
+                },
+                timeout: {
+                    await timeoutGate.wait()
+                    return "timeout"
+                }
+            )
+        }
+
+        await settleScheduler()
+        operationGate.open()
+
+        let result = await resultTask.value
+        #expect(result == "operation")
+        // timeoutGate was never opened — firstResult still returned, proving this doesn't block
+        // on the losing closure (the exact property a TaskGroup-based race would NOT have — see
+        // this file's own "BOUNDED WAIT" header).
+    }
+
+    @Test("firstResult returns the timeout's result when the operation never completes, and never blocks waiting for it")
+    func timeoutWinsWhenOperationNeverCompletes() async {
+        let operationGate = TestGate() // intentionally never opened in this test
+        let timeoutGate = TestGate()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: {
+                    await operationGate.wait()
+                    return "operation"
+                },
+                timeout: {
+                    await timeoutGate.wait()
+                    return "timeout"
+                }
+            )
+        }
+
+        await settleScheduler()
+        timeoutGate.open()
+
+        let result = await resultTask.value
+        #expect(result == "timeout")
+    }
+
+    @Test("A late-arriving result from the losing closure is silently discarded, never crashes, and never changes the already-delivered result")
+    func loserResultIsDiscardedAfterFirstResultReturns() async {
+        let winningGate = TestGate()
+        let losingGate = TestGate()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: {
+                    await winningGate.wait()
+                    return "winner"
+                },
+                timeout: {
+                    await losingGate.wait()
+                    return "loser"
+                }
+            )
+        }
+
+        await settleScheduler()
+        winningGate.open()
+        let result = await resultTask.value
+        #expect(result == "winner")
+
+        // Resuming a CheckedContinuation twice is a runtime trap — opening the loser's gate AFTER
+        // firstResult already returned must never crash, and must never retroactively change the
+        // value the caller already received.
+        losingGate.open()
+        await settleScheduler()
+        #expect(result == "winner")
+    }
+
+    // MARK: - Loser cancellation (best-effort cleanup — see RaceTaskRegistry's own header)
+
+    @Test("When the operation wins, the timeout Task is cancelled rather than left to sleep out its full duration")
+    func operationWins_timeoutTaskIsCancelled() async {
+        let timeoutGate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: { "operation" },
+                timeout: {
+                    await timeoutGate.wait()
+                    await timeoutObservedCancellation.set(Task.isCancelled)
+                    return "timeout"
+                }
+            )
+        }
+
+        let result = await resultTask.value
+        #expect(result == "operation")
+
+        // The cancel call fires as part of the operation closure's own resume — give it a chance
+        // to land before releasing the (already-cancelled) timeout closure to observe it.
+        await settleScheduler()
+        timeoutGate.open()
+        await settleScheduler()
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("When the timeout wins, the operation Task is cancelled — the exact case that matters for a genuinely-hung AppTransaction.shared")
+    func timeoutWins_operationTaskIsCancelled() async {
+        let operationGate = TestGate()
+        let operationObservedCancellation = TestFlag()
+
+        let resultTask = Task {
+            await firstResult(
+                operation: {
+                    await operationGate.wait()
+                    await operationObservedCancellation.set(Task.isCancelled)
+                    return "operation"
+                },
+                timeout: { "timeout" }
+            )
+        }
+
+        let result = await resultTask.value
+        #expect(result == "timeout")
+
+        await settleScheduler()
+        operationGate.open()
+        await settleScheduler()
+
+        #expect(await operationObservedCancellation.get())
+    }
+}
+
+/// Deterministic (gate-based, never timing/scheduling-based) proof that RaceTaskRegistry closes
+/// the PRE-REGISTRATION cancellation race documented in that type's own header: a cancellation
+/// requested before `register(operationTask:timeoutTask:)` has run must still be applied the
+/// instant that Task's handle is actually stored, never silently dropped. Constructs
+/// RaceTaskRegistry directly (it is not `private`, specifically for this) rather than trying to
+/// force the race through `firstResult` itself, which would only ever be able to reproduce this
+/// ordering by scheduling luck, never deterministically.
+struct RaceTaskRegistryTests {
+    @Test("A timeout-task cancellation requested BEFORE registration is remembered and applied the instant registration happens")
+    func cancelTimeoutRequestedBeforeRegistration_appliesOnRegister() async {
+        let registry = RaceTaskRegistry()
+
+        // Requested first — at this point neither Task even exists yet.
+        registry.cancelTimeoutTask()
+
+        let gate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+        let timeoutTask = Task {
+            await gate.wait()
+            await timeoutObservedCancellation.set(Task.isCancelled)
+        }
+        let operationTask = Task {
+            await gate.wait()
+        }
+
+        // Registration must apply the already-requested cancellation immediately — before this
+        // call returns, per RaceTaskRegistry's own contract.
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+
+        gate.open()
+        _ = await timeoutTask.value
+        _ = await operationTask.value
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("An operation-task cancellation requested BEFORE registration is remembered and applied the instant registration happens")
+    func cancelOperationRequestedBeforeRegistration_appliesOnRegister() async {
+        let registry = RaceTaskRegistry()
+
+        registry.cancelOperationTask()
+
+        let gate = TestGate()
+        let operationObservedCancellation = TestFlag()
+        let operationTask = Task {
+            await gate.wait()
+            await operationObservedCancellation.set(Task.isCancelled)
+        }
+        let timeoutTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+
+        gate.open()
+        _ = await operationTask.value
+        _ = await timeoutTask.value
+
+        #expect(await operationObservedCancellation.get())
+    }
+
+    @Test("A timeout-task cancellation requested AFTER registration still cancels the already-registered handle")
+    func cancelTimeoutRequestedAfterRegistration_cancelsImmediately() async {
+        let registry = RaceTaskRegistry()
+
+        let gate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+        let timeoutTask = Task {
+            await gate.wait()
+            await timeoutObservedCancellation.set(Task.isCancelled)
+        }
+        let operationTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+        registry.cancelTimeoutTask()
+
+        gate.open()
+        _ = await timeoutTask.value
+        _ = await operationTask.value
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("An operation-task cancellation requested AFTER registration still cancels the already-registered handle")
+    func cancelOperationRequestedAfterRegistration_cancelsImmediately() async {
+        let registry = RaceTaskRegistry()
+
+        let gate = TestGate()
+        let operationObservedCancellation = TestFlag()
+        let operationTask = Task {
+            await gate.wait()
+            await operationObservedCancellation.set(Task.isCancelled)
+        }
+        let timeoutTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+        registry.cancelOperationTask()
+
+        gate.open()
+        _ = await operationTask.value
+        _ = await timeoutTask.value
+
+        #expect(await operationObservedCancellation.get())
     }
 }
