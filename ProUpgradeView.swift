@@ -36,6 +36,35 @@ struct ProUpgradeView: View {
     @State private var hasAppliedDefaultPlanSelection = false
     @State private var hasUserManuallySelectedPlan = false
 
+    // 85Blends 2.4.0 — Refer & Earn pre-purchase attribution. Referral attribution must happen
+    // BEFORE the qualifying paid Pro purchase (see ReferralAwareProPurchaseCoordinator.swift's own
+    // header) — this is the paywall's own compact code-entry path, distinct from (and never a
+    // replacement for) the standalone ReferralCodeEntrySheet under More -> Refer & Earn.
+    @State private var referralCodeInput = ""
+    @State private var isShowingReferralConfirmation = false
+    /// True only while the referral-first purchase sequence (apply, then purchase) is actually
+    /// running — see beginPurchase(normalizedReferralCode:)'s own re-entrancy guard. Folded into
+    /// `isWorking` in actionsSection alongside RevenueCat purchasing/restoring.
+    @State private var isApplyingReferralBeforePurchase = false
+    /// Safe, non-sensitive copy from ReferralPresentation.userFacingMessage(for:) only — never a
+    /// raw backend string, error description, or OSStatus. Cleared whenever the code field changes
+    /// or a new purchase attempt begins.
+    @State private var referralErrorMessage: String?
+
+    private var referralManager: ReferralManager { ReferralManager.shared }
+
+    /// Trim+uppercase only — see ReferralPresentation.normalizedReferralCode's own header. Shared
+    /// validation/normalization semantics with ReferralCodeEntrySheet; never a second validator.
+    private var normalizedReferralCode: String {
+        ReferralPresentation.normalizedReferralCode(referralCodeInput)
+    }
+
+    /// True only when the user has typed something non-empty that fails the shared format check —
+    /// a blank field is never "invalid," it just means no referral is being requested.
+    private var hasInvalidNonEmptyReferralCode: Bool {
+        normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode) == false
+    }
+
     // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
     // Experience. Split into two tiers so a quick scan reads "headline value" vs "everything
     // else included," rather than one flat list of equally-weighted bullets:
@@ -70,6 +99,7 @@ struct ProUpgradeView: View {
             VStack(alignment: .leading, spacing: 20) {
                 headerSection
                 planPickerCard
+                referralCard
                 benefitsCard
                 comingSoonCard
 
@@ -114,6 +144,15 @@ struct ProUpgradeView: View {
             // Load (or re-fetch for freshness) on every paywall presentation.
             await manager.loadProducts()
             applyDefaultPlanSelectionIfNeeded()
+        }
+        // 85Blends 2.4.0 — starts in PARALLEL with the product/offering load above, via a second
+        // top-level `.task`, never gating it: a person must still be able to purchase WITHOUT a
+        // referral code even if the referral service itself is unavailable. Referral availability
+        // only actually blocks anything when the person is actively trying to USE a code — see
+        // beginPurchase(normalizedReferralCode:). Exactly the same ReferralManager.refresh() the
+        // standalone Refer & Earn screen already calls — no second networking layer.
+        .task {
+            await referralManager.refresh()
         }
         // 85Blends 2.4.0 — centralized paywall-presentation signal for the App Store
         // review-request system (see SubscriptionManager.isPaywallPresented's header). Reporting
@@ -244,6 +283,10 @@ struct ProUpgradeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        // 85Blends 2.4.0 — disabled while the referral-first purchase sequence is running, so the
+        // selected plan can't change out from under an in-flight apply/purchase (Phase 14 of this
+        // feature's own task spec).
+        .disabled(isApplyingReferralBeforePurchase)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -299,6 +342,230 @@ struct ProUpgradeView: View {
         let availablePlans = Set(ProPlan.allCases.filter { manager.canPurchase($0) })
         if let bestAvailable = ProPlan.preferredDefault(among: availablePlans) {
             selectedPlan = bestAvailable
+        }
+    }
+
+    // MARK: - Referral Code (85Blends 2.4.0 — Refer & Earn pre-purchase attribution)
+    //
+    // Free users only — an existing Pro subscriber never sees any part of this card, not even a
+    // "checking eligibility" spinner (see Phase 7 of this feature's own task spec: "EXISTING PRO
+    // USER: No referral-code entry field"). `manager.isProUser` is read once here AND passed as
+    // the exact same value into `entryEligibility` below, so the two can never disagree about
+    // whether the user is Pro within a single render pass.
+
+    @ViewBuilder
+    private var referralCard: some View {
+        if !manager.isProUser {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeader(title: "Referral Code", subtitle: "Optional — have a friend's code? Enter it before subscribing.")
+
+                referralCardContent
+
+                Text("Referral codes can't be added after the qualifying paid Pro purchase.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+    }
+
+    /// Mirrors ReferEarnView's own `content` switch over the SAME ReferralLoadState — never a
+    /// second referral network/state layer. `.idle`/`.loading` render identically, matching that
+    /// screen's own convention.
+    @ViewBuilder
+    private var referralCardContent: some View {
+        switch referralManager.loadState {
+        case .idle, .loading:
+            statusRow(icon: "arrow.triangle.2.circlepath", text: "Checking referral eligibility…", color: AppTheme.Colors.textSecondary, spinning: true)
+        case .waitingForRevenueCatIdentity:
+            referralPreparationRow(text: "Finishing referral setup…")
+        case .waitingForStoreEnvironment:
+            referralPreparationRow(text: "Verifying the App Store environment for referrals…")
+        case .failed(let error):
+            referralUnavailableRow(error: error)
+        case .loaded(let status):
+            referralLoadedContent(status: status)
+        }
+    }
+
+    private func referralPreparationRow(text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            statusRow(icon: "arrow.triangle.2.circlepath", text: text, color: AppTheme.Colors.textSecondary, spinning: true)
+            referralRetryButton { await referralManager.refresh() }
+        }
+    }
+
+    /// Never a raw backend string, error description, or OSStatus — only the same REF-XXXXX
+    /// diagnostic support code already shown on the standalone Refer & Earn screen (see
+    /// ReferralPresentation.diagnosticCode(for:)'s own header).
+    private func referralUnavailableRow(error: ReferralServiceError) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            statusRow(icon: "exclamationmark.circle.fill", text: "Referral setup temporarily unavailable", color: AppTheme.Colors.textSecondary)
+            Text("Support code: \(ReferralPresentation.diagnosticCode(for: error))")
+                .font(.caption2.monospaced())
+                .foregroundStyle(AppTheme.Colors.textMuted)
+            referralRetryButton { await referralManager.refresh() }
+        }
+    }
+
+    private func referralRetryButton(action: @escaping () async -> Void) -> some View {
+        Button {
+            Task { await action() }
+        } label: {
+            Text("Try Again")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.stationYellow)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Applied-code state always takes precedence, independent of Pro-entitlement-resolution
+    /// state — checked FIRST, exactly like ReferEarnView's own referredBySection, before ever
+    /// consulting entryEligibility below.
+    @ViewBuilder
+    private func referralLoadedContent(status: ReferralStatus) -> some View {
+        if ReferralPresentation.hasAppliedReferralCode(referredByCode: status.referredByCode) {
+            appliedReferralRow(status: status)
+        } else {
+            // Reuses the EXACT SAME entryEligibility this feature's standalone Refer & Earn screen
+            // already uses — including its own hardening against a still-resolving or
+            // never-resolved RevenueCat entitlement fetch being misread as confirmed Free/Pro (see
+            // SubscriptionManager.hasAuthoritativeProStatus's own header). Never a second, paywall-
+            // specific eligibility rule.
+            switch ReferralPresentation.entryEligibility(
+                canApplyReferralCode: status.canApplyReferralCode,
+                isCurrentlyPro: manager.isProUser,
+                isEntitlementResolutionPending: manager.isInitialEntitlementResolutionPending,
+                hasAuthoritativeProStatus: manager.hasAuthoritativeProStatus
+            ) {
+            case .allowed:
+                referralCodeField
+            case .waitingForSubscriptionStatus:
+                statusRow(icon: "arrow.triangle.2.circlepath", text: "Checking Pro status…", color: AppTheme.Colors.textSecondary, spinning: true)
+            case .subscriptionStatusUnavailable:
+                VStack(alignment: .leading, spacing: 6) {
+                    statusRow(icon: "exclamationmark.triangle.fill", text: "Unable to verify Pro status", color: AppTheme.Colors.textSecondary)
+                    referralRetryButton { await SubscriptionManager.shared.refreshProStatus() }
+                }
+            case .blockedAlreadyPro:
+                // Structurally unreachable from this call site — this whole card only renders
+                // inside `if !manager.isProUser` above, and `isCurrentlyPro` here is that exact
+                // same value read in the same render pass. Handled for switch exhaustiveness only.
+                EmptyView()
+            case .blockedCannotApply:
+                EmptyView()
+            }
+        }
+    }
+
+    private func appliedReferralRow(status: ReferralStatus) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Referral code applied")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                if let code = status.referredByCode {
+                    Text(code)
+                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Exactly ReferralPresentation's shared normalization/validation — see
+    /// normalizedReferralCode/hasInvalidNonEmptyReferralCode above. Never a second validator, per
+    /// this feature's own task spec ("Do not duplicate a second validator").
+    private var referralCodeField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Referral code (optional)", text: $referralCodeInput)
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .tracking(2)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled(true)
+                .keyboardType(.asciiCapable)
+                .disabled(isApplyingReferralBeforePurchase)
+                .onChange(of: referralCodeInput) { _, newValue in
+                    let normalized = ReferralPresentation.normalizedReferralCode(newValue)
+                    referralCodeInput = String(normalized.prefix(ReferralPresentation.referralCodeLength))
+                    referralErrorMessage = nil
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(AppTheme.Colors.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .accessibilityLabel("Referral code, optional")
+                .accessibilityHint("Enter an 8 character referral code, or leave blank")
+
+            if hasInvalidNonEmptyReferralCode {
+                Text(ReferralPresentation.userFacingMessage(for: .api(.invalidReferralCode)))
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.warningRed)
+            }
+
+            if let referralErrorMessage {
+                Text(referralErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.warningRed)
+            }
+        }
+    }
+
+    /// The load-bearing ordering guarantee this whole feature exists for — see
+    /// ReferralAwareProPurchaseCoordinator.swift's own header. Re-entrancy-guarded so a double tap
+    /// (on the CTA, or on "Apply & Continue" in the confirmation dialog) can never start two
+    /// applies or two purchases: the guard-check-then-set below has no `await` in between, so on
+    /// @MainActor's serial executor the first call to actually run always claims the flag before a
+    /// second overlapping call gets a chance to observe it as false.
+    private func beginPurchase(normalizedReferralCode: String) async {
+        guard isApplyingReferralBeforePurchase == false else { return }
+        guard manager.purchaseState != .purchasing, manager.purchaseState != .restoring else { return }
+
+        isApplyingReferralBeforePurchase = true
+        referralErrorMessage = nil
+        defer { isApplyingReferralBeforePurchase = false }
+
+        let outcome = await ReferralAwareProPurchaseCoordinator.purchase(
+            normalizedCode: normalizedReferralCode,
+            applyReferralCode: { code in try await ReferralManager.shared.applyReferralCode(code) },
+            purchase: { await manager.purchasePro(selectedPlan) }
+        )
+
+        switch outcome {
+        case .purchased:
+            break // SubscriptionManager.purchaseState already reflects the purchase outcome.
+        case .invalidCode:
+            // Structurally shouldn't be reachable — the CTA is already disabled whenever
+            // hasInvalidNonEmptyReferralCode is true — kept as a safe no-op rather than ever
+            // silently purchasing anyway on an invalid code.
+            break
+        case .applyFailed(let message):
+            AppHaptics.warning()
+            referralErrorMessage = message
+        case .confirmationMismatch:
+            AppHaptics.warning()
+            referralErrorMessage = ReferralPresentation.userFacingMessage(for: .invalidResponse)
         }
     }
 
@@ -469,7 +736,11 @@ struct ProUpgradeView: View {
 
     @ViewBuilder
     private var actionsSection: some View {
-        let isWorking = manager.purchaseState == .purchasing || manager.purchaseState == .restoring
+        // 85Blends 2.4.0 — accounts for BOTH RevenueCat purchasing/restoring AND the referral
+        // pre-apply step (Phase 14 of this feature's own task spec), so the CTA/Continue/Restore
+        // row stays disabled for the whole referral-first purchase sequence, not just the final
+        // RevenueCat call.
+        let isWorking = manager.purchaseState == .purchasing || manager.purchaseState == .restoring || isApplyingReferralBeforePurchase
 
         VStack(spacing: 12) {
             if manager.isProUser {
@@ -480,8 +751,10 @@ struct ProUpgradeView: View {
                 // (offline / product missing). The blanket "subscriptions unavailable" note
                 // below is reserved for when EVERY plan has failed to resolve — a single
                 // unavailable plan is already communicated by that row's own "Unavailable right
-                // now" label in planRow, so it doesn't also need this global message.
-                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan))
+                // now" label in planRow, so it doesn't also need this global message. Also
+                // disabled while a non-empty typed referral code fails local format validation —
+                // never silently ignore an invalid code and purchase anyway.
+                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan) || hasInvalidNonEmptyReferralCode)
 
                 if !manager.anyPlanPurchasable {
                     availabilityNote
@@ -532,20 +805,34 @@ struct ProUpgradeView: View {
         }
     }
 
+    /// A blank referral field purchases immediately — no gate, no dialog. A non-empty one always
+    /// confirms first: referral codes are immutable once applied (see
+    /// ReferralAwareProPurchaseCoordinator's own header), so the user must explicitly opt in to
+    /// spending that one-time attribution before the purchase runs, per this feature's own
+    /// "load-bearing" referral-before-purchase ordering requirement.
     private func unlockButton(disabled: Bool) -> some View {
         Button {
-            Task { await manager.purchasePro(selectedPlan) }
+            if normalizedReferralCode.isEmpty {
+                Task { await beginPurchase(normalizedReferralCode: "") }
+            } else {
+                isShowingReferralConfirmation = true
+            }
         } label: {
             VStack(spacing: 3) {
-                Text("Unlock 85Blends Pro")
-                    .font(.headline)
-                    .foregroundStyle(.black)
-                // Show subscription title, duration, and price once the package is loaded
-                // so the user knows exactly what they're buying before tapping.
-                if let product = manager.storeProduct(for: selectedPlan) {
-                    Text("\(product.localizedTitle) · \(subscriptionPeriodLabel(for: product)) · \(product.localizedPriceString)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.black.opacity(0.7))
+                if isApplyingReferralBeforePurchase {
+                    ProgressView()
+                        .tint(.black)
+                } else {
+                    Text("Unlock 85Blends Pro")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                    // Show subscription title, duration, and price once the package is loaded
+                    // so the user knows exactly what they're buying before tapping.
+                    if let product = manager.storeProduct(for: selectedPlan) {
+                        Text("\(product.localizedTitle) · \(subscriptionPeriodLabel(for: product)) · \(product.localizedPriceString)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.black.opacity(0.7))
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
@@ -556,6 +843,19 @@ struct ProUpgradeView: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .confirmationDialog(
+            "Apply referral code?",
+            isPresented: $isShowingReferralConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Apply & Continue") {
+                let code = normalizedReferralCode
+                Task { await beginPurchase(normalizedReferralCode: code) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Apply \(normalizedReferralCode) before subscribing?\n\nReferral codes can't be changed after they're applied.")
+        }
     }
 
     private func subscriptionPeriodLabel(for product: StoreProduct) -> String {

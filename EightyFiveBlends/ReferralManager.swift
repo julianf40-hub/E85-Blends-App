@@ -71,8 +71,24 @@ import Foundation
 import Observation
 
 enum ReferralLoadState: Equatable {
+    /// Neutral initial state — no attempt has been made yet this process. Deliberately NEVER
+    /// reused to mean "a prerequisite is unavailable": before this hardening pass, a missing
+    /// RevenueCat identity or StoreKit environment signal both left this at `.idle`, which
+    /// `ReferEarnView` rendered identically to `.loading` — a real, potentially indefinite
+    /// prerequisite wait was visually indistinguishable from "still loading" (see this feature's
+    /// own task spec, Part A). `.waitingForRevenueCatIdentity`/`.waitingForStoreEnvironment` below
+    /// exist specifically so a genuine wait is never silently folded back into this case.
     case idle
     case loading
+    /// `performBootstrap()` is waiting on `identityProvider.currentAppUserID()` — RevenueCat
+    /// hasn't produced an App User ID yet this launch. Not an error: routine and retryable, but
+    /// distinct from `.idle` so the UI can say what setup is actually waiting on.
+    case waitingForRevenueCatIdentity
+    /// `performBootstrap()` is waiting on `environmentProvider.currentEnvironment()` — the
+    /// verified StoreKit SANDBOX/PRODUCTION signal referral-api's bootstrap action requires isn't
+    /// available yet (or the bounded wait for it timed out — see
+    /// StoreKitReferralRevenueEnvironmentProvider's own "BOUNDED WAIT" header). Not an error.
+    case waitingForStoreEnvironment
     case loaded(ReferralStatus)
     case failed(ReferralServiceError)
 }
@@ -281,8 +297,10 @@ final class ReferralManager {
 
         guard let revenueCatAppUserID = identityProvider.currentAppUserID(), revenueCatAppUserID.isEmpty == false else {
             // Not an error — RevenueCat simply hasn't configured/produced an identity yet this
-            // launch. Stays idle/retryable, exactly like "no environment signal yet" below.
-            loadState = .idle
+            // launch. Retryable, but distinct from `.idle` (see ReferralLoadState's own header) so
+            // the UI can say specifically what referral setup is waiting on, instead of an
+            // indefinite generic spinner.
+            loadState = .waitingForRevenueCatIdentity
             throw ReferralServiceError.notConfigured
         }
 
@@ -299,10 +317,19 @@ final class ReferralManager {
             throw serviceError
         }
 
+        // Set BEFORE awaiting the environment signal — StoreKitReferralRevenueEnvironmentProvider
+        // bounds its own wait (see that type's own "BOUNDED WAIT" header), but even a bounded wait
+        // takes real time; this immediately tells the UI what referral setup is waiting on instead
+        // of leaving it on a generic network spinner for however long that wait takes.
+        loadState = .waitingForStoreEnvironment
         guard let environment = await environmentProvider.currentEnvironment() else {
-            loadState = .idle
+            // Already `.waitingForStoreEnvironment` from just above — explicit here too so this
+            // stays correct even if a future refactor reorders the lines above. No authoritative
+            // signal arrived before the provider's own bounded wait gave up — never a guess.
+            loadState = .waitingForStoreEnvironment
             throw ReferralServiceError.notConfigured
         }
+        loadState = .loading
 
         do {
             let service = try serviceFactory()

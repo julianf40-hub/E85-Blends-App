@@ -192,6 +192,72 @@ struct ReferralPresentationTests {
         )
     }
 
+    // MARK: - Paywall entry-gate composition (Phase 20, 2.4.0)
+    //
+    // ProUpgradeView's own `hasInvalidNonEmptyReferralCode` is a PRIVATE computed property (not
+    // reachable even via @testable import) that composes exactly
+    // `normalizedReferralCode.isEmpty == false && referralCodeIsValid(normalizedReferralCode) ==
+    // false` — deliberately never a second/duplicate validator, per this feature's own task spec.
+    // These tests pin the exact behavior of that composition's two ReferralPresentation building
+    // blocks so a future change to either one can't silently break the paywall's gating without a
+    // test failing here.
+
+    @Test("An empty or whitespace-only referral code normalizes to empty — the paywall treats this as 'no code,' optional, never as an invalid one")
+    func blankReferralCode_normalizesToEmpty_isOptionalNotInvalid() {
+        for blank in ["", "   ", "\n\t "] {
+            let normalized = ReferralPresentation.normalizedReferralCode(blank)
+            #expect(normalized.isEmpty)
+            // referralCodeIsValid(blank) is false, but the paywall never reads that alone — it
+            // only flags a code as invalid when normalizedReferralCode.isEmpty == false AND
+            // referralCodeIsValid == false. A blank/whitespace-only value fails the isEmpty
+            // check, so it can never reach the "invalid" branch — matching the composition above.
+            #expect(ReferralPresentation.referralCodeIsValid(blank) == false)
+        }
+    }
+
+    @Test(
+        "A non-empty, malformed referral code fails validation, so the paywall's isEmpty==false && !isValid gate correctly flags it as invalid",
+        arguments: ["SHORT", "ABCD234O", "TOOLONGCODE9"]
+    )
+    func nonEmptyInvalidReferralCode_failsValidation_gateFlagsInvalid(code: String) {
+        let normalized = ReferralPresentation.normalizedReferralCode(code)
+        #expect(normalized.isEmpty == false)
+        #expect(ReferralPresentation.referralCodeIsValid(code) == false)
+        // The exact boolean expression ProUpgradeView.hasInvalidNonEmptyReferralCode composes:
+        let hasInvalidNonEmptyReferralCode = normalized.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalized) == false
+        #expect(hasInvalidNonEmptyReferralCode)
+    }
+
+    @Test("A non-empty, well-formed referral code never trips the paywall's invalid-code gate")
+    func nonEmptyValidReferralCode_neverTripsInvalidGate() {
+        let normalized = ReferralPresentation.normalizedReferralCode("abcd2345")
+        let hasInvalidNonEmptyReferralCode = normalized.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalized) == false
+        #expect(hasInvalidNonEmptyReferralCode == false)
+    }
+
+    @Test("Pro-hides-entry and Free+canApply-shows-entry are the exact two paywall referral-card outcomes reused from the standalone Refer & Earn screen — no paywall-specific eligibility rule exists")
+    func paywallReusesExactStandaloneEntryEligibilityOutcomes() {
+        // Free, resolved, authoritative, backend allows it -> the paywall shows the entry field.
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: false,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .allowed
+        )
+        // Already Pro -> the paywall never shows entry (a purchase can't happen twice, and
+        // attribution must happen before the qualifying purchase).
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: true,
+                isEntitlementResolutionPending: false,
+                hasAuthoritativeProStatus: true
+            ) == .blockedAlreadyPro
+        )
+    }
+
     // MARK: - Referred-status copy (20-23)
 
     @Test("referredStatus 'pending' maps to friendly Pending copy")

@@ -87,6 +87,10 @@ struct ReferEarnView: View {
         switch ReferralManager.shared.loadState {
         case .idle, .loading:
             loadingSection
+        case .waitingForRevenueCatIdentity:
+            preparationSection(body: "We're waiting for subscription services to finish starting before referrals can be loaded.")
+        case .waitingForStoreEnvironment:
+            preparationSection(body: "We're verifying the App Store environment required for referrals.")
         case .failed(let error):
             errorSection(error: error)
         case .loaded(let status):
@@ -118,6 +122,39 @@ struct ReferEarnView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 48)
         .accessibilityElement(children: .combine)
+    }
+
+    /// Shown while ReferralManager is waiting on a referral PREREQUISITE (RevenueCat identity or
+    /// a verified StoreKit environment signal) rather than the referral-api network call itself —
+    /// see ReferralLoadState's own header on why these are distinct from `.idle`/`.loading`. Never
+    /// a hard error: no REF-XXXXX support code here (there is no ReferralServiceError to map —
+    /// see errorSection(error:) for that), and never exposes the RevenueCat identity, raw
+    /// AppTransaction data, or a raw sandbox/production value — `body` is always one of this
+    /// file's own two fixed, safe copy strings.
+    private func preparationSection(body: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            AppCard {
+                HStack(alignment: .top, spacing: 12) {
+                    ProgressView()
+                        .tint(AppTheme.Colors.textMuted)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Finishing referral setup")
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Text(body)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+
+            SecondaryButton(title: "Try Again") {
+                Task { await ReferralManager.shared.refresh() }
+            }
+        }
     }
 
     /// The diagnostic support code below is display-only — never the primary message, never a
