@@ -144,6 +144,35 @@ final class SubscriptionManager {
         RevenueCatSubscriptionService.shared.isInitialEntitlementResolutionPending
     }
 
+    /// 85Blends 2.4.0 Refer & Earn hardening — a STRONGER signal than
+    /// `isInitialEntitlementResolutionPending == false`. That flag only means the first
+    /// resolution *attempt* has finished — per `InitialEntitlementResolutionState.resolved`'s own
+    /// header, it is deliberately reached on a FAILED first fetch too (and on a missing SDK key),
+    /// specifically so Stations never hangs behind an indefinite loading shell. That means
+    /// `isInitialEntitlementResolutionPending == false && isProUser == false` alone cannot
+    /// distinguish a confirmed-Free result from "the fetch failed and we still don't actually
+    /// know." This property answers the narrower, stronger question Refer & Earn actually needs:
+    /// has at least one REAL CustomerInfo result been successfully applied this process? Derived
+    /// from `RevenueCatSubscriptionService.customerInfoLastUpdatedAt`, which is set only inside
+    /// `apply(_:)` — i.e. only by a successful fetch/purchase/restore/stream update, never by a
+    /// failed refresh (see that file's own `refreshCustomerInfoNow()` catch block, which
+    /// deliberately never touches it). Referral code entry must never be offered — and an
+    /// existing Pro subscriber must never be told they're already Pro — on the strength of a
+    /// failed fetch; this is the property that lets `ReferralPresentation.entryEligibility`
+    /// require a real answer before doing either.
+    var hasAuthoritativeProStatus: Bool {
+        RevenueCatSubscriptionService.shared.customerInfoLastUpdatedAt != nil
+    }
+
+    /// Narrow feature-facing wrapper so Refer & Earn's "Try Again" can re-request CustomerInfo
+    /// without reaching into RevenueCatSubscriptionService or Purchases.shared directly from
+    /// SwiftUI. Duplicates no entitlement logic of its own — delegates entirely to the existing
+    /// `refreshCustomerInfoNow()`, the same manual-refresh path already used by Internal/Debug
+    /// diagnostics and the scenePhase → .active handler.
+    func refreshProStatus() async {
+        await RevenueCatSubscriptionService.shared.refreshCustomerInfoNow()
+    }
+
     // MARK: - Feature access (all derived from `isPro`)
     var canAccessTripPlanner: Bool       { isPro }
     var canAccessAdvancedAnalytics: Bool { isPro }

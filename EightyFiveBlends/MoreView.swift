@@ -51,6 +51,22 @@ struct MoreView: View {
                             ProUpgradeView()
                         }
 
+                        // 85Blends 2.4.0 Refer & Earn — available to every user, Free and Pro
+                        // alike (cloud sync's own "core capability, not a Pro benefit" precedent
+                        // applies the same way here: referring is not itself a premium feature).
+                        // Deliberately NEVER wrapped in `if appExperienceMode == .normal` — Simple
+                        // Mode's own promise (Calculator, Stations, streamlined Settings only)
+                        // does not extend to hiding a user-facing core capability like this one,
+                        // and it is never Pro-gated either. See ReferEarnView.swift's own header.
+                        MoreNavigationRow(
+                            title: "Refer & Earn",
+                            subtitle: "Refer 5 paid Pro members and earn a free month.",
+                            systemImage: "gift.fill",
+                            tint: AppTheme.Colors.stationYellow
+                        ) {
+                            ReferEarnView()
+                        }
+
                         // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
                         // Calculator, Stations, and streamlined Settings only.
                         if appExperienceMode == .normal {

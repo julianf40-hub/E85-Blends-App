@@ -588,4 +588,32 @@ struct SubscriptionManagerTests {
     // safely faked to exercise this end-to-end), the same reasoning already established for items
     // 13/20/22 above — not a new runtime assertion, since sections A-D's existing tests already
     // exhaustively cover these functions' actual, unchanged behavior.
+
+    // MARK: K. hasAuthoritativeProStatus / refreshProStatus() — 85Blends 2.4.0 Refer & Earn hardening
+    //
+    // SubscriptionManager.hasAuthoritativeProStatus derives directly from
+    // RevenueCatSubscriptionService.customerInfoLastUpdatedAt != nil (SubscriptionManager.swift) —
+    // a `private(set)` property only ever written inside RevenueCatSubscriptionService.apply(_:),
+    // itself only ever reached by a SUCCESSFUL refreshCustomerInfoNow()/purchase(_:)/restore()/
+    // customerInfoStream emission (see that file's own header). A FAILED refreshCustomerInfoNow()
+    // explicitly does not call apply(_:) — same untestable-in-process category as section I above
+    // (this file's header explains why: no constructible real CustomerInfo, and configuring the
+    // live Purchases SDK as a side effect isn't safe for a unit test) — so the actual true-producing
+    // path (a real successful CustomerInfo fetch) is a code-inspection fact here, not a runtime
+    // assertion, exactly like items 13/20/22 and section I's scenarios A-H.
+    //
+    // refreshProStatus() is a one-line, directly-inspectable delegation to the existing, already-
+    // tested-by-production-use refreshCustomerInfoNow() (SubscriptionManager.swift) — it introduces
+    // no new entitlement logic of its own to test.
+
+    @Test("hasAuthoritativeProStatus reads false before any CustomerInfo has ever been successfully applied this process (the untouched default customerInfoLastUpdatedAt == nil state)")
+    func hasAuthoritativeProStatus_isFalseBeforeAnyRealCustomerInfo() {
+        // This test process never calls RevenueCatSubscriptionService.configureIfNeeded() (no
+        // SDK key is configured for the test target — see this file's header on why RevenueCat
+        // can't safely be driven end-to-end here), so customerInfoLastUpdatedAt can only still be
+        // at its declared `nil` default — proving hasAuthoritativeProStatus starts false rather
+        // than, say, accidentally defaulting to true. Does NOT prove the true-producing path;
+        // that's the code-inspection fact in this section's own header above.
+        #expect(SubscriptionManager.shared.hasAuthoritativeProStatus == false)
+    }
 }
