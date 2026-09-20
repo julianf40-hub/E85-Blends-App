@@ -140,6 +140,24 @@ enum ReferralPresentation {
         referredByCode != nil
     }
 
+    /// Whether a malformed, non-empty LOCAL referral code should actually disable the paywall's
+    /// purchase CTA — structurally `false` whenever `backendAppliedReferralCode` is non-empty,
+    /// never merely assumed unreachable in practice. Mirrors
+    /// `ReferralAwareProPurchaseCoordinator.purchase`'s own `alreadyAppliedCode` precedence
+    /// (backend attribution wins unconditionally over local input — same code, a different valid
+    /// code, or malformed input alike) at the UI-gating layer: once this installation already has
+    /// a confirmed referral, the CTA must never stay disabled because of stale, hidden local text
+    /// field state the user can no longer even edit.
+    static func shouldBlockPurchaseForReferralInput(
+        backendAppliedReferralCode: String?,
+        normalizedReferralCode: String
+    ) -> Bool {
+        guard (backendAppliedReferralCode ?? "").isEmpty else {
+            return false
+        }
+        return normalizedReferralCode.isEmpty == false && referralCodeIsValid(normalizedReferralCode) == false
+    }
+
     // MARK: - Applied referral status copy (Phase 17)
 
     struct AppliedStatusPresentation: Equatable, Sendable {

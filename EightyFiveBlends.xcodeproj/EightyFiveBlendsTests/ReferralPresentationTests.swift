@@ -258,6 +258,70 @@ struct ReferralPresentationTests {
         )
     }
 
+    // MARK: - shouldBlockPurchaseForReferralInput (pre-merge pass: backend attribution must
+    // structurally dominate the paywall CTA's own invalid-input gate, not merely be assumed
+    // unreachable — see this function's own header)
+
+    @Test("No backend attribution + a malformed non-empty local code blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_malformedLocalInput_blocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: "BAD!"
+            )
+        )
+    }
+
+    @Test("No backend attribution + a blank local field never blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_blankLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: ""
+            ) == false
+        )
+    }
+
+    @Test("No backend attribution + a well-formed local code never blocks the CTA")
+    func shouldBlockPurchase_noBackendCode_validLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: nil,
+                normalizedReferralCode: "5SDC95NB"
+            ) == false
+        )
+    }
+
+    @Test("Backend attribution already exists + a malformed stale local code must NOT block the CTA — backend state dominates")
+    func shouldBlockPurchase_backendCodeExists_malformedStaleLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "5SDC95NB",
+                normalizedReferralCode: "BAD!"
+            ) == false
+        )
+    }
+
+    @Test("Backend attribution already exists + a different valid stale local code must NOT block the CTA — backend state dominates")
+    func shouldBlockPurchase_backendCodeExists_differentValidStaleLocalInput_neverBlocks() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "5SDC95NB",
+                normalizedReferralCode: "ABCD2345"
+            ) == false
+        )
+    }
+
+    @Test("An empty-string backend-applied code is treated identically to nil — never mistaken for real attribution")
+    func shouldBlockPurchase_emptyStringBackendCode_treatedAsAbsent() {
+        #expect(
+            ReferralPresentation.shouldBlockPurchaseForReferralInput(
+                backendAppliedReferralCode: "",
+                normalizedReferralCode: "BAD!"
+            )
+        )
+    }
+
     // MARK: - Referred-status copy (20-23)
 
     @Test("referredStatus 'pending' maps to friendly Pending copy")

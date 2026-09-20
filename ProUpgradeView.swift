@@ -60,9 +60,25 @@ struct ProUpgradeView: View {
     }
 
     /// True only when the user has typed something non-empty that fails the shared format check —
-    /// a blank field is never "invalid," it just means no referral is being requested.
+    /// a blank field is never "invalid," it just means no referral is being requested. Used only
+    /// for the inline warning text under the (already-hidden-once-applied) text field itself; see
+    /// `shouldBlockPurchaseForInvalidReferralInput` below for the CTA's own gating, which must
+    /// additionally yield to backend attribution.
     private var hasInvalidNonEmptyReferralCode: Bool {
         normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode) == false
+    }
+
+    /// The CTA's own referral-input gate — structurally yields to backend attribution rather than
+    /// merely relying on the (already-hidden) text field being unreachable once applied. See
+    /// `ReferralPresentation.shouldBlockPurchaseForReferralInput`'s own header: this mirrors the
+    /// coordinator's `alreadyAppliedCode` precedence at the UI-gating layer, so stale/malformed
+    /// local input can never keep the Unlock button disabled once `backendAppliedReferralCode` is
+    /// non-empty.
+    private var shouldBlockPurchaseForInvalidReferralInput: Bool {
+        ReferralPresentation.shouldBlockPurchaseForReferralInput(
+            backendAppliedReferralCode: backendAppliedReferralCode,
+            normalizedReferralCode: normalizedReferralCode
+        )
     }
 
     /// The backend's own authoritative attribution for this installation, if any — reads ONLY
@@ -781,8 +797,10 @@ struct ProUpgradeView: View {
                 // unavailable plan is already communicated by that row's own "Unavailable right
                 // now" label in planRow, so it doesn't also need this global message. Also
                 // disabled while a non-empty typed referral code fails local format validation —
-                // never silently ignore an invalid code and purchase anyway.
-                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan) || hasInvalidNonEmptyReferralCode)
+                // never silently ignore an invalid code and purchase anyway — UNLESS backend
+                // attribution already exists, in which case that stale local input must never
+                // block a legitimate purchase (see shouldBlockPurchaseForInvalidReferralInput).
+                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan) || shouldBlockPurchaseForInvalidReferralInput)
 
                 if !manager.anyPlanPurchasable {
                     availabilityNote
