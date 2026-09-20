@@ -80,28 +80,67 @@ struct ReferralPresentationTests {
         #expect(ReferralPresentation.progressInCurrentCycle(referralsNeeded: -3) == 5)
     }
 
-    // MARK: - Entry eligibility (16-19)
+    // MARK: - Entry eligibility (16-19, extended for entitlement-resolution gating)
 
-    @Test("canApplyReferralCode=true and not currently Pro allows entry")
+    @Test("canApplyReferralCode=true, entitlement resolved, not Pro allows entry")
     func entryEligibility_freeUserCanApply_allowed() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: false) == .allowed)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: false, isEntitlementResolutionPending: false) == .allowed)
     }
 
-    @Test("canApplyReferralCode=true but currently Pro blocks entry with the Pro-specific reason")
+    @Test("canApplyReferralCode=true, entitlement resolved, Pro blocks entry with the Pro-specific reason")
     func entryEligibility_proUserCanApply_blockedAlreadyPro() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: true) == .blockedAlreadyPro)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: true, isCurrentlyPro: true, isEntitlementResolutionPending: false) == .blockedAlreadyPro)
     }
 
-    @Test("canApplyReferralCode=false blocks entry regardless of Pro status")
+    @Test("canApplyReferralCode=false blocks entry regardless of Pro status or entitlement-resolution state")
     func entryEligibility_cannotApply_blockedRegardlessOfPro() {
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false) == .blockedCannotApply)
-        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: true) == .blockedCannotApply)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: false) == .blockedCannotApply)
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: true, isEntitlementResolutionPending: false) == .blockedCannotApply)
+        // The backend's own canApplyReferralCode=false is checked first and is decisive on its
+        // own — still blockedCannotApply even while entitlement resolution is pending.
+        #expect(ReferralPresentation.entryEligibility(canApplyReferralCode: false, isCurrentlyPro: false, isEntitlementResolutionPending: true) == .blockedCannotApply)
+    }
+
+    @Test(
+        "While entitlement resolution is pending, entry is withheld with waitingForSubscriptionStatus regardless of the provisional isCurrentlyPro value",
+        arguments: [false, true]
+    )
+    func entryEligibility_entitlementResolutionPending_waitsRegardlessOfProvisionalProValue(provisionalIsCurrentlyPro: Bool) {
+        // A real Pro subscriber can briefly read isProUser == false during cold-launch RevenueCat
+        // resolution — this must never be trusted while resolution is still pending, in either
+        // direction: .allowed would risk letting a real Pro subscriber apply a code they should
+        // never be offered; .blockedAlreadyPro would risk wrongly telling a real Free user they
+        // can't enter a code.
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: provisionalIsCurrentlyPro,
+                isEntitlementResolutionPending: true
+            ) == .waitingForSubscriptionStatus
+        )
     }
 
     @Test("A present referredByCode means the immutable applied state, never entry")
     func hasAppliedReferralCode_reflectsReferredByCodePresence() {
         #expect(ReferralPresentation.hasAppliedReferralCode(referredByCode: "ABCD2345"))
         #expect(ReferralPresentation.hasAppliedReferralCode(referredByCode: nil) == false)
+    }
+
+    @Test("hasAppliedReferralCode takes no entitlement-resolution parameter, so an applied code always wins independently of Pro-resolution state — see ReferEarnLoadedContent.referredBySection's own precedence comment")
+    func hasAppliedReferralCode_isIndependentOfEntitlementResolution() {
+        #expect(ReferralPresentation.hasAppliedReferralCode(referredByCode: "ABCD2345"))
+        // Confirms the separate fact this precedence relies on: with the exact same
+        // canApplyReferralCode/isCurrentlyPro inputs, entryEligibility alone (never consulted by
+        // referredBySection once a code is applied) would have produced a waiting/blocked outcome
+        // instead — hasAppliedReferralCode being checked first is what shields the applied card
+        // from ever being replaced by it.
+        #expect(
+            ReferralPresentation.entryEligibility(
+                canApplyReferralCode: true,
+                isCurrentlyPro: false,
+                isEntitlementResolutionPending: true
+            ) == .waitingForSubscriptionStatus
+        )
     }
 
     // MARK: - Referred-status copy (20-23)

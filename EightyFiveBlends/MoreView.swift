@@ -56,8 +56,8 @@ struct MoreView: View {
                         // applies the same way here: referring is not itself a premium feature).
                         // Deliberately NEVER wrapped in `if appExperienceMode == .normal` — Simple
                         // Mode's own promise (Calculator, Stations, streamlined Settings only)
-                        // does not extend to hiding an account-level capability like this one, and
-                        // it is never Pro-gated either. See ReferEarnView.swift's own header.
+                        // does not extend to hiding a user-facing core capability like this one,
+                        // and it is never Pro-gated either. See ReferEarnView.swift's own header.
                         MoreNavigationRow(
                             title: "Refer & Earn",
                             subtitle: "Refer 5 paid Pro members and earn a free month.",

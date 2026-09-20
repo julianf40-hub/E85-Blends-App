@@ -83,6 +83,13 @@ enum ReferralPresentation {
         /// Show the entry prompt/button — free-or-Pro-eligible-either-way installation with no
         /// code applied yet.
         case allowed
+        /// RevenueCat's initial entitlement fetch hasn't resolved yet, so `isCurrentlyPro` is
+        /// provisional and cannot yet be trusted either way — a real Pro subscriber can briefly
+        /// read as `false` during cold-launch resolution. Never fall through to `.allowed` or
+        /// `.blockedAlreadyPro` while this is true; both would risk either hiding entry from an
+        /// eligible Free user or, worse, letting an existing Pro subscriber apply a code they
+        /// should never be offered.
+        case waitingForSubscriptionStatus
         /// Already Pro — referral codes must be applied BEFORE the qualifying purchase, so
         /// entry is intentionally withheld once the user is already subscribed.
         case blockedAlreadyPro
@@ -94,8 +101,19 @@ enum ReferralPresentation {
         case blockedCannotApply
     }
 
-    static func entryEligibility(canApplyReferralCode: Bool, isCurrentlyPro: Bool) -> EntryEligibility {
+    /// UX gating only — the backend remains authoritative on whether an apply_code call actually
+    /// succeeds. `isEntitlementResolutionPending` takes priority over `isCurrentlyPro` (checked
+    /// second, right after the backend's own `canApplyReferralCode`) specifically because a
+    /// provisional `isCurrentlyPro == false` during cold-launch RevenueCat resolution is not the
+    /// same fact as a confirmed Free entitlement — see
+    /// `SubscriptionManager.isInitialEntitlementResolutionPending`'s own header.
+    static func entryEligibility(
+        canApplyReferralCode: Bool,
+        isCurrentlyPro: Bool,
+        isEntitlementResolutionPending: Bool
+    ) -> EntryEligibility {
         guard canApplyReferralCode else { return .blockedCannotApply }
+        if isEntitlementResolutionPending { return .waitingForSubscriptionStatus }
         return isCurrentlyPro ? .blockedAlreadyPro : .allowed
     }
 
