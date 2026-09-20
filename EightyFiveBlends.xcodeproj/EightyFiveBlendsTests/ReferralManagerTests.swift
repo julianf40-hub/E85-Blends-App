@@ -1297,3 +1297,113 @@ struct FirstResultRacingTests {
         #expect(await operationObservedCancellation.get())
     }
 }
+
+/// Deterministic (gate-based, never timing/scheduling-based) proof that RaceTaskRegistry closes
+/// the PRE-REGISTRATION cancellation race documented in that type's own header: a cancellation
+/// requested before `register(operationTask:timeoutTask:)` has run must still be applied the
+/// instant that Task's handle is actually stored, never silently dropped. Constructs
+/// RaceTaskRegistry directly (it is not `private`, specifically for this) rather than trying to
+/// force the race through `firstResult` itself, which would only ever be able to reproduce this
+/// ordering by scheduling luck, never deterministically.
+struct RaceTaskRegistryTests {
+    @Test("A timeout-task cancellation requested BEFORE registration is remembered and applied the instant registration happens")
+    func cancelTimeoutRequestedBeforeRegistration_appliesOnRegister() async {
+        let registry = RaceTaskRegistry()
+
+        // Requested first — at this point neither Task even exists yet.
+        registry.cancelTimeoutTask()
+
+        let gate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+        let timeoutTask = Task {
+            await gate.wait()
+            await timeoutObservedCancellation.set(Task.isCancelled)
+        }
+        let operationTask = Task {
+            await gate.wait()
+        }
+
+        // Registration must apply the already-requested cancellation immediately — before this
+        // call returns, per RaceTaskRegistry's own contract.
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+
+        gate.open()
+        _ = await timeoutTask.value
+        _ = await operationTask.value
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("An operation-task cancellation requested BEFORE registration is remembered and applied the instant registration happens")
+    func cancelOperationRequestedBeforeRegistration_appliesOnRegister() async {
+        let registry = RaceTaskRegistry()
+
+        registry.cancelOperationTask()
+
+        let gate = TestGate()
+        let operationObservedCancellation = TestFlag()
+        let operationTask = Task {
+            await gate.wait()
+            await operationObservedCancellation.set(Task.isCancelled)
+        }
+        let timeoutTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+
+        gate.open()
+        _ = await operationTask.value
+        _ = await timeoutTask.value
+
+        #expect(await operationObservedCancellation.get())
+    }
+
+    @Test("A timeout-task cancellation requested AFTER registration still cancels the already-registered handle")
+    func cancelTimeoutRequestedAfterRegistration_cancelsImmediately() async {
+        let registry = RaceTaskRegistry()
+
+        let gate = TestGate()
+        let timeoutObservedCancellation = TestFlag()
+        let timeoutTask = Task {
+            await gate.wait()
+            await timeoutObservedCancellation.set(Task.isCancelled)
+        }
+        let operationTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+        registry.cancelTimeoutTask()
+
+        gate.open()
+        _ = await timeoutTask.value
+        _ = await operationTask.value
+
+        #expect(await timeoutObservedCancellation.get())
+    }
+
+    @Test("An operation-task cancellation requested AFTER registration still cancels the already-registered handle")
+    func cancelOperationRequestedAfterRegistration_cancelsImmediately() async {
+        let registry = RaceTaskRegistry()
+
+        let gate = TestGate()
+        let operationObservedCancellation = TestFlag()
+        let operationTask = Task {
+            await gate.wait()
+            await operationObservedCancellation.set(Task.isCancelled)
+        }
+        let timeoutTask = Task {
+            await gate.wait()
+        }
+
+        registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
+        registry.cancelOperationTask()
+
+        gate.open()
+        _ = await operationTask.value
+        _ = await timeoutTask.value
+
+        #expect(await operationObservedCancellation.get())
+    }
+}

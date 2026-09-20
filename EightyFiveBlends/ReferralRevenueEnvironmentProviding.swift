@@ -49,13 +49,19 @@
 //  (cancellation is cooperative, and `AppTransaction.shared` is not guaranteed to observe it
 //  promptly) — so a slow/hung `AppTransaction.shared` could still block the "timed out" result from
 //  ever being returned. Racing via unstructured Tasks avoids that: the winner's result is returned
-//  immediately, and the loser is explicitly `.cancel()`-ed (see `RaceTaskRegistry` below) as a
-//  best-effort cleanup — cancellation is still cooperative, so this cannot force-terminate a
-//  genuinely-hung `AppTransaction.shared` that never checks `Task.isCancelled` itself, but it
-//  ensures a loser that DOES respect cancellation stops promptly instead of running to completion
-//  unobserved, and avoids one leaked, permanently-suspended Task per retry in the worst case (a
-//  real Refer & Earn "Try Again"/pull-to-refresh path re-races on every attempt while the
-//  environment stays unavailable).
+//  immediately, and the loser receives a best-effort cancellation REQUEST (see `RaceTaskRegistry`
+//  below). Two things are true about that request, and neither is optional:
+//    1. It can never be silently lost due to registration timing — `RaceTaskRegistry` remembers a
+//       cancellation requested before the loser's `Task` handle is even registered, and applies it
+//       the instant registration happens (see that type's own header for the race this closes).
+//    2. It is still only a REQUEST. Cancellation in Swift is cooperative: a cancellable operation
+//       like `Task.sleep` stops promptly once cancelled, but if `AppTransaction.shared` itself
+//       never checks `Task.isCancelled`/`Task.checkCancellation()`, the unstructured Task wrapping
+//       it can remain suspended until StoreKit itself eventually returns — this file does NOT, and
+//       cannot, guarantee that a genuinely non-cooperative `AppTransaction.shared` can never leak a
+//       suspended Task. What IS guaranteed regardless: `firstResult` itself still returns within
+//       `timeout` every time, since the winner is decided independently of whether the loser ever
+//       actually stops.
 //
 
 import Foundation
@@ -169,34 +175,70 @@ private actor FirstResumeGuard<T: Sendable> {
 /// Holds the two racing `Task` handles so the winner can cancel its sibling — a plain
 /// `NSLock`-backed class (not an actor) so `register(operationTask:timeoutTask:)` can be called
 /// synchronously right after both `Task`s are created, from `firstResult`'s own non-async
-/// continuation body. In the vanishingly unlikely case a racer wins before registration lands,
-/// its cancel call simply finds nothing registered yet and is a no-op — the loser then behaves
-/// exactly as it did before this cleanup existed (runs to completion, its result silently
-/// discarded by `FirstResumeGuard`), never a correctness issue, only a missed cleanup
-/// opportunity.
-private final class RaceTaskRegistry: @unchecked Sendable {
+/// continuation body.
+///
+/// PRE-REGISTRATION CANCELLATION RACE (closed) — a newly created `Task` can begin running on a
+/// different OS thread immediately, genuinely in parallel with the thread still executing
+/// `firstResult`'s synchronous continuation body. If a racer's own closure completes near-
+/// instantly (a trivially fast `operation`/`timeout`, exactly as several of this file's own tests
+/// deliberately construct), it can win `FirstResumeGuard` and call `cancelTimeoutTask()`/
+/// `cancelOperationTask()` BEFORE `register(operationTask:timeoutTask:)` has run on the other
+/// thread — at which point the naive version of this type (read the stored `Task?`, call
+/// `.cancel()` if non-nil) would find `nil` and silently drop the cancellation request forever,
+/// even though the loser's handle is registered moments later. `operationCancellationRequested`/
+/// `timeoutCancellationRequested` close that window: a cancellation requested before registration
+/// is remembered and applied the instant `register` actually stores that task's handle, so a
+/// cancellation request can never be silently lost purely due to timing — see
+/// `EightyFiveBlendsTests/ReferralManagerTests.swift`'s own `RaceTaskRegistryTests` for
+/// deterministic (gate-based, not timing-based) proof of exactly this ordering. `Task.cancel()`
+/// itself is only ever invoked AFTER releasing `lock`, never while held.
+///
+/// Not `private` (this file's other single-use-site types stay `private`) specifically so
+/// `RaceTaskRegistryTests` can construct and drive one directly with full control over call
+/// order — the only way to test the pre-registration race deterministically rather than via
+/// scheduling luck.
+final class RaceTaskRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var operationTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var operationCancellationRequested = false
+    private var timeoutCancellationRequested = false
 
     func register(operationTask: Task<Void, Never>, timeoutTask: Task<Void, Never>) {
         lock.lock()
         self.operationTask = operationTask
         self.timeoutTask = timeoutTask
+        let shouldCancelOperation = operationCancellationRequested
+        let shouldCancelTimeout = timeoutCancellationRequested
         lock.unlock()
+
+        if shouldCancelOperation {
+            operationTask.cancel()
+        }
+        if shouldCancelTimeout {
+            timeoutTask.cancel()
+        }
     }
 
     func cancelOperationTask() {
         lock.lock()
-        let task = operationTask
-        lock.unlock()
-        task?.cancel()
+        if let operationTask {
+            lock.unlock()
+            operationTask.cancel()
+        } else {
+            operationCancellationRequested = true
+            lock.unlock()
+        }
     }
 
     func cancelTimeoutTask() {
         lock.lock()
-        let task = timeoutTask
-        lock.unlock()
-        task?.cancel()
+        if let timeoutTask {
+            lock.unlock()
+            timeoutTask.cancel()
+        } else {
+            timeoutCancellationRequested = true
+            lock.unlock()
+        }
     }
 }
