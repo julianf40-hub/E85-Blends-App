@@ -143,12 +143,13 @@ func firstResult<T: Sendable>(
                 registry.cancelOperationTask()
             }
         }
-        // Registered synchronously, immediately after creation — before returning from this
-        // (non-async) continuation body — so a racer that resolves and wins essentially
-        // instantly still finds its sibling already registered and cancellable. RaceTaskRegistry
-        // is a plain NSLock-backed class specifically so this registration needs no `await`
-        // (this closure isn't async), matching this test target's existing TestGate/TestFlag
-        // pattern for the same reason.
+        // Registration happens immediately after both task handles are created. If a racer wins
+        // before registration completes, RaceTaskRegistry's sticky cancellation-request flags
+        // preserve the request and apply it once the sibling handle is registered — see that
+        // type's own header for the exact race this closes. RaceTaskRegistry is a plain
+        // NSLock-backed class specifically so this registration needs no `await` (this closure
+        // isn't async), matching this test target's existing TestGate/TestFlag pattern for the
+        // same reason.
         registry.register(operationTask: operationTask, timeoutTask: timeoutTask)
     }
 }
