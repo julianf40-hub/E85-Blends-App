@@ -108,8 +108,13 @@ struct ReferralAPIService: ReferralAPIServicing {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Client-safe key only — see SupabaseConfig.swift's own "Key Safety Notes." Never a
-        // service-role credential; none exists anywhere in this app.
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
+        // service-role credential; none exists anywhere in this app. The modern publishable key
+        // when configured (production always ships one — see SupabaseConfig.referralClientAPIKey's
+        // own header), falling back to the legacy anon key only so a configuration without
+        // SUPABASE_PUBLISHABLE_KEY set doesn't immediately break. Deliberately never both keys and
+        // never a retry with the other one — referral-api accepts either individually; this is a
+        // single deterministic choice, not a fallback attempt sequence.
+        request.setValue(config.referralClientAPIKey, forHTTPHeaderField: "apikey")
 
         guard let body = try? encoder.encode(payload) else {
             throw ReferralServiceError.decoding
