@@ -277,3 +277,77 @@ test("deriveClaimStatus: redeemed beats expired — a redeemed code that has sin
     "redeemed",
   );
 });
+
+// MARK: — deriveClaimStatus fails closed: 'claimed' requires the EXACT combination
+// (claimStatus === 'claimed' AND offerCodeStatus === 'issued' AND offerCodeExpired === false),
+// never a default for anything merely unrecognized (Phase 4 hardening).
+
+test("deriveClaimStatus: claimed + an 'available' (never-allocated) code is non-redeemable, not 'claimed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "available", offerCodeExpired: false }),
+    "void",
+  );
+});
+
+test("deriveClaimStatus: claimed + no resolvable code row (null) is non-redeemable, not 'claimed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: null, offerCodeExpired: false }),
+    "void",
+  );
+});
+
+test("deriveClaimStatus: an unrecognized claim status paired with an 'issued' code is non-redeemable, not 'claimed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "some_future_value", offerCodeStatus: "issued", offerCodeExpired: false }),
+    "void",
+  );
+});
+
+test("deriveClaimStatus: an unrecognized offer-code status is non-redeemable, not 'claimed', even with a recognized claim status", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "some_future_value", offerCodeExpired: false }),
+    "void",
+  );
+});
+
+test("deriveClaimStatus: exhaustively, 'claimed' is returned ONLY for the one exact valid combination", () => {
+  const claimStatuses = ["claimed", "redeemed", "void", "unrecognized", ""];
+  const offerCodeStatuses = ["issued", "available", "redeemed", "void", "unrecognized", null];
+  let claimedCount = 0;
+  for (const claimStatus of claimStatuses) {
+    for (const offerCodeStatus of offerCodeStatuses) {
+      for (const offerCodeExpired of [false, true]) {
+        const result = deriveClaimStatus({ claimStatus, offerCodeStatus, offerCodeExpired });
+        const isExactValidCombination = claimStatus === "claimed" && offerCodeStatus === "issued" && !offerCodeExpired;
+        if (isExactValidCombination) {
+          assert.equal(result, "claimed", `expected 'claimed' for the exact valid combination`);
+          claimedCount++;
+        } else {
+          assert.notEqual(result, "claimed", `claimStatus=${claimStatus} offerCodeStatus=${offerCodeStatus} offerCodeExpired=${offerCodeExpired} must NOT be 'claimed'`);
+        }
+      }
+    }
+  }
+  assert.equal(claimedCount, 1, "exactly one combination in this matrix should have produced 'claimed'");
+});
+
+test("end-to-end: every deriveClaimStatus fail-closed outcome, run through buildStatusResponse, never emits a redemption_url", () => {
+  const failClosedInputs = [
+    { claimStatus: "claimed", offerCodeStatus: "available", offerCodeExpired: false },
+    { claimStatus: "claimed", offerCodeStatus: null, offerCodeExpired: false },
+    { claimStatus: "some_future_value", offerCodeStatus: "issued", offerCodeExpired: false },
+    { claimStatus: "claimed", offerCodeStatus: "some_future_value", offerCodeExpired: false },
+  ];
+  for (const input of failClosedInputs) {
+    const status = deriveClaimStatus(input);
+    assert.equal(status, "void");
+    const response = buildStatusResponse({
+      status,
+      campaign: SAMPLE_CAMPAIGN,
+      selectedProductId: "com.85blends.subscription.monthly",
+      appleCode: "SHOULD-NEVER-LEAK-EITHER",
+    });
+    assert.equal(response.redemption_url, null);
+    assert.equal(JSON.stringify(response).includes("SHOULD-NEVER-LEAK-EITHER"), false);
+  }
+});

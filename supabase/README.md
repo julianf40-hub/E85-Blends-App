@@ -372,10 +372,17 @@ security posture as every other table in this file): `promo_campaigns`, `promo_c
 `promo_offer_codes`, `promo_claims`, `promo_code_attempts`. See the migration's own per-table header
 comments for the full column-by-column rationale — not duplicated here. `promo_claims` is the one
 direction of truth for "which claim owns which code": `offer_code_id` is `NOT NULL` and `UNIQUE`
-(one Apple code, at most one claim, ever, as a real DB constraint — not a convention), and composite
-foreign keys additionally force `campaign_plan_offer_id` to agree with the row's own `campaign_id`,
-and `offer_code_id` to agree with the row's own `campaign_plan_offer_id` — a claim can never
-structurally reference a plan-offer or code belonging to a different campaign/plan.
+(one Apple code, at most one claim, ever, as a real DB constraint — not a convention), a composite
+foreign key additionally forces `campaign_plan_offer_id`, `campaign_id`, **and** `product_id` to ALL
+agree with the exact same `promo_campaign_plan_offers` row (a claim can never structurally say
+"Annual" while its `campaign_plan_offer_id` names the Monthly plan-offer), and another ties
+`offer_code_id` to the row's own `campaign_plan_offer_id` — a claim can never structurally reference
+a plan-offer belonging to a different campaign, a mismatched product, or a code belonging to a
+different plan's pool. Separately, `promo_campaigns` itself has a `CHECK` requiring that any
+campaign with `status = 'active'` target at least one subscriber segment — an active campaign with
+all three `eligibility_*` flags false ("open to nobody") is rejected by the schema outright; this is
+a weaker, independent guardrail against an ops mistake, not a substitute for the fail-closed
+eligibility rule described below.
 
 **One-time code accounting is a CLAIM cap, not a redemption cap.** Once an Apple one-time-use code
 is revealed to a user (`promo_offer_codes.status = 'issued'`), it is **permanently** consumed from

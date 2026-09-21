@@ -263,8 +263,8 @@ test("promo_claims.offer_code_id is NOT NULL and UNIQUE — one Apple code is st
 
 test("promo_campaign_plan_offers and promo_offer_codes each expose the composite unique constraint promo_claims' own composite FKs require", () => {
   assertContains(
-    "constraint promo_campaign_plan_offers_id_campaign_id_key unique (id, campaign_id)",
-    "promo_campaign_plan_offers must expose (id, campaign_id) as a composite unique target",
+    "constraint promo_campaign_plan_offers_id_campaign_id_product_id_key unique (id, campaign_id, product_id)",
+    "promo_campaign_plan_offers must expose (id, campaign_id, product_id) as a composite unique target",
   );
   assertContains(
     "constraint promo_offer_codes_id_campaign_plan_offer_id_key unique (id, campaign_plan_offer_id)",
@@ -272,22 +272,41 @@ test("promo_campaign_plan_offers and promo_offer_codes each expose the composite
   );
 });
 
-test("promo_claims enforces campaign/plan/product/code relational consistency via composite foreign keys, not plain single-column FKs", () => {
+test("promo_claims enforces campaign/plan/PRODUCT/code relational consistency via a triple composite foreign key, not plain single-column FKs", () => {
   assertContains(
-    "constraint promo_claims_campaign_plan_offer_campaign_fkey\n    foreign key (campaign_plan_offer_id, campaign_id)\n    references private.promo_campaign_plan_offers (id, campaign_id)",
-    "a claim's campaign_plan_offer_id must be structurally tied to this SAME row's own campaign_id",
+    "constraint promo_claims_campaign_plan_offer_campaign_product_fkey\n    foreign key (campaign_plan_offer_id, campaign_id, product_id)\n    references private.promo_campaign_plan_offers (id, campaign_id, product_id)",
+    "a claim's campaign_plan_offer_id, campaign_id, AND product_id must ALL be structurally tied to the SAME promo_campaign_plan_offers row",
   );
   assertContains(
     "constraint promo_claims_offer_code_plan_offer_fkey\n    foreign key (offer_code_id, campaign_plan_offer_id)\n    references private.promo_offer_codes (id, campaign_plan_offer_id)",
     "a claim's offer_code_id must be structurally tied to this SAME row's own campaign_plan_offer_id",
   );
-  // A plain single-column FK on campaign_plan_offer_id would be strictly weaker than the composite
-  // one above (it would allow campaign_plan_offer_id to name a plan-offer under a DIFFERENT
-  // campaign than this row's own campaign_id) — confirm it was deliberately not (re-)added.
+  // A plain single-column FK on campaign_plan_offer_id (or a two-column one omitting product_id)
+  // would be strictly weaker than the triple composite one above — confirm neither was
+  // (re-)added, and that the earlier, narrower two-column FK this triple one replaced is gone.
   assertNotContains(
     "campaign_plan_offer_id uuid not null references private.promo_campaign_plan_offers(id),",
     "campaign_plan_offer_id must rely on the composite FK, not a plain single-column one",
   );
+  assertNotContains(
+    "constraint promo_claims_campaign_plan_offer_campaign_fkey",
+    "the earlier, weaker two-column (campaign_plan_offer_id, campaign_id) FK must be fully replaced, not kept alongside the triple one",
+  );
+});
+
+test("promo_claims.product_id can never disagree with the plan-offer it names — the DB rejects a Monthly plan-offer paired with an Annual product_id", () => {
+  // A structural (not just behavioral) proof: the triple FK's referenced tuple on
+  // promo_campaign_plan_offers is (id, campaign_id, product_id) — product_id is one of the
+  // MATCHED columns, not a bystander, so a claim naming a real campaign_plan_offer_id/campaign_id
+  // pair with a DIFFERENT product_id than that exact row has cannot satisfy this FK at all.
+  const fkMatch = sql.match(
+    /constraint promo_claims_campaign_plan_offer_campaign_product_fkey\s+foreign key \(([^)]+)\)\s+references private\.promo_campaign_plan_offers \(([^)]+)\)/,
+  );
+  assert.ok(fkMatch, "expected to find the triple composite FK's own column lists");
+  const claimColumns = fkMatch![1].split(",").map((c) => c.trim());
+  const parentColumns = fkMatch![2].split(",").map((c) => c.trim());
+  assert.deepEqual(claimColumns, ["campaign_plan_offer_id", "campaign_id", "product_id"]);
+  assert.deepEqual(parentColumns, ["id", "campaign_id", "product_id"]);
 });
 
 test("promo_code_attempts_outcome_check carries the exact extended outcome vocabulary, including eligibility_unverified", () => {
@@ -334,4 +353,40 @@ test("private.claim_promo_campaign checks the existing claim (idempotency) BEFOR
   assert.ok(statusCheckIndex > idempotencyIndex, "campaign_not_active check must come AFTER the idempotency check, not before");
   assert.ok(eligibilityCheckIndex > idempotencyIndex, "eligibility fail-closed check must come AFTER the idempotency check, not before");
   assert.ok(productCheckIndex > idempotencyIndex, "product_not_eligible check must come AFTER the idempotency check, not before");
+});
+
+// MARK: — final pre-merge integrity pass: active campaigns must target a segment, structural
+// product_id consistency (see the two tests already added above under the previous MARK section
+// for the composite-unique-target and triple-FK assertions themselves)
+
+test("an ACTIVE campaign must target at least one subscriber segment — a DB-level CHECK, independent of claim_promo_campaign's own fail-closed rule", () => {
+  assertContains(
+    "constraint promo_campaigns_active_has_eligibility_target\n    check (\n      status <> 'active'\n      or eligibility_new_subscribers\n      or eligibility_existing_subscribers\n      or eligibility_expired_subscribers\n    )",
+    "an active campaign with all three eligibility flags false must be rejected by the schema itself",
+  );
+});
+
+test("draft/paused/ended campaigns are exempt from the active-has-eligibility-target check — only status = 'active' triggers it", () => {
+  // The CHECK's own first disjunct is `status <> 'active'` — confirm the constraint text uses
+  // exactly that escape hatch rather than, say, listing every non-active status explicitly (which
+  // would silently stop covering a future fifth status value).
+  const constraintMatch = sql.match(/constraint promo_campaigns_active_has_eligibility_target\s+check \(([\s\S]*?)\)\s*,/);
+  assert.ok(constraintMatch, "expected to find the active-has-eligibility-target CHECK's own body");
+  assert.ok(constraintMatch![1].includes("status <> 'active'"), "the escape hatch must be status <> 'active', not an enumerated non-active list");
+});
+
+test("the active-has-eligibility-target CHECK does not touch or loosen claim_promo_campaign's own separate, stricter fail-closed rule", () => {
+  // The schema-level CHECK only requires ONE of the three flags (an OR) — claim_promo_campaign's
+  // own rule (asserted by the eligibility fail-closed test above) still requires ALL three (an
+  // AND). These are two deliberately different thresholds; confirm the weaker OR-based CHECK's
+  // own text never appears inside claim_promo_campaign's function body, i.e. the two rules are
+  // genuinely separate mechanisms, not one accidentally overwriting the other.
+  const functionStart = sql.indexOf("create function private.claim_promo_campaign(");
+  const functionEnd = sql.indexOf("$function$;", functionStart);
+  const body = sql.slice(functionStart, functionEnd);
+  assert.ok(!body.includes("promo_campaigns_active_has_eligibility_target"), "the DB CHECK constraint name must not appear inside claim_promo_campaign's own body");
+  assert.ok(
+    body.includes("v_campaign.eligibility_new_subscribers") && body.includes("v_campaign.eligibility_existing_subscribers") && body.includes("v_campaign.eligibility_expired_subscribers"),
+    "claim_promo_campaign must still check all three flags itself, independent of the schema-level CHECK",
+  );
 });

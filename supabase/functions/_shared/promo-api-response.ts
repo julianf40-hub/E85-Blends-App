@@ -150,11 +150,17 @@ export interface StatusResponseInput {
 }
 
 export interface ClaimStatusDerivationInput {
-  /** promo_claims.status: 'claimed' | 'redeemed' | 'void'. */
+  /** promo_claims.status: 'claimed' | 'redeemed' | 'void' by the DB's own CHECK constraint — typed
+   *  as plain `string` here (not that literal union) deliberately, so deriveClaimStatus's own
+   *  fail-closed handling of an unrecognized value is a real, exercised code path, not something
+   *  the type system quietly rules out. */
   claimStatus: string;
   /** promo_offer_codes.status for this claim's own code: 'available' | 'issued' | 'redeemed' |
-   *  'void' — null only if the claim somehow has no resolvable code row (structurally shouldn't
-   *  happen now that offer_code_id is NOT NULL + FK-enforced, but never assumed away). */
+   *  'void' by the DB's own CHECK constraint — null only if the claim somehow has no resolvable
+   *  code row (structurally shouldn't happen now that offer_code_id is NOT NULL + FK-enforced).
+   *  'available' specifically would itself be a structural inconsistency (offer_code_id should
+   *  only ever point at a code claim_promo_campaign just marked 'issued') — deriveClaimStatus
+   *  treats it, null, and any other unrecognized value identically: fail closed, never 'claimed'. */
   offerCodeStatus: string | null;
   /** True when the code's own apple_expires_at has passed, computed in SQL (see index.ts's own
    *  loadExistingClaim query) to avoid any driver timestamp-comparison risk. */
@@ -166,8 +172,25 @@ export interface ClaimStatusDerivationInput {
  * external status vocabulary `status` returns. void/expired/redeemed never carry a redemption_url
  * (see buildStatusResponse) regardless of WHICH of the two underlying rows actually recorded it —
  * a claim can be independently voided by ops, or its code can independently expire or be voided,
- * and either must produce the same safe, non-URL-bearing external status. Order matters: void
- * (either side) wins over redeemed, which wins over expired, which wins over the default 'claimed'.
+ * and either must produce the same safe, non-URL-bearing external status.
+ *
+ * 'claimed' — the ONLY status buildStatusResponse ever attaches a redemption_url to — is
+ * therefore a PRIVILEGE, not a default: it requires an EXACT valid combination
+ * (claimStatus === 'claimed' AND offerCodeStatus === 'issued' AND offerCodeExpired === false),
+ * checked last, only once every other, more specific state has been ruled out. Anything that
+ * isn't one of the two recognized terminal states (void/redeemed) and also isn't that exact
+ * combination — an unrecognized claimStatus, an offerCodeStatus that is 'available' (never
+ * actually allocated to this claim despite the claim existing) or null (no resolvable code row)
+ * or any other unrecognized value — fails closed to 'void' rather than falling through to
+ * 'claimed' by default. A future, genuinely distinct "structurally invalid" status was considered
+ * and rejected here: 'void' already means "this claim's code is not currently redeemable," which
+ * is exactly what every one of these fail-closed cases is, and introducing a second status for the
+ * same external meaning would only give a caller two things to check instead of one.
+ *
+ * Order (checked in this exact sequence): (1) void wins, either side. (2) redeemed wins, either
+ * side. (3) any claimStatus other than 'claimed' fails closed to void. (4) any offerCodeStatus
+ * other than 'issued' fails closed to void. (5) an expired-but-issued code is 'expired'. (6) only
+ * then, 'claimed'.
  */
 export function deriveClaimStatus(input: ClaimStatusDerivationInput): PromoClaimStatusValue {
   if (input.claimStatus === "void" || input.offerCodeStatus === "void") {
@@ -175,6 +198,12 @@ export function deriveClaimStatus(input: ClaimStatusDerivationInput): PromoClaim
   }
   if (input.claimStatus === "redeemed" || input.offerCodeStatus === "redeemed") {
     return "redeemed";
+  }
+  if (input.claimStatus !== "claimed") {
+    return "void";
+  }
+  if (input.offerCodeStatus !== "issued") {
+    return "void";
   }
   if (input.offerCodeExpired) {
     return "expired";

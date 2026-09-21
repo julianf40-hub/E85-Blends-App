@@ -171,6 +171,23 @@ create table private.promo_campaigns (
   eligibility_existing_subscribers boolean not null default false,
   eligibility_expired_subscribers boolean not null default false,
 
+  -- An ACTIVE campaign must target AT LEAST ONE subscriber segment. draft/paused/ended may sit
+  -- with all three false (nothing to enforce yet, or no longer relevant) — but flipping status to
+  -- 'active' with all three false would mean "open to nobody," never a meaningful campaign state
+  -- and almost certainly an ops mistake (forgot to set eligibility before activating). This is a
+  -- WEAKER, independent guarantee from private.claim_promo_campaign's own fail-closed rule
+  -- (Section 6): a campaign scoped to fewer than all three segments (e.g. new subscribers only)
+  -- still gets refused with 'eligibility_unverified' there until real RevenueCat-backed
+  -- eligibility enforcement exists. This constraint only rules out the strictly worse "active and
+  -- targets literally nobody" case — it does not loosen or replace that separate rule.
+  constraint promo_campaigns_active_has_eligibility_target
+    check (
+      status <> 'active'
+      or eligibility_new_subscribers
+      or eligibility_existing_subscribers
+      or eligibility_expired_subscribers
+    ),
+
   -- User-facing presentation copy — the ONLY campaign fields promo-api's `validate`/`status`
   -- actions ever return (see Section 7's header). display_title is required; every other display
   -- field is optional so a minimal campaign can still be created without inventing placeholder text.
@@ -245,15 +262,23 @@ create table private.promo_campaign_plan_offers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
+  -- ONE plan per product within a campaign — a DIFFERENT business invariant from the composite
+  -- unique target below: this one is about what may belong to a campaign at all; the one below
+  -- exists only so a CHILD row's composite FK can verify it agrees with the exact parent row it
+  -- claims to belong to.
   constraint promo_campaign_plan_offers_campaign_product_key unique (campaign_id, product_id),
 
   -- Composite unique, existing ONLY to be the target of promo_claims' own composite foreign key
-  -- below (Section 5) — Postgres requires a unique/PK constraint on exactly the referenced column
-  -- tuple. (id) alone is already unique via the primary key; this additionally makes (id,
-  -- campaign_id) unique, so a claim's campaign_plan_offer_id can be tied, at the schema level, to
-  -- the SAME campaign_id it also stores directly — see Section 7 of this migration's own header
-  -- for why this closes a relational-consistency gap a plain single-column FK cannot.
-  constraint promo_campaign_plan_offers_id_campaign_id_key unique (id, campaign_id)
+  -- (Section 5) — Postgres requires a unique/PK constraint on exactly the referenced column tuple.
+  -- (id) alone is already unique via the primary key; this additionally makes (id, campaign_id,
+  -- product_id) unique, so a claim's campaign_plan_offer_id/campaign_id/product_id can ALL be tied,
+  -- at the schema level, to the SAME plan-offer row it claims to belong to — not just campaign_id.
+  -- An earlier revision of this migration exposed only (id, campaign_id) for this purpose, which
+  -- left promo_claims.product_id independently writable (the DB could theoretically hold a claim
+  -- naming a Monthly plan-offer while its own product_id column said Annual); that narrower
+  -- composite unique/FK pair has been replaced by this one, which fully subsumes it — see Section 7
+  -- of this migration's own header.
+  constraint promo_campaign_plan_offers_id_campaign_id_product_id_key unique (id, campaign_id, product_id)
 );
 
 comment on table private.promo_campaign_plan_offers is
@@ -321,8 +346,8 @@ create table private.promo_offer_codes (
   created_at timestamptz not null default now(),
 
   -- Composite unique, existing ONLY to be the target of promo_claims' own composite foreign key
-  -- (Section 5) — mirrors promo_campaign_plan_offers_id_campaign_id_key's own reasoning exactly:
-  -- (id) alone is already unique via the primary key; this additionally makes (id,
+  -- (Section 5) — mirrors promo_campaign_plan_offers_id_campaign_id_product_id_key's own reasoning
+  -- exactly: (id) alone is already unique via the primary key; this additionally makes (id,
   -- campaign_plan_offer_id) unique, so a claim's offer_code_id can be tied, at the schema level,
   -- to the SAME campaign_plan_offer_id it also stores directly — a code from one plan's pool can
   -- never end up structurally attached to a claim recorded against a different plan.
@@ -398,11 +423,14 @@ create table private.promo_claims (
   participant_id uuid not null references private.referral_participants(id),
   installation_id uuid not null references private.referral_client_installations(installation_id),
 
-  -- No plain single-column FK on either of these two — see the composite FK constraints below,
-  -- which subsume the plain-FK guarantee (id must exist) AND additionally force
-  -- campaign_plan_offer_id/offer_code_id to structurally agree with THIS row's own campaign_id
-  -- (Section 7 of this migration's own header: "DB-level campaign/plan/product/code relational
-  -- consistency").
+  -- campaign_plan_offer_id has no plain single-column FK — see the composite FK constraints below,
+  -- which subsume the plain-FK guarantee (id must exist) AND additionally force it to structurally
+  -- agree with THIS row's own campaign_id AND product_id (Section 7 of this migration's own
+  -- header: "DB-level campaign/plan/product/code relational consistency"). product_id carries no
+  -- independent FK of its own either — it is not free-standing text: the SAME composite FK below
+  -- ties it to the exact plan-offer row campaign_plan_offer_id already names, so this column can
+  -- never disagree with the plan a claim was actually made against (e.g. naming the Monthly
+  -- plan-offer while this column says Annual is structurally impossible).
   campaign_plan_offer_id uuid not null,
   product_id text not null,
 
@@ -447,23 +475,30 @@ create table private.promo_claims (
   -- NULL).
   constraint promo_claims_offer_code_id_key unique (offer_code_id),
 
-  -- Relational-consistency composite FKs (Section 7): campaign_plan_offer_id must belong to THIS
-  -- row's own campaign_id, and offer_code_id must belong to THIS row's own campaign_plan_offer_id
-  -- — both enforced by referencing a composite UNIQUE constraint on the parent table (plain (id)
-  -- uniqueness alone cannot express this; see promo_campaign_plan_offers_id_campaign_id_key and
+  -- Relational-consistency composite FKs (Section 7): campaign_plan_offer_id, campaign_id, AND
+  -- product_id must ALL belong to the SAME promo_campaign_plan_offers row, and offer_code_id must
+  -- belong to THIS row's own campaign_plan_offer_id — both enforced by referencing a composite
+  -- UNIQUE constraint on the parent table (plain (id) uniqueness alone cannot express this; see
+  -- promo_campaign_plan_offers_id_campaign_id_product_id_key and
   -- promo_offer_codes_id_campaign_plan_offer_id_key, each created for exactly this purpose). It is
   -- therefore structurally impossible to record a claim whose plan-offer belongs to a different
-  -- campaign, or whose offer code was drawn from a different plan-offer's pool.
-  constraint promo_claims_campaign_plan_offer_campaign_fkey
-    foreign key (campaign_plan_offer_id, campaign_id)
-    references private.promo_campaign_plan_offers (id, campaign_id),
+  -- campaign, whose product_id disagrees with the plan-offer it names (e.g. Monthly plan-offer +
+  -- Annual product_id), or whose offer code was drawn from a different plan-offer's pool. The
+  -- three-column FK below replaces an earlier, weaker two-column
+  -- (campaign_plan_offer_id, campaign_id) -> (id, campaign_id) version that left product_id
+  -- independently writable — the new one fully subsumes it (any row satisfying the triple match
+  -- also satisfies the double match on its own campaign_id column), so the old, narrower
+  -- constraint was removed rather than kept alongside it.
+  constraint promo_claims_campaign_plan_offer_campaign_product_fkey
+    foreign key (campaign_plan_offer_id, campaign_id, product_id)
+    references private.promo_campaign_plan_offers (id, campaign_id, product_id),
   constraint promo_claims_offer_code_plan_offer_fkey
     foreign key (offer_code_id, campaign_plan_offer_id)
     references private.promo_offer_codes (id, campaign_plan_offer_id)
 );
 
 comment on table private.promo_claims is
-  '85Blends 2.4.0 promo campaigns. One immutable row per (participant, campaign) — see private.claim_promo_campaign (Section 6) for the concurrency-safe function that is the ONLY intended writer. offer_code_id is NOT NULL and UNIQUE: one Apple code is structurally owned by at most one claim, discoverable only via this reverse pointer (promo_offer_codes carries no pointer back). Composite foreign keys tie campaign_plan_offer_id to this row''s own campaign_id, and offer_code_id to this row''s own campaign_plan_offer_id — a claim can never reference a plan-offer or code belonging to a different campaign/plan. No cascading deletes from campaign/plan-offer/offer-code — a real claim blocks deletion of what it references. service_role-only.';
+  '85Blends 2.4.0 promo campaigns. One immutable row per (participant, campaign) — see private.claim_promo_campaign (Section 6) for the concurrency-safe function that is the ONLY intended writer. offer_code_id is NOT NULL and UNIQUE: one Apple code is structurally owned by at most one claim, discoverable only via this reverse pointer (promo_offer_codes carries no pointer back). A composite foreign key ties campaign_plan_offer_id, campaign_id, AND product_id ALL to the SAME promo_campaign_plan_offers row, and another ties offer_code_id to this row''s own campaign_plan_offer_id — a claim can never reference a plan-offer belonging to a different campaign, a product_id that disagrees with the plan-offer it names, or a code drawn from a different plan-offer''s pool. No cascading deletes from campaign/plan-offer/offer-code — a real claim blocks deletion of what it references. service_role-only.';
 
 create trigger promo_claims_set_updated_at
   before update on private.promo_claims
