@@ -336,6 +336,101 @@ entitlements, and never grants Pro.
 5. verify the endpoint against production
 6. only then wire/ship the iOS client
 
+## Promo Campaigns (85Blends 2.4.0)
+
+A reusable, backend-configured promotional campaign system — future campaigns (`HOLIDAY26`,
+`BLACKFRIDAY`, `SUMMER27`, ...) are created, paused, and changed entirely from data in
+`private.promo_*`, never by shipping a new app version or writing another migration.
+`20260921000000_promo_campaign_foundation.sql` adds the schema and `supabase/functions/promo-api`
+adds the client-facing Edge Function — **neither has been applied/deployed to the live project as
+of this addition**, and **no real campaign has been created**. `85BLENDS` (1 month of Pro free, for
+new subscribers, across the three current paid plans, capped at 100 total claims) is used
+throughout this section and the migration's own comments purely as the **example** this foundation
+was designed against — it is not seeded data and does not exist as a row anywhere in this
+repository.
+
+**Why a campaign's public code is not itself an Apple Offer Code.** Apple Offer Codes attach to one
+individual subscription product's offer — the same custom one-time-use code cannot cover monthly,
+three-month, and annual at once. A strict global-capped campaign therefore needs one more layer:
+
+```
+PUBLIC CAMPAIGN CODE (e.g. "85BLENDS")
+  -> private.promo_campaigns            (the campaign: dates, cap, display copy)
+  -> private.promo_campaign_plan_offers (one row per eligible subscription product)
+  -> private.promo_offer_codes          (that product's own pool of Apple one-time codes)
+  -> ONE Apple one-time-use code, allocated once, never issued twice
+```
+
+The campaign's `global_claim_limit` is enforced by this backend **across every plan's pool
+combined** — see `private.claim_promo_campaign`'s own header comment in the migration for the exact
+row-locking mechanism that makes this safe under concurrent claims, and this file's "Future
+campaign workflow" below for why each plan's Apple-side batch can (and normally will) contain far
+more codes than the campaign is actually allowed to issue.
+
+**Tables** (all `private`, RLS-enabled with zero client policies, `service_role`-only — same
+security posture as every other table in this file): `promo_campaigns`, `promo_campaign_plan_offers`,
+`promo_offer_codes`, `promo_claims`, `promo_code_attempts`. See the migration's own per-table header
+comments for the full column-by-column rationale — not duplicated here.
+
+**One-time code accounting is a CLAIM cap, not a redemption cap.** Once an Apple one-time-use code
+is revealed to a user (`promo_offer_codes.status = 'issued'`), it is **permanently** consumed from
+this backend's own pool, even if the user never actually redeems it in the App Store — this backend
+has no reliable way to know a revealed code was never used elsewhere, so silently returning an
+abandoned code to the pool could hand the same code to two different people. A
+`before update` trigger (`promo_offer_codes_enforce_status_transition`) makes "a code is never
+recycled once issued" a real, DB-enforced invariant, not merely a convention. This is exactly why
+marketing copy like "first 100 users to **claim** the offer" is honest — it was never a promise that
+abandoned slots get recycled to someone else.
+
+**Authentication reuses the existing installation-possession credential.** `promo-api` authenticates
+against `private.referral_client_installations` — the exact same durable credential store
+`referral-api` already authenticates against — never a second Keychain secret system. That table's
+name is legacy (it predates this generic promo system) but is already the app's one shipping
+installation-identity store, and this addition treats it as such rather than renaming it.
+`verify_jwt = false` for `promo-api` (see `supabase/config.toml`) for the identical reason as
+`referral-api`: no Supabase Auth session exists for the iOS app to present, so this function
+performs its own independent authentication (a client-safe API key **and** the installation
+credential, both required) in place of the platform JWT gate that setting would otherwise remove.
+
+**Actions** (single POST-only endpoint, JSON body with `action`): `validate` (safe presentation +
+eligibility facts only — never issues a code, never consumes a slot), `claim` (the only action that
+can allocate an Apple code — routes through `private.claim_promo_campaign`, the one authoritative,
+concurrency-safe entry point), `status` (this installation's own claim state — also never consumes
+a slot, and never counts against the abuse rate limit the way a fresh code guess does).
+
+**Referral interaction — documented, not yet implemented.** A promo/free Apple Offer Code purchase
+must never, by itself, qualify a pending referral. Hardening
+`supabase/functions/_shared/referral-classification.ts`'s `isReferralQualifyingEvent` (and the
+paid-qualification database function it feeds) to recognize and exclude a promo-driven
+`INITIAL_PURCHASE` — while still allowing the first genuine PAID renewal that follows it to qualify,
+once trusted RevenueCat production confirmation is available — is required before any promo
+campaign goes live to real users, and is explicitly **not** part of this addition. Nothing in the
+existing referral pipeline is changed by this migration.
+
+**Webhook integration — documented, not yet implemented.** `revenuecat-webhook`'s behavior is
+**not** touched by this addition. A later pass will teach it to mark a `promo_claims` row
+`'redeemed'` by matching participant identity + `product_id` +
+`promo_campaign_plan_offers.apple_offer_reference_name` + an outstanding `'claimed'` row — **never**
+by trying to match RevenueCat's payload against `promo_offer_codes.apple_code`, which RevenueCat
+does not reliably expose. `apple_offer_reference_name` (the Apple **offer's** own name, set in App
+Store Connect) and the literal Apple **redemption code** drawn from a pool are two different
+concepts throughout this schema — never conflated.
+
+**Future campaign workflow** (once the generic client ships — no further app release is needed
+after that, for any future campaign):
+1. Create the Apple subscription Offer in App Store Connect for each plan the campaign covers.
+2. For a strict globally-capped campaign, generate Apple one-time-use Offer Code batches for each
+   plan — a batch may (and normally will) contain **more** codes than the campaign's own cap
+   allows; `global_claim_limit` is what actually stops issuing, not the size of any one pool.
+3. Import those Apple codes into the corresponding `private.promo_offer_codes` pool (status
+   `'available'`) — ops tooling for this import is out of scope for this addition.
+4. Insert a `private.promo_campaigns` row (`status = 'draft'` initially).
+5. Insert one `private.promo_campaign_plan_offers` row per eligible product, with that product's
+   real Apple offer reference name.
+6. Set the campaign's `status` to `'active'` (and `starts_at`/`ends_at` as desired) when ready.
+7. No iOS app release is required for this or any later campaign, once the generic promo client
+   ships — creating/pausing/ending a campaign, or changing its copy/dates/cap, is a data change only.
+
 ## What comes next
 
 Phase C (apply the Phase B1 migrations, provision secrets, deploy the Edge Function, configure the

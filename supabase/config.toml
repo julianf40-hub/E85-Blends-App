@@ -78,3 +78,11 @@ verify_jwt = false
 # both required — see supabase/functions/referral-api/index.ts).
 [functions.referral-api]
 verify_jwt = false
+
+# 85Blends 2.4.0 — Generic promo campaign API. Same architecture and the exact same reasoning as
+# referral-api above: no Supabase Auth session exists for the iOS app to present here, so
+# `verify_jwt = false` is scoped to this one function only, replaced by its own independent
+# authentication (a client-safe Supabase API key AND the SAME per-installation credential
+# referral-api already authenticates against — see supabase/functions/promo-api/index.ts).
+[functions.promo-api]
+verify_jwt = false
