@@ -39,12 +39,10 @@ struct MoreView: View {
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
 
-                    sponsorCard
-
                     VStack(spacing: 16) {
                         // Pro / Referral — no separate section header: the page header above
                         // already sets context, so this preserves the clean transition from the
-                        // sponsor card straight into this card.
+                        // header straight into this card.
                         MoreGroupedCard {
                             MoreNavigationRow(
                                 title: "85Blends Pro",
@@ -164,6 +162,10 @@ struct MoreView: View {
                                 }
                             }
                         }
+
+                        // RVP Supply sponsor — moved here from directly under the page header
+                        // (Pass 4); still a full sibling of the section groups, just compacted.
+                        sponsorCard
 
                         // About 85Blends
                         VStack(alignment: .leading, spacing: 12) {
@@ -358,26 +360,39 @@ struct MoreView: View {
         }
     }
 
+    // 85Blends 2.4.0 Pass 4 — compact horizontal presentation (was a 150pt hero card directly
+    // under the page header; the call site now lives after Guides & Resources). Same asset, URL,
+    // openSponsorLink() mechanism, and error handling as before — only the layout changed.
     private var sponsorCard: some View {
         Button {
             openSponsorLink()
         } label: {
-            VStack(alignment: .leading, spacing: 14) {
-                Image("RVPSupplyLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 150)
-                    .padding(.horizontal, 10)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 14) {
+                    Image("RVPSupplyLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 80, height: 60)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Sponsored by RVP Supply")
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Sponsored by RVP Supply")
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .multilineTextAlignment(.leading)
 
-                    Text("Tap to visit the shop")
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        Text("Performance parts & gear")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Spacer()
+
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .accessibilityHidden(true)
                 }
 
                 if let sponsorLinkMessage {
@@ -386,7 +401,8 @@ struct MoreView: View {
                         .foregroundStyle(AppTheme.Colors.stationYellow)
                 }
             }
-            .padding(18)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 15)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(AppTheme.Colors.surfaceElevated)
             .overlay(
@@ -394,8 +410,10 @@ struct MoreView: View {
                     .stroke(AppTheme.Colors.stationYellow.opacity(0.24), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityHint("Opens the RVP Supply website")
     }
 
     private func openSponsorLink() {
