@@ -15,6 +15,15 @@
 // This is deliberately NOT a substitute for running `supabase db push`/two clean replays against a
 // real local stack before this migration is ever applied to production — see supabase/README.md's
 // "Migrations are additive and reviewed before production apply."
+//
+// THIS LIMITATION IS NOT HYPOTHETICAL: an earlier revision of private.claim_promo_campaign
+// compiled cleanly (CREATE FUNCTION succeeded) and passed every static assertion in this file, but
+// failed at RUNTIME against real PostgreSQL 17 with error 42702 ("column reference ... is
+// ambiguous — It could refer to either a PL/pgSQL variable or a table column"), caught only by
+// independent, external Supabase validation — never by this file, which cannot execute SQL at all.
+// See the "REGRESSION (real PostgreSQL 42702)" test below for the fix this specific failure
+// required, and for why a static test can lock in a textual fix but can never itself be evidence
+// that the fixed function actually runs correctly.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -236,7 +245,7 @@ test("promo_offer_codes.apple_expires_at is NOT NULL — an unknown-expiry code 
 });
 
 test("private.claim_promo_campaign never allocates an expired code — the old nullable-expiry escape hatch is fully removed", () => {
-  assertContains("and apple_expires_at > now()", "the pool-selection query must require a real, unexpired code");
+  assertContains("and oc.apple_expires_at > now()", "the pool-selection query must require a real, unexpired code, qualified against its own alias");
   assertNotContains(
     "apple_expires_at is null or apple_expires_at > now()",
     "the old 'NULL = no known expiry' branch must no longer exist anywhere in this migration",
@@ -334,7 +343,7 @@ test("private.claim_promo_campaign checks the existing claim (idempotency) BEFOR
   const body = sql.slice(functionStart, functionEnd);
 
   const notFoundIndex = body.indexOf("'campaign_not_found'::text");
-  const idempotencyIndex = body.indexOf("and participant_id = p_participant_id\n  for update;");
+  const idempotencyIndex = body.indexOf("and cl.participant_id = p_participant_id\n  for update;");
   const statusCheckIndex = body.indexOf("if v_campaign.status <> 'active' then");
   const eligibilityCheckIndex = body.indexOf("Selective subscriber eligibility FAILS CLOSED");
   const productCheckIndex = body.indexOf("if v_plan_offer.id is null then");
@@ -388,5 +397,89 @@ test("the active-has-eligibility-target CHECK does not touch or loosen claim_pro
   assert.ok(
     body.includes("v_campaign.eligibility_new_subscribers") && body.includes("v_campaign.eligibility_existing_subscribers") && body.includes("v_campaign.eligibility_expired_subscribers"),
     "claim_promo_campaign must still check all three flags itself, independent of the schema-level CHECK",
+  );
+});
+
+// MARK: — REGRESSION: real PostgreSQL 42702 "column reference is ambiguous"
+
+test("REGRESSION (real PostgreSQL 42702): every claim_promo_campaign query qualifies columns that collide with its own RETURNS TABLE variables", () => {
+  // WHY THIS TEST EXISTS: private.claim_promo_campaign's RETURNS TABLE clause declares
+  // outcome/claim_id/campaign_id/campaign_plan_offer_id/offer_code_id/apple_code/product_id as
+  // PL/pgSQL variables, visible for this function's ENTIRE body — not just its RETURN statements.
+  // Several of this schema's real table columns share those exact names
+  // (promo_claims.campaign_id, promo_campaign_plan_offers.campaign_id/product_id,
+  // promo_offer_codes.campaign_plan_offer_id). An earlier revision of this function referenced
+  // several of those columns UNQUALIFIED inside ordinary SQL statements. Under PL/pgSQL's default
+  // `plpgsql.variable_conflict = error` setting, that is NOT a compile-time error — CREATE FUNCTION
+  // succeeds — it only fails at RUNTIME, the first time Postgres actually has to resolve the
+  // identifier while executing the statement:
+  //
+  //   ERROR:  column reference "campaign_id" is ambiguous
+  //   DETAIL: It could refer to either a PL/pgSQL variable or a table column.
+  //   SQLSTATE: 42702
+  //
+  // This was reproduced against REAL PostgreSQL 17 on an independent, isolated Supabase validation
+  // project — NOT by this static test, and NOT by anything Node/JavaScript in this repository can
+  // execute. This repository's own sandbox has no local Postgres/Docker stack available (see this
+  // file's own header comment for the honestly-documented reason) — a genuinely separate, external
+  // validation environment is what actually caught this. This test does not claim to be that
+  // validation, or a substitute for it; it only locks in the textual fix so the same bug class
+  // cannot silently regress: every table reference inside claim_promo_campaign is aliased and every
+  // column qualified.
+  const functionStart = sql.indexOf("create function private.claim_promo_campaign(");
+  const functionEnd = sql.indexOf("$function$;", functionStart);
+  assert.ok(functionStart >= 0 && functionEnd > functionStart, "expected to locate claim_promo_campaign's own function body");
+  const body = sql.slice(functionStart, functionEnd);
+
+  // The exact statement the real failure was reproduced against: the existing-claim (idempotency)
+  // lookup against promo_claims, which has its own real campaign_id column.
+  assert.ok(
+    body.includes("from private.promo_claims cl\n  where cl.campaign_id = v_campaign.id\n    and cl.participant_id = p_participant_id"),
+    "the promo_claims existing-claim lookup must alias the table and qualify campaign_id — this is the exact statement PostgreSQL 42702 was reproduced against",
+  );
+
+  // promo_campaign_plan_offers campaign/product lookup — a SECOND real ambiguity this audit found
+  // (campaign_id AND product_id both collide here), which the originally-reported failure never
+  // reached because Postgres stops at the first runtime error — this statement would have failed
+  // next, the moment a caller resolved a real, found campaign with no existing claim.
+  assert.ok(
+    body.includes("from private.promo_campaign_plan_offers po\n  where po.campaign_id = v_campaign.id\n    and po.product_id = p_product_id"),
+    "the promo_campaign_plan_offers lookup must alias the table and qualify both campaign_id and product_id",
+  );
+
+  // promo_claims campaign count (the global cap check) — a THIRD real ambiguity this audit found.
+  assert.ok(
+    body.includes("from private.promo_claims cl\n    where cl.campaign_id = v_campaign.id;"),
+    "the global-cap claim-count query must alias the table and qualify campaign_id",
+  );
+
+  // promo_offer_codes plan/status/expiry lookup (the allocation query) — campaign_plan_offer_id
+  // collides here.
+  assert.ok(
+    body.includes(
+      "from private.promo_offer_codes oc\n  where oc.campaign_plan_offer_id = v_plan_offer.id\n    and oc.status = 'available'\n    and oc.apple_expires_at > now()",
+    ),
+    "the offer-code allocation query must alias the table and qualify campaign_plan_offer_id/status/apple_expires_at",
+  );
+
+  // The exact bare, unqualified patterns that previously triggered the runtime failure must never
+  // reappear anywhere inside this function — a direct regression guard, not just a positive check.
+  const knownAmbiguousPatterns = [
+    "where campaign_id = v_campaign.id",
+    "where campaign_id = v_campaign.id\n    and product_id = p_product_id",
+    "where campaign_plan_offer_id = v_plan_offer.id",
+  ];
+  for (const pattern of knownAmbiguousPatterns) {
+    assert.ok(!body.includes(pattern), `the known-ambiguous unqualified pattern must not reappear: ${JSON.stringify(pattern)}`);
+  }
+
+  // promo_claims.campaign_id is referenced, qualified, in exactly TWO separate queries inside this
+  // function — the idempotency check and the cap count — confirming BOTH were fixed, not just the
+  // one statement the real runtime failure happened to reach first.
+  const qualifiedClaimsCampaignIdOccurrences = body.split("cl.campaign_id = v_campaign.id").length - 1;
+  assert.equal(
+    qualifiedClaimsCampaignIdOccurrences,
+    2,
+    "expected cl.campaign_id = v_campaign.id to appear exactly twice — the idempotency check and the cap count — proving both were qualified",
   );
 });
