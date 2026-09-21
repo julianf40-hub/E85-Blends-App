@@ -44,8 +44,8 @@ struct MoreView: View {
                     VStack(spacing: 16) {
                         // Pro / Referral — no separate section header: the page header above
                         // already sets context, so this preserves the clean transition from the
-                        // sponsor card straight into these two rows.
-                        VStack(spacing: 12) {
+                        // sponsor card straight into this card.
+                        MoreGroupedCard {
                             MoreNavigationRow(
                                 title: "85Blends Pro",
                                 subtitle: "Drive farther. Plan smarter. Fuel with confidence.",
@@ -54,6 +54,8 @@ struct MoreView: View {
                             ) {
                                 ProUpgradeView()
                             }
+
+                            MoreRowSeparator()
 
                             // 85Blends 2.4.0 Refer & Earn — available to every user, Free and Pro
                             // alike (cloud sync's own "core capability, not a Pro benefit" precedent
@@ -79,38 +81,46 @@ struct MoreView: View {
                                 subtitle: "Fuel tracking, cost tools, and app preferences."
                             )
 
-                            // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
-                            // Calculator, Stations, and streamlined Settings only.
-                            if appExperienceMode == .normal {
+                            MoreGroupedCard {
+                                // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
+                                // Calculator, Stations, and streamlined Settings only. The separator
+                                // lives inside this block too, so Simple Mode never renders an
+                                // orphaned separator above Compare Fuel Cost.
+                                if appExperienceMode == .normal {
+                                    MoreNavigationRow(
+                                        title: "Fuel Log",
+                                        subtitle: "Review fill-up history, spend, and MPG trends.",
+                                        systemImage: "list.bullet.clipboard",
+                                        tint: AppTheme.Colors.accentGreen
+                                    ) {
+                                        FuelLogView()
+                                    }
+
+                                    MoreRowSeparator()
+                                }
+
+                                // Same underlying CostCalculatorView ("Compare Fuel Cost") Calculator's
+                                // own entry card opens — kept here too so this existing, known route
+                                // isn't removed.
                                 MoreNavigationRow(
-                                    title: "Fuel Log",
-                                    subtitle: "Review fill-up history, spend, and MPG trends.",
-                                    systemImage: "list.bullet.clipboard",
+                                    title: "Compare Fuel Cost",
+                                    subtitle: "See what different ethanol blends cost.",
+                                    systemImage: "dollarsign.circle",
+                                    tint: AppTheme.Colors.accentYellow
+                                ) {
+                                    CostCalculatorView()
+                                }
+
+                                MoreRowSeparator()
+
+                                MoreNavigationRow(
+                                    title: "Preferences",
+                                    subtitle: "Choose maps, default blend, theme, and tab visibility.",
+                                    systemImage: "slider.horizontal.3",
                                     tint: AppTheme.Colors.accentGreen
                                 ) {
-                                    FuelLogView()
+                                    PreferencesView()
                                 }
-                            }
-
-                            // Same underlying CostCalculatorView ("Compare Fuel Cost") Calculator's
-                            // own entry card opens — kept here too so this existing, known route
-                            // isn't removed.
-                            MoreNavigationRow(
-                                title: "Compare Fuel Cost",
-                                subtitle: "See what different ethanol blends cost.",
-                                systemImage: "dollarsign.circle",
-                                tint: AppTheme.Colors.accentYellow
-                            ) {
-                                CostCalculatorView()
-                            }
-
-                            MoreNavigationRow(
-                                title: "Preferences",
-                                subtitle: "Choose maps, default blend, theme, and tab visibility.",
-                                systemImage: "slider.horizontal.3",
-                                tint: AppTheme.Colors.accentGreen
-                            ) {
-                                PreferencesView()
                             }
                         }
 
@@ -121,31 +131,37 @@ struct MoreView: View {
                                 subtitle: "Help, blending guidance, and recommended gear."
                             )
 
-                            MoreNavigationRow(
-                                title: "Help / FAQ",
-                                subtitle: "Quick answers to common ethanol and app questions.",
-                                systemImage: "questionmark.circle",
-                                tint: AppTheme.Colors.accentGreen
-                            ) {
-                                HelpFAQView()
-                            }
+                            MoreGroupedCard {
+                                MoreNavigationRow(
+                                    title: "Help / FAQ",
+                                    subtitle: "Quick answers to common ethanol and app questions.",
+                                    systemImage: "questionmark.circle",
+                                    tint: AppTheme.Colors.accentGreen
+                                ) {
+                                    HelpFAQView()
+                                }
 
-                            MoreNavigationRow(
-                                title: "Advanced Guide",
-                                subtitle: "Blend strategy, pump order, and practical cautions.",
-                                systemImage: "graduationcap",
-                                tint: AppTheme.Colors.accentYellow
-                            ) {
-                                AdvancedGuideView()
-                            }
+                                MoreRowSeparator()
 
-                            MoreNavigationRow(
-                                title: "Recommended Gear",
-                                subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
-                                systemImage: "wrench.and.screwdriver",
-                                tint: AppTheme.Colors.accentGreen
-                            ) {
-                                RecommendedGearView()
+                                MoreNavigationRow(
+                                    title: "Advanced Guide",
+                                    subtitle: "Blend strategy, pump order, and practical cautions.",
+                                    systemImage: "graduationcap",
+                                    tint: AppTheme.Colors.accentYellow
+                                ) {
+                                    AdvancedGuideView()
+                                }
+
+                                MoreRowSeparator()
+
+                                MoreNavigationRow(
+                                    title: "Recommended Gear",
+                                    subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
+                                    systemImage: "wrench.and.screwdriver",
+                                    tint: AppTheme.Colors.accentGreen
+                                ) {
+                                    RecommendedGearView()
+                                }
                             }
                         }
 
@@ -156,31 +172,37 @@ struct MoreView: View {
                                 subtitle: "App information, privacy, and important notices."
                             )
 
-                            MoreNavigationRow(
-                                title: "About",
-                                subtitle: "What 85Blends is, who it is for, and sponsor info.",
-                                systemImage: "info.circle",
-                                tint: AppTheme.Colors.accentYellow
-                            ) {
-                                AboutView()
-                            }
+                            MoreGroupedCard {
+                                MoreNavigationRow(
+                                    title: "About",
+                                    subtitle: "What 85Blends is, who it is for, and sponsor info.",
+                                    systemImage: "info.circle",
+                                    tint: AppTheme.Colors.accentYellow
+                                ) {
+                                    AboutView()
+                                }
 
-                            MoreNavigationRow(
-                                title: "Privacy",
-                                subtitle: "How your local-first data is handled today.",
-                                systemImage: "lock.shield",
-                                tint: AppTheme.Colors.accentGreen
-                            ) {
-                                PrivacyView()
-                            }
+                                MoreRowSeparator()
 
-                            MoreNavigationRow(
-                                title: "Disclaimer",
-                                subtitle: "Important estimation, tuning, warranty, and legal notices.",
-                                systemImage: "exclamationmark.triangle",
-                                tint: AppTheme.Colors.accentYellow
-                            ) {
-                                DisclaimerView()
+                                MoreNavigationRow(
+                                    title: "Privacy",
+                                    subtitle: "How your local-first data is handled today.",
+                                    systemImage: "lock.shield",
+                                    tint: AppTheme.Colors.accentGreen
+                                ) {
+                                    PrivacyView()
+                                }
+
+                                MoreRowSeparator()
+
+                                MoreNavigationRow(
+                                    title: "Disclaimer",
+                                    subtitle: "Important estimation, tuning, warranty, and legal notices.",
+                                    systemImage: "exclamationmark.triangle",
+                                    tint: AppTheme.Colors.accentYellow
+                                ) {
+                                    DisclaimerView()
+                                }
                             }
                         }
                     }
@@ -219,7 +241,7 @@ struct MoreView: View {
                 subtitle: "Rate us, tell us what you think, or share 85Blends with someone else."
             )
 
-            VStack(spacing: 12) {
+            MoreGroupedCard {
                 MoreActionRow(
                     title: "Rate 85Blends",
                     subtitle: "Enjoying the app? A quick App Store rating helps a lot.",
@@ -232,8 +254,11 @@ struct MoreView: View {
                     Text(rateAppStoreMessage)
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textMuted)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
                 }
+
+                MoreRowSeparator()
 
                 // 85Blends' existing, official support address (support@85blends.app,
                 // already the contact used on 85blends.app's own Support page) — verified
@@ -251,8 +276,11 @@ struct MoreView: View {
                     Text(supportContactMessage)
                         .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textMuted)
-                        .padding(.horizontal, 4)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 10)
                 }
+
+                MoreRowSeparator()
 
                 ShareLink(item: AppStoreDestination.share) {
                     MoreRowLabel(
@@ -414,62 +442,50 @@ struct MoreView: View {
         .modelContainer(for: [FuelLogEntry.self, VehicleProfile.self], inMemory: true)
 }
 
-private struct MoreNavigationRow<Destination: View>: View {
-    let title: String
-    let subtitle: String
-    let systemImage: String
-    let tint: Color
-    @ViewBuilder let destination: Destination
+// One outer rounded container for a logical group of More rows. Surgical Pass 2 replaces each
+// row's own floating card (background/border/22pt corners) with a single shared card per
+// section plus MoreRowSeparator hairlines between rows, cutting the vertical space Pass 1's
+// per-row cards used without changing what's tappable or where anything navigates.
+private struct MoreGroupedCard<Content: View>: View {
+    @ViewBuilder let content: Content
 
     var body: some View {
-        NavigationLink {
-            destination
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: systemImage)
-                    .font(.title3)
-                    .foregroundStyle(tint)
-                    .frame(width: 42, height: 42)
-                    .background(tint.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.surfaceElevated)
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        VStack(spacing: 0) {
+            content
         }
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 
-// Shared visual chrome for a "leaves the app" row — extracted so both MoreActionRow (a Button)
-// and the Share 85Blends row (a ShareLink) render identically without duplicating this layout.
-// Trailing "arrow.up.forward.square" (vs. MoreNavigationRow's "chevron.right") signals "this
-// leaves the app" rather than "this navigates within it".
-private struct MoreRowLabel: View {
+// Hairline separator between rows inside a MoreGroupedCard. The leading inset (16pt row padding
+// + 42pt icon + 14pt icon-to-text spacing) lines it up with each row's title/subtitle column so
+// it reads as a divider between rows rather than a cut through the icon. Not a VoiceOver element.
+private struct MoreRowSeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.Colors.border.opacity(0.6))
+            .frame(height: 1)
+            .padding(.leading, 72)
+            .accessibilityHidden(true)
+    }
+}
+
+// Shared row content for both MoreNavigationRow (chevron.right) and MoreRowLabel
+// (arrow.up.forward.square) once a MoreGroupedCard supplies the outer card chrome. No
+// background/border of its own. .contentShape keeps the full row — including the Spacer gap
+// before the trailing indicator — tappable now that there's no opaque background to do that
+// implicitly.
+private struct MoreRowContent: View {
     let title: String
     let subtitle: String
     let systemImage: String
     let tint: Color
+    let trailingSystemImage: String
 
     var body: some View {
         HStack(spacing: 14) {
@@ -492,23 +508,62 @@ private struct MoreRowLabel: View {
 
             Spacer()
 
-            Image(systemName: "arrow.up.forward.square")
+            Image(systemName: trailingSystemImage)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textMuted)
         }
-        .padding(18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct MoreNavigationRow<Destination: View>: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    @ViewBuilder let destination: Destination
+
+    var body: some View {
+        NavigationLink {
+            destination
+        } label: {
+            MoreRowContent(
+                title: title,
+                subtitle: subtitle,
+                systemImage: systemImage,
+                tint: tint,
+                trailingSystemImage: "chevron.right"
+            )
+        }
+    }
+}
+
+// Shared visual content for a "leaves the app" row — extracted so both MoreActionRow (a Button)
+// and the Share 85Blends row (a ShareLink) render identically without duplicating this layout.
+// Trailing "arrow.up.forward.square" (vs. MoreNavigationRow's "chevron.right") signals "this
+// leaves the app" rather than "this navigates within it".
+private struct MoreRowLabel: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        MoreRowContent(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage,
+            tint: tint,
+            trailingSystemImage: "arrow.up.forward.square"
         )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
 
 // Performs an action (opening Mail, a URL, etc.) instead of pushing a NavigationLink
-// destination. See MoreRowLabel above for the shared visual chrome.
+// destination. See MoreRowLabel above for the shared visual content.
 private struct MoreActionRow: View {
     let title: String
     let subtitle: String
