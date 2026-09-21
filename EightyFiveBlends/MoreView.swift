@@ -75,7 +75,7 @@ struct MoreView: View {
                         }
 
                         // Your Tools
-                        VStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
                             SectionHeader(
                                 title: "Your Tools",
                                 subtitle: "Fuel tracking, cost tools, and app preferences."
@@ -125,7 +125,7 @@ struct MoreView: View {
                         }
 
                         // Guides & Resources
-                        VStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
                             SectionHeader(
                                 title: "Guides & Resources",
                                 subtitle: "Help, blending guidance, and recommended gear."
@@ -166,7 +166,7 @@ struct MoreView: View {
                         }
 
                         // About 85Blends
-                        VStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
                             SectionHeader(
                                 title: "About 85Blends",
                                 subtitle: "App information, privacy, and important notices."
@@ -500,11 +500,14 @@ private struct MoreRowContent: View {
                 Text(title)
                     .font(.headline)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .multilineTextAlignment(.leading)
 
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.leading)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
 
