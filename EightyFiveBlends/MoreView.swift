@@ -41,118 +41,147 @@ struct MoreView: View {
 
                     sponsorCard
 
-                    VStack(spacing: 12) {
-                        MoreNavigationRow(
-                            title: "85Blends Pro",
-                            subtitle: "Drive farther. Plan smarter. Fuel with confidence.",
-                            systemImage: "crown.fill",
-                            tint: AppTheme.Colors.stationYellow
-                        ) {
-                            ProUpgradeView()
-                        }
-
-                        // 85Blends 2.4.0 Refer & Earn — available to every user, Free and Pro
-                        // alike (cloud sync's own "core capability, not a Pro benefit" precedent
-                        // applies the same way here: referring is not itself a premium feature).
-                        // Deliberately NEVER wrapped in `if appExperienceMode == .normal` — Simple
-                        // Mode's own promise (Calculator, Stations, streamlined Settings only)
-                        // does not extend to hiding a user-facing core capability like this one,
-                        // and it is never Pro-gated either. See ReferEarnView.swift's own header.
-                        MoreNavigationRow(
-                            title: "Refer & Earn",
-                            subtitle: "Refer 5 paid Pro members and earn a free month.",
-                            systemImage: "gift.fill",
-                            tint: AppTheme.Colors.stationYellow
-                        ) {
-                            ReferEarnView()
-                        }
-
-                        // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
-                        // Calculator, Stations, and streamlined Settings only.
-                        if appExperienceMode == .normal {
+                    VStack(spacing: 16) {
+                        // Pro / Referral — no separate section header: the page header above
+                        // already sets context, so this preserves the clean transition from the
+                        // sponsor card straight into these two rows.
+                        VStack(spacing: 12) {
                             MoreNavigationRow(
-                                title: "Fuel Log",
-                                subtitle: "Review fill-up history, spend, and MPG trends.",
-                                systemImage: "list.bullet.clipboard",
-                                tint: AppTheme.Colors.accentGreen
+                                title: "85Blends Pro",
+                                subtitle: "Drive farther. Plan smarter. Fuel with confidence.",
+                                systemImage: "crown.fill",
+                                tint: AppTheme.Colors.stationYellow
                             ) {
-                                FuelLogView()
+                                ProUpgradeView()
+                            }
+
+                            // 85Blends 2.4.0 Refer & Earn — available to every user, Free and Pro
+                            // alike (cloud sync's own "core capability, not a Pro benefit" precedent
+                            // applies the same way here: referring is not itself a premium feature).
+                            // Deliberately NEVER wrapped in `if appExperienceMode == .normal` — Simple
+                            // Mode's own promise (Calculator, Stations, streamlined Settings only)
+                            // does not extend to hiding a user-facing core capability like this one,
+                            // and it is never Pro-gated either. See ReferEarnView.swift's own header.
+                            MoreNavigationRow(
+                                title: "Refer & Earn",
+                                subtitle: "Refer 5 paid Pro members and earn a free month.",
+                                systemImage: "gift.fill",
+                                tint: AppTheme.Colors.stationYellow
+                            ) {
+                                ReferEarnView()
                             }
                         }
 
-                        // Same underlying CostCalculatorView ("Compare Fuel Cost") Calculator's
-                        // own entry card opens — kept here too so this existing, known route
-                        // isn't removed.
-                        MoreNavigationRow(
-                            title: "Compare Fuel Cost",
-                            subtitle: "See what different ethanol blends cost.",
-                            systemImage: "dollarsign.circle",
-                            tint: AppTheme.Colors.accentYellow
-                        ) {
-                            CostCalculatorView()
+                        // Your Tools
+                        VStack(spacing: 12) {
+                            SectionHeader(
+                                title: "Your Tools",
+                                subtitle: "Fuel tracking, cost tools, and app preferences."
+                            )
+
+                            // Fuel Log is a Normal Mode feature — Simple Mode's core promise is
+                            // Calculator, Stations, and streamlined Settings only.
+                            if appExperienceMode == .normal {
+                                MoreNavigationRow(
+                                    title: "Fuel Log",
+                                    subtitle: "Review fill-up history, spend, and MPG trends.",
+                                    systemImage: "list.bullet.clipboard",
+                                    tint: AppTheme.Colors.accentGreen
+                                ) {
+                                    FuelLogView()
+                                }
+                            }
+
+                            // Same underlying CostCalculatorView ("Compare Fuel Cost") Calculator's
+                            // own entry card opens — kept here too so this existing, known route
+                            // isn't removed.
+                            MoreNavigationRow(
+                                title: "Compare Fuel Cost",
+                                subtitle: "See what different ethanol blends cost.",
+                                systemImage: "dollarsign.circle",
+                                tint: AppTheme.Colors.accentYellow
+                            ) {
+                                CostCalculatorView()
+                            }
+
+                            MoreNavigationRow(
+                                title: "Preferences",
+                                subtitle: "Choose maps, default blend, theme, and tab visibility.",
+                                systemImage: "slider.horizontal.3",
+                                tint: AppTheme.Colors.accentGreen
+                            ) {
+                                PreferencesView()
+                            }
                         }
 
-                        MoreNavigationRow(
-                            title: "Preferences",
-                            subtitle: "Choose maps, default blend, theme, and tab visibility.",
-                            systemImage: "slider.horizontal.3",
-                            tint: AppTheme.Colors.accentGreen
-                        ) {
-                            PreferencesView()
+                        // Guides & Resources
+                        VStack(spacing: 12) {
+                            SectionHeader(
+                                title: "Guides & Resources",
+                                subtitle: "Help, blending guidance, and recommended gear."
+                            )
+
+                            MoreNavigationRow(
+                                title: "Help / FAQ",
+                                subtitle: "Quick answers to common ethanol and app questions.",
+                                systemImage: "questionmark.circle",
+                                tint: AppTheme.Colors.accentGreen
+                            ) {
+                                HelpFAQView()
+                            }
+
+                            MoreNavigationRow(
+                                title: "Advanced Guide",
+                                subtitle: "Blend strategy, pump order, and practical cautions.",
+                                systemImage: "graduationcap",
+                                tint: AppTheme.Colors.accentYellow
+                            ) {
+                                AdvancedGuideView()
+                            }
+
+                            MoreNavigationRow(
+                                title: "Recommended Gear",
+                                subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
+                                systemImage: "wrench.and.screwdriver",
+                                tint: AppTheme.Colors.accentGreen
+                            ) {
+                                RecommendedGearView()
+                            }
                         }
 
-                        MoreNavigationRow(
-                            title: "Help / FAQ",
-                            subtitle: "Quick answers to common ethanol and app questions.",
-                            systemImage: "questionmark.circle",
-                            tint: AppTheme.Colors.accentGreen
-                        ) {
-                            HelpFAQView()
-                        }
+                        // About 85Blends
+                        VStack(spacing: 12) {
+                            SectionHeader(
+                                title: "About 85Blends",
+                                subtitle: "App information, privacy, and important notices."
+                            )
 
-                        MoreNavigationRow(
-                            title: "Advanced Guide",
-                            subtitle: "Blend strategy, pump order, and practical cautions.",
-                            systemImage: "graduationcap",
-                            tint: AppTheme.Colors.accentYellow
-                        ) {
-                            AdvancedGuideView()
-                        }
+                            MoreNavigationRow(
+                                title: "About",
+                                subtitle: "What 85Blends is, who it is for, and sponsor info.",
+                                systemImage: "info.circle",
+                                tint: AppTheme.Colors.accentYellow
+                            ) {
+                                AboutView()
+                            }
 
-                        MoreNavigationRow(
-                            title: "Recommended Gear",
-                            subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
-                            systemImage: "wrench.and.screwdriver",
-                            tint: AppTheme.Colors.accentGreen
-                        ) {
-                            RecommendedGearView()
-                        }
+                            MoreNavigationRow(
+                                title: "Privacy",
+                                subtitle: "How your local-first data is handled today.",
+                                systemImage: "lock.shield",
+                                tint: AppTheme.Colors.accentGreen
+                            ) {
+                                PrivacyView()
+                            }
 
-                        MoreNavigationRow(
-                            title: "About",
-                            subtitle: "What 85Blends is, who it is for, and sponsor info.",
-                            systemImage: "info.circle",
-                            tint: AppTheme.Colors.accentYellow
-                        ) {
-                            AboutView()
-                        }
-
-                        MoreNavigationRow(
-                            title: "Privacy",
-                            subtitle: "How your local-first data is handled today.",
-                            systemImage: "lock.shield",
-                            tint: AppTheme.Colors.accentGreen
-                        ) {
-                            PrivacyView()
-                        }
-
-                        MoreNavigationRow(
-                            title: "Disclaimer",
-                            subtitle: "Important estimation, tuning, warranty, and legal notices.",
-                            systemImage: "exclamationmark.triangle",
-                            tint: AppTheme.Colors.accentYellow
-                        ) {
-                            DisclaimerView()
+                            MoreNavigationRow(
+                                title: "Disclaimer",
+                                subtitle: "Important estimation, tuning, warranty, and legal notices.",
+                                systemImage: "exclamationmark.triangle",
+                                tint: AppTheme.Colors.accentYellow
+                            ) {
+                                DisclaimerView()
+                            }
                         }
                     }
 
