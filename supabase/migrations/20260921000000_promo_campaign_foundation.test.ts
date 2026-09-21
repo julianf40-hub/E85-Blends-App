@@ -217,3 +217,121 @@ test("this migration never touches referral_participants/referral_client_install
   assertNotContains("alter table private.referral_rewards", "must not alter the existing referral_rewards table");
   assertNotContains("alter table private.referral_client_installations", "must not alter the existing referral_client_installations table");
 });
+
+// MARK: — pre-merge hardening pass: fail-closed eligibility, mandatory expiry, relational consistency
+
+test("promo_campaigns enforces a genuine (non-empty) date window when both starts_at and ends_at are set", () => {
+  assertContains(
+    "constraint promo_campaigns_date_window_check\n    check (starts_at is null or ends_at is null or starts_at < ends_at)",
+    "a campaign naming both bounds must require starts_at strictly before ends_at",
+  );
+});
+
+test("promo_offer_codes.apple_expires_at is NOT NULL — an unknown-expiry code can never be imported, and can never outlive its own import", () => {
+  assertContains("apple_expires_at timestamptz not null", "apple_expires_at must be NOT NULL");
+  assertContains(
+    "constraint promo_offer_codes_apple_expires_at_after_created\n    check (apple_expires_at > created_at)",
+    "an already-expired code must be rejected at import time",
+  );
+});
+
+test("private.claim_promo_campaign never allocates an expired code — the old nullable-expiry escape hatch is fully removed", () => {
+  assertContains("and apple_expires_at > now()", "the pool-selection query must require a real, unexpired code");
+  assertNotContains(
+    "apple_expires_at is null or apple_expires_at > now()",
+    "the old 'NULL = no known expiry' branch must no longer exist anywhere in this migration",
+  );
+});
+
+test("promo_offer_codes.issued_claim_id no longer exists — promo_claims.offer_code_id is the one direction of truth", () => {
+  // Scoped to the actual DDL constructs (the column declaration and the constraint name), not a
+  // blanket ban on the identifier string — this migration's own comments legitimately explain WHY
+  // issued_claim_id was removed, mirroring this file's own "85BLENDS in a comment is fine, 85BLENDS
+  // in an INSERT is not" precedent above.
+  assertNotContains("issued_claim_id uuid", "the issued_claim_id COLUMN must be fully removed from promo_offer_codes");
+  assertNotContains("promo_offer_codes_issued_claim_id_fkey", "the post-hoc circular-reference FK must be fully removed");
+  assertNotContains("issued_claim_id = v_claim_id", "claim_promo_campaign must no longer write to issued_claim_id");
+});
+
+test("promo_claims.offer_code_id is NOT NULL and UNIQUE — one Apple code is structurally owned by at most one claim", () => {
+  assertContains("offer_code_id uuid not null", "offer_code_id must be NOT NULL (no inline FK — see the composite FK test below)");
+  assertContains(
+    "constraint promo_claims_offer_code_id_key unique (offer_code_id)",
+    "offer_code_id must be UNIQUE — a code can never be linked to two different claims",
+  );
+});
+
+test("promo_campaign_plan_offers and promo_offer_codes each expose the composite unique constraint promo_claims' own composite FKs require", () => {
+  assertContains(
+    "constraint promo_campaign_plan_offers_id_campaign_id_key unique (id, campaign_id)",
+    "promo_campaign_plan_offers must expose (id, campaign_id) as a composite unique target",
+  );
+  assertContains(
+    "constraint promo_offer_codes_id_campaign_plan_offer_id_key unique (id, campaign_plan_offer_id)",
+    "promo_offer_codes must expose (id, campaign_plan_offer_id) as a composite unique target",
+  );
+});
+
+test("promo_claims enforces campaign/plan/product/code relational consistency via composite foreign keys, not plain single-column FKs", () => {
+  assertContains(
+    "constraint promo_claims_campaign_plan_offer_campaign_fkey\n    foreign key (campaign_plan_offer_id, campaign_id)\n    references private.promo_campaign_plan_offers (id, campaign_id)",
+    "a claim's campaign_plan_offer_id must be structurally tied to this SAME row's own campaign_id",
+  );
+  assertContains(
+    "constraint promo_claims_offer_code_plan_offer_fkey\n    foreign key (offer_code_id, campaign_plan_offer_id)\n    references private.promo_offer_codes (id, campaign_plan_offer_id)",
+    "a claim's offer_code_id must be structurally tied to this SAME row's own campaign_plan_offer_id",
+  );
+  // A plain single-column FK on campaign_plan_offer_id would be strictly weaker than the composite
+  // one above (it would allow campaign_plan_offer_id to name a plan-offer under a DIFFERENT
+  // campaign than this row's own campaign_id) — confirm it was deliberately not (re-)added.
+  assertNotContains(
+    "campaign_plan_offer_id uuid not null references private.promo_campaign_plan_offers(id),",
+    "campaign_plan_offer_id must rely on the composite FK, not a plain single-column one",
+  );
+});
+
+test("promo_code_attempts_outcome_check carries the exact extended outcome vocabulary, including eligibility_unverified", () => {
+  assertContains(
+    "constraint promo_code_attempts_outcome_check check (\n    outcome in (\n      'valid', 'campaign_not_found', 'campaign_not_active', 'campaign_not_started',\n      'campaign_ended', 'eligibility_unverified', 'product_not_eligible', 'campaign_exhausted',\n      'offer_pool_exhausted', 'claimed', 'claim_plan_conflict', 'error'\n    )\n  )",
+    "the outcome vocabulary must match exactly, with eligibility_unverified included",
+  );
+});
+
+test("private.claim_promo_campaign fails closed on selective subscriber eligibility — only a campaign open to every segment may proceed", () => {
+  assertContains(
+    "if not (\n    v_campaign.eligibility_new_subscribers\n    and v_campaign.eligibility_existing_subscribers\n    and v_campaign.eligibility_expired_subscribers\n  ) then",
+    "the function must refuse any campaign that is not open to every subscriber segment",
+  );
+  assertContains(
+    "return query select 'eligibility_unverified'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;",
+    "the fail-closed branch must return the eligibility_unverified outcome",
+  );
+});
+
+test("private.claim_promo_campaign checks the existing claim (idempotency) BEFORE any campaign status/date/eligibility/product check", () => {
+  const functionStart = sql.indexOf("create function private.claim_promo_campaign(");
+  const functionEnd = sql.indexOf("$function$;", functionStart);
+  assert.ok(functionStart >= 0 && functionEnd > functionStart, "expected to locate claim_promo_campaign's own function body");
+  const body = sql.slice(functionStart, functionEnd);
+
+  const notFoundIndex = body.indexOf("'campaign_not_found'::text");
+  const idempotencyIndex = body.indexOf("and participant_id = p_participant_id\n  for update;");
+  const statusCheckIndex = body.indexOf("if v_campaign.status <> 'active' then");
+  const eligibilityCheckIndex = body.indexOf("Selective subscriber eligibility FAILS CLOSED");
+  const productCheckIndex = body.indexOf("if v_plan_offer.id is null then");
+
+  for (const [label, index] of [
+    ["campaign_not_found check", notFoundIndex],
+    ["idempotency check", idempotencyIndex],
+    ["status check", statusCheckIndex],
+    ["eligibility fail-closed check", eligibilityCheckIndex],
+    ["product-not-eligible check", productCheckIndex],
+  ] as const) {
+    assert.ok(index >= 0, `expected to locate the ${label} inside claim_promo_campaign's body`);
+  }
+
+  assert.ok(idempotencyIndex > notFoundIndex, "idempotency check must come after the not-found check (a campaign must resolve first)");
+  assert.ok(statusCheckIndex > idempotencyIndex, "campaign_not_active check must come AFTER the idempotency check, not before");
+  assert.ok(eligibilityCheckIndex > idempotencyIndex, "eligibility fail-closed check must come AFTER the idempotency check, not before");
+  assert.ok(productCheckIndex > idempotencyIndex, "product_not_eligible check must come AFTER the idempotency check, not before");
+});

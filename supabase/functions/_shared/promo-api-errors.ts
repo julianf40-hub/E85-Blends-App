@@ -36,6 +36,10 @@ const CLAIM_OUTCOME_ERROR_MAP: Record<string, PromoApiErrorMapping> = {
   campaign_not_active: { httpStatus: 409, code: "campaign_not_active" },
   campaign_not_started: { httpStatus: 409, code: "campaign_not_started" },
   campaign_ended: { httpStatus: 409, code: "campaign_ended" },
+  // Selective subscriber eligibility this foundation cannot verify (see the migration's own
+  // claim_promo_campaign header and promo-api-eligibility.ts) — a fail-closed refusal, not a
+  // not-found/exhausted condition, so it gets its own distinct 409 code.
+  eligibility_unverified: { httpStatus: 409, code: "eligibility_unverified" },
   product_not_eligible: { httpStatus: 409, code: "product_not_eligible" },
   campaign_exhausted: { httpStatus: 409, code: "campaign_exhausted" },
   offer_pool_exhausted: { httpStatus: 409, code: "offer_pool_exhausted" },

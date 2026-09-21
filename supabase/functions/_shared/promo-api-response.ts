@@ -124,7 +124,11 @@ export function buildClaimSuccessResponse(input: ClaimSuccessInput): ClaimSucces
 
 // MARK: — status
 
-export type PromoClaimStatusValue = "not_claimed" | "claimed" | "redeemed";
+/** 'expired' and 'void' were added by a later hardening pass (see deriveClaimStatus's own header):
+ *  a claim can independently outlive its own code's apple_expires_at, or either the claim or its
+ *  code can independently be voided by ops — the external status vocabulary must be able to say so
+ *  rather than collapsing either case into a misleading 'claimed' or 'not_claimed'. */
+export type PromoClaimStatusValue = "not_claimed" | "claimed" | "expired" | "redeemed" | "void";
 
 export interface StatusResponse {
   status: PromoClaimStatusValue;
@@ -137,17 +141,58 @@ export interface StatusResponseInput {
   status: PromoClaimStatusValue;
   campaign: CampaignPresentationInput;
   selectedProductId: string | null;
-  /** Present only when status is 'claimed' or 'redeemed' — the caller passes null for
-   *  'not_claimed'. Retrying a valid, unexpired claim's redemption must not allocate another code
-   *  (see the task spec's own Phase 5 STATUS section) — this returns the SAME code every time. */
+  /** The claim's underlying Apple code, when one exists — the caller passes null for
+   *  'not_claimed'. Whether it actually surfaces as a redemption_url is decided BELOW by status
+   *  alone (see buildStatusResponse), not by whether this is present — a defense-in-depth
+   *  guarantee that a caller bug passing a non-null code alongside a void/expired/redeemed status
+   *  can never leak a URL for a code that is no longer safely usable/relevant. */
   appleCode: string | null;
 }
 
+export interface ClaimStatusDerivationInput {
+  /** promo_claims.status: 'claimed' | 'redeemed' | 'void'. */
+  claimStatus: string;
+  /** promo_offer_codes.status for this claim's own code: 'available' | 'issued' | 'redeemed' |
+   *  'void' — null only if the claim somehow has no resolvable code row (structurally shouldn't
+   *  happen now that offer_code_id is NOT NULL + FK-enforced, but never assumed away). */
+  offerCodeStatus: string | null;
+  /** True when the code's own apple_expires_at has passed, computed in SQL (see index.ts's own
+   *  loadExistingClaim query) to avoid any driver timestamp-comparison risk. */
+  offerCodeExpired: boolean;
+}
+
+/**
+ * Combines a claim's own status with its underlying Apple code's status/expiry into the ONE
+ * external status vocabulary `status` returns. void/expired/redeemed never carry a redemption_url
+ * (see buildStatusResponse) regardless of WHICH of the two underlying rows actually recorded it —
+ * a claim can be independently voided by ops, or its code can independently expire or be voided,
+ * and either must produce the same safe, non-URL-bearing external status. Order matters: void
+ * (either side) wins over redeemed, which wins over expired, which wins over the default 'claimed'.
+ */
+export function deriveClaimStatus(input: ClaimStatusDerivationInput): PromoClaimStatusValue {
+  if (input.claimStatus === "void" || input.offerCodeStatus === "void") {
+    return "void";
+  }
+  if (input.claimStatus === "redeemed" || input.offerCodeStatus === "redeemed") {
+    return "redeemed";
+  }
+  if (input.offerCodeExpired) {
+    return "expired";
+  }
+  return "claimed";
+}
+
+/** A redemption_url is ever emitted ONLY when status is exactly 'claimed' — void/expired/redeemed
+ *  never re-expose it (Phase ... hardening): void/expired because the code is no longer usable,
+ *  redeemed because it has already served its purpose and continuing to echo the raw code back is
+ *  unnecessary. Gated here, at the one place every status response is built, rather than trusted to
+ *  every call site — the same "enforce once, at the most authoritative layer" pattern this
+ *  migration's own STORED GENERATED column and status-transition trigger already apply in SQL. */
 export function buildStatusResponse(input: StatusResponseInput): StatusResponse {
   return {
     status: input.status,
     campaign: buildCampaignPresentation(input.campaign),
     selected_product_id: input.selectedProductId,
-    redemption_url: input.appleCode ? buildRedemptionUrl(input.appleCode) : null,
+    redemption_url: input.status === "claimed" && input.appleCode ? buildRedemptionUrl(input.appleCode) : null,
   };
 }

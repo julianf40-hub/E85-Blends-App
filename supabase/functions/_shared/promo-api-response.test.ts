@@ -9,6 +9,7 @@ import {
   buildValidateResponse,
   buildClaimSuccessResponse,
   buildStatusResponse,
+  deriveClaimStatus,
 } from "./promo-api-response.ts";
 
 const SAMPLE_CAMPAIGN = {
@@ -176,18 +177,103 @@ test("buildStatusResponse: claimed includes the product and a redemption URL ide
   assert.equal(response.redemption_url, buildRedemptionUrl("APPLECODE456"));
 });
 
-test("buildStatusResponse: redeemed also carries a redemption URL — retrieving it again never allocates a new code", () => {
-  const first = buildStatusResponse({
+test("buildStatusResponse: redeemed never carries a redemption URL — it has already served its purpose (Phase ... hardening)", () => {
+  const response = buildStatusResponse({
     status: "redeemed",
     campaign: SAMPLE_CAMPAIGN,
     selectedProductId: "com.85blends.subscription.annual",
     appleCode: "STABLECODE",
   });
-  const second = buildStatusResponse({
-    status: "redeemed",
+  assert.equal(response.status, "redeemed");
+  assert.equal(response.redemption_url, null);
+  assert.equal(JSON.stringify(response).includes("STABLECODE"), false);
+});
+
+test("buildStatusResponse: expired never carries a redemption URL — Apple will no longer accept the code", () => {
+  const response = buildStatusResponse({
+    status: "expired",
     campaign: SAMPLE_CAMPAIGN,
-    selectedProductId: "com.85blends.subscription.annual",
-    appleCode: "STABLECODE",
+    selectedProductId: "com.85blends.subscription.monthly",
+    appleCode: "EXPIREDCODE1",
   });
-  assert.deepEqual(first, second);
+  assert.equal(response.status, "expired");
+  assert.equal(response.redemption_url, null);
+  assert.equal(JSON.stringify(response).includes("EXPIREDCODE1"), false);
+});
+
+test("buildStatusResponse: void never carries a redemption URL", () => {
+  const response = buildStatusResponse({
+    status: "void",
+    campaign: SAMPLE_CAMPAIGN,
+    selectedProductId: "com.85blends.subscription.threemonth",
+    appleCode: "VOIDEDCODE1",
+  });
+  assert.equal(response.status, "void");
+  assert.equal(response.redemption_url, null);
+  assert.equal(JSON.stringify(response).includes("VOIDEDCODE1"), false);
+});
+
+test("buildStatusResponse: a non-null appleCode alongside a non-'claimed' status is defensively ignored — the gate is on status, not on appleCode's presence", () => {
+  for (const status of ["not_claimed", "expired", "redeemed", "void"] as const) {
+    const response = buildStatusResponse({
+      status,
+      campaign: SAMPLE_CAMPAIGN,
+      selectedProductId: null,
+      appleCode: "SHOULD-NEVER-LEAK",
+    });
+    assert.equal(response.redemption_url, null, `status ${status} must never emit a redemption_url`);
+  }
+});
+
+// MARK: — deriveClaimStatus
+
+test("deriveClaimStatus: a live, unexpired, unredeemed claim is 'claimed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "issued", offerCodeExpired: false }),
+    "claimed",
+  );
+});
+
+test("deriveClaimStatus: claim.status 'void' wins regardless of the code's own status", () => {
+  assert.equal(deriveClaimStatus({ claimStatus: "void", offerCodeStatus: "issued", offerCodeExpired: false }), "void");
+  assert.equal(deriveClaimStatus({ claimStatus: "void", offerCodeStatus: "available", offerCodeExpired: false }), "void");
+});
+
+test("deriveClaimStatus: the code's own status 'void' wins even if the claim row itself is still 'claimed'", () => {
+  assert.equal(deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "void", offerCodeExpired: false }), "void");
+});
+
+test("deriveClaimStatus: claim.status 'redeemed' wins over a non-expired code", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "redeemed", offerCodeStatus: "issued", offerCodeExpired: false }),
+    "redeemed",
+  );
+});
+
+test("deriveClaimStatus: the code's own status 'redeemed' wins even if the claim row itself is still 'claimed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "redeemed", offerCodeExpired: false }),
+    "redeemed",
+  );
+});
+
+test("deriveClaimStatus: an expired, still-issued code on an otherwise-claimed claim is 'expired'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "claimed", offerCodeStatus: "issued", offerCodeExpired: true }),
+    "expired",
+  );
+});
+
+test("deriveClaimStatus: void beats expired — a voided-and-also-expired code is reported as void", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "void", offerCodeStatus: "void", offerCodeExpired: true }),
+    "void",
+  );
+});
+
+test("deriveClaimStatus: redeemed beats expired — a redeemed code that has since passed its expiry is still 'redeemed'", () => {
+  assert.equal(
+    deriveClaimStatus({ claimStatus: "redeemed", offerCodeStatus: "redeemed", offerCodeExpired: true }),
+    "redeemed",
+  );
 });

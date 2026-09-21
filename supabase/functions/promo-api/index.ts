@@ -49,6 +49,10 @@
 // its attempt) — acceptable for an ABUSE DETERRENT, never used for anything that needs to be exact
 // the way the global claim cap does (see the migration's own private.claim_promo_campaign header
 // for that genuinely atomic guarantee, enforced by a real row lock, not by this rate limiter).
+// isRateLimited() itself is also skipped entirely (not just its result recorded/unrecorded) for a
+// retry of an installation's own existing SAME-PRODUCT claim, in validate, claim, AND status alike
+// — idempotent retrieval of a fact this backend already confirmed is never a new code-guessing
+// attempt, so it must never cost that installation any of its abuse budget, whichever action asks.
 //
 // OUT OF SCOPE for this revision (see the promo-foundation task spec): reward/redemption UI,
 // RevenueCat entitlement mutation, seeding any real campaign (85BLENDS included), and any change to
@@ -73,9 +77,11 @@ import {
   buildValidateResponse,
   buildClaimSuccessResponse,
   buildStatusResponse,
+  deriveClaimStatus,
   type CampaignPresentationInput,
 } from "../_shared/promo-api-response.ts";
 import { mapClaimOutcomeToError, buildSafeErrorLogMetadata } from "../_shared/promo-api-errors.ts";
+import { hasUnverifiedEligibilityScope } from "../_shared/promo-api-eligibility.ts";
 
 const ATTEMPT_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const ATTEMPT_RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -116,16 +122,22 @@ async function authenticateInstallation(sql: Sql, installationId: string, instal
     where c.installation_id = ${installationId}
   `;
 
-  if (rows.length === 0) {
+  // An explicit `row = rows[0]` guard, not a `rows.length === 0` check followed by further
+  // `rows[0]` access — under noUncheckedIndexedAccess, TS does not narrow rows[0] itself based on
+  // a prior `.length` comparison, so this is both more honest AND the only form that is actually
+  // provably safe (see this repo's own promo-foundation hardening pass: "harden array/result
+  // access instead of copying older unchecked patterns").
+  const row = rows[0];
+  if (!row) {
     return { ok: false, response: errorResponse(401, "invalid_installation_credentials") };
   }
 
   const suppliedHash = await hashSecret(installationSecret);
-  if (!constantTimeEqual(suppliedHash, rows[0].installation_secret_hash)) {
+  if (!constantTimeEqual(suppliedHash, row.installation_secret_hash)) {
     return { ok: false, response: errorResponse(401, "invalid_installation_credentials") };
   }
 
-  return { ok: true, participantId: rows[0].participant_id, installationId };
+  return { ok: true, participantId: row.participant_id, installationId };
 }
 
 interface CampaignStateRow {
@@ -134,6 +146,9 @@ interface CampaignStateRow {
   is_before_start: boolean;
   is_after_end: boolean;
   global_claim_limit: number | null;
+  eligibility_new_subscribers: boolean;
+  eligibility_existing_subscribers: boolean;
+  eligibility_expired_subscribers: boolean;
   display_title: string;
   display_subtitle: string | null;
   display_badge: string | null;
@@ -149,6 +164,7 @@ async function loadCampaignByCode(sql: Sql, normalizedPublicCode: string): Promi
   const rows = await sql<CampaignStateRow[]>`
     select
       id, status, global_claim_limit,
+      eligibility_new_subscribers, eligibility_existing_subscribers, eligibility_expired_subscribers,
       display_title, display_subtitle, display_badge, display_terms, cta_label,
       (starts_at is not null and now() < starts_at) as is_before_start,
       (ends_at is not null and now() > ends_at) as is_after_end
@@ -156,6 +172,75 @@ async function loadCampaignByCode(sql: Sql, normalizedPublicCode: string): Promi
     where normalized_public_code = ${normalizedPublicCode}
   `;
   return rows[0] ?? null;
+}
+
+interface PlanOfferRow {
+  id: string;
+}
+
+/** Mirrors private.claim_promo_campaign's own "an ACTIVE plan-offer row for this product" check —
+ *  used by validate (Phase ... hardening: "verify the selected active plan... before returning
+ *  valid=true") so validate can never say a product looks claimable when claim would immediately
+ *  refuse it with product_not_eligible. */
+async function loadActivePlanOffer(sql: Sql, campaignId: string, productId: string): Promise<PlanOfferRow | null> {
+  const rows = await sql<PlanOfferRow[]>`
+    select id from private.promo_campaign_plan_offers
+    where campaign_id = ${campaignId} and product_id = ${productId} and active = true
+  `;
+  return rows[0] ?? null;
+}
+
+/** Mirrors private.claim_promo_campaign's own pool-availability condition (available, unexpired)
+ *  exactly — used by validate so it can never say a product looks claimable when the pool backing
+ *  it is actually empty (Phase ... hardening: "usable non-expired code pool... before returning
+ *  valid=true"). Read-only: never locks anything, never allocates. */
+async function planOfferHasAvailableCode(sql: Sql, campaignPlanOfferId: string): Promise<boolean> {
+  const rows = await sql<{ code_available: boolean }[]>`
+    select exists (
+      select 1 from private.promo_offer_codes
+      where campaign_plan_offer_id = ${campaignPlanOfferId}
+        and status = 'available'
+        and apple_expires_at > now()
+    ) as code_available
+  `;
+  return rows[0]?.code_available ?? false;
+}
+
+type ValidateOutcome =
+  | "valid"
+  | "campaign_not_active"
+  | "campaign_not_started"
+  | "campaign_ended"
+  | "eligibility_unverified"
+  | "product_not_eligible"
+  | "offer_pool_exhausted";
+
+/** Determines the SAME real outcome private.claim_promo_campaign would reach for this campaign +
+ *  product, WITHOUT allocating anything — the one place validate's status/date/eligibility/
+ *  product/pool checks live, so the value logged to promo_code_attempts and the value the HTTP
+ *  response actually reflects can never drift apart (Phase ... hardening: "validate attempt
+ *  logging must record the REAL outcome, not prematurely record 'valid'"). Global claim_limit is
+ *  deliberately NOT checked here — that stays informational-only via claim_limit_reached on the
+ *  success response, exactly as before this hardening pass; only the two NEW checks this pass adds
+ *  (product eligibility, pool availability) turn into a hard, non-'valid' outcome. */
+async function determineValidateOutcome(sql: Sql, campaign: CampaignStateRow, selectedProductId: string): Promise<ValidateOutcome> {
+  if (campaign.status !== "active") return "campaign_not_active";
+  if (campaign.is_before_start) return "campaign_not_started";
+  if (campaign.is_after_end) return "campaign_ended";
+  if (
+    hasUnverifiedEligibilityScope({
+      eligibilityNewSubscribers: campaign.eligibility_new_subscribers,
+      eligibilityExistingSubscribers: campaign.eligibility_existing_subscribers,
+      eligibilityExpiredSubscribers: campaign.eligibility_expired_subscribers,
+    })
+  ) {
+    return "eligibility_unverified";
+  }
+  const planOffer = await loadActivePlanOffer(sql, campaign.id, selectedProductId);
+  if (!planOffer) return "product_not_eligible";
+  const hasAvailableCode = await planOfferHasAvailableCode(sql, planOffer.id);
+  if (!hasAvailableCode) return "offer_pool_exhausted";
+  return "valid";
 }
 
 interface CampaignDisplayRow {
@@ -195,11 +280,21 @@ interface ExistingClaimRow {
   product_id: string;
   status: string;
   apple_code: string | null;
+  /** The claim's own code's status ('available' | 'issued' | 'redeemed' | 'void') — null only if
+   *  the LEFT JOIN somehow finds no code row (structurally shouldn't happen now that
+   *  promo_claims.offer_code_id is NOT NULL + FK-enforced, but the join stays LEFT defensively).
+   *  Feeds deriveClaimStatus (see promo-api-response.ts). */
+  offer_code_status: string | null;
+  /** Computed IN SQL, not JS — same timestamp-comparison-risk avoidance as is_before_start/
+   *  is_after_end above. False (never true) when offer_code_status is null. */
+  offer_code_expired: boolean;
 }
 
 async function loadExistingClaim(sql: Sql, campaignId: string, participantId: string): Promise<ExistingClaimRow | null> {
   const rows = await sql<ExistingClaimRow[]>`
-    select c.id, c.product_id, c.status, oc.apple_code
+    select
+      c.id, c.product_id, c.status, oc.apple_code, oc.status as offer_code_status,
+      (oc.apple_expires_at is not null and oc.apple_expires_at <= now()) as offer_code_expired
     from private.promo_claims c
     left join private.promo_offer_codes oc on oc.id = c.offer_code_id
     where c.campaign_id = ${campaignId} and c.participant_id = ${participantId}
@@ -207,15 +302,36 @@ async function loadExistingClaim(sql: Sql, campaignId: string, participantId: st
   return rows[0] ?? null;
 }
 
+/** A narrower lookup than loadExistingClaim: `claim` doesn't yet have a resolved campaign_id at
+ *  the point it needs this (unlike validate/status, which already called loadCampaignByCode) — so
+ *  this resolves directly from the normalized public code in one query, returning only the ONE
+ *  field the rate-limit-bypass check actually needs (Phase ... hardening: "existing same-product
+ *  claim bypasses the new-code rate limiter"). Returns null if no claim exists yet, exactly like a
+ *  genuinely new attempt. */
+async function loadExistingClaimProductByPublicCode(sql: Sql, normalizedPublicCode: string, participantId: string): Promise<string | null> {
+  const rows = await sql<{ product_id: string }[]>`
+    select c.product_id
+    from private.promo_claims c
+    join private.promo_campaigns pc on pc.id = c.campaign_id
+    where pc.normalized_public_code = ${normalizedPublicCode} and c.participant_id = ${participantId}
+  `;
+  return rows[0]?.product_id ?? null;
+}
+
 /** See this module's own header for why this is a plain, unlocked count-check rather than an
- *  advisory-locked one — a soft abuse deterrent, never the global claim cap's own hard guarantee. */
+ *  advisory-locked one — a soft abuse deterrent, never the global claim cap's own hard guarantee.
+ *  Reads the count via `rows[0]?.count ?? "0"` rather than destructuring (`const [{ count }] =
+ *  ...`) — a `select count(*)` always returns exactly one row in practice, but that is a runtime
+ *  invariant of the query, not something the type system can see; destructuring would silently
+ *  assume it and crash on a driver/refactor surprise, where an explicit fallback degrades safely
+ *  to "not rate limited yet" instead (see this repo's own promo-foundation hardening pass). */
 async function isRateLimited(sql: Sql, installationId: string): Promise<boolean> {
-  const [{ count }] = await sql<{ count: string }[]>`
+  const rows = await sql<{ count: string }[]>`
     select count(*)::text as count from private.promo_code_attempts
     where installation_id = ${installationId}
       and attempted_at >= now() - (${ATTEMPT_RATE_LIMIT_WINDOW_SECONDS} * interval '1 second')
   `;
-  return Number(count) >= ATTEMPT_RATE_LIMIT_MAX_ATTEMPTS;
+  return Number(rows[0]?.count ?? "0") >= ATTEMPT_RATE_LIMIT_MAX_ATTEMPTS;
 }
 
 /** Records ONE genuinely new campaign-code attempt with its real outcome — callers must only
@@ -242,50 +358,65 @@ async function handleValidate(sql: Sql, request: ValidatePromoRequest): Promise<
   const campaign = await loadCampaignByCode(sql, request.publicCode);
   const existingClaim = campaign ? await loadExistingClaim(sql, campaign.id, auth.participantId) : null;
 
-  // Repeated validate of an already-claimed campaign never consumes the abuse budget (see this
-  // module's header); every other case (campaign missing, or found but not yet claimed by this
-  // installation) is a genuinely new/unresolved lookup and does.
-  if (!existingClaim) {
-    if (await isRateLimited(sql, auth.installationId)) {
-      return errorResponse(429, "rate_limited");
-    }
-    await recordAttempt(sql, auth.installationId, request.publicCode, campaign ? "valid" : "campaign_not_found");
+  // An existing claim is immutable regardless of the campaign's later state (see the STATUS
+  // action's own identical philosophy) — never re-derives an outcome, never touches
+  // promo_code_attempts at all (this module's header: repeated retrieval of an already-claimed
+  // campaign never consumes the abuse budget). Guarding on `campaign` too (not just
+  // `existingClaim`) is what actually lets TS narrow `campaign` to non-null below — existingClaim
+  // is only ever non-null when campaign was too (loadExistingClaim is only called when campaign is
+  // truthy, above), but TS cannot see that fact through a ternary alone.
+  if (campaign && existingClaim) {
+    const response = buildValidateResponse({
+      ...campaignPresentation(campaign, request.publicCode),
+      selectedProductId: request.selectedProductId,
+      claimLimitReached: false,
+      alreadyClaimed: true,
+      claimedProductId: existingClaim.product_id,
+    });
+    return jsonResponse(200, response);
   }
+
+  if (await isRateLimited(sql, auth.installationId)) {
+    return errorResponse(429, "rate_limited");
+  }
+
+  // Determine the REAL outcome ONCE — the SAME value both drives the HTTP response below AND gets
+  // logged to promo_code_attempts, closing the "recorded 'valid', then a later check actually
+  // failed" gap (Phase ... hardening: "validate attempt logging must record the REAL outcome, not
+  // prematurely record 'valid'"). Never allocates anything either way — validate must never
+  // consume a slot (this repo's promo-foundation task spec, Phase 5).
+  const outcome: ValidateOutcome | "campaign_not_found" = campaign
+    ? await determineValidateOutcome(sql, campaign, request.selectedProductId)
+    : "campaign_not_found";
+  await recordAttempt(sql, auth.installationId, request.publicCode, outcome);
 
   if (!campaign) {
     return errorResponse(404, "campaign_not_found");
   }
+  if (outcome === "campaign_not_active") return errorResponse(409, "campaign_not_active");
+  if (outcome === "campaign_not_started") return errorResponse(409, "campaign_not_started");
+  if (outcome === "campaign_ended") return errorResponse(409, "campaign_ended");
+  if (outcome === "eligibility_unverified") return errorResponse(409, "eligibility_unverified");
+  if (outcome === "product_not_eligible") return errorResponse(409, "product_not_eligible");
+  if (outcome === "offer_pool_exhausted") return errorResponse(409, "offer_pool_exhausted");
 
-  // Read-only state checks, mirroring private.claim_promo_campaign's own — but never allocate
-  // anything; validate must never consume a slot (this repo's promo-foundation task spec, Phase
-  // 5). Skipped once this installation already holds a claim: an existing claim is immutable
-  // regardless of the campaign's later state (see the STATUS action's own identical philosophy).
-  if (existingClaim === null) {
-    if (campaign.status !== "active") {
-      return errorResponse(409, "campaign_not_active");
-    }
-    if (campaign.is_before_start) {
-      return errorResponse(409, "campaign_not_started");
-    }
-    if (campaign.is_after_end) {
-      return errorResponse(409, "campaign_ended");
-    }
-  }
-
+  // outcome === "valid" from here — global_claim_limit stays INFORMATIONAL only (unchanged by this
+  // hardening pass): a fully-claimed campaign still returns valid:true with claim_limit_reached
+  // true, so the client can show "fully claimed" copy rather than a bare error.
   let claimLimitReached = false;
   if (campaign.global_claim_limit !== null) {
-    const [{ count }] = await sql<{ count: string }[]>`
+    const claimCountRows = await sql<{ count: string }[]>`
       select count(*)::text as count from private.promo_claims where campaign_id = ${campaign.id}
     `;
-    claimLimitReached = Number(count) >= campaign.global_claim_limit;
+    claimLimitReached = Number(claimCountRows[0]?.count ?? "0") >= campaign.global_claim_limit;
   }
 
   const response = buildValidateResponse({
     ...campaignPresentation(campaign, request.publicCode),
     selectedProductId: request.selectedProductId,
     claimLimitReached,
-    alreadyClaimed: existingClaim !== null,
-    claimedProductId: existingClaim?.product_id ?? null,
+    alreadyClaimed: false,
+    claimedProductId: null,
   });
   return jsonResponse(200, response);
 }
@@ -308,7 +439,16 @@ async function handleClaim(sql: Sql, request: ClaimPromoRequest): Promise<Respon
     return errorResponse(400, "invalid_campaign_code");
   }
 
-  if (await isRateLimited(sql, auth.installationId)) {
+  // A retry of an ALREADY-claimed campaign for the SAME product must never be rate-limited — it is
+  // idempotent retrieval (private.claim_promo_campaign returns 'already_claimed' for it, and never
+  // touches promo_code_attempts either — see recordAttempt's own call below), not a new code-guess
+  // attempt, exactly mirroring validate/status's own existing-claim exemption (Phase ... hardening:
+  // "existing same-product claim bypasses the new-code rate limiter"). A DIFFERENT product is NOT
+  // exempt — that is a genuinely new decision (a plan change), still subject to the limiter.
+  const existingProductId = await loadExistingClaimProductByPublicCode(sql, request.publicCode, auth.participantId);
+  const isIdempotentRetry = existingProductId !== null && existingProductId === request.selectedProductId;
+
+  if (!isIdempotentRetry && (await isRateLimited(sql, auth.installationId))) {
     return errorResponse(429, "rate_limited");
   }
 
@@ -327,7 +467,15 @@ async function handleClaim(sql: Sql, request: ClaimPromoRequest): Promise<Respon
     return errorResponse(500, "internal_error");
   }
 
-  const [result] = rows;
+  // Explicit `rows[0]` + guard, not a destructure — private.claim_promo_campaign's own body always
+  // returns exactly one row on every path, but that is a PL/pgSQL body invariant, not something
+  // the type system (or a future refactor of that function) guarantees; this stays honest about
+  // that instead of silently assuming it (see this repo's own promo-foundation hardening pass).
+  const result = rows[0];
+  if (!result) {
+    logWebhookEvent("error", "promo-api claim returned no rows", {});
+    return errorResponse(500, "internal_error");
+  }
 
   // Repeated identical claim of an already-claimed campaign never consumes the abuse budget (see
   // this module's header); every other outcome — success, plan conflict, or any failure — is
@@ -344,6 +492,28 @@ async function handleClaim(sql: Sql, request: ClaimPromoRequest): Promise<Respon
       logWebhookEvent("error", "promo-api claim outcome missing expected fields", {});
       return errorResponse(500, "internal_error");
     }
+
+    if (result.outcome === "already_claimed") {
+      // A freshly-'claimed' outcome is provably current — the code was JUST allocated inside this
+      // SAME call to claim_promo_campaign, atomically. An idempotent 'already_claimed' retry
+      // reflects a PAST claim instead, whose code may since have expired, been voided by ops, or
+      // (once a future webhook pass exists) been marked redeemed — void/expired/redeemed claims
+      // must never re-expose a redemption URL (Phase ... hardening), and `claim` is just as
+      // reachable a way to retrieve one as `status` is. Re-derive the SAME way status does, rather
+      // than trusting the apple_code claim_promo_campaign happened to return.
+      const existingClaim = await loadExistingClaim(sql, result.campaign_id as string, auth.participantId);
+      const currentStatus = existingClaim
+        ? deriveClaimStatus({
+            claimStatus: existingClaim.status,
+            offerCodeStatus: existingClaim.offer_code_status,
+            offerCodeExpired: existingClaim.offer_code_expired,
+          })
+        : "void"; // structurally unreachable (already_claimed implies a real row) — fail safe, not open.
+      if (currentStatus !== "claimed") {
+        return errorResponse(409, "claim_no_longer_redeemable");
+      }
+    }
+
     const response = buildClaimSuccessResponse({
       claimId: result.claim_id,
       campaign: campaignPresentation(campaign, request.publicCode),
@@ -386,11 +556,19 @@ async function handleStatus(sql: Sql, request: StatusPromoRequest): Promise<Resp
     return jsonResponse(200, response);
   }
 
-  // Retrying redemption must not allocate another code — the same stored apple_code is returned
-  // every time via the same redemption URL, whether the claim is still 'claimed' or has since been
-  // marked 'redeemed' by a future webhook pass (see the migration's own header).
+  // Retrying a currently-valid claim must not allocate another code — the same stored apple_code
+  // is returned every time via the same redemption URL. void/expired/redeemed never re-expose it
+  // (Phase ... hardening) — deriveClaimStatus (see promo-api-response.ts) combines the claim's OWN
+  // status with its underlying code's status/expiry into the one status value that decides this;
+  // buildStatusResponse itself additionally gates the URL on status === 'claimed' as a second,
+  // independent safeguard, so passing appleCode through unconditionally here is safe.
+  const status = deriveClaimStatus({
+    claimStatus: existingClaim.status,
+    offerCodeStatus: existingClaim.offer_code_status,
+    offerCodeExpired: existingClaim.offer_code_expired,
+  });
   const response = buildStatusResponse({
-    status: existingClaim.status === "redeemed" ? "redeemed" : "claimed",
+    status,
     campaign: presentation,
     selectedProductId: existingClaim.product_id,
     appleCode: existingClaim.apple_code,

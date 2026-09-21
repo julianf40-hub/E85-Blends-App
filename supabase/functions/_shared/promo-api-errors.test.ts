@@ -11,6 +11,7 @@ test("mapClaimOutcomeToError: every documented private.claim_promo_campaign fail
   assert.deepEqual(mapClaimOutcomeToError("campaign_not_active"), { httpStatus: 409, code: "campaign_not_active" });
   assert.deepEqual(mapClaimOutcomeToError("campaign_not_started"), { httpStatus: 409, code: "campaign_not_started" });
   assert.deepEqual(mapClaimOutcomeToError("campaign_ended"), { httpStatus: 409, code: "campaign_ended" });
+  assert.deepEqual(mapClaimOutcomeToError("eligibility_unverified"), { httpStatus: 409, code: "eligibility_unverified" });
   assert.deepEqual(mapClaimOutcomeToError("product_not_eligible"), { httpStatus: 409, code: "product_not_eligible" });
   assert.deepEqual(mapClaimOutcomeToError("campaign_exhausted"), { httpStatus: 409, code: "campaign_exhausted" });
   assert.deepEqual(mapClaimOutcomeToError("offer_pool_exhausted"), { httpStatus: 409, code: "offer_pool_exhausted" });

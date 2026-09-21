@@ -139,6 +139,12 @@ create table private.promo_campaigns (
   -- starts_at as "already started" and a NULL ends_at as "never ends" — never a guess either way.
   starts_at timestamptz,
   ends_at timestamptz,
+  -- A campaign that names BOTH bounds must have a genuine, non-empty window — a start at or after
+  -- its own end can never be entered, which almost certainly means an ops data-entry mistake
+  -- (swapped fields), not an intentionally-zero-width campaign. Either bound alone (the other
+  -- NULL) is unconstrained by this check.
+  constraint promo_campaigns_date_window_check
+    check (starts_at is null or ends_at is null or starts_at < ends_at),
 
   -- NULL = uncapped. A non-null value must be a genuine positive limit — 0 would mean "can never
   -- be claimed by anyone," which is what `status = 'draft'`/`'paused'` already expresses; a
@@ -239,7 +245,15 @@ create table private.promo_campaign_plan_offers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
-  constraint promo_campaign_plan_offers_campaign_product_key unique (campaign_id, product_id)
+  constraint promo_campaign_plan_offers_campaign_product_key unique (campaign_id, product_id),
+
+  -- Composite unique, existing ONLY to be the target of promo_claims' own composite foreign key
+  -- below (Section 5) — Postgres requires a unique/PK constraint on exactly the referenced column
+  -- tuple. (id) alone is already unique via the primary key; this additionally makes (id,
+  -- campaign_id) unique, so a claim's campaign_plan_offer_id can be tied, at the schema level, to
+  -- the SAME campaign_id it also stores directly — see Section 7 of this migration's own header
+  -- for why this closes a relational-consistency gap a plain single-column FK cannot.
+  constraint promo_campaign_plan_offers_id_campaign_id_key unique (id, campaign_id)
 );
 
 comment on table private.promo_campaign_plan_offers is
@@ -276,15 +290,27 @@ create table private.promo_offer_codes (
   status text not null default 'available',
   constraint promo_offer_codes_status_check check (status in ('available', 'issued', 'redeemed', 'void')),
 
-  -- Apple-side expiry for this specific one-time code, if the imported batch carries one. NULL =
-  -- no known expiry. private.claim_promo_campaign (Section 6) never selects an already-expired
-  -- code, even if it is still `available`.
-  apple_expires_at timestamptz,
+  -- Apple-side expiry for this specific one-time code. NOT NULL, deliberately: Apple requires
+  -- every generated one-time-use Offer Code to carry an expiration (maximum validity six months —
+  -- see supabase/README.md's "REQUIRED launch gates" / operational notes), so "no known expiry" is
+  -- never a legitimate state for a real imported code — treating it as optional here would let an
+  -- already-stale or malformed import silently sit in the `available` pool forever. private.
+  -- claim_promo_campaign (Section 6) never selects an already-expired code, even if it is still
+  -- `available`.
+  apple_expires_at timestamptz not null,
+  constraint promo_offer_codes_apple_expires_at_after_created
+    check (apple_expires_at > created_at),
 
-  -- Set together, exactly once, the moment this code is issued to a claim (Section 6) — never
-  -- cleared or reused afterward (see this migration's own header, and the status-transition
-  -- trigger below, which makes "issued" a one-way door away from "available").
-  issued_claim_id uuid,
+  -- Set once, the moment this code is issued to a claim (Section 6) — never cleared or reused
+  -- afterward (see this migration's own header, and the status-transition trigger below, which
+  -- makes "issued" a one-way door away from "available"). Which CLAIM issued a given code is
+  -- discoverable via a reverse lookup on promo_claims.offer_code_id (Section 5) — made a real
+  -- structural guarantee, not a convention, by that column being NOT NULL and UNIQUE (one code,
+  -- at most one claim, ever). This table deliberately does NOT also carry its own
+  -- issued_claim_id pointer back — an earlier revision of this migration did, and closed it via a
+  -- post-hoc ALTER TABLE once promo_claims existed, but that made the same fact (which claim owns
+  -- which code) representable in TWO places that nothing forced to agree. One direction, one
+  -- source of truth.
   issued_at timestamptz,
   redeemed_at timestamptz,
 
@@ -292,7 +318,15 @@ create table private.promo_offer_codes (
   -- operational/diagnostic only, never parsed by any function in this migration.
   import_batch text,
 
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+
+  -- Composite unique, existing ONLY to be the target of promo_claims' own composite foreign key
+  -- (Section 5) — mirrors promo_campaign_plan_offers_id_campaign_id_key's own reasoning exactly:
+  -- (id) alone is already unique via the primary key; this additionally makes (id,
+  -- campaign_plan_offer_id) unique, so a claim's offer_code_id can be tied, at the schema level,
+  -- to the SAME campaign_plan_offer_id it also stores directly — a code from one plan's pool can
+  -- never end up structurally attached to a claim recorded against a different plan.
+  constraint promo_offer_codes_id_campaign_plan_offer_id_key unique (id, campaign_plan_offer_id)
 );
 
 comment on table private.promo_offer_codes is
@@ -363,13 +397,22 @@ create table private.promo_claims (
   campaign_id uuid not null references private.promo_campaigns(id),
   participant_id uuid not null references private.referral_participants(id),
   installation_id uuid not null references private.referral_client_installations(installation_id),
-  campaign_plan_offer_id uuid not null references private.promo_campaign_plan_offers(id),
+
+  -- No plain single-column FK on either of these two — see the composite FK constraints below,
+  -- which subsume the plain-FK guarantee (id must exist) AND additionally force
+  -- campaign_plan_offer_id/offer_code_id to structurally agree with THIS row's own campaign_id
+  -- (Section 7 of this migration's own header: "DB-level campaign/plan/product/code relational
+  -- consistency").
+  campaign_plan_offer_id uuid not null,
   product_id text not null,
 
-  -- Nullable at the schema level (not every future fulfillment_mode need allocate a pooled Apple
-  -- code — see the fulfillment_mode CHECK above), but private.claim_promo_campaign (the only
-  -- writer in this foundation, which only ever runs in 'one_time_pool' mode) always sets it.
-  offer_code_id uuid references private.promo_offer_codes(id),
+  -- NOT NULL and UNIQUE: every claim in this foundation allocates exactly one Apple code (only
+  -- 'one_time_pool' fulfillment_mode exists — see promo_campaigns.fulfillment_mode's own CHECK),
+  -- and UNIQUE makes "one Apple code is owned by at most one claim" a real, structural, DB-level
+  -- guarantee rather than a convention private.claim_promo_campaign merely happens to uphold. A
+  -- future fulfillment_mode that does NOT allocate a pooled code would need its own migration to
+  -- relax this — never silently accepted by loosening it preemptively here.
+  offer_code_id uuid not null,
 
   status text not null default 'claimed',
   constraint promo_claims_status_check check (status in ('claimed', 'redeemed', 'void')),
@@ -397,11 +440,30 @@ create table private.promo_claims (
   -- (structurally near-impossible, since referral_participants.installation_id is itself unique)
   -- case of an installation/participant mapping ever becoming less than 1:1, one installation can
   -- still never hold two claims on the same campaign.
-  constraint promo_claims_one_per_installation_per_campaign unique (campaign_id, installation_id)
+  constraint promo_claims_one_per_installation_per_campaign unique (campaign_id, installation_id),
+
+  -- "One Apple code, at most one claim" (Section 7 of this migration's own header) — the structural
+  -- half of the guarantee; see offer_code_id's own column comment above for the other half (NOT
+  -- NULL).
+  constraint promo_claims_offer_code_id_key unique (offer_code_id),
+
+  -- Relational-consistency composite FKs (Section 7): campaign_plan_offer_id must belong to THIS
+  -- row's own campaign_id, and offer_code_id must belong to THIS row's own campaign_plan_offer_id
+  -- — both enforced by referencing a composite UNIQUE constraint on the parent table (plain (id)
+  -- uniqueness alone cannot express this; see promo_campaign_plan_offers_id_campaign_id_key and
+  -- promo_offer_codes_id_campaign_plan_offer_id_key, each created for exactly this purpose). It is
+  -- therefore structurally impossible to record a claim whose plan-offer belongs to a different
+  -- campaign, or whose offer code was drawn from a different plan-offer's pool.
+  constraint promo_claims_campaign_plan_offer_campaign_fkey
+    foreign key (campaign_plan_offer_id, campaign_id)
+    references private.promo_campaign_plan_offers (id, campaign_id),
+  constraint promo_claims_offer_code_plan_offer_fkey
+    foreign key (offer_code_id, campaign_plan_offer_id)
+    references private.promo_offer_codes (id, campaign_plan_offer_id)
 );
 
 comment on table private.promo_claims is
-  '85Blends 2.4.0 promo campaigns. One immutable row per (participant, campaign) — see private.claim_promo_campaign (Section 6) for the concurrency-safe function that is the ONLY intended writer. No cascading deletes from campaign/plan-offer/offer-code — a real claim blocks deletion of what it references. service_role-only.';
+  '85Blends 2.4.0 promo campaigns. One immutable row per (participant, campaign) — see private.claim_promo_campaign (Section 6) for the concurrency-safe function that is the ONLY intended writer. offer_code_id is NOT NULL and UNIQUE: one Apple code is structurally owned by at most one claim, discoverable only via this reverse pointer (promo_offer_codes carries no pointer back). Composite foreign keys tie campaign_plan_offer_id to this row''s own campaign_id, and offer_code_id to this row''s own campaign_plan_offer_id — a claim can never reference a plan-offer or code belonging to a different campaign/plan. No cascading deletes from campaign/plan-offer/offer-code — a real claim blocks deletion of what it references. service_role-only.';
 
 create trigger promo_claims_set_updated_at
   before update on private.promo_claims
@@ -411,14 +473,6 @@ revoke all on table private.promo_claims from public, anon, authenticated;
 grant select, insert, update on table private.promo_claims to service_role;
 
 alter table private.promo_claims enable row level security;
-
--- Close the circular reference now that promo_claims exists: an offer code''s issued_claim_id
--- points at the claim that consumed it. No cascade (same audit-preservation reasoning as
--- promo_claims'' own FKs above) — a claim is never expected to be deleted, and if it somehow were,
--- the code that reveals it should not be silently orphaned back toward reuse.
-alter table private.promo_offer_codes
-  add constraint promo_offer_codes_issued_claim_id_fkey
-  foreign key (issued_claim_id) references private.promo_claims(id);
 
 -- ================================================================================================
 -- 6. private.claim_promo_campaign — the ONE authoritative, concurrency-safe entry point.
@@ -448,22 +502,32 @@ alter table private.promo_offer_codes
 -- credential in TypeScript first (SHA-256 hash compare, constant-time), then calls this function
 -- with the resolved, trusted identity — never the other way around.
 --
--- ELIGIBILITY SCOPE (deliberately narrow in this foundation): checks campaign status, the
--- start/end date window, and whether the selected product has an ACTIVE plan-offer row for this
--- campaign. Does NOT check promo_campaigns.eligibility_new_subscribers/existing_subscribers/
--- expired_subscribers against the caller''s actual RevenueCat subscription history — that requires
--- a RevenueCat subscriber lookup this schema/function does not perform, and was not part of this
--- migration''s required behavior (see Phase 4 of the promo-foundation task). Those three columns
--- remain pure configuration/display data until a dedicated, separately-scoped eligibility-
--- enforcement pass adds that check here.
+-- ELIGIBILITY SCOPE — FAILS CLOSED for any selective segment this foundation cannot verify: this
+-- schema/function has no RevenueCat subscriber-history lookup, so it can never actually check
+-- promo_campaigns.eligibility_new_subscribers/existing_subscribers/expired_subscribers against a
+-- caller''s real subscription history. A campaign open to ALL THREE segments needs no such check —
+-- everyone qualifies by definition, so it proceeds normally. A campaign scoped to any NARROWER
+-- combination (e.g. new subscribers only) cannot be safely evaluated here AT ALL: silently
+-- proceeding anyway would risk handing a real Apple code to a caller this backend never actually
+-- confirmed was eligible. This function therefore refuses outright ('eligibility_unverified') for
+-- any campaign whose eligibility flags are not all true, rather than guessing or ignoring them —
+-- until a dedicated, separately-scoped RevenueCat-backed eligibility-enforcement pass adds the real
+-- check (see supabase/README.md''s "REQUIRED launch gates"). promo-api''s own `validate` action
+-- mirrors this exact rule client-side (promo-api-eligibility.ts) so it never tells a caller a
+-- selectively-scoped campaign looks claimable when this function would immediately refuse it.
 --
--- IDEMPOTENCY: a participant who already has a claim on this campaign gets that SAME claim back —
--- never a second Apple code, never a second increment of the campaign''s claim count — whether
--- they ask for the SAME product again or a DIFFERENT one (Phase 10''s explicit "the app tells users
--- to pick their plan before claiming; do not silently allocate a second code" rule). The two cases
--- are distinguished by outcome so promo-api can phrase them differently: 'already_claimed' (same
--- product) vs. 'claim_plan_conflict' (different product) — both return the SAME existing claim/code,
--- since the underlying fact (one immutable claim already exists) is identical either way.
+-- IDEMPOTENCY — CHECKED FIRST, before any campaign-state check: a participant who already has a
+-- claim on this campaign gets that SAME claim back regardless of what has happened to the campaign
+-- SINCE they claimed it — paused, ended, or now eligibility-scoped differently. An existing claim
+-- is a permanent fact about the past; it must never be re-litigated against the campaign''s CURRENT
+-- state (exactly the same "backend-confirmed state wins over a later, unrelated check" principle
+-- already applied to referral re-application in this codebase). Never a second Apple code, never a
+-- second increment of the campaign''s claim count — whether they ask for the SAME product again or
+-- a DIFFERENT one (Phase 10''s explicit "the app tells users to pick their plan before claiming; do
+-- not silently allocate a second code" rule). The two cases are distinguished by outcome so
+-- promo-api can phrase them differently: 'already_claimed' (same product) vs. 'claim_plan_conflict'
+-- (different product) — both return the SAME existing claim/code, since the underlying fact (one
+-- immutable claim already exists) is identical either way.
 create function private.claim_promo_campaign(
   p_participant_id uuid,
   p_installation_id uuid,
@@ -473,7 +537,8 @@ create function private.claim_promo_campaign(
 returns table (
   outcome text,  -- claimed | already_claimed | claim_plan_conflict | campaign_not_found |
                  -- campaign_not_active | campaign_not_started | campaign_ended |
-                 -- product_not_eligible | campaign_exhausted | offer_pool_exhausted
+                 -- eligibility_unverified | product_not_eligible | campaign_exhausted |
+                 -- offer_pool_exhausted
   claim_id uuid,
   campaign_id uuid,
   campaign_plan_offer_id uuid,
@@ -511,35 +576,11 @@ begin
     return;
   end if;
 
-  if v_campaign.status <> 'active' then
-    return query select 'campaign_not_active'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
-    return;
-  end if;
-
-  if v_campaign.starts_at is not null and now() < v_campaign.starts_at then
-    return query select 'campaign_not_started'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
-    return;
-  end if;
-
-  if v_campaign.ends_at is not null and now() > v_campaign.ends_at then
-    return query select 'campaign_ended'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
-    return;
-  end if;
-
-  select * into v_plan_offer
-  from private.promo_campaign_plan_offers
-  where campaign_id = v_campaign.id
-    and product_id = p_product_id
-    and active = true;
-
-  if v_plan_offer.id is null then
-    return query select 'product_not_eligible'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
-    return;
-  end if;
-
-  -- Idempotency check — see this function''s own header. Locked too (harmless: at most one row
-  -- can ever match this unique constraint), purely for consistency with the rest of this
-  -- transaction''s locking discipline.
+  -- Idempotency check — CHECKED FIRST, before any campaign-state check below (see this function''s
+  -- own header for why: an existing claim is a permanent fact about the past and must never be
+  -- re-litigated against the campaign''s current status/dates/eligibility). Locked too (harmless: at
+  -- most one row can ever match this unique constraint), purely for consistency with the rest of
+  -- this transaction''s locking discipline.
   select * into v_existing_claim
   from private.promo_claims
   where campaign_id = v_campaign.id
@@ -560,6 +601,43 @@ begin
     return;
   end if;
 
+  if v_campaign.status <> 'active' then
+    return query select 'campaign_not_active'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
+    return;
+  end if;
+
+  if v_campaign.starts_at is not null and now() < v_campaign.starts_at then
+    return query select 'campaign_not_started'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
+    return;
+  end if;
+
+  if v_campaign.ends_at is not null and now() > v_campaign.ends_at then
+    return query select 'campaign_ended'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
+    return;
+  end if;
+
+  -- Selective subscriber eligibility FAILS CLOSED — see this function''s own header. Only a
+  -- campaign open to every segment (all three flags true) may proceed past this point.
+  if not (
+    v_campaign.eligibility_new_subscribers
+    and v_campaign.eligibility_existing_subscribers
+    and v_campaign.eligibility_expired_subscribers
+  ) then
+    return query select 'eligibility_unverified'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
+    return;
+  end if;
+
+  select * into v_plan_offer
+  from private.promo_campaign_plan_offers
+  where campaign_id = v_campaign.id
+    and product_id = p_product_id
+    and active = true;
+
+  if v_plan_offer.id is null then
+    return query select 'product_not_eligible'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
+    return;
+  end if;
+
   -- Global cap enforcement — safe under concurrency ONLY because the campaign row lock above is
   -- still held at this point (never a bare "count then insert" — see this function''s own header).
   if v_campaign.global_claim_limit is not null then
@@ -573,14 +651,16 @@ begin
     end if;
   end if;
 
-  -- One available, non-expired code from THIS product''s own pool. `for update skip locked`: see
-  -- this function''s own header for why this is a second, independent safeguard rather than the
-  -- primary concurrency mechanism (the campaign-row lock already is).
+  -- One available, non-expired code from THIS product''s own pool. apple_expires_at is NOT NULL
+  -- (see promo_offer_codes) — an expired code can never allocate, full stop, never a "no known
+  -- expiry" escape hatch. `for update skip locked`: see this function''s own header for why this is
+  -- a second, independent safeguard rather than the primary concurrency mechanism (the
+  -- campaign-row lock already is).
   select * into v_offer_code
   from private.promo_offer_codes
   where campaign_plan_offer_id = v_plan_offer.id
     and status = 'available'
-    and (apple_expires_at is null or apple_expires_at > now())
+    and apple_expires_at > now()
   order by created_at
   for update skip locked
   limit 1;
@@ -597,11 +677,13 @@ begin
   )
   returning id into v_claim_id;
 
-  -- Second, independent idempotency backstop for "never issue the same code twice" — belt and
-  -- suspenders with the row locking above, not a substitute for it (same "second line of defense"
-  -- philosophy this codebase already applies to referral_rewards_unique_milestone).
+  -- promo_claims.offer_code_id (set above, NOT NULL + UNIQUE) is now the ONE record of which claim
+  -- owns this code — promo_offer_codes carries no pointer back (see that table''s own column
+  -- comments). Marking the code 'issued' here is still a second, independent idempotency backstop
+  -- for "never issue the same code twice" alongside the row locking above — same "second line of
+  -- defense" philosophy this codebase already applies to referral_rewards_unique_milestone.
   update private.promo_offer_codes
-  set status = 'issued', issued_claim_id = v_claim_id, issued_at = now()
+  set status = 'issued', issued_at = now()
   where id = v_offer_code.id;
 
   return query select
@@ -610,7 +692,7 @@ end;
 $function$;
 
 comment on function private.claim_promo_campaign(uuid, uuid, text, text) is
-  '85Blends 2.4.0 promo campaigns. THE ONLY authoritative, concurrency-safe way to claim a campaign — see this function''s own header for the campaign-row-lock mechanism that makes the global claim cap safe under concurrent callers. Never called with a raw installation secret; the caller (promo-api) authenticates possession first and passes an already-resolved participant_id/installation_id.';
+  '85Blends 2.4.0 promo campaigns. THE ONLY authoritative, concurrency-safe way to claim a campaign — see this function''s own header for the campaign-row-lock mechanism that makes the global claim cap safe under concurrent callers, the idempotency-checked-first ordering, and why selective subscriber eligibility fails closed (outcome ''eligibility_unverified''). Never called with a raw installation secret; the caller (promo-api) authenticates possession first and passes an already-resolved participant_id/installation_id.';
 
 revoke all on function private.claim_promo_campaign(uuid, uuid, text, text) from public, anon, authenticated;
 grant execute on function private.claim_promo_campaign(uuid, uuid, text, text) to service_role;
@@ -641,8 +723,8 @@ create table private.promo_code_attempts (
   constraint promo_code_attempts_outcome_check check (
     outcome in (
       'valid', 'campaign_not_found', 'campaign_not_active', 'campaign_not_started',
-      'campaign_ended', 'product_not_eligible', 'campaign_exhausted', 'offer_pool_exhausted',
-      'claimed', 'claim_plan_conflict', 'error'
+      'campaign_ended', 'eligibility_unverified', 'product_not_eligible', 'campaign_exhausted',
+      'offer_pool_exhausted', 'claimed', 'claim_plan_conflict', 'error'
     )
   )
 );
