@@ -563,6 +563,21 @@ alter table private.promo_claims enable row level security;
 -- promo-api can phrase them differently: 'already_claimed' (same product) vs. 'claim_plan_conflict'
 -- (different product) — both return the SAME existing claim/code, since the underlying fact (one
 -- immutable claim already exists) is identical either way.
+--
+-- IDENTIFIER QUALIFICATION — every SQL statement below uses an explicit table alias and fully
+-- qualifies every column reference, deliberately, not stylistically. RETURNS TABLE declares
+-- outcome/claim_id/campaign_id/campaign_plan_offer_id/offer_code_id/apple_code/product_id as
+-- PL/pgSQL variables visible for this function''s ENTIRE body, and several real table columns share
+-- those exact names (promo_claims.campaign_id, promo_campaign_plan_offers.campaign_id/product_id,
+-- promo_offer_codes.campaign_plan_offer_id). An earlier revision of this function left several such
+-- references unqualified; with PL/pgSQL''s default `plpgsql.variable_conflict = error` behavior,
+-- those statements compiled cleanly but failed at RUNTIME with PostgreSQL error 42702 ("column
+-- reference ... is ambiguous — It could refer to either a PL/pgSQL variable or a table column") —
+-- reproduced against real PostgreSQL 17 during independent Supabase validation of this migration
+-- (this repository''s own sandbox has no local Postgres to have caught it beforehand — see the
+-- migration''s own test file for that honestly-documented limitation). Every table reference below
+-- is now aliased and every column qualified — even ones not currently ambiguous — so this exact bug
+-- class cannot silently reappear if a future column is ever added under one of the OUT names above.
 create function private.claim_promo_campaign(
   p_participant_id uuid,
   p_installation_id uuid,
@@ -601,9 +616,9 @@ begin
 
   -- Row lock — see this function''s own header for why this single statement is the entire
   -- concurrency-safety mechanism for the global cap enforced below.
-  select * into v_campaign
-  from private.promo_campaigns
-  where normalized_public_code = v_normalized_code
+  select pc.* into v_campaign
+  from private.promo_campaigns pc
+  where pc.normalized_public_code = v_normalized_code
   for update;
 
   if v_campaign.id is null then
@@ -616,14 +631,14 @@ begin
   -- re-litigated against the campaign''s current status/dates/eligibility). Locked too (harmless: at
   -- most one row can ever match this unique constraint), purely for consistency with the rest of
   -- this transaction''s locking discipline.
-  select * into v_existing_claim
-  from private.promo_claims
-  where campaign_id = v_campaign.id
-    and participant_id = p_participant_id
+  select cl.* into v_existing_claim
+  from private.promo_claims cl
+  where cl.campaign_id = v_campaign.id
+    and cl.participant_id = p_participant_id
   for update;
 
   if v_existing_claim.id is not null then
-    select * into v_offer_code from private.promo_offer_codes where id = v_existing_claim.offer_code_id;
+    select oc.* into v_offer_code from private.promo_offer_codes oc where oc.id = v_existing_claim.offer_code_id;
     if v_existing_claim.product_id = p_product_id then
       return query select
         'already_claimed'::text, v_existing_claim.id, v_campaign.id, v_existing_claim.campaign_plan_offer_id,
@@ -662,11 +677,11 @@ begin
     return;
   end if;
 
-  select * into v_plan_offer
-  from private.promo_campaign_plan_offers
-  where campaign_id = v_campaign.id
-    and product_id = p_product_id
-    and active = true;
+  select po.* into v_plan_offer
+  from private.promo_campaign_plan_offers po
+  where po.campaign_id = v_campaign.id
+    and po.product_id = p_product_id
+    and po.active = true;
 
   if v_plan_offer.id is null then
     return query select 'product_not_eligible'::text, null::uuid, v_campaign.id, null::uuid, null::uuid, null::text, null::text;
@@ -677,8 +692,8 @@ begin
   -- still held at this point (never a bare "count then insert" — see this function''s own header).
   if v_campaign.global_claim_limit is not null then
     select count(*) into v_current_claim_count
-    from private.promo_claims
-    where campaign_id = v_campaign.id;
+    from private.promo_claims cl
+    where cl.campaign_id = v_campaign.id;
 
     if v_current_claim_count >= v_campaign.global_claim_limit then
       return query select 'campaign_exhausted'::text, null::uuid, v_campaign.id, v_plan_offer.id, null::uuid, null::text, null::text;
@@ -691,12 +706,12 @@ begin
   -- expiry" escape hatch. `for update skip locked`: see this function''s own header for why this is
   -- a second, independent safeguard rather than the primary concurrency mechanism (the
   -- campaign-row lock already is).
-  select * into v_offer_code
-  from private.promo_offer_codes
-  where campaign_plan_offer_id = v_plan_offer.id
-    and status = 'available'
-    and apple_expires_at > now()
-  order by created_at
+  select oc.* into v_offer_code
+  from private.promo_offer_codes oc
+  where oc.campaign_plan_offer_id = v_plan_offer.id
+    and oc.status = 'available'
+    and oc.apple_expires_at > now()
+  order by oc.created_at
   for update skip locked
   limit 1;
 
@@ -717,9 +732,9 @@ begin
   -- comments). Marking the code 'issued' here is still a second, independent idempotency backstop
   -- for "never issue the same code twice" alongside the row locking above — same "second line of
   -- defense" philosophy this codebase already applies to referral_rewards_unique_milestone.
-  update private.promo_offer_codes
+  update private.promo_offer_codes oc
   set status = 'issued', issued_at = now()
-  where id = v_offer_code.id;
+  where oc.id = v_offer_code.id;
 
   return query select
     'claimed'::text, v_claim_id, v_campaign.id, v_plan_offer.id, v_offer_code.id, v_offer_code.apple_code, p_product_id;
