@@ -119,15 +119,17 @@ struct ProUpgradeView: View {
     //     Coming Soon item.
     // Cloud Sync itself is never listed here — it's unconditional for every user, Free and Pro
     // alike (see SubscriptionManager.swift, GarageView.swift, and CLAUDE.md's Cloud Sync
-    // product-policy note), so it is not Pro benefit content. The Nearby E85 widget is the same
-    // story: it publishes and renders for every user regardless of isProUser (see
-    // StationsView.publishNearbyWidgetSnapshot and the widget extension itself, neither of which
-    // reference isProUser/canAccess at all), so it stays out of this list too unless/until it's
-    // actually gated behind Pro.
+    // product-policy note), so it is not Pro benefit content. The Nearby E85 widget is
+    // different: product has confirmed it will be Pro-gated for the 2.4.0 public release, so
+    // it's listed below on that basis even though current dev code doesn't enforce it yet
+    // (isProUser/canAccess don't gate it in StationsView.publishNearbyWidgetSnapshot or the
+    // widget extension) — entitlement enforcement is separate, planned work, not part of this
+    // list.
     private let majorBenefits: [(icon: String, title: String, detail: String)] = [
         ("map.fill", "Intelligent E85 Trip Planning", "Plan complete routes around E85 availability, reserve targets, and backup fuel options."),
         ("sparkles", "Ad-Free Experience", "Enjoy 85Blends without ads while your Pro subscription is active."),
         ("car.fill", "Unlimited Vehicles", "Add and manage your entire garage with 85Blends Pro."),
+        ("rectangle.grid.2x2", "Nearby E85 Widget", "See nearby E85 stations right from your Home Screen."),
     ]
 
     var body: some View {
@@ -636,7 +638,8 @@ struct ProUpgradeView: View {
     }
 
     /// Full visual treatment — icon badge, headline-weight title — for the headline benefits
-    /// in `majorBenefits` (Trip Planning, Ad-Free Experience, Unlimited Vehicles).
+    /// in `majorBenefits` (Trip Planning, Ad-Free Experience, Unlimited Vehicles, Nearby E85
+    /// Widget).
     private func majorBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
         HStack(alignment: .top, spacing: 14) {
             ZStack {
