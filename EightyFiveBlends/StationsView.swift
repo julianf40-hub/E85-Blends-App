@@ -2973,10 +2973,16 @@ struct StationsView: View {
             // Matches Stations' saved-first hierarchy; never invent a price from NLR data.
             let localPrice = NearbyE85Price.validated(saved?.lastKnownE85Price, reportedAt: saved?.lastUpdated, source: .saved, now: now)
             let communityPrice = NearbyE85Price.validated(community?.latestPrice, reportedAt: community?.latestReportedAt, source: .community, now: now)
+            // Ethanol has no "saved" tier — it's community-reported only. validated(...) applies
+            // the same 14-day freshness bar StationsView already uses before showing a community
+            // ethanol reading, so the widget only ever receives readings that already qualify.
+            let communityEthanol = saved.flatMap { communityEthanolSummary(for: $0) } ?? communityEthanolSummary(for: live)
+            let ethanol = NearbyE85Ethanol.validated(percentage: communityEthanol?.latestPercentage,
+                                                     reportedAt: communityEthanol?.latestReportedAt, now: now)
             return NearbyE85Station(id: key, name: live.name,
                                    address: [live.address, live.city, live.state, live.zip].filter { !$0.isEmpty }.joined(separator: ", "),
                                    latitude: live.latitude, longitude: live.longitude, distanceMiles: live.distanceMiles,
-                                   price: localPrice ?? communityPrice)
+                                   price: localPrice ?? communityPrice, ethanol: ethanol)
         }
         NearbyE85Publisher.publish(.make(stations: items, radiusMiles: snapshot.radiusMiles,
                                          updatedAt: snapshot.fetchedAt, locationAt: searchLocationAt,
@@ -3049,6 +3055,11 @@ struct StationsView: View {
                 await MainActor.run {
                     communityEthanolSummaries = summaries
                     communityEthanolSyncMessage = nil
+                    // Matches refreshCommunityPricePreviews' own post-fetch republish — without
+                    // this, a fresh ethanol reading would sit in communityEthanolSummaries but
+                    // never reach the widget snapshot until some unrelated event (e.g. a price
+                    // refresh) happened to publish next.
+                    publishNearbyWidgetSnapshot()
                 }
             } catch {
                 guard Task.isCancelled == false else { return }

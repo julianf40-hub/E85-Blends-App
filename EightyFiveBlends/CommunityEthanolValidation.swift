@@ -41,8 +41,11 @@ enum CommunityEthanolValidation {
 
     /// The range a genuine E85 pump is expected to read. Values outside this band remain valid
     /// (see `requiresConfirmation`) — this is a confirmation threshold, never a rejection bound.
-    static let expectedRangeLowerBound = 51.0
-    static let expectedRangeUpperBound = 83.0
+    /// Backed by StationDataValidation.expectedE85EthanolRange, the single source of truth shared
+    /// with the Nearby E85 widget's own eligibility rule — see that constant's own header for why
+    /// it lives there instead of here.
+    static var expectedRangeLowerBound: Double { StationDataValidation.expectedE85EthanolRange.lowerBound }
+    static var expectedRangeUpperBound: Double { StationDataValidation.expectedE85EthanolRange.upperBound }
 
     /// Parses and validates a user-typed ethanol percentage string. Returns the parsed value,
     /// normalized to at most one decimal place, only if it is a genuine finite number within
@@ -76,6 +79,6 @@ enum CommunityEthanolValidation {
     /// classification, so hard validity and expected-range classification can never be conflated
     /// into one rule.
     static func requiresConfirmation(forPercentage percentage: Double) -> Bool {
-        (expectedRangeLowerBound...expectedRangeUpperBound).contains(percentage) == false
+        StationDataValidation.expectedE85EthanolRange.contains(percentage) == false
     }
 }

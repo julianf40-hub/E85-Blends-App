@@ -142,7 +142,7 @@ struct NearbyE85WidgetView: View {
             if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
                 VStack(alignment: .leading, spacing: 6) {
                     header
-                    station(first, compact: false)
+                    station(first, compact: false, showsEthanol: true)
                     Spacer(minLength: 0)
                     footer(snapshot)
                 }
@@ -229,6 +229,24 @@ struct NearbyE85WidgetView: View {
                     .padding(.vertical, 10)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 85Blends 2.4.0 widget polish — fixes a hairline seam along the widget's top corners
+            // (worst in Dark Mode) where the edge-to-edge map met WidgetKit's automatic
+            // containerBackground clip. That system clip and this view's own content were each
+            // being anti-aliased independently at the curved corner, and the two didn't quite
+            // agree pixel-for-pixel. ContainerRelativeShape() always resolves to the actual
+            // current container's corner radius, so explicitly clipping to it forces both layers
+            // through the exact same shape, eliminating the mismatch — this is the standard
+            // WidgetKit fix for full-bleed content meeting the system corner clip, not a
+            // decorative stroke covering the symptom. Applied to the whole large content (map +
+            // divider + list) rather than just the map: ContainerRelativeShape() reports the
+            // full container's shape, so clipping only the map sub-region would incorrectly round
+            // its bottom corners too, right where it meets the divider. Clipping the whole
+            // VStack at its full frame instead rounds exactly the four true widget corners — top
+            // via the map, bottom via the list — reproducing (not altering) whatever the system
+            // was already doing at the bottom, so that boundary is untouched. Medium is
+            // deliberately not touched by this: its map fills all four corners itself and no seam
+            // was reported there.
+            .clipShape(ContainerRelativeShape())
         } else {
             smallContent
         }
@@ -255,8 +273,44 @@ struct NearbyE85WidgetView: View {
                 Spacer(minLength: 6)
                 distance(station)
             }
-            Text(priceLine(station)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            if let ethanol = station.ethanol {
+                // ViewThatFits picks the first candidate whose ideal (fixedSize) width actually
+                // fits; the badge candidate is asked for honestly — it never silently truncates
+                // "Reported E78" down to a bare, more-authoritative-looking "E78" to save space.
+                // When there's truly not room for both, price/freshness wins outright (the
+                // fallback candidate below is plain priceLine, full width, ordinary lineLimit(1)
+                // truncation) and the ethanol badge is dropped entirely for that row — station
+                // name/distance/price stay legible; only the least-critical element disappears.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(priceLine(station)).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                        ethanolBadge(ethanol)
+                    }
+                    Text(priceLine(station)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            } else {
+                Text(priceLine(station)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
         }.accessibilityElement(children: .combine)
+    }
+
+    /// Compact capsule, visual-only — this row's real VoiceOver text (including ethanol
+    /// freshness) comes from the outer Link's own .accessibilityLabel(directionsAccessibilityLabel
+    /// (for:)) in largeStationList, which always wins over this view's own .combine anyway; hidden
+    /// here defensively so the badge is never a stray, independent VoiceOver stop.
+    ///
+    /// Says "Reported E78", not a bare "E78" — this is a single most-recent community report (see
+    /// NearbyE85Ethanol's own header), not a verified reading, and a bare percentage in an
+    /// authoritative-looking capsule reads too easily as a claim about the pump itself.
+    private func ethanolBadge(_ ethanol: NearbyE85Ethanol) -> some View {
+        Text(ethanol.badgeText)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Color.green.opacity(0.85), in: Capsule())
+            .fixedSize()
+            .lineLimit(1)
+            .accessibilityHidden(true)
     }
 
     private func priceLine(_ station: NearbyE85Station) -> String {
@@ -333,8 +387,17 @@ struct NearbyE85WidgetView: View {
         }
     }
 
+    // Shared by smallContent's whole-widget label and each row's Link label in
+    // largeStationList — one place enriches the VoiceOver announcement with ethanol for both
+    // families at once. The visible badge in largeRow says "Reported E78", not the freshness
+    // ("updated 1 day ago") that qualified it for display — that lives here instead, so
+    // VoiceOver users get the same information sighted users get from the badge plus its caption.
     private func directionsAccessibilityLabel(for station: NearbyE85Station) -> String {
-        "Get directions to \(station.name), approximately \(String(format: "%.1f", station.distanceMiles)) miles away"
+        var label = "Get directions to \(station.name), approximately \(String(format: "%.1f", station.distanceMiles)) miles away"
+        if let ethanol = station.ethanol {
+            label += ". Community reported \(ethanol.labelText), \(ethanol.accessibilityAgeText(at: entry.date))"
+        }
+        return label
     }
 
     private func freshnessBadge(_ text: String) -> some View {
@@ -352,7 +415,12 @@ struct NearbyE85WidgetView: View {
             .font(.caption.weight(.bold)).foregroundStyle(.green)
     }
 
-    @ViewBuilder private func station(_ station: NearbyE85Station, compact: Bool) -> some View {
+    // `showsEthanol` defaults to false so mediumContent's degraded "no map yet" fallback — which
+    // calls this same helper — stays byte-for-byte unchanged; only smallContent opts in. Small's
+    // own accessibility label already comes entirely from directionsAccessibilityLabel(for:)
+    // (children: .ignore below it), so the ethanol Text added here is a purely visual addition —
+    // its VoiceOver content lives there instead, not in this view's own (unused) combined label.
+    @ViewBuilder private func station(_ station: NearbyE85Station, compact: Bool, showsEthanol: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline) {
                 Text(station.name).font(compact ? .subheadline.weight(.semibold) : .headline)
@@ -374,7 +442,24 @@ struct NearbyE85WidgetView: View {
             if !compact, let price = station.price {
                 Text(price.status(at: entry.date)).font(.caption2).lineLimit(1)
             }
+            // No placeholder when absent — the `if let` simply contributes no sibling, so the
+            // VStack collapses with no leftover gap (spacing only applies between views that
+            // actually exist).
+            if showsEthanol, let ethanol = station.ethanol {
+                ethanolLine(ethanol)
+            }
         }.accessibilityElement(children: .combine)
+    }
+
+    /// "Reported E78 · 1d ago" — price stays visually dominant (title2/subheadline bold above);
+    /// this is deliberately caption2/secondary with only the value itself tinted, mirroring the
+    /// main app's own CommunityEthanolPreview treatment (value in the app's green/accent color,
+    /// the "reported X ago" portion muted) so the same reading looks familiar in both places.
+    private func ethanolLine(_ ethanol: NearbyE85Ethanol) -> some View {
+        (Text("Reported ") + Text(ethanol.labelText).foregroundStyle(.green) + Text(" · \(ethanol.agoText(at: entry.date))"))
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
     private func distance(_ station: NearbyE85Station) -> some View {
         Text("≈\(station.distanceMiles, specifier: "%.1f") mi")

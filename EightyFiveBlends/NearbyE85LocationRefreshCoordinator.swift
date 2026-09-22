@@ -99,8 +99,9 @@ enum NearbyE85LocationRefreshCoordinator {
     /// Pure/testable core. Re-measures distance for each already-published station from the
     /// new coordinate, drops any that fall outside the original search radius, and hands the
     /// rest to `NearbyE85Snapshot.make` for the exact same dedupe/sort/cap rules the live
-    /// network path already uses. Preserves each station's `price` untouched — a location
-    /// reposition must never alter `priceReportedAt`. Returns nil if every previously-published
+    /// network path already uses. Preserves each station's `price` and `ethanol` untouched — a
+    /// location reposition must never alter `priceReportedAt` or a community ethanol reading's
+    /// own freshness clock, only the distance. Returns nil if every previously-published
     /// station is now out of range. Called unconditionally (before any publish decision) so that
     /// decision can compare against what the *candidate* presentation would actually look like,
     /// not just how far the user physically moved.
@@ -112,7 +113,7 @@ enum NearbyE85LocationRefreshCoordinator {
                 id: station.id, name: station.name, address: station.address,
                 latitude: station.latitude, longitude: station.longitude,
                 distanceMiles: userLocation.distance(from: CLLocation(latitude: station.latitude, longitude: station.longitude)) / 1_609.344,
-                price: station.price)
+                price: station.price, ethanol: station.ethanol)
         }
         guard recomputed.contains(where: { $0.distanceMiles <= cached.radiusMiles }) else { return nil }
         return .make(stations: recomputed, radiusMiles: cached.radiusMiles, updatedAt: cached.updatedAt,

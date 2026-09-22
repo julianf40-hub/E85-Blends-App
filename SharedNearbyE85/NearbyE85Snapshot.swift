@@ -36,6 +36,80 @@ nonisolated struct NearbyE85Price: Codable, Equatable, Sendable {
     }
 }
 
+/// The latest qualifying RECENT COMMUNITY REPORT of a station's ethanol percentage — not a
+/// vetted, verified, or consensus figure, and not a claim about the station's actual pump
+/// composition. This is exactly what CommunityPriceService.fetchLatestEthanolReport(...) returns
+/// today: the single most recently submitted community report for the station (Supabase query
+/// orders by `reported_at.desc,created_at.desc` with `limit=1` — no aggregation across multiple
+/// reports). `validated(...)` is the only way to construct one, and only does so once that one
+/// report also clears three additional, independent bars before the widget will show it: a
+/// physically valid percentage, a timestamp that passes StationDataValidation's own timestamp
+/// validation (so it isn't meaningfully in the future — small clock-skew tolerance included, see
+/// StationDataValidation.isValidTimestamp), and current/recent — never stale — per the same
+/// 14-day calendar-day threshold the main app already uses before showing a community ethanol
+/// reading (see StationDataValidation.isStale/daysSince, and StationsView.swift's
+/// CommunityEthanolPreview/communityPriceIsStale). Widget UI never has to re-check any of this
+/// itself — only `!= nil`.
+nonisolated struct NearbyE85Ethanol: Codable, Equatable, Sendable {
+    let percentage: Double
+    let reportedAt: Date
+
+    static func validated(percentage: Double?, reportedAt: Date?, now: Date, maxAgeDays: Int = 14) -> Self? {
+        guard let percentage, percentage.isFinite, percentage >= 0, percentage <= 100,
+              // StationDataValidation.expectedE85EthanolRange is the single source of truth this
+              // shares with CommunityEthanolValidation.requiresConfirmation's own "expected E85
+              // range" band in the main app (StationDataValidation.swift is dual-compiled into
+              // both the app and this widget extension target, so this is a genuine shared
+              // reference, not a duplicated literal). A percentage outside that band is a
+              // legitimate, unrejected report in the main app, but only ever shown there behind an
+              // explicit user-facing confirmation/disclaimer — room the widget doesn't have.
+              // Rather than inventing separate widget warning UI, an out-of-range report is simply
+              // not eligible for the widget at all for this release.
+              StationDataValidation.expectedE85EthanolRange.contains(percentage),
+              let reportedAt, StationDataValidation.isValidTimestamp(reportedAt, asOf: now),
+              !StationDataValidation.isStale(daysSince: StationDataValidation.daysSince(reportedAt, asOf: now),
+                                             thresholdDays: maxAgeDays)
+        else { return nil }
+        return Self(percentage: percentage, reportedAt: reportedAt)
+    }
+
+    /// "E78", "E72.5" — mirrors StationsView.swift's `e85EthanolLabelText` formatting exactly
+    /// (one decimal place, no trailing ".0" for a whole-number reading) so the same percentage
+    /// reads identically between the main app and the widget. Duplicated rather than shared:
+    /// that helper is private to StationsView.swift, which isn't part of the widget extension's
+    /// compilation graph — see this file's own "value-only boundary" header.
+    var labelText: String {
+        let normalized = (percentage * 10).rounded() / 10
+        if normalized == normalized.rounded() {
+            return "E\(Int(normalized))"
+        }
+        return "E\(String(format: "%.1f", normalized))"
+    }
+
+    /// "Reported E78" — the Large widget's badge text. Always carries the "Reported" prefix on
+    /// screen, not just in VoiceOver: a bare percentage in an otherwise-authoritative-looking
+    /// capsule reads too easily as a claim about the station's actual pump composition, when this
+    /// is only ever a single most-recent community report (see this struct's own header). Kept
+    /// here, not inlined at the call site, so the exact on-screen wording rule is directly
+    /// testable independent of rendering.
+    var badgeText: String { "Reported \(labelText)" }
+
+    /// "Today", "1d ago", "3d ago" — the compact on-screen freshness wording, mirroring
+    /// NearbyE85Price.status(at:)'s own style.
+    func agoText(at date: Date) -> String {
+        let days = StationDataValidation.daysSince(reportedAt, asOf: date)
+        return days == 0 ? "Today" : "\(days)d ago"
+    }
+
+    /// "updated today", "updated 1 day ago" — the fuller VoiceOver phrasing, distinct from
+    /// `agoText`'s compact on-screen abbreviation.
+    func accessibilityAgeText(at date: Date) -> String {
+        let days = StationDataValidation.daysSince(reportedAt, asOf: date)
+        if days == 0 { return "updated today" }
+        return "updated \(days) day\(days == 1 ? "" : "s") ago"
+    }
+}
+
 nonisolated struct NearbyE85Station: Codable, Equatable, Identifiable, Sendable {
     let id: String // Existing canonical community station key, never LiveFuelStation's random UUID.
     let name: String
@@ -44,6 +118,11 @@ nonisolated struct NearbyE85Station: Codable, Equatable, Identifiable, Sendable 
     let longitude: Double
     let distanceMiles: Double
     var price: NearbyE85Price?
+    // Optional, defaulted — matches the userLatitude/userLongitude precedent below: every
+    // existing call site (production and tests) keeps compiling unchanged, and an old cached
+    // snapshot with no "ethanol" key still decodes (Codable synthesizes decodeIfPresent for an
+    // Optional stored property regardless of the default value).
+    var ethanol: NearbyE85Ethanol? = nil
 }
 
 nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
@@ -113,6 +192,18 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
             (station.price.map { price in
                 StationDataValidation.isValidPrice(price.dollarsPerGallon) &&
                 (price.reportedAt.map { StationDataValidation.isValidTimestamp($0, asOf: date) } ?? true)
+            } ?? true) &&
+            // Deliberately just the hard physical bound (0...100), not NearbyE85Ethanol.
+            // validated(...)'s narrower StationDataValidation.expectedE85EthanolRange
+            // display-eligibility band: this is a structural "is the stored data well-formed"
+            // check, not today's display policy, exactly like the price check above never
+            // re-derives saved-vs-community sourcing either. Failing isValid(at:) discards the
+            // WHOLE snapshot (see NearbyE85Cache.read), so conflating the two would risk hiding
+            // an otherwise-fine station over one out-of-range ethanol field — a future change to
+            // the expected-range policy should never need to touch this.
+            (station.ethanol.map { ethanol in
+                ethanol.percentage.isFinite && ethanol.percentage >= 0 && ethanol.percentage <= 100 &&
+                StationDataValidation.isValidTimestamp(ethanol.reportedAt, asOf: date)
             } ?? true)
         }
     }
