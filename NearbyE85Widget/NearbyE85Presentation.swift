@@ -200,19 +200,42 @@ struct NearbyE85WidgetView: View {
     // independent Link regions so tapping a row can never fall through to the map's "open
     // Stations" action (or vice versa) — see NearbyE85WidgetURLResolver's doc comment for the
     // fallback region any leftover, unLink-covered area (e.g. the divider) still uses.
+    // 85Blends 2.4.0 widget polish, take 2 — physical-device testing showed the previous
+    // .clipShape(ContainerRelativeShape()) fix (removed below) did NOT resolve a persistent,
+    // few-pixel strip of the widget/container background visible above the map's top edge, in
+    // both Light and Dark Mode. A screenshot predating that fix showed substantially the same
+    // strip, so the original "independent anti-aliasing mismatch" diagnosis was incomplete.
+    //
+    // Medium — the one family with no reported strip — renders mapArea(...) directly as its
+    // content, wrapped in no Link/Button at all; its own tap behavior comes entirely from the
+    // widget-level .widgetURL(...) in NearbyE85WidgetView.body, never from an interactive view
+    // inside its own tree. Large was the only family that wrapped the VISUAL map content itself
+    // inside a Link. That is the one concrete structural difference between Large and its
+    // known-good Medium control — MKMapSnapshotter usage, NearbyE85MapView, containerBackground,
+    // and contentMarginsDisabled() are all identical between them — so the map below is now
+    // rendered directly, unwrapped, exactly like Medium, and the "open Stations" tap target
+    // moves to a separate, fully transparent Link layered on top of it instead.
     @ViewBuilder private var largeContent: some View {
         if let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
             VStack(spacing: 0) {
                 if let mapRender = entry.mapRender {
-                    // Zoom controls are a SIBLING overlay on top of the map's Link, not nested
-                    // inside it — each stays its own independent tap target, so a tap on + / -
-                    // invokes that button's AppIntent instead of falling through to the map's
-                    // "open Stations" Link underneath.
+                    // Controls are a SIBLING on top of the transparent Link, not nested inside
+                    // it — each stays its own independent tap target, so a tap on + / - invokes
+                    // that button's AppIntent instead of falling through to the map's "open
+                    // Stations" Link underneath. Z-order (first = bottom): visual map, then the
+                    // invisible tap layer, then the controls on top of both.
                     ZStack(alignment: .trailing) {
+                        mapArea(mapRender, snapshot: snapshot)
+                        // Invisible interaction layer, sized identically to mapArea(...) above
+                        // (same explicit width/height, not an independent maxHeight: .infinity)
+                        // so it can never influence this ZStack's own size — it only ever matches
+                        // whatever size the visual map itself already establishes.
                         Link(destination: NearbyE85DeepLink.stationsURL()) {
-                            mapArea(mapRender, snapshot: snapshot)
+                            Color.clear.contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: mapRender.size.height)
                         .accessibilityLabel(stationsAccessibilityLabel)
                         NearbyE85MapControls(currentZoomLevel: entry.zoomLevel, isRefreshing: entry.isRefreshing)
                             .padding(.trailing, NearbyE85WidgetLayout.largeControlsTrailingInset)
@@ -229,24 +252,12 @@ struct NearbyE85WidgetView: View {
                     .padding(.vertical, 10)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // 85Blends 2.4.0 widget polish — fixes a hairline seam along the widget's top corners
-            // (worst in Dark Mode) where the edge-to-edge map met WidgetKit's automatic
-            // containerBackground clip. That system clip and this view's own content were each
-            // being anti-aliased independently at the curved corner, and the two didn't quite
-            // agree pixel-for-pixel. ContainerRelativeShape() always resolves to the actual
-            // current container's corner radius, so explicitly clipping to it forces both layers
-            // through the exact same shape, eliminating the mismatch — this is the standard
-            // WidgetKit fix for full-bleed content meeting the system corner clip, not a
-            // decorative stroke covering the symptom. Applied to the whole large content (map +
-            // divider + list) rather than just the map: ContainerRelativeShape() reports the
-            // full container's shape, so clipping only the map sub-region would incorrectly round
-            // its bottom corners too, right where it meets the divider. Clipping the whole
-            // VStack at its full frame instead rounds exactly the four true widget corners — top
-            // via the map, bottom via the list — reproducing (not altering) whatever the system
-            // was already doing at the bottom, so that boundary is untouched. Medium is
-            // deliberately not touched by this: its map fills all four corners itself and no seam
-            // was reported there.
-            .clipShape(ContainerRelativeShape())
+            // ContainerRelativeShape() removed here — see this property's own header comment.
+            // It measurably did not fix the strip on a physical device, and WidgetKit already
+            // clips every widget's content to its own corner radius automatically; Medium's
+            // corners already rely on exactly that system behavior with no explicit clip at all.
+            // Keeping a clip that provably didn't fix the reported bug would just be a second,
+            // redundant no-op sitting on top of the system's own clipping.
         } else {
             smallContent
         }
