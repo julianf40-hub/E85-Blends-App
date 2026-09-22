@@ -5,9 +5,10 @@ import Testing
 
 struct NearbyE85Tests {
     private let now = Date(timeIntervalSince1970: 1_788_600_000)
-    private func station(_ id: String = "station|a & b", miles: Double = 1, price: NearbyE85Price? = nil) -> NearbyE85Station {
+    private func station(_ id: String = "station|a & b", miles: Double = 1, price: NearbyE85Price? = nil,
+                          ethanol: NearbyE85Ethanol? = nil) -> NearbyE85Station {
         .init(id: id, name: "E85 station", address: "123 Main St", latitude: 33.45, longitude: -112.07,
-              distanceMiles: miles, price: price)
+              distanceMiles: miles, price: price, ethanol: ethanol)
     }
     private func snapshot(stations: [NearbyE85Station]? = nil) -> NearbyE85Snapshot {
         .make(stations: stations ?? [station()], radiusMiles: 25, updatedAt: now, locationAt: now)
@@ -136,6 +137,121 @@ struct NearbyE85Tests {
         #expect(eligible(StationsRecentSearchStore(persistenceURL: url)) == nil)
     }
 
+    // MARK: - 85Blends 2.4.0 widget ethanol polish
+
+    @Test func ethanolQualifiesOnlyWhenCurrentAndWithinPhysicalRange() {
+        for percentage in [-1, 101, Double.nan, Double.infinity, -Double.infinity] {
+            #expect(NearbyE85Ethanol.validated(percentage: percentage, reportedAt: now, now: now) == nil)
+        }
+        #expect(NearbyE85Ethanol.validated(percentage: nil, reportedAt: now, now: now) == nil)
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: nil, now: now) == nil)
+        // Exactly at the 14-day bar still qualifies (StationDataValidation.isStale is `days >
+        // thresholdDays`, so 14 itself is not yet stale) — one day older does not.
+        let atBoundary = NearbyE85Ethanol.validated(percentage: 78, reportedAt: now.addingTimeInterval(-14 * 86400), now: now)
+        #expect(atBoundary?.percentage == 78)
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: now.addingTimeInterval(-15 * 86400), now: now) == nil)
+        // A report meaningfully in the future fails StationDataValidation.isValidTimestamp and is
+        // never valid. A full day is used deliberately, well beyond isValidTimestamp's own
+        // 300-second clock-skew tolerance, so this stays an unambiguous future-report case even
+        // if that tolerance is ever retuned — not a borderline clock-skew one.
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: now.addingTimeInterval(86400), now: now) == nil)
+    }
+
+    /// A separate, deliberately independent concern from physical validity above — mirrors
+    /// CommunityEthanolValidation's own "hard validity vs. expected-range classification" split.
+    /// A recent, otherwise-valid report outside the 51...83 "expected E85 range" is real
+    /// (CommunityEthanolValidation never rejects it — see requiresConfirmation), just not
+    /// eligible for the widget: this release has no room for the confirmation/disclaimer context
+    /// the full Stations UI gives an out-of-range reading, so the widget simply omits it rather
+    /// than showing an unqualified number.
+    @Test func ethanolOutsideExpectedE85RangeIsOmittedEvenWhenRecentAndOtherwiseValid() {
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: now, now: now)?.percentage == 78) // recent, normal -> included
+        #expect(NearbyE85Ethanol.validated(percentage: 70, reportedAt: now, now: now)?.percentage == 70) // recent, normal -> included
+        #expect(NearbyE85Ethanol.validated(percentage: 51, reportedAt: now, now: now)?.percentage == 51) // lower bound -> included
+        #expect(NearbyE85Ethanol.validated(percentage: 83, reportedAt: now, now: now)?.percentage == 83) // upper bound -> included
+        // requiresConfirmation == true under CommunityEthanolValidation -> omitted from the widget,
+        // even though the value is physically valid, recent, and never rejected by the main app.
+        for requiresConfirmation in [0.0, 10.0, 50.9, 83.1, 95.0, 100.0] {
+            #expect(NearbyE85Ethanol.validated(percentage: requiresConfirmation, reportedAt: now, now: now) == nil)
+        }
+    }
+
+    @Test func ethanolLabelTextMatchesMainAppsWholeNumberAndOneDecimalFormatting() {
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: now, now: now)?.labelText == "E78")
+        #expect(NearbyE85Ethanol.validated(percentage: 72.5, reportedAt: now, now: now)?.labelText == "E72.5")
+        // Rounds to one decimal place, never showing a trailing ".0" once rounded to a whole number.
+        #expect(NearbyE85Ethanol.validated(percentage: 70.04, reportedAt: now, now: now)?.labelText == "E70")
+    }
+
+    /// The Large widget's on-screen badge text must say "Reported", not a bare percentage — this
+    /// is the one line item from the correction pass that isn't otherwise provable from a
+    /// screenshot alone, so it gets a direct, rendering-independent assertion.
+    @Test func ethanolBadgeTextAlwaysCarriesTheReportedPrefixOnScreen() {
+        #expect(NearbyE85Ethanol.validated(percentage: 78, reportedAt: now, now: now)?.badgeText == "Reported E78")
+        #expect(NearbyE85Ethanol.validated(percentage: 72.5, reportedAt: now, now: now)?.badgeText == "Reported E72.5")
+    }
+
+    @Test func ethanolAgeTextMatchesTodayAndDaysAgoWording() {
+        let fresh = NearbyE85Ethanol.validated(percentage: 78, reportedAt: now, now: now)
+        #expect(fresh?.agoText(at: now) == "Today")
+        #expect(fresh?.accessibilityAgeText(at: now) == "updated today")
+        let threeDaysOld = NearbyE85Ethanol.validated(percentage: 78, reportedAt: now.addingTimeInterval(-3 * 86400), now: now)
+        #expect(threeDaysOld?.agoText(at: now) == "3d ago")
+        #expect(threeDaysOld?.accessibilityAgeText(at: now) == "updated 3 days ago")
+        let oneDayOld = NearbyE85Ethanol.validated(percentage: 78, reportedAt: now.addingTimeInterval(-1 * 86400), now: now)
+        #expect(oneDayOld?.accessibilityAgeText(at: now) == "updated 1 day ago")
+    }
+
+    @Test func stationEthanolFieldDefaultsToNilForExistingCallSiteCompatibility() {
+        // Every pre-existing call site across the app and tests constructs NearbyE85Station
+        // without an `ethanol:` argument — confirms that still compiles and still means "none".
+        #expect(station().ethanol == nil)
+    }
+
+    // Named "physically invalid," not "out of range," to stay distinct from
+    // ethanolOutsideExpectedE85RangeIsOmittedEvenWhenRecentAndOtherwiseValid below: 101% fails
+    // the 0...100 hard bound outright, unlike a StationDataValidation.expectedE85EthanolRange
+    // miss (e.g. 90%), which is physically valid and only omitted from the widget by policy.
+    @Test func snapshotValidationRejectsPhysicallyInvalidOrFutureStationEthanol() {
+        let good = station(ethanol: .init(percentage: 78, reportedAt: now.addingTimeInterval(-86400)))
+        #expect(snapshot(stations: [good]).isValid(at: now))
+
+        // NearbyE85Ethanol.validated(...) is the only normal construction path and already
+        // forbids these, but isValid(at:) re-checks independently — the same defense-in-depth
+        // isValid already applies to price above, since a snapshot decoded from disk didn't
+        // necessarily pass through `validated` at all.
+        let outOfRange = NearbyE85Station(id: "bad", name: "Bad", address: "", latitude: 33.45, longitude: -112.07,
+                                          distanceMiles: 1, price: nil,
+                                          ethanol: NearbyE85Ethanol(percentage: 101, reportedAt: now))
+        #expect(!snapshot(stations: [outOfRange]).isValid(at: now))
+        // A full day ahead — well beyond isValidTimestamp's 300-second clock-skew tolerance —
+        // so this is unambiguously a future report, not a borderline clock-skew case.
+        let future = NearbyE85Station(id: "bad2", name: "Bad", address: "", latitude: 33.45, longitude: -112.07,
+                                      distanceMiles: 1, price: nil,
+                                      ethanol: NearbyE85Ethanol(percentage: 78, reportedAt: now.addingTimeInterval(86400)))
+        #expect(!snapshot(stations: [future]).isValid(at: now))
+    }
+
+    /// Simulates a real snapshot-v1.json already on a user's disk from before ethanol support
+    /// existed: encodes a normal (post-change) station, then removes the "ethanol" key entirely
+    /// — not merely nulls it — so this proves decoding a payload that never had the key at all,
+    /// the genuine old-file shape, not just one with an explicit null.
+    @Test func stationsFromBeforeEthanolSupportStillDecodeSuccessfully() throws {
+        let modern = station(price: .init(dollarsPerGallon: 2.89, reportedAt: now, source: .community))
+        var stationJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(modern)) as? [String: Any])
+        #expect(stationJSON["ethanol"] == nil, "a nil optional should already be omitted, confirming this fixture matches a genuine old payload")
+        stationJSON.removeValue(forKey: "ethanol")
+
+        let oldSnapshot = snapshot(stations: [modern])
+        var snapshotJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(oldSnapshot)) as? [String: Any])
+        snapshotJSON["stations"] = [stationJSON]
+        let oldData = try JSONSerialization.data(withJSONObject: snapshotJSON)
+
+        let decoded = try JSONDecoder().decode(NearbyE85Snapshot.self, from: oldData)
+        #expect(decoded.stations.first?.ethanol == nil)
+        #expect(decoded.stations.first?.price?.dollarsPerGallon == 2.89)
+        #expect(decoded.isValid(at: now))
+    }
 }
 
 /// Pure geometry for the medium widget's map. Phoenix-area coordinates throughout so distances

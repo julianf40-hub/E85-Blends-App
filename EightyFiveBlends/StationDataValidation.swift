@@ -50,6 +50,19 @@ nonisolated enum StationDataValidation {
         return date.timeIntervalSince(asOf) <= futureToleranceSeconds
     }
 
+    // MARK: - Community ethanol reports
+
+    /// The percentage range a genuine E85 pump is expected to read. A report outside this band
+    /// is still physically possible (see CommunityEthanolValidation's own 0...100 hard-validity
+    /// bound) and is never rejected outright — it only needs extra confirmation/context before
+    /// being shown. Single source of truth for both: CommunityEthanolValidation.requiresConfirmation
+    /// uses it to decide when the main app needs that confirmation, and (via the widget
+    /// extension's own dual-compilation of this file) NearbyE85Ethanol.validated(...) uses the
+    /// exact same range to decide widget eligibility — the two call sites intentionally differ in
+    /// what they DO with an out-of-range value (warn-and-still-show vs. omit-for-lack-of-space),
+    /// never in what counts as "expected" in the first place.
+    static let expectedE85EthanolRange: ClosedRange<Double> = 51.0...83.0
+
     // MARK: - Freshness
 
     /// Whole calendar days between `date` and `asOf`, clamped to zero so a clock-skewed

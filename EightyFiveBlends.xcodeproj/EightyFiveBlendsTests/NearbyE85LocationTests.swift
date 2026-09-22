@@ -185,9 +185,9 @@ struct NearbyE85LocationRefreshCoordinatorRepositionTests {
     private let home = (latitude: 33.4484, longitude: -112.0740)
 
     private func station(_ id: String, latitude: Double, longitude: Double, distanceMiles: Double,
-                          price: NearbyE85Price? = nil) -> NearbyE85Station {
+                          price: NearbyE85Price? = nil, ethanol: NearbyE85Ethanol? = nil) -> NearbyE85Station {
         .init(id: id, name: id, address: "Address", latitude: latitude, longitude: longitude,
-              distanceMiles: distanceMiles, price: price)
+              distanceMiles: distanceMiles, price: price, ethanol: ethanol)
     }
 
     @Test func repositionChangesNearestStationWhenACloserOneNowLeads() {
@@ -240,6 +240,21 @@ struct NearbyE85LocationRefreshCoordinatorRepositionTests {
             cached: cached, newLatitude: home.latitude + 0.02, newLongitude: home.longitude, locationAt: now.addingTimeInterval(600))
         #expect(repositioned?.stations.first?.price?.dollarsPerGallon == 3.89)
         #expect(repositioned?.stations.first?.price?.reportedAt == reportedAt)
+    }
+
+    /// 85Blends 2.4.0 widget ethanol polish — a background location update must recompute
+    /// distance only, exactly like price above; it must never silently drop an already-qualifying
+    /// community ethanol reading just because the coordinate moved.
+    @Test func repositionPreservesEthanolIndependentlyOfLocation() {
+        let reportedAt = now.addingTimeInterval(-1 * 86_400)
+        let withEthanol = station("Mobil", latitude: home.latitude, longitude: home.longitude, distanceMiles: 0.1,
+                                  ethanol: .init(percentage: 78, reportedAt: reportedAt))
+        let cached = NearbyE85Snapshot.make(stations: [withEthanol], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                            userLatitude: home.latitude, userLongitude: home.longitude)
+        let repositioned = NearbyE85LocationRefreshCoordinator.reposition(
+            cached: cached, newLatitude: home.latitude + 0.02, newLongitude: home.longitude, locationAt: now.addingTimeInterval(600))
+        #expect(repositioned?.stations.first?.ethanol?.percentage == 78)
+        #expect(repositioned?.stations.first?.ethanol?.reportedAt == reportedAt)
     }
 
     @Test func repositionUpdatesLocationAtWithoutTouchingUpdatedAt() {

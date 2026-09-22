@@ -11,15 +11,15 @@ final class NearbyE85RenderingTests: XCTestCase {
     private static let smallSize = CGSize(width: 155, height: 155)
     private static let mediumSize = CGSize(width: 329, height: 155)
     private static let largeSize = CGSize(width: 329, height: 345)
-    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize) throws -> UIImage {
+    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize, colorScheme: ColorScheme = .light) throws -> UIImage {
         // `widgetContentMargins` is read-only, so tests can't inject a stand-in value the way
         // production gets it from the real widget host — NearbyE85WidgetView reads whatever
         // default this environment resolves to outside an actual widget render context. Visual
         // captures below confirm small/large still get sensible breathing room from it.
         let view = NearbyE85WidgetView(entry: entry, family: family).content
-            .environment(\.colorScheme, .light)
+            .environment(\.colorScheme, colorScheme)
             .frame(width: size.width, height: size.height)
-            .background(Color.white)
+            .background(colorScheme == .dark ? Color.black : Color.white)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 3
         return try XCTUnwrap(renderer.uiImage)
@@ -209,6 +209,70 @@ final class NearbyE85RenderingTests: XCTestCase {
         for (name, snap) in cases {
             let entry = NearbyE85Entry(date: now, snapshot: snap, mapRender: syntheticRender(for: snap, size: mapSize))
             let image = try render(entry, family: .systemLarge, size: Self.largeSize)
+            attach(image, name: "nearby-large-\(name)")
+        }
+    }
+
+    /// 85Blends 2.4.0 widget ethanol polish — Small's compact ethanol line, in both color
+    /// schemes, with and without a qualifying reading (absence must collapse with no leftover
+    /// gap — this doesn't assert layout numerically, but the attached images make a stray blank
+    /// row immediately visible on review).
+    func testSmallStationCardAcrossEthanolAndColorSchemeStates() throws {
+        let now = Date.now
+        let (nearest, _, _) = phoenixStations(now: now)
+        var withEthanol = nearest
+        withEthanol.ethanol = .init(percentage: 78, reportedAt: now.addingTimeInterval(-1 * 86400))
+        let cases: [(String, NearbyE85Station, ColorScheme)] = [
+            ("light-no-ethanol", nearest, .light), ("light-e78", withEthanol, .light),
+            ("dark-no-ethanol", nearest, .dark), ("dark-e78", withEthanol, .dark),
+        ]
+        for (name, station, scheme) in cases {
+            let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot)
+            let image = try render(entry, family: .systemSmall, size: Self.smallSize, colorScheme: scheme)
+            attach(image, name: "nearby-small-\(name)")
+        }
+    }
+
+    /// 85Blends 2.4.0 widget ethanol polish — the six row states the badge must handle: price
+    /// and ethanol together, price only, ethanol only (a station can have a qualifying community
+    /// ethanol report with no price report at all — the two are independent), neither, a stale
+    /// price alongside a still-fresh ethanol reading (independent freshness clocks), and a badge
+    /// next to a long station name (confirms the name's own truncation, already covered by
+    /// testLargeMapAndStationListAcrossStates, is unaffected by the badge on the line below it).
+    func testLargeStationRowsAcrossEthanolAvailabilityStates() throws {
+        let now = Date.now
+        func station(_ id: String, name: String, miles: Double, price: NearbyE85Price?, ethanol: NearbyE85Ethanol?) -> NearbyE85Station {
+            NearbyE85Station(id: id, name: name, address: "Example address, Phoenix, AZ",
+                             latitude: 33.45 + miles * 0.01, longitude: -112.07 - miles * 0.01, distanceMiles: miles,
+                             price: price, ethanol: ethanol)
+        }
+        let priceAndEthanol = station("price-and-ethanol", name: "Mobil", miles: 0.6,
+            price: .init(dollarsPerGallon: 3.90, reportedAt: now.addingTimeInterval(-2 * 86400), source: .community),
+            ethanol: .init(percentage: 78, reportedAt: now.addingTimeInterval(-1 * 86400)))
+        let priceOnly = station("price-only", name: "Circle K", miles: 1.1,
+            price: .init(dollarsPerGallon: 3.75, reportedAt: now, source: .saved), ethanol: nil)
+        let ethanolOnly = station("ethanol-only", name: "QuikTrip", miles: 1.4,
+            price: nil, ethanol: .init(percentage: 83, reportedAt: now.addingTimeInterval(-5 * 86400)))
+        let neither = station("neither", name: "Shell", miles: 1.8, price: nil, ethanol: nil)
+        let stalePriceFreshEthanol = station("stale-price-fresh-ethanol", name: "Chevron", miles: 2.4,
+            price: .init(dollarsPerGallon: 4.99, reportedAt: now.addingTimeInterval(-20 * 86400), source: .community),
+            ethanol: .init(percentage: 70, reportedAt: now.addingTimeInterval(-3 * 86400)))
+        let longNameWithEthanol = station("long-name", name: "Really Long Alliance AutoGas Fuel Center Name", miles: 3.0,
+            price: .init(dollarsPerGallon: 3.05, reportedAt: now, source: .saved),
+            ethanol: .init(percentage: 72.5, reportedAt: now))
+
+        let all = [priceAndEthanol, priceOnly, ethanolOnly, neither, stalePriceFreshEthanol, longNameWithEthanol]
+        let snapshot = NearbyE85Snapshot.make(stations: Array(all.prefix(3)), radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let secondSnapshot = NearbyE85Snapshot.make(stations: Array(all.suffix(3)), radiusMiles: 25, updatedAt: now, locationAt: now,
+                                                    userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        for (name, snap, scheme) in [("ethanol-rows-1-light", snapshot, ColorScheme.light),
+                                      ("ethanol-rows-1-dark", snapshot, .dark),
+                                      ("ethanol-rows-2-light", secondSnapshot, .light)] {
+            let entry = NearbyE85Entry(date: now, snapshot: snap, mapRender: syntheticRender(for: snap, size: mapSize))
+            let image = try render(entry, family: .systemLarge, size: Self.largeSize, colorScheme: scheme)
             attach(image, name: "nearby-large-\(name)")
         }
     }
