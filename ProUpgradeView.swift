@@ -102,32 +102,32 @@ struct ProUpgradeView: View {
     }
 
     // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
-    // Experience. Split into two tiers so a quick scan reads "headline value" vs "everything
-    // else included," rather than one flat list of equally-weighted bullets:
-    //   - majorBenefits get full visual treatment (icon badge, headline-weight title). Trip
-    //     Planning is genuinely implemented today and gated behind isProUser (see
-    //     ProFeatureGate/TripPlannerView). Ad-Free Experience is genuinely implemented and
-    //     validated on a real device as of 2.3.1 — AdManager.isAdsEnabled reads
-    //     SubscriptionManager.shared.isProUser directly, and NativeAdView never even constructs
-    //     an ad request when that's false (see AdManager.swift/NativeAdView.swift) — a zero-ad-
-    //     request guarantee, not "load then hide." Unlimited Vehicles is genuinely implemented
-    //     and validated as of 2.3.0 (see VehicleCreationPolicy/SubscriptionManager.
-    //     canAccessUnlimitedVehicles) — no longer a Coming Soon item.
-    //   - supportingBenefits render compactly underneath. Save & Revisit Routes intentionally
-    //     never says "sync," "backed up," or "available across devices" — Saved Trips
-    //     (SavedTripStore) are device-local today, not CloudKit-synced.
+    // Experience. 2.4.0 folded the former supportingBenefits sub-bullets (E85 Stops Along Your
+    // Route, Save & Revisit Routes) into Intelligent E85 Trip Planning below — both were things
+    // Trip Planning already does, not separate benefits, so listing them again underneath just
+    // repeated the headline. Every row here gets full visual treatment (icon badge,
+    // headline-weight title):
+    //   - Trip Planning is genuinely implemented today and gated behind isProUser (see
+    //     ProFeatureGate/TripPlannerView).
+    //   - Ad-Free Experience is genuinely implemented and validated on a real device as of
+    //     2.3.1 — AdManager.isAdsEnabled reads SubscriptionManager.shared.isProUser directly,
+    //     and NativeAdView never even constructs an ad request when that's false (see
+    //     AdManager.swift/NativeAdView.swift) — a zero-ad-request guarantee, not "load then
+    //     hide."
+    //   - Unlimited Vehicles is genuinely implemented and validated as of 2.3.0 (see
+    //     VehicleCreationPolicy/SubscriptionManager.canAccessUnlimitedVehicles) — no longer a
+    //     Coming Soon item.
     // Cloud Sync itself is never listed here — it's unconditional for every user, Free and Pro
     // alike (see SubscriptionManager.swift, GarageView.swift, and CLAUDE.md's Cloud Sync
-    // product-policy note), so it is not Pro benefit content.
+    // product-policy note), so it is not Pro benefit content. The Nearby E85 widget is the same
+    // story: it publishes and renders for every user regardless of isProUser (see
+    // StationsView.publishNearbyWidgetSnapshot and the widget extension itself, neither of which
+    // reference isProUser/canAccess at all), so it stays out of this list too unless/until it's
+    // actually gated behind Pro.
     private let majorBenefits: [(icon: String, title: String, detail: String)] = [
         ("map.fill", "Intelligent E85 Trip Planning", "Plan complete routes around E85 availability, reserve targets, and backup fuel options."),
         ("sparkles", "Ad-Free Experience", "Enjoy 85Blends without ads while your Pro subscription is active."),
         ("car.fill", "Unlimited Vehicles", "Add and manage your entire garage with 85Blends Pro."),
-    ]
-
-    private let supportingBenefits: [(icon: String, title: String, detail: String)] = [
-        ("arrow.triangle.turn.up.right.diamond.fill", "E85 Stops Along Your Route", "Find ethanol stops that make sense for your actual trip, not just what's nearby."),
-        ("bookmark.fill", "Save & Revisit Routes", "Save useful trips and quickly plan them again later."),
     ]
 
     var body: some View {
@@ -624,15 +624,6 @@ struct ProUpgradeView: View {
                     majorBenefitRow(benefit)
                 }
             }
-
-            Divider()
-                .background(AppTheme.Colors.border)
-
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(supportingBenefits, id: \.title) { benefit in
-                    supportingBenefitRow(benefit)
-                }
-            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -676,41 +667,18 @@ struct ProUpgradeView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Compact treatment — small inline icon, no badge — for supporting benefits that round
-    /// out the headline value above without competing with it for attention.
-    private func supportingBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: benefit.icon)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .frame(width: 20)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(benefit.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                Text(benefit.detail)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
     // MARK: - Coming soon
 
     // A separate, visually secondary card so a quick scan never mistakes a roadmap item for a
     // current entitlement. Reuses ProShellRow — the same muted "Coming soon" capsule already
-    // shipped in StationsView's and MoreView's Coming Soon sections for these exact two
-    // features — rather than inventing a new visual language for the same concept. No CTA
-    // button (there is nothing to unlock yet) and no date/version promise, per product policy;
-    // "Planned for future 85Blends updates." is deliberately non-committal.
+    // shipped in StationsView's and MoreView's Coming Soon sections for Advanced Fuel Analytics
+    // and Station Price Alerts — rather than inventing a new visual language for the same
+    // concept. Ethanol % Alerts (2.4.0) is new to this screen only; MoreView's Coming Soon still
+    // lists just the first two. Its copy deliberately says "reported" ethanol content rather
+    // than an exact percentage — the alert is community-reported/estimated, never a guaranteed
+    // pump composition. No CTA button (there is nothing to unlock yet) and no date/version
+    // promise, per product policy; "Planned for future 85Blends updates." is deliberately
+    // non-committal.
     private var comingSoonCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(title: "Coming Soon to Pro", subtitle: "Planned for future 85Blends updates.")
@@ -729,6 +697,15 @@ struct ProUpgradeView: View {
                     icon: "bell.badge.fill",
                     title: "Station Price Alerts",
                     detail: "Keep track of fuel prices at stations you care about."
+                )
+
+                Divider()
+                    .background(AppTheme.Colors.border)
+
+                ProShellRow(
+                    icon: "percent",
+                    title: "Ethanol % Alerts",
+                    detail: "Get notified when a station's reported ethanol content changes."
                 )
             }
         }
