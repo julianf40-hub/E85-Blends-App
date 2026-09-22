@@ -39,10 +39,15 @@ struct MoreView: View {
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
 
+                    // RVP Supply sponsor — returned to premium top-of-page placement (Pass 5),
+                    // directly below the header and before Pro / Referral. Same compact
+                    // horizontal card introduced in Pass 4; only the position changed.
+                    sponsorCard
+
                     VStack(spacing: 16) {
                         // Pro / Referral — no separate section header: the page header above
                         // already sets context, so this preserves the clean transition from the
-                        // header straight into this card.
+                        // sponsor card straight into this card.
                         MoreGroupedCard {
                             MoreNavigationRow(
                                 title: "85Blends Pro",
@@ -162,10 +167,6 @@ struct MoreView: View {
                                 }
                             }
                         }
-
-                        // RVP Supply sponsor — moved here from directly under the page header
-                        // (Pass 4); still a full sibling of the section groups, just compacted.
-                        sponsorCard
 
                         // About 85Blends
                         VStack(alignment: .leading, spacing: 12) {
