@@ -251,7 +251,22 @@ struct NearbyE85WidgetView: View {
                     .padding(.leading, widgetMargins.leading).padding(.trailing, widgetMargins.trailing)
                     .padding(.vertical, 10)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 85Blends 2.4.0 widget polish, take 3 — real-device testing after take 2 (the
+            // Link-decoupling above) confirmed interaction works correctly but the top strip
+            // persisted, ruling out the Link wrapper as its cause. The map's height is fixed at
+            // exactly 60% of the widget's display height (see NearbyE85MapRenderer.mapSize /
+            // NearbyE85Widget's mapRender(for:context:zoomLevel:)), while largeStationList below
+            // has no forcing frame at all — its height is purely intrinsic (rows + spacing +
+            // padding). Nothing guarantees those two heights plus the Divider sum to exactly the
+            // full canvas height, so this VStack's own natural height can be shorter than the
+            // frame below expands it to. `alignment: .top` (SwiftUI's frame default is `.center`
+            // when omitted) is what actually matters here: without it, any leftover vertical
+            // space split evenly above the map and below the list — the top half exposed the
+            // widget/container background as a visible strip, while the bottom half was
+            // invisible against the same-colored background behind the list. Small already does
+            // this correctly (`alignment: .topLeading` on its own frame); Medium never needed it
+            // since its map is sized to 100% of the canvas, leaving nothing to redistribute.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             // ContainerRelativeShape() removed here — see this property's own header comment.
             // It measurably did not fix the strip on a physical device, and WidgetKit already
             // clips every widget's content to its own corner radius automatically; Medium's
