@@ -248,6 +248,23 @@ struct EightyFiveBlendsApp: App {
                 .onChange(of: locationManager.authorizationStatus) { _, _ in
                     if !locationManager.isAuthorizedForUserLocation { NearbyE85Publisher.revokeLocation() }
                 }
+                // 85Blends 2.4.0 Nearby E85 widget Pro gate — keeps the App-Group access MIRROR
+                // in step with the authoritative entitlement. `initial: true` publishes once at
+                // launch (first launch after updating to 2.4.0 has no mirror yet); afterwards
+                // this fires whenever the mirrored value changes: a successful CustomerInfo
+                // application (RevenueCatSubscriptionService.apply(_:) — refresh, purchase,
+                // restore, or a customerInfoStream emission), or an Internal/Debug Developer Pro
+                // Override change. A `nil` status (no authoritative answer yet, or a refresh that
+                // failed) publishes nothing, so a previously-mirrored `.pro` is never downgraded
+                // to `.free` by a transient failure — see NearbyE85WidgetAccessPublisher's header
+                // and SharedNearbyE85/NearbyE85WidgetAccess.swift's AUTHORITY INVARIANT. Both the
+                // previous and current values are passed on because, in Internal/Debug builds
+                // only, a value → nil transition means a Developer Pro Override was just switched
+                // Off before RevenueCat answered, and the forced mirror it left behind must be
+                // removed — see NearbyE85WidgetAccessPublisher.MirrorTransition.
+                .onChange(of: nearbyE85WidgetAccessStatus, initial: true) { previous, current in
+                    NearbyE85WidgetAccessPublisher.sync(previous: previous, current: current)
+                }
                 .onChange(of: themePreference) { _, _ in
                     AppTheme.applyTabBarAppearance()
                 }
@@ -261,6 +278,14 @@ struct EightyFiveBlendsApp: App {
                 }
         }
         .modelContainer(sharedModelContainer)
+    }
+
+    /// What the app is currently allowed to mirror into the App Group for the Nearby E85 widget —
+    /// see the `.onChange(of:initial:)` in `body` above. Reading `SubscriptionManager.shared` (an
+    /// `@Observable`) inside this `Scene` body is what lets that `.onChange` re-evaluate when the
+    /// underlying RevenueCat state or the Developer Pro Override changes.
+    private var nearbyE85WidgetAccessStatus: NearbyE85WidgetAccessStatus? {
+        NearbyE85WidgetAccessPublisher.mirroredStatus(for: SubscriptionManager.shared)
     }
 
     /// The active-app half of the Nearby E85 widget's manual refresh button. The widget

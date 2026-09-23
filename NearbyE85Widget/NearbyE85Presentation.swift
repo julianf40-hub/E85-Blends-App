@@ -8,6 +8,11 @@ import AppIntents
 nonisolated struct NearbyE85Entry: TimelineEntry {
     let date: Date
     let snapshot: NearbyE85Snapshot?
+    // 85Blends 2.4.0 Pro gate — what this entry is allowed to render. Deliberately NOT defaulted:
+    // a TimelineEntry for a Pro-gated widget must never fall open by omission, so every producer
+    // (NearbyE85Provider, previews, tests) states it explicitly. Only `.pro` entries ever carry a
+    // snapshot/mapRender — see NearbyE85Provider.lockedEntry.
+    let access: NearbyE85WidgetAccessStatus
     var mapRender: NearbyE85MapRender? = nil
     // Only meaningful for .systemLarge — Medium/Small always render at .default regardless of
     // this value (see NearbyE85Provider.mapRender).
@@ -42,6 +47,38 @@ nonisolated enum NearbyE85WidgetURLResolver {
         }
         return NearbyE85DeepLink.stationsURL()
     }
+
+    /// 85Blends 2.4.0 Pro gate — what NearbyE85WidgetView.body actually installs. A non-Pro shell
+    /// (locked or verify) always opens the app at Stations, never a directions link, regardless of
+    /// family or of any snapshot that might (defensively) be attached to the entry; the app's own
+    /// entitlement gate then decides between the ordinary route and the paywall — see
+    /// NearbyE85WidgetEntitlementRoute. `.pro` is exactly the pre-existing rule above.
+    static func widgetURL(family: WidgetFamily, snapshot: NearbyE85Snapshot?, access: NearbyE85WidgetAccessStatus) -> URL {
+        guard access.permitsWidgetInteraction else { return NearbyE85DeepLink.stationsURL() }
+        return widgetURL(family: family, snapshot: snapshot)
+    }
+}
+
+/// 85Blends 2.4.0 Pro gate — every user-facing string the non-Pro shells show, in one place so the
+/// "unknown must never read as Free/expired/upgrade" rule is something a test can actually hold the
+/// copy to (see NearbyE85WidgetProGateTests), not just a comment. Not private for that reason.
+nonisolated enum NearbyE85WidgetAccessCopy {
+    static let title = "Nearby E85"
+    static let proName = "85Blends Pro"
+    /// Small (`.free`).
+    static let smallLockedHeadline = "Unlock the Nearby E85 widget"
+    static let smallLockedAction = "Open 85Blends"
+    /// Medium and Large (`.free`).
+    static let lockedHeadline = "Nearby E85 on your Home Screen"
+    static let lockedAvailability = "Available with 85Blends Pro"
+    static let lockedAction = "Open 85Blends to unlock"
+    /// Every family (`.unknown`) — deliberately neutral: this state means "the app hasn't told the
+    /// widget anything authoritative yet," which is just as true for a Pro subscriber on a fresh
+    /// install as for anyone else, so it must not suggest the user lacks Pro.
+    static let unverifiedHeadline = "Verify Pro Access"
+    static let unverifiedBody = "Open 85Blends to verify your widget access."
+    /// Everything the `.unknown` shell can ever display — what the neutrality test scans.
+    static let unverifiedStrings = [title, unverifiedHeadline, unverifiedBody]
 }
 
 /// 85Blends 2.4.0 zoom-boundary tap-through fix — WidgetKit does not guarantee a `.disabled()`
@@ -123,16 +160,114 @@ struct NearbyE85WidgetView: View {
     var body: some View {
         content
             .containerBackground(.background, for: .widget)
-            .widgetURL(NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: entry.snapshot))
+            .widgetURL(NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: entry.snapshot, access: entry.access))
             .privacySensitive()
     }
 
+    // 85Blends 2.4.0 Pro gate — access is the OUTER switch, family the inner one, so the three
+    // shipped Pro layouts below (`proContent`) are reached through exactly the same
+    // family dispatch as before and are otherwise untouched. A non-Pro entry never reaches any
+    // view that renders a snapshot, map, price, ethanol, Link, or AppIntent button.
     @ViewBuilder var content: some View {
+        switch entry.access {
+        case .pro: proContent
+        case .free: lockedContent
+        case .unknown: unverifiedContent
+        }
+    }
+
+    @ViewBuilder private var proContent: some View {
         switch family {
         case .systemMedium: mediumContent
         case .systemLarge: largeContent
         default: smallContent
         }
+    }
+
+    // MARK: - Non-Pro shells (85Blends 2.4.0 Pro gate)
+    //
+    // Text and SF Symbols only: no placeholder map, no sample stations, no blurred/redacted
+    // "preview" of Pro content, no refresh/zoom controls, no per-region Links. The whole widget
+    // is one tap target (the widget-level .widgetURL in body — always Stations for these; see
+    // NearbyE85WidgetURLResolver.widgetURL(family:snapshot:access:)). AppTheme isn't available in
+    // the widget extension, so the PRO badge below uses a literal matching AppTheme.Colors.
+    // stationYellow rather than importing anything new.
+
+    private static let proBadgeColor = Color(red: 0.98, green: 0.78, blue: 0.20)
+
+    private var proBadge: some View {
+        Text("PRO")
+            .font(.system(size: 9, weight: .heavy, design: .rounded))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Self.proBadgeColor, in: Capsule())
+            .accessibilityHidden(true)
+    }
+
+    private var lockedAccessibilityLabel: String {
+        "Nearby E85 widget. Available with 85Blends Pro. Open 85Blends to unlock."
+    }
+
+    @ViewBuilder private var lockedContent: some View {
+        switch family {
+        case .systemSmall:
+            VStack(alignment: .leading, spacing: 6) {
+                header
+                Spacer(minLength: 0)
+                HStack(spacing: 4) {
+                    Image(systemName: "crown.fill").foregroundStyle(Self.proBadgeColor)
+                    Text(NearbyE85WidgetAccessCopy.proName)
+                }
+                .font(.caption.weight(.bold))
+                Text(NearbyE85WidgetAccessCopy.smallLockedHeadline)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2).minimumScaleFactor(0.85)
+                Text(NearbyE85WidgetAccessCopy.smallLockedAction)
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(widgetMargins)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(lockedAccessibilityLabel)
+        default:
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) { header; proBadge }
+                Spacer(minLength: 0)
+                if family == .systemLarge {
+                    Image(systemName: "crown.fill")
+                        .font(.title2).foregroundStyle(Self.proBadgeColor)
+                }
+                Text(NearbyE85WidgetAccessCopy.lockedHeadline)
+                    .font(family == .systemLarge ? .title3.weight(.semibold) : .headline)
+                    .lineLimit(2)
+                Text(NearbyE85WidgetAccessCopy.lockedAvailability)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(NearbyE85WidgetAccessCopy.lockedAction)
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(widgetMargins)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(lockedAccessibilityLabel)
+        }
+    }
+
+    /// `.unknown` — see NearbyE85WidgetAccessCopy.unverified* for why this wording is neutral.
+    private var unverifiedContent: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            header
+            Spacer(minLength: 0)
+            Text(NearbyE85WidgetAccessCopy.unverifiedHeadline)
+                .font(family == .systemSmall ? .subheadline.weight(.semibold) : .headline)
+                .lineLimit(2).minimumScaleFactor(0.85)
+            Text(NearbyE85WidgetAccessCopy.unverifiedBody)
+                .font(family == .systemSmall ? .caption2 : .caption).foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .padding(widgetMargins)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Nearby E85 widget. \(NearbyE85WidgetAccessCopy.unverifiedHeadline). \(NearbyE85WidgetAccessCopy.unverifiedBody)")
     }
 
     // MARK: - Small — information-first nearest-station card (unchanged visual design)

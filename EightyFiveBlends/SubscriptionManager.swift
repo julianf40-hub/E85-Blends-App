@@ -178,6 +178,13 @@ final class SubscriptionManager {
     var canAccessAdvancedAnalytics: Bool { isPro }
     var canAccessStationAlerts: Bool     { isPro }
     var canAccessUnlimitedVehicles: Bool { isPro }
+    /// 85Blends 2.4.0 — the Nearby E85 Home Screen widget (all three families) is a Pro feature.
+    /// Same plan-agnostic `isPro` as every other gate above. This property is the app-side
+    /// authority the widget mirror is derived FROM (see NearbyE85WidgetAccessPublisher) and the
+    /// value ContentView's widget deep-link gate reads (see NearbyE85WidgetEntitlementRoute) — the
+    /// App-Group value the widget extension itself reads is only ever a copy of this, never a
+    /// second source of truth (see SharedNearbyE85/NearbyE85WidgetAccess.swift's header).
+    var canAccessNearbyE85Widget: Bool   { isPro }
 
     // MARK: - Package / price (sourced from RevenueCat — see RevenueCatSubscriptionService)
 

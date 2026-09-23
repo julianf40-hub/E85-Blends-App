@@ -46,3 +46,82 @@ enum NearbyE85WidgetRouting {
         }
     }
 }
+
+/// 85Blends 2.4.0 Nearby E85 widget Pro gate — the pure, app-side decision ContentView makes
+/// BEFORE it consumes a widget deep link (`openPendingWidgetLink()`). Reads the authoritative
+/// entitlement (via `SubscriptionManager`, never the App Group mirror — the mirror is for the
+/// widget extension only; see SharedNearbyE85/NearbyE85WidgetAccess.swift's header). Derived from
+/// the exact same rule the mirror itself is published from (`NearbyE85WidgetAccessPublisher.
+/// mirroredStatus`), so the widget's shell and the app's response to a tap on it can never
+/// disagree about what "Pro", "Free", and "not yet known" mean.
+nonisolated enum NearbyE85WidgetEntitlementRoute: Equatable {
+    /// No authoritative answer yet (cold launch before RevenueCat's first CustomerInfo, or a
+    /// launch where every fetch so far failed). ContentView keeps the pending URL and re-runs
+    /// this decision when the entitlement inputs change — it never presents the paywall on the
+    /// strength of "unknown," and never drops a Pro user's tap.
+    case waitForEntitlement
+    /// Pro (RevenueCat-confirmed, or Developer Override "Force Pro"): perform the widget's
+    /// ordinary route (`NearbyE85WidgetRouting.resolve`) exactly as before this gate existed.
+    case allowWidgetRoute
+    /// Confirmed Free (a real CustomerInfo with no active `pro`, or "Force Free"): consume the
+    /// URL and present the single 85Blends Pro paywall (`ProUpgradeView`, `.modal`) instead.
+    case presentProPaywall
+
+    static func resolve(mirroredStatus: NearbyE85WidgetAccessStatus?) -> Self {
+        switch mirroredStatus {
+        case nil, .unknown: return .waitForEntitlement
+        case .pro: return .allowWidgetRoute
+        case .free: return .presentProPaywall
+        }
+    }
+
+    /// Plain-value form (unit-tested in NearbyE85WidgetProGateTests) — `isPro` is
+    /// `SubscriptionManager.canAccessNearbyE85Widget`, the other two are the same inputs
+    /// `NearbyE85WidgetAccessPublisher.mirroredStatus` takes.
+    static func resolve(isPro: Bool, hasAuthoritativeProStatus: Bool, isDebugProOverrideActive: Bool) -> Self {
+        resolve(mirroredStatus: NearbyE85WidgetAccessPublisher.mirroredStatus(
+            isPro: isPro, hasAuthoritativeProStatus: hasAuthoritativeProStatus,
+            isDebugProOverrideActive: isDebugProOverrideActive))
+    }
+
+    @MainActor
+    static func resolve(for manager: SubscriptionManager) -> Self {
+        resolve(mirroredStatus: NearbyE85WidgetAccessPublisher.mirroredStatus(for: manager))
+    }
+}
+
+/// 85Blends 2.4.0 Pro gate — the pending-URL half of `ContentView.openPendingWidgetLink()`: given the
+/// URL currently pending (if any) and the entitlement route, decides what happens to that URL on
+/// THIS attempt. Pure, so the whole lifecycle is unit-testable (NearbyE85WidgetProGateTests): tap →
+/// held while the entitlement is unknown → RevenueCat answers → the SAME URL is retried → consumed
+/// exactly once, as either the ordinary widget route or the paywall. There is deliberately no
+/// timer, counter, or retry loop here: ContentView re-attempts only from its existing trigger points
+/// plus `.onChange(of: widgetEntitlementRoute)`, which fires on a route CHANGE, never on a plain
+/// body re-evaluation.
+nonisolated enum NearbyE85WidgetLinkGate {
+    enum Action: Equatable {
+        /// Nothing to do this attempt: either nothing is pending, or the entitlement isn't known yet
+        /// — in which case `Step.pendingURL` is the SAME URL, still pending for a later attempt.
+        case hold
+        /// Consumed — present the 85Blends Pro paywall; no widget route is performed.
+        case presentPaywall
+        /// Consumed — perform the ordinary `NearbyE85WidgetRouting` outcome for the URL.
+        case route
+    }
+
+    struct Step: Equatable {
+        /// What ContentView stores back into `pendingWidgetURL`: unchanged while held, `nil` once
+        /// consumed. This is the single point at which a widget URL is ever consumed.
+        let pendingURL: URL?
+        let action: Action
+    }
+
+    static func advance(pendingURL: URL?, route: NearbyE85WidgetEntitlementRoute) -> Step {
+        guard let pendingURL else { return Step(pendingURL: nil, action: .hold) }
+        switch route {
+        case .waitForEntitlement: return Step(pendingURL: pendingURL, action: .hold)
+        case .presentProPaywall: return Step(pendingURL: nil, action: .presentPaywall)
+        case .allowWidgetRoute: return Step(pendingURL: nil, action: .route)
+        }
+    }
+}
