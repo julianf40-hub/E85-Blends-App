@@ -144,7 +144,7 @@ struct NearbyE85WidgetView: View {
                     header
                     station(first, compact: false, showsEthanol: true)
                     Spacer(minLength: 0)
-                    footer(snapshot)
+                    footer(snapshot, staleText: "Older location")
                 }
                 // The whole widget is one tap target that starts directions — a single clear
                 // announcement beats VoiceOver reading out the name/distance/price separately
@@ -446,14 +446,40 @@ struct NearbyE85WidgetView: View {
     // own accessibility label already comes entirely from directionsAccessibilityLabel(for:)
     // (children: .ignore below it), so the ethanol Text added here is a purely visual addition —
     // its VoiceOver content lives there instead, not in this view's own (unused) combined label.
+    //
+    // 85Blends 2.4.0 widget polish — real-device testing found Small's ethanol line pushed the
+    // footer to the bottom edge (clipped/crowded): non-compact mode already gave distance its own
+    // full line, so adding the ethanol line made a 5th content row where there'd only ever been 4.
+    // `inlineNameAndDistance` recovers exactly that one row by combining name+distance onto a
+    // single line — the same layout `compact` mode already uses — but ONLY when the ethanol line
+    // is actually about to render (`showsEthanolLine`), and WITHOUT `compact`'s other effects
+    // (price stays .title2/.bold, price freshness keeps its own line): those weren't the problem,
+    // and shrinking them wasn't asked for. When ethanol is absent (or not requested), this
+    // resolves to `compact` alone, exactly the original behavior — Medium's fallback call below
+    // never passes showsEthanol, so it's completely unaffected regardless.
     @ViewBuilder private func station(_ station: NearbyE85Station, compact: Bool, showsEthanol: Bool = false) -> some View {
+        let showsEthanolLine = showsEthanol && station.ethanol != nil
+        let inlineNameAndDistance = compact || showsEthanolLine
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline) {
                 Text(station.name).font(compact ? .subheadline.weight(.semibold) : .headline)
-                    .lineLimit(compact ? 1 : 2)
-                if compact { Spacer(minLength: 4); distance(station) }
+                    .lineLimit(inlineNameAndDistance ? 1 : 2)
+                // Spacer(minLength:) only enforces a floor, and the name's own lineLimit(1) +
+                // truncation gives HStack a much wider compressible range than distance's short,
+                // barely-truncatable string — so in practice a long name yields space long before
+                // distance would. But neither fact is an actual guarantee: without .fixedSize()
+                // here, an extreme case (very large Dynamic Type) could still force distance
+                // itself to compress or wrap once the name has already hit its ellipsis-minimum.
+                // .fixedSize(horizontal:true, vertical:false) makes that a real guarantee instead
+                // of a practical tendency — distance always renders at its natural single-line
+                // width, never wrapping or disappearing, which only matters in that same extreme
+                // case (a normal short distance string already renders at its natural width
+                // regardless, so this is a no-op for the common case). Applied only at this call
+                // site, not to distance(_:) itself, so largeRow's own, independent distance(...)
+                // usage — Large is untouched by this pass — is completely unaffected.
+                if inlineNameAndDistance { Spacer(minLength: 4); distance(station).fixedSize(horizontal: true, vertical: false) }
             }
-            if !compact { distance(station) }
+            if !inlineNameAndDistance { distance(station) }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if let price = station.price {
                     Text(price.dollarsPerGallon, format: .currency(code: "USD"))
@@ -471,7 +497,7 @@ struct NearbyE85WidgetView: View {
             // No placeholder when absent — the `if let` simply contributes no sibling, so the
             // VStack collapses with no leftover gap (spacing only applies between views that
             // actually exist).
-            if showsEthanol, let ethanol = station.ethanol {
+            if showsEthanolLine, let ethanol = station.ethanol {
                 ethanolLine(ethanol)
             }
         }.accessibilityElement(children: .combine)
@@ -492,9 +518,16 @@ struct NearbyE85WidgetView: View {
             .font(.caption).foregroundStyle(.secondary)
             .accessibilityLabel("Approximately \(station.distanceMiles, specifier: "%.1f") miles from last app location")
     }
-    private func footer(_ snapshot: NearbyE85Snapshot) -> some View {
+    // `staleText` defaults to the original wording so Medium's fallback and the "no stations"
+    // fallbackBody call sites stay byte-for-byte unchanged — only Small overrides it below.
+    // Small's own whole-widget tap starts directions (see smallContent's own comment and
+    // NearbyE85WidgetURLResolver), never refresh — only the dedicated refresh icon refreshes — so
+    // "tap to refresh" was never accurate there. This is scoped to Small specifically rather than
+    // changed globally: Medium's fallback tap semantics ("always opens Stations, never directions"
+    // — see mediumContent's own comment) are a separate call site this task doesn't touch.
+    private func footer(_ snapshot: NearbyE85Snapshot, staleText: String = "Older location · tap to refresh") -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(snapshot.isStale(at: entry.date) ? "Older location · tap to refresh" : "Near last app location")
+            Text(snapshot.isStale(at: entry.date) ? staleText : "Near last app location")
             HStack(spacing: 3) {
                 Text("Updated")
                 Text(snapshot.updatedAt, style: .relative)
