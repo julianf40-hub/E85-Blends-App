@@ -25,8 +25,26 @@ struct NearbyE85RefreshIntent: AppIntent {
     init() {}
 
     func perform() async throws -> some IntentResult {
-        NearbyE85RefreshRequestStore().markRequested(at: .now)
-        WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
+        Self.handle(access: NearbyE85WidgetAccessStore().read().status,
+                    requestStore: NearbyE85RefreshRequestStore(), now: .now) {
+            WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
+        }
         return .result()
+    }
+
+    /// 85Blends 2.4.0 Pro gate — `perform()`'s actual body, with its I/O injected so it's unit-
+    /// testable (NearbyE85WidgetProGateTests). A non-Pro access status (`.free` OR `.unknown`) is
+    /// a complete no-op: no pending-refresh flag is written (so the app never performs a location
+    /// refresh on a locked widget's behalf) and no timeline reload is requested. Defensive rather
+    /// than reachable in practice — a non-Pro shell renders no refresh button at all (see
+    /// NearbyE85WidgetView.lockedContent) — but an AppIntent is an entry point of its own, so the
+    /// gate lives here too, not only in the view. Returns whether the refresh was recorded.
+    @discardableResult
+    nonisolated static func handle(access: NearbyE85WidgetAccessStatus, requestStore: NearbyE85RefreshRequestStore,
+                                   now: Date, reloadTimelines: () -> Void) -> Bool {
+        guard access.permitsWidgetInteraction else { return false }
+        requestStore.markRequested(at: now)
+        reloadTimelines()
+        return true
     }
 }

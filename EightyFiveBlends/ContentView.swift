@@ -73,6 +73,13 @@ struct ContentView: View {
     @State private var widgetStation: NearbyE85Station?
     @State private var widgetSnapshot: NearbyE85Snapshot?
     @State private var pendingWidgetURL: URL?
+    // 85Blends 2.4.0 Nearby E85 widget Pro gate — set only by openPendingWidgetLink() when the
+    // entitlement route resolves to .presentProPaywall (a CONFIRMED Free user tapped the widget).
+    // Presents the single existing 85Blends Pro paywall; ProUpgradeView's own onAppear/
+    // onDisappear already report it via SubscriptionManager.isPaywallPresented, so the
+    // review-request and price-contribution prompts below stay suppressed while it's up with
+    // no extra wiring here.
+    @State private var isShowingWidgetProPaywall = false
     // 85Blends 2.4.0 post-navigation price-contribution prompt — set only at the exact moment
     // attemptPendingPriceContributionPromptIfNeeded() below decides to show the banner; never
     // bound continuously to PendingPriceContributionStore.shared.current, mirroring how
@@ -105,6 +112,14 @@ struct ContentView: View {
             showGarageTab: showGarageTab,
             showRemindersTab: showRemindersTab
         )
+    }
+
+    /// 85Blends 2.4.0 Nearby E85 widget Pro gate — the authoritative (SubscriptionManager-derived,
+    /// never App-Group-mirror-derived) decision for a pending widget deep link. Read inside `body`
+    /// via `.onChange(of:)` below so a tap that arrived before RevenueCat answered is re-evaluated
+    /// the moment it does, instead of being dropped or paywalled on an unknown entitlement.
+    private var widgetEntitlementRoute: NearbyE85WidgetEntitlementRoute {
+        .resolve(for: SubscriptionManager.shared)
     }
 
     // True only when onboarding transitioned from incomplete to complete during this same
@@ -273,8 +288,19 @@ struct ContentView: View {
         .onChange(of: hasCompletedOnboarding) { _, completed in
             if completed { openPendingWidgetLink() }
         }
+        // A widget tap held at .waitForEntitlement (see openPendingWidgetLink) is retried here as
+        // soon as the entitlement inputs change — typically RevenueCat's first CustomerInfo of the
+        // launch arriving a moment after the deep link did. No-op when nothing is pending.
+        .onChange(of: widgetEntitlementRoute) { _, _ in
+            if pendingWidgetURL != nil { openPendingWidgetLink() }
+        }
         .sheet(item: $widgetStation) { station in
             if let snapshot = widgetSnapshot { NearbyE85StationView(station: station, snapshot: snapshot) }
+        }
+        // Same presentation ProFeatureLockView already uses for every other Pro gate — one
+        // paywall, one presentation style; nothing widget-specific is rendered here.
+        .sheet(isPresented: $isShowingWidgetProPaywall) {
+            NavigationStack { ProUpgradeView(presentationMode: .modal) }
         }
     }
 
@@ -288,7 +314,25 @@ struct ContentView: View {
             isShowingWhatsNew = false
             return // Present after its onDismiss; never compete with an existing sheet.
         }
-        pendingWidgetURL = nil // Consumed exactly once, regardless of which outcome follows.
+        // 85Blends 2.4.0 Nearby E85 widget Pro gate. Evaluated AFTER the onboarding/consent/
+        // What's New guards above (so the paywall never competes with those either) and BEFORE
+        // the URL is consumed, so an unresolved entitlement keeps the tap pending rather than
+        // dropping it. Every widget tap — a locked Small/Medium/Large shell, the neutral "verify"
+        // shell, or a real Pro map/row/directions link — lands here; only a Pro user proceeds to
+        // the ordinary route below, and only a CONFIRMED Free user sees the paywall. The pure
+        // NearbyE85WidgetLinkGate owns the pending-URL lifecycle (held intact vs consumed exactly
+        // once) so that lifecycle is unit-tested rather than implied by this function's shape.
+        let gate = NearbyE85WidgetLinkGate.advance(pendingURL: url, route: widgetEntitlementRoute)
+        pendingWidgetURL = gate.pendingURL // Same URL while held; nil once consumed — the one consumption point.
+        switch gate.action {
+        case .hold:
+            return // .onChange(of: widgetEntitlementRoute) retries once RevenueCat answers.
+        case .presentPaywall:
+            isShowingWidgetProPaywall = true // The paywall IS this tap's outcome; no widget route.
+            return
+        case .route:
+            break
+        }
         switch NearbyE85WidgetRouting.resolve(destination, snapshot: NearbyE85Cache().read(),
                                               isAuthorized: widgetLocationManager.isAuthorizedForUserLocation) {
         case .switchToStations:

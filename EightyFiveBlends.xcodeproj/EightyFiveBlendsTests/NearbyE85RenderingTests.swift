@@ -53,7 +53,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         ]
         for (stateName, snapshot) in cases {
             for (familyName, family, size) in Self.familySizes {
-                let image = try render(.init(date: now, snapshot: snapshot), family: family, size: size)
+                let image = try render(.init(date: now, snapshot: snapshot, access: .pro), family: family, size: size)
                 attach(image, name: "nearby-\(familyName)-\(stateName)")
             }
         }
@@ -62,6 +62,39 @@ final class NearbyE85RenderingTests: XCTestCase {
     /// The manual refresh button, present on every family, must render alongside the map/zoom
     /// controls without clipping the widget's canvas or crashing — Large in particular now
     /// stacks three controls (+/-/refresh) on the map's trailing edge.
+    /// 85Blends 2.4.0 Pro gate — a VISUAL SMOKE test only: the `.free` (locked) and `.unknown`
+    /// (verify) shells at every family, in both appearances. Each render is attached for visual
+    /// review, and every light-mode capture is additionally scanned to confirm the shell drew
+    /// content (text/icon) rather than an empty canvas — the same near-white heuristic
+    /// testSmallFooterRemainsVisible… uses. This does NOT prove data isolation — a pixel scan can't
+    /// tell station text from lock-screen text. That proof lives in NearbyE85WidgetProGateTests
+    /// (NearbyE85ProviderAccessGateTests: the Provider's non-Pro path never loads Pro inputs and its
+    /// entries carry no snapshot/map/zoom/refresh/directions link) and in NearbyE85WidgetView's own
+    /// structure (Pro views sit behind `entry.access == .pro`; the locked/verify shells take no
+    /// snapshot at all).
+    func testNonProShellsRenderAcrossAllFamiliesAndColorSchemes() throws {
+        let now = Date.now
+        for access in [NearbyE85WidgetAccessStatus.free, .unknown] {
+            for (familyName, family, size) in Self.familySizes {
+                for colorScheme in [ColorScheme.light, .dark] {
+                    let entry = NearbyE85Entry(date: now, snapshot: nil, access: access)
+                    let image = try render(entry, family: family, size: size, colorScheme: colorScheme)
+                    attach(image, name: "nearby-\(familyName)-\(access.rawValue)-\(colorScheme == .dark ? "dark" : "light")")
+                    guard colorScheme == .light else { continue }
+                    var foundContent = false
+                    let scale = image.scale
+                    for x in stride(from: 8, to: Int(size.width) - 8, by: 6) where !foundContent {
+                        for y in stride(from: 8, to: Int(size.height) - 8, by: 6) where !foundContent {
+                            let color = try pixelColor(of: image, at: CGPoint(x: CGFloat(x) * scale, y: CGFloat(y) * scale))
+                            if isNotNearWhite(color) { foundContent = true }
+                        }
+                    }
+                    XCTAssertTrue(foundContent, "\(familyName)/\(access.rawValue) rendered an apparently blank canvas")
+                }
+            }
+        }
+    }
+
     func testRefreshButtonRendersAlongsideMapAndZoomControlsOnEveryFamily() throws {
         let now = Date.now
         let station = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
@@ -73,7 +106,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             let heightFraction = family == .systemLarge ? 0.6 : 1.0
             let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
             let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedIn4)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender, zoomLevel: .zoomedIn4)
             let image = try render(entry, family: family, size: size)
             XCTAssertEqual(image.size, size, "The refresh/zoom overlay must never resize the widget's own canvas")
             attach(image, name: "nearby-\(familyName)-with-refresh-button")
@@ -95,7 +128,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             let heightFraction = family == .systemLarge ? 0.6 : 1.0
             let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
             let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: .zoomedIn4, isRefreshing: true)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender, zoomLevel: .zoomedIn4, isRefreshing: true)
             let image = try render(entry, family: family, size: size)
             XCTAssertEqual(image.size, size, "The in-progress refresh appearance must never resize the widget's own canvas")
             attach(image, name: "nearby-\(familyName)-refreshing")
@@ -181,7 +214,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             ("ready-three-stations", ready), ("stale-location", stale), ("no-price-nearest", noPrice), ("one-station", oneStation),
         ]
         for (name, snapshot) in cases {
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: syntheticRender(for: snapshot, size: mapSize))
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: syntheticRender(for: snapshot, size: mapSize))
             let image = try render(entry, family: .systemMedium, size: Self.mediumSize)
             attach(image, name: "nearby-medium-map-\(name)")
         }
@@ -207,7 +240,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             ("no-price-rows", noPriceOnly), ("stale-location", stale),
         ]
         for (name, snap) in cases {
-            let entry = NearbyE85Entry(date: now, snapshot: snap, mapRender: syntheticRender(for: snap, size: mapSize))
+            let entry = NearbyE85Entry(date: now, snapshot: snap, access: .pro, mapRender: syntheticRender(for: snap, size: mapSize))
             let image = try render(entry, family: .systemLarge, size: Self.largeSize)
             attach(image, name: "nearby-large-\(name)")
         }
@@ -228,7 +261,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         ]
         for (name, station, scheme) in cases {
             let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
             let image = try render(entry, family: .systemSmall, size: Self.smallSize, colorScheme: scheme)
             attach(image, name: "nearby-small-\(name)")
         }
@@ -255,7 +288,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         let staleTimestamp = now.addingTimeInterval(-2 * 3600)
         let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: staleTimestamp, locationAt: staleTimestamp)
 
-        let image = try render(.init(date: now, snapshot: snapshot), family: .systemSmall, size: Self.smallSize)
+        let image = try render(.init(date: now, snapshot: snapshot, access: .pro), family: .systemSmall, size: Self.smallSize)
         attach(image, name: "nearby-small-ethanol-stale-footer")
         XCTAssertEqual(image.size, Self.smallSize, "Overflowing content must never resize the widget's own canvas")
 
@@ -318,7 +351,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         for (name, snap, scheme) in [("ethanol-rows-1-light", snapshot, ColorScheme.light),
                                       ("ethanol-rows-1-dark", snapshot, .dark),
                                       ("ethanol-rows-2-light", secondSnapshot, .light)] {
-            let entry = NearbyE85Entry(date: now, snapshot: snap, mapRender: syntheticRender(for: snap, size: mapSize))
+            let entry = NearbyE85Entry(date: now, snapshot: snap, access: .pro, mapRender: syntheticRender(for: snap, size: mapSize))
             let image = try render(entry, family: .systemLarge, size: Self.largeSize, colorScheme: scheme)
             attach(image, name: "nearby-large-\(name)")
         }
@@ -345,7 +378,7 @@ final class NearbyE85RenderingTests: XCTestCase {
             context.fill(CGRect(origin: .zero, size: mapSize))
         }
         let mapRender = NearbyE85MapRender(image: mapImage, size: mapSize, markers: [])
-        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender)
         let image = try render(entry, family: .systemLarge, size: Self.largeSize)
         attach(image, name: "nearby-large-top-alignment-short-list")
 
@@ -407,7 +440,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         ]
         for (name, level) in cases {
             let mapRender = syntheticRender(for: snapshot, size: mapSize, zoomLevel: level)
-            let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender, zoomLevel: level)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender, zoomLevel: level)
             let image = try render(entry, family: .systemLarge, size: Self.largeSize)
             XCTAssertEqual(image.size, Self.largeSize, "Zoom must never resize the widget itself, only the map's framing")
             attach(image, name: "nearby-large-zoom-\(name)")
@@ -432,7 +465,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertEqual(mapRender.image.size, size)
         let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
-        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender)
         let image = try render(entry, family: .systemMedium, size: Self.mediumSize)
         attach(image, name: "nearby-medium-map-real-snapshot")
     }
@@ -450,7 +483,7 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertEqual(mapRender.image.size, size)
         let snapshot = NearbyE85Snapshot.make(stations: stations, radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
-        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender)
         let image = try render(entry, family: .systemLarge, size: Self.largeSize)
         attach(image, name: "nearby-large-map-real-snapshot")
     }
