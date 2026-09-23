@@ -234,6 +234,53 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// 85Blends 2.4.0 widget polish — Small's ethanol line added a 5th content row; without
+    /// consolidating name+distance onto one line (see `inlineNameAndDistance` in
+    /// `station(_:compact:showsEthanol:)`), that row pushed the two-line, stale footer toward —
+    /// and on a physical device, past — the bottom of Small's fixed 155x155 canvas. Reproduces
+    /// the exact on-device values (Mobil, 3.1mi, $3.90 reported 3d ago, E75 reported 5d ago,
+    /// stale snapshot) at the real fixed canvas size, then samples a small grid of points across
+    /// where the footer's second line ("Updated ...") should land and asserts at least one is
+    /// genuinely non-background content — not a fake check of a source property. If the footer
+    /// were pushed off-canvas or fully clipped, this whole region would sample as pure
+    /// background.
+    func testSmallFooterRemainsVisibleWithEthanolAndAStaleSnapshot() throws {
+        let now = Date.now
+        var station = NearbyE85Station(id: "nearest", name: "Mobil", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 3.1,
+            price: .init(dollarsPerGallon: 3.90, reportedAt: now.addingTimeInterval(-3 * 86400), source: .community))
+        station.ethanol = .init(percentage: 75, reportedAt: now.addingTimeInterval(-5 * 86400))
+        // 2 hours old — safely past NearbyE85Snapshot.staleAfter (1 hour) — exercises the same
+        // "Older location" + long relative-time footer state as the on-device report.
+        let staleTimestamp = now.addingTimeInterval(-2 * 3600)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: staleTimestamp, locationAt: staleTimestamp)
+
+        let image = try render(.init(date: now, snapshot: snapshot), family: .systemSmall, size: Self.smallSize)
+        attach(image, name: "nearby-small-ethanol-stale-footer")
+        XCTAssertEqual(image.size, Self.smallSize, "Overflowing content must never resize the widget's own canvas")
+
+        // A small grid across the bottom-left area where the footer's second line should sit at
+        // Small's topLeading alignment. Wide enough to tolerate whatever widgetContentMargins
+        // value this offline test environment resolves (see render(...)'s own header comment —
+        // it can't be injected the way a real widget host provides it).
+        var foundContent = false
+        for y in stride(from: Self.smallSize.height - 10, through: Self.smallSize.height - 2, by: 2) {
+            for x in stride(from: CGFloat(10), through: 60, by: 10) {
+                let color = try pixelColor(of: image, at: CGPoint(x: x, y: y))
+                if isNotNearWhite(color) { foundContent = true }
+            }
+        }
+        XCTAssertTrue(foundContent, "Expected the footer's second line to render somewhere near the bottom of Small's canvas; " +
+                      "sampled region was uniformly background — looks like the footer was pushed off-canvas or clipped")
+    }
+
+    /// True when `color` is meaningfully darker than a white/near-white page background — a
+    /// simple, channel-order-agnostic way to detect "some text/content is here" versus "this is
+    /// background," without needing to identify specific glyphs.
+    private func isNotNearWhite(_ color: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)) -> Bool {
+        min(color.r, color.g, color.b) < 200
+    }
+
     /// 85Blends 2.4.0 widget ethanol polish — the six row states the badge must handle: price
     /// and ethanol together, price only, ethanol only (a station can have a qualifying community
     /// ethanol report with no price report at all — the two are independent), neither, a stale
