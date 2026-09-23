@@ -277,6 +277,76 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// 85Blends 2.4.0 widget polish, take 3 — pixel-level regression test for the top-alignment
+    /// fix. Unlike ContainerRelativeShape()/containerBackground (WidgetKit-pipeline behaviors
+    /// that only fully resolve inside a real widget host — see this file's own render(...)
+    /// header comment), `.frame(alignment:)` is ordinary SwiftUI layout math that ImageRenderer
+    /// executes faithfully, so this genuinely verifies the fix's actual pixel output rather than
+    /// just that the modifier is present in source. Uses a single station (the shortest possible
+    /// list) to maximize the map/list height mismatch that previously left the map vertically
+    /// centered with a gap above it, and a solid, saturated synthetic map fill with no markers so
+    /// "is this pixel the map, or the page background behind it" is unambiguous.
+    func testLargeMapReachesTheWidgetsTopEdgeWithAShortStationList() throws {
+        let now = Date.now
+        let station = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let mapSize = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        let mapImage = UIGraphicsImageRenderer(size: mapSize).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(origin: .zero, size: mapSize))
+        }
+        let mapRender = NearbyE85MapRender(image: mapImage, size: mapSize, markers: [])
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, mapRender: mapRender)
+        let image = try render(entry, family: .systemLarge, size: Self.largeSize)
+        attach(image, name: "nearby-large-top-alignment-short-list")
+
+        // Sanity check on the test's own setup: well inside the map's own bounds, the pixel must
+        // read as the synthetic map's fill — if this fails, something about the render pipeline
+        // itself (not the alignment fix) is broken, and the top-edge assertion below proves
+        // nothing either way.
+        let interior = try pixelColor(of: image, at: CGPoint(x: Self.largeSize.width / 2, y: mapSize.height / 2))
+        XCTAssertTrue(isRedLike(interior), "Test setup sanity check failed: expected the synthetic map's own fill at its center, got \(interior)")
+
+        // The actual regression check: a point 1pt below the widget's very top edge must already
+        // be the map's fill. Before the `alignment: .top` fix, a short station list left the
+        // whole VStack shorter than the full canvas height, and the default `.center` alignment
+        // split that leftover space evenly above the map and below the list — this point would
+        // have read as the page background instead.
+        let topEdge = try pixelColor(of: image, at: CGPoint(x: Self.largeSize.width / 2, y: 1))
+        XCTAssertTrue(isRedLike(topEdge),
+                      "Expected the map to reach the widget's top edge; got \(topEdge) — looks like leftover vertical centering space above the map")
+    }
+
+    /// Pure red has exactly one channel saturated and the other two near zero — true regardless
+    /// of which byte position that channel actually occupies, so this doesn't depend on knowing
+    /// pixelColor(of:at:)'s exact RGBA vs BGRA byte layout.
+    private func isRedLike(_ color: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)) -> Bool {
+        let channels = [color.r, color.g, color.b].sorted()
+        return channels[2] > 200 && channels[1] < 60 && channels[0] < 60
+    }
+
+    /// The RGBA bytes of a single pixel in `image`, at `point` in the image's own point
+    /// coordinate space. Draws the source image shifted so the requested point lands at a 1x1
+    /// canvas's origin — UIGraphicsImageRenderer/UIImage.draw(at:) already use UIKit's top-left
+    /// coordinate convention consistently (the same mechanism this file's own syntheticRender/
+    /// existing map fixtures already rely on), so this needs no manual CoreGraphics
+    /// bottom-left-origin flip math. format.scale is pinned to 1 so the result is exactly one
+    /// physical pixel, regardless of the test runner's own display scale.
+    private func pixelColor(of image: UIImage, at point: CGPoint) throws -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let cropped = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1), format: format).image { _ in
+            image.draw(at: CGPoint(x: -point.x, y: -point.y))
+        }
+        guard let cgImage = cropped.cgImage, let data = cgImage.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data), CFDataGetLength(data) >= 4 else {
+            throw XCTSkip("Could not read pixel data from the rendered image in this environment")
+        }
+        return (bytes[0], bytes[1], bytes[2], bytes[3])
+    }
+
     /// Large must render cleanly (no crash/clip) at every zoom extreme, with the zoom controls
     /// visible, correctly enabled/disabled at the boundary, and the map/station-list split intact.
     func testLargeRendersAtMinimumDefaultAndMaximumZoom() throws {
