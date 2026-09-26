@@ -57,10 +57,7 @@ struct PendingPriceContributionEligibilityTests {
         #expect(PendingPriceContributionEligibility.isEligible(contribution, now: now) == true)
     }
 
-    @Test(
-        "Exactly 6 hours elapsed is still eligible (inclusive upper bound) and not yet expired — " +
-        "isEligible and isExpired agree at the boundary"
-    )
+    @Test("Exactly 6 hours elapsed is still eligible (inclusive upper bound) and not yet expired — isEligible and isExpired agree at the boundary")
     func isEligible_exactlySixHours_isTrueAndNotExpired() {
         let now = Date()
         let contribution = makeContribution(directionsOpenedAt: now.addingTimeInterval(-(6 * 60 * 60)))
