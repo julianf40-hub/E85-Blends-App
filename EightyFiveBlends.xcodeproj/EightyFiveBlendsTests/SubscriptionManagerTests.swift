@@ -39,6 +39,7 @@
 //  report), not something this file tests. Item 13 and item 20 below are call-site/compile-time
 //  facts for the same reason — noted rather than asserted.
 
+import Foundation
 import Testing
 @testable import EightyFiveBlends
 
