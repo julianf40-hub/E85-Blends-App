@@ -216,6 +216,14 @@ final class RevenueCatSubscriptionService {
     /// never had a load attempted yet — `packageAvailability(for:)` below treats that identically
     /// to `.notLoaded`, so callers never need to special-case "missing key."
     private(set) var packageAvailability: [ProPlan: PackageAvailability] = [:]
+    /// 85Blends 2.4.0 RevenueCatUI integration — the raw `default` offering (see `offeringID`
+    /// above), once loaded by `loadOfferings()`. This is what the RevenueCatUI hosted paywall
+    /// (`ProUpgradeView`) renders directly via `PaywallView(offering:)` — the exact same offering
+    /// this file's own per-plan package resolution reads from below, never RevenueCat's own
+    /// `.current` designation (see `loadOfferings()`'s own header for why `.current` is
+    /// deliberately never trusted: the live project has a second, legacy offering where the
+    /// retired quarterly product lives, and this app must never render or sell that one).
+    private(set) var defaultOffering: Offering?
     /// `true`/`false` once a `pro` entitlement record has been seen (active or not — RevenueCat
     /// still reports sandbox-vs-production for an expired/inactive entitlement); `nil` if no
     /// entitlement record has ever been observed. Diagnostics-only.
@@ -419,6 +427,7 @@ final class RevenueCatSubscriptionService {
             // means `offeringExists: false` below — every plan resolves to `.offeringUnavailable`
             // (the normal retry/error paywall state), never a silent fallback to another offering.
             let offering = offerings.offering(identifier: Self.offeringID)
+            defaultOffering = offering
             var errorMessages: [String] = []
             for plan in ProPlan.allCases {
                 let package = Self.package(for: plan, in: offering)
@@ -452,6 +461,11 @@ final class RevenueCatSubscriptionService {
             lastErrorDescription = errorMessages.isEmpty ? nil : Array(Set(errorMessages)).sorted().joined(separator: " ")
         } catch {
             for plan in ProPlan.allCases { packageAvailability[plan] = .offeringUnavailable }
+            // A failed re-fetch must never leave RevenueCatUI's PaywallView rendering a stale
+            // Offering from an earlier successful load while every plan's own availability above
+            // just flipped to `.offeringUnavailable` — the two must never disagree about whether
+            // this load succeeded.
+            defaultOffering = nil
             lastErrorDescription = error.localizedDescription
         }
     }

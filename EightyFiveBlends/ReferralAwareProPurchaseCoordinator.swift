@@ -8,11 +8,16 @@
 //
 //  This type owns NEITHER RevenueCat purchasing NOR referral application — it takes both as
 //  injected closures and only orchestrates the CALL ORDER between them. In production,
-//  `applyReferralCode` is exactly `ReferralManager.shared.applyReferralCode(_:)` and `purchase` is
-//  exactly `{ await SubscriptionManager.shared.purchasePro(selectedPlan) }` — ProUpgradeView still
-//  owns supplying those closures and reading their owning managers' own @Observable state
-//  (purchaseState, loadState) to render the UI; this coordinator never touches either manager
-//  directly, and is fully testable with plain local closures (see
+//  `applyReferralCode` is exactly `ReferralManager.shared.applyReferralCode(_:)`. `purchase` itself
+//  is caller-supplied and has meant two different things across this app's history: before the
+//  85Blends 2.4.0 RevenueCatUI integration, ProUpgradeView passed
+//  `{ await SubscriptionManager.shared.purchasePro(selectedPlan) }` (this coordinator called
+//  RevenueCat's purchase directly); since that integration, ProUpgradeView instead passes
+//  `{ resume(true) }` — letting RevenueCatUI's own hosted paywall perform the actual purchase once
+//  this coordinator decides referral attribution has been satisfied (see ProUpgradeView.swift's own
+//  header). Either way, ProUpgradeView owns supplying the closures and reading their owning
+//  managers' own @Observable state (purchaseState, loadState) to render the UI; this coordinator
+//  never touches either manager directly, and is fully testable with plain local closures (see
 //  ReferralAwareProPurchaseCoordinatorTests.swift) with no ReferralManager/SubscriptionManager/
 //  RevenueCat/network dependency at all.
 //
@@ -63,8 +68,8 @@ enum ReferralAwareProPurchaseCoordinator {
     ///   - applyReferralCode: In production, exactly `ReferralManager.shared.applyReferralCode(_:)`
     ///     — awaited to completion, and its result checked, before `purchase` is ever invoked.
     ///     Never called at all when `alreadyAppliedCode` is non-empty.
-    ///   - purchase: In production, exactly the paywall's existing
-    ///     `SubscriptionManager.shared.purchasePro(selectedPlan)` call — invoked at most once, and
+    ///   - purchase: In production, the paywall's own "let the actual RevenueCat purchase proceed"
+    ///     step (see this file's header for what that call is today) — invoked at most once, and
     ///     only after a non-empty NEW code has been backend-confirmed, or immediately for a blank
     ///     code or an already-applied one.
     static func purchase(
