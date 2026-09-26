@@ -218,6 +218,33 @@ final class SubscriptionManager {
         ProPlan.allCases.contains { canPurchase($0) }
     }
 
+    /// 85Blends 2.4.0 RevenueCatUI integration — the raw `default` offering `ProUpgradeView`
+    /// passes to `PaywallView(offering:)`, once loaded. `nil` until `loadProducts()` completes at
+    /// least once. See `RevenueCatSubscriptionService.defaultOffering`'s own header for why this
+    /// is never RevenueCat's own `.current` offering.
+    var defaultOffering: Offering? {
+        RevenueCatSubscriptionService.shared.defaultOffering
+    }
+
+    /// 85Blends 2.4.0 RevenueCatUI integration — true if ANY plan's package resolved to a product
+    /// ID that doesn't match its own `ProPlan.productID` (see
+    /// `RevenueCatSubscriptionService.resolvePackage(...)`'s own header for why this can only mean
+    /// a `default`-offering dashboard misconfiguration — e.g. the retired quarterly product
+    /// getting reattached to a plan slot it must never occupy). `canPurchase(_:)` already refused
+    /// to let the pre-RevenueCatUI custom paywall sell such a package; `PaywallView(offering:)`
+    /// renders directly from the raw `Offering` and has no awareness of this app's own per-plan
+    /// product-ID cross-validation, so `ProUpgradeView` checks this BEFORE ever presenting it —
+    /// falling back to its own retry UI instead of RevenueCatUI in that case — to preserve the
+    /// exact same "never sell the wrong product" guarantee.
+    var hasUnexpectedProductInDefaultOffering: Bool {
+        ProPlan.allCases.contains { plan in
+            if case .unexpectedProduct = RevenueCatSubscriptionService.shared.packageAvailability(for: plan) {
+                return true
+            }
+            return false
+        }
+    }
+
     /// True while an offerings load is currently in flight for any plan — all three always load
     /// together in one `RevenueCatSubscriptionService.loadOfferings()` call, so checking one is
     /// equivalent to checking all three.
@@ -264,6 +291,20 @@ final class SubscriptionManager {
     /// bookkeeping, not an entitlement or purchasing action.
     func setPaywallPresented(_ presented: Bool) {
         isPaywallPresented = presented
+    }
+
+    /// 85Blends 2.4.0 RevenueCatUI integration — called only by `ProUpgradeView`, exactly like
+    /// `setPaywallPresented` above, whenever RevenueCatUI's hosted paywall performs a purchase or
+    /// restore directly (see that view's header). Mirrors the exact same state transitions
+    /// `purchase(_:)`/`restorePurchases()` below already produce when this type drives the
+    /// RevenueCat call itself — via the same `state(forPurchaseOutcome:)`/
+    /// `state(forRestoreOutcome:wasProBefore:)` pure mappings — so `purchaseState`/
+    /// `isPurchaseActive` (see ContentView's review-request gate) stays meaningful regardless of
+    /// which call path actually performed the purchase. Not part of the "Public API" section below
+    /// for the same reason `setPaywallPresented` isn't: this is presentation/outcome bookkeeping,
+    /// never itself an entitlement or purchasing action.
+    func setPurchaseState(_ state: PurchaseState) {
+        purchaseState = state
     }
 
     private init() {

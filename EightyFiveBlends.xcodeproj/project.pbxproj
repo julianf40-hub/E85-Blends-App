@@ -13,6 +13,7 @@
 		2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */; };
 		2E4E26685537428120887E81 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */; };
 		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
+		5185506854810ED820221CA5 /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */; };
 		41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */; };
 		44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */; };
@@ -153,6 +154,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */,
+				5185506854810ED820221CA5 /* RevenueCatUI in Frameworks */,
 				11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */,
 				8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */,
 			);
@@ -270,6 +272,7 @@
 			name = EightyFiveBlends;
 			packageProductDependencies = (
 				1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */,
+				30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */,
 				B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */,
 				CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */,
 			);
@@ -1052,6 +1055,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
 			productName = RevenueCat;
+		};
+		30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 47A989DB5009C43246FCD6BB /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCatUI;
 		};
 		B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */ = {
 			isa = XCSwiftPackageProductDependency;

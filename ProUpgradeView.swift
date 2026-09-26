@@ -6,9 +6,25 @@
 //  Pro lock cards and soft-limit banners, and pushed from the More screen. There is
 //  intentionally only ONE paywall so the Pro experience stays consistent everywhere.
 //
+//  85Blends 2.4.0 RevenueCatUI integration — this view is a thin shell around RevenueCatUI's
+//  hosted `PaywallView` (the published "85Blends Pro · 2.4.0" paywall paired with the `default`
+//  offering in the RevenueCat dashboard). This file continues to own everything RevenueCatUI must
+//  never decide on its own:
+//    - whether a paywall should be shown at all (an existing subscriber never sees `PaywallView`
+//      — see `body` below)
+//    - referral pre-purchase attribution (`referralCard` + the `.onPurchaseInitiated` interceptor)
+//    - entitlement authority (still exclusively `SubscriptionManager`/`RevenueCatSubscriptionService`
+//      — RevenueCatUI never touches `pro` directly; see that type's own "KEY AUTHORITY INVARIANT")
+//    - presentation/routing (`presentationMode`, every existing call site is unchanged)
+//    - post-purchase state bookkeeping (`SubscriptionManager.setPurchaseState`, mirroring the
+//      exact same transitions `purchase(_:)`/`restorePurchases()` already produce)
+//  RevenueCatUI owns paywall rendering, package selection, purchase UI, restore UI, and the
+//  remote paywall content itself — this file never duplicates that in SwiftUI.
+//
 
 import SwiftUI
 import RevenueCat
+import RevenueCatUI
 
 enum ProPresentationMode {
     case pushed
@@ -26,30 +42,30 @@ struct ProUpgradeView: View {
 
     private var manager: SubscriptionManager { SubscriptionManager.shared }
 
-    // 85Blends 2.4.0 three-plan paywall. Defaults to Annual (best value) and is corrected at
-    // most once, in applyDefaultPlanSelectionIfNeeded(), to the best available plan once real
-    // package availability is known — mirroring this codebase's established "apply once, never
-    // re-arm" idiom. hasUserManuallySelectedPlan exists separately so that correction can never
-    // clobber a plan the person already tapped themselves while the initial load was still in
-    // flight (the paywall's rows are tappable immediately, before .task's load even settles).
-    @State private var selectedPlan: ProPlan = .annual
-    @State private var hasAppliedDefaultPlanSelection = false
-    @State private var hasUserManuallySelectedPlan = false
-
     // 85Blends 2.4.0 — Refer & Earn pre-purchase attribution. Referral attribution must happen
     // BEFORE the qualifying paid Pro purchase (see ReferralAwareProPurchaseCoordinator.swift's own
     // header) — this is the paywall's own compact code-entry path, distinct from (and never a
     // replacement for) the standalone ReferralCodeEntrySheet under More -> Refer & Earn.
     @State private var referralCodeInput = ""
     @State private var isShowingReferralConfirmation = false
-    /// True only while the referral-first purchase sequence (apply, then purchase) is actually
-    /// running — see beginPurchase(normalizedReferralCode:)'s own re-entrancy guard. Folded into
-    /// `isWorking` in actionsSection alongside RevenueCat purchasing/restoring.
+    /// Snapshot of the code the confirmation dialog is actually asking about — taken once, when
+    /// the dialog is raised, so a later async gap can never read a since-changed `referralCodeInput`
+    /// (the field is disabled the moment this dialog is up, but this avoids relying on that alone).
+    @State private var pendingReferralCodeForConfirmation = ""
+    /// The RevenueCatUI purchase-flow resume callback captured while the confirmation dialog is
+    /// up. Type-erased to a plain closure deliberately — see `handlePurchaseInitiated`'s header.
+    @State private var pendingPurchaseResume: ((Bool) -> Void)?
+    /// True only while the referral-first purchase sequence (apply, then let RevenueCatUI proceed)
+    /// is actually running — see `handlePurchaseInitiated`'s own re-entrancy guard.
     @State private var isApplyingReferralBeforePurchase = false
     /// Safe, non-sensitive copy from ReferralPresentation.userFacingMessage(for:) only — never a
     /// raw backend string, error description, or OSStatus. Cleared whenever the code field changes
     /// or a new purchase attempt begins.
     @State private var referralErrorMessage: String?
+    /// Snapshot of `manager.isProUser` taken the moment RevenueCatUI's restore flow starts, so the
+    /// resulting message can distinguish a fresh restore from "already active" — mirrors
+    /// `restorePurchases()`'s own `wasProBefore` snapshot.
+    @State private var restoreWasProBefore = false
 
     private var referralManager: ReferralManager { ReferralManager.shared }
 
@@ -61,33 +77,18 @@ struct ProUpgradeView: View {
 
     /// True only when the user has typed something non-empty that fails the shared format check —
     /// a blank field is never "invalid," it just means no referral is being requested. Used only
-    /// for the inline warning text under the (already-hidden-once-applied) text field itself; see
-    /// `shouldBlockPurchaseForInvalidReferralInput` below for the CTA's own gating, which must
-    /// additionally yield to backend attribution.
+    /// for the inline warning text under the (already-hidden-once-applied) text field itself.
     private var hasInvalidNonEmptyReferralCode: Bool {
         normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode) == false
     }
 
-    /// The CTA's own referral-input gate — structurally yields to backend attribution rather than
-    /// merely relying on the (already-hidden) text field being unreachable once applied. See
-    /// `ReferralPresentation.shouldBlockPurchaseForReferralInput`'s own header: this mirrors the
-    /// coordinator's `alreadyAppliedCode` precedence at the UI-gating layer, so stale/malformed
-    /// local input can never keep the Unlock button disabled once `backendAppliedReferralCode` is
-    /// non-empty.
-    private var shouldBlockPurchaseForInvalidReferralInput: Bool {
-        ReferralPresentation.shouldBlockPurchaseForReferralInput(
-            backendAppliedReferralCode: backendAppliedReferralCode,
-            normalizedReferralCode: normalizedReferralCode
-        )
-    }
-
     /// The backend's own authoritative attribution for this installation, if any — reads ONLY
     /// `referralManager.loadState`, never `referralCodeInput`/`normalizedReferralCode`. Once a
-    /// purchase attempt applies a code (e.g. a first attempt the user then cancels in Apple's own
-    /// StoreKit sheet), this stays non-nil for the rest of the paywall session even though the
-    /// local text field is hidden and never cleared — so it, not the stale hidden field, must be
-    /// what future Unlock taps consult. See `ReferralAwareProPurchaseCoordinator.purchase`'s own
-    /// `alreadyAppliedCode` header for why this always wins over local UI state, unconditionally.
+    /// purchase attempt applies a code (e.g. a first attempt the user then cancels), this stays
+    /// non-nil for the rest of the paywall session even though the local text field is hidden and
+    /// never cleared — so it, not the stale hidden field, must be what future purchase attempts
+    /// consult. See `ReferralAwareProPurchaseCoordinator.purchase`'s own `alreadyAppliedCode`
+    /// header for why this always wins over local UI state, unconditionally.
     private var backendAppliedReferralCode: String? {
         guard case .loaded(let status) = referralManager.loadState else {
             return nil
@@ -101,64 +102,14 @@ struct ProUpgradeView: View {
         return code
     }
 
-    // Benefit list — 85Blends 2.3.0 paywall content refresh, extended in 2.3.1 to add Ad-Free
-    // Experience. 2.4.0 folded the former supportingBenefits sub-bullets (E85 Stops Along Your
-    // Route, Save & Revisit Routes) into Intelligent E85 Trip Planning below — both were things
-    // Trip Planning already does, not separate benefits, so listing them again underneath just
-    // repeated the headline. Every row here gets full visual treatment (icon badge,
-    // headline-weight title):
-    //   - Trip Planning is genuinely implemented today and gated behind isProUser (see
-    //     ProFeatureGate/TripPlannerView).
-    //   - Ad-Free Experience is genuinely implemented and validated on a real device as of
-    //     2.3.1 — AdManager.isAdsEnabled reads SubscriptionManager.shared.isProUser directly,
-    //     and NativeAdView never even constructs an ad request when that's false (see
-    //     AdManager.swift/NativeAdView.swift) — a zero-ad-request guarantee, not "load then
-    //     hide."
-    //   - Unlimited Vehicles is genuinely implemented and validated as of 2.3.0 (see
-    //     VehicleCreationPolicy/SubscriptionManager.canAccessUnlimitedVehicles) — no longer a
-    //     Coming Soon item.
-    // Cloud Sync itself is never listed here — it's unconditional for every user, Free and Pro
-    // alike (see SubscriptionManager.swift, GarageView.swift, and CLAUDE.md's Cloud Sync
-    // product-policy note), so it is not Pro benefit content. The Nearby E85 widget is
-    // different: product has confirmed it will be Pro-gated for the 2.4.0 public release, so
-    // it's listed below on that basis even though current dev code doesn't enforce it yet
-    // (isProUser/canAccess don't gate it in StationsView.publishNearbyWidgetSnapshot or the
-    // widget extension) — entitlement enforcement is separate, planned work, not part of this
-    // list.
-    private let majorBenefits: [(icon: String, title: String, detail: String)] = [
-        ("map.fill", "Intelligent E85 Trip Planning", "Plan complete routes around E85 availability, reserve targets, and backup fuel options."),
-        ("sparkles", "Ad-Free Experience", "Enjoy 85Blends without ads while your Pro subscription is active."),
-        ("car.fill", "Unlimited Vehicles", "Add and manage your entire garage with 85Blends Pro."),
-        ("rectangle.grid.2x2", "Nearby E85 Widget", "See nearby E85 stations right from your Home Screen."),
-    ]
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                headerSection
-                planPickerCard
-                referralCard
-                benefitsCard
-                comingSoonCard
-
-                // Mutually exclusive with activeProRow inside actionsSection below: a Pro
-                // subscriber already sees a thank-you/support card there, so showing this too
-                // would be a redundant second "support us" message. A free user sees exactly
-                // one of the two, never both.
-                if !manager.isProUser {
-                    supportCard
-                }
-
-                actionsSection
-                footerNote
+        Group {
+            if manager.isProUser {
+                proActiveContent
+            } else {
+                freePaywallContent
             }
-            .padding(16)
-            // Cap content width on iPad so it doesn't stretch awkwardly on wide displays.
-            // The outer frame centers the capped block within the scroll view's full width.
-            .frame(maxWidth: 600)
-            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .background(AppTheme.Colors.charcoal)
         .navigationTitle("85Blends Pro")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -179,67 +130,185 @@ struct ProUpgradeView: View {
             while manager.isLoadingProducts {
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            // Load (or re-fetch for freshness) on every paywall presentation.
+            // Load (or re-fetch for freshness) on every paywall presentation — this is also what
+            // populates `manager.defaultOffering`, which RevenueCatUI's PaywallView renders below.
             await manager.loadProducts()
-            applyDefaultPlanSelectionIfNeeded()
         }
-        // 85Blends 2.4.0 — starts in PARALLEL with the product/offering load above, via a second
-        // top-level `.task`, never gating it: a person must still be able to purchase WITHOUT a
-        // referral code even if the referral service itself is unavailable. Referral availability
-        // only actually blocks anything when the person is actively trying to USE a code — see
-        // beginPurchase(normalizedReferralCode:). Exactly the same ReferralManager.refresh() the
+        // Starts in PARALLEL with the offering load above, via a second top-level `.task`, never
+        // gating it: a person must still be able to purchase WITHOUT a referral code even if the
+        // referral service itself is unavailable. Referral availability only actually blocks
+        // anything when the person is actively trying to USE a code — see
+        // handlePurchaseInitiated(resume:). Exactly the same ReferralManager.refresh() the
         // standalone Refer & Earn screen already calls — no second networking layer.
         .task {
             await referralManager.refresh()
         }
-        // 85Blends 2.4.0 — centralized paywall-presentation signal for the App Store
-        // review-request system (see SubscriptionManager.isPaywallPresented's header). Reporting
-        // this here, rather than at each of the four call sites that present this view, means
-        // every current and future paywall entry point is covered automatically. Fires
-        // identically for both `.modal` (sheet) and `.pushed` (NavigationLink) presentation —
-        // onAppear/onDisappear are called by SwiftUI either way. Purely a presentation flag;
-        // never touches entitlement or purchasing state.
+        // Centralized paywall-presentation signal for the App Store review-request system (see
+        // SubscriptionManager.isPaywallPresented's header). Purely a presentation flag; never
+        // touches entitlement or purchasing state.
         .onAppear { manager.setPaywallPresented(true) }
         .onDisappear { manager.setPaywallPresented(false) }
-    }
-
-    // MARK: - Header
-
-    private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "crown.fill")
-                    .font(.system(.title, design: .rounded))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .accessibilityHidden(true)
-
-                Text("85Blends Pro")
-                    .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-            }
-
-            Text("Drive farther. Plan smarter. Fuel with confidence.")
-                .font(.title3)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Plan Picker
-
-    private var planPickerCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Choose Your Plan", subtitle: "Every plan unlocks everything in 85Blends Pro.")
-
-            VStack(spacing: 10) {
-                ForEach(ProPlan.allCases) { plan in
-                    planRow(plan)
+        .confirmationDialog(
+            "Apply referral code?",
+            isPresented: $isShowingReferralConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Apply & Continue") {
+                let code = pendingReferralCodeForConfirmation
+                let resume = pendingPurchaseResume
+                pendingPurchaseResume = nil
+                Task {
+                    await runReferralAwarePurchase(normalizedReferralCode: code, alreadyAppliedCode: nil, resume: resume ?? { _ in })
                 }
             }
+            Button("Cancel", role: .cancel) {
+                pendingPurchaseResume?(false)
+                pendingPurchaseResume = nil
+            }
+        } message: {
+            Text("Apply \(pendingReferralCodeForConfirmation) before subscribing?\n\nReferral codes can't be changed after they're applied.")
+        }
+    }
 
-            Text("Cancel anytime.")
-                .font(.subheadline)
+    // MARK: - Free user: referral entry + RevenueCatUI hosted paywall
+
+    @ViewBuilder
+    private var freePaywallContent: some View {
+        VStack(spacing: 0) {
+            referralCard
+                .padding(16)
+                .frame(maxWidth: 600)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            if let offering = manager.defaultOffering, manager.hasUnexpectedProductInDefaultOffering == false {
+                PaywallView(offering: offering)
+                    .onPurchaseInitiated { _, resume in
+                        // Type-erased immediately to a plain `(Bool) -> Void` so nothing else in
+                        // this file needs to name RevenueCatUI's own resume-action type — see
+                        // handlePurchaseInitiated's own header.
+                        let proceed: (Bool) -> Void = { shouldProceed in
+                            if shouldProceed {
+                                resume()
+                            } else {
+                                resume(shouldProceed: false)
+                            }
+                        }
+                        Task { @MainActor in
+                            await handlePurchaseInitiated(resume: proceed)
+                        }
+                    }
+                    .onPurchaseStarted { _ in
+                        manager.setPurchaseState(.purchasing)
+                    }
+                    .onPurchaseCompleted { customerInfo in
+                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: RevenueCatSubscriptionService.purchaseOutcome(
+                            userCancelled: false,
+                            isProEntitlementActiveAfterPurchase: RevenueCatSubscriptionService.isProEntitlementActive(
+                                entitlementIsActive: customerInfo.entitlements[RevenueCatSubscriptionService.proEntitlementID]?.isActive
+                            )
+                        )))
+                    }
+                    .onPurchaseCancelled {
+                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: .cancelled))
+                    }
+                    .onPurchaseFailure { error in
+                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: .failed(error.localizedDescription)))
+                    }
+                    .onRestoreStarted {
+                        // The raw RevenueCat entitlement, not `manager.isProUser` — mirrors
+                        // SubscriptionManager.restorePurchases()'s own snapshot: a Developer
+                        // Force Pro/Force Free override (Internal/Debug only) must never distort
+                        // restore messaging.
+                        restoreWasProBefore = RevenueCatSubscriptionService.shared.revenueCatIsPro
+                        manager.setPurchaseState(.restoring)
+                    }
+                    .onRestoreCompleted { customerInfo in
+                        let isActive = RevenueCatSubscriptionService.isProEntitlementActive(
+                            entitlementIsActive: customerInfo.entitlements[RevenueCatSubscriptionService.proEntitlementID]?.isActive
+                        )
+                        manager.setPurchaseState(SubscriptionManager.state(
+                            forRestoreOutcome: isActive ? .proActive : .noActivePro,
+                            wasProBefore: restoreWasProBefore
+                        ))
+                    }
+                    .onRestoreFailure { error in
+                        manager.setPurchaseState(SubscriptionManager.state(
+                            forRestoreOutcome: .failed(error.localizedDescription),
+                            wasProBefore: restoreWasProBefore
+                        ))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                offeringUnavailableView
+            }
+
+            legalDisclosureFooter
+                .padding(16)
+                .frame(maxWidth: 600)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .background(AppTheme.Colors.charcoal)
+    }
+
+    /// Shown only while `manager.defaultOffering` hasn't loaded (or failed to). Once it loads,
+    /// RevenueCatUI's own hosted paywall takes over rendering entirely — this is never shown
+    /// alongside it. Still offers Restore Purchases (going straight through
+    /// `SubscriptionManager.restorePurchases()`, not RevenueCatUI, which isn't shown in this
+    /// branch) — the old custom paywall kept Restore visible in every paywall state, including
+    /// while offerings had failed to load (e.g. a reinstall with a real subscription hitting this
+    /// screen on a flaky connection), and that App-Review-driven guarantee must not regress just
+    /// because the offering itself failed to fetch.
+    @ViewBuilder
+    private var offeringUnavailableView: some View {
+        VStack(spacing: 16) {
+            if manager.isLoadingProducts || !manager.hasAttemptedProductLoad {
+                statusRow(icon: "arrow.triangle.2.circlepath", text: "Loading subscription…", color: AppTheme.Colors.textSecondary, spinning: true)
+            } else {
+                statusRow(
+                    icon: "wifi.exclamationmark",
+                    text: "Subscriptions are temporarily unavailable. Check your connection and try again.",
+                    color: AppTheme.Colors.textSecondary
+                )
+
+                Button {
+                    Task { await manager.loadProducts() }
+                } label: {
+                    Text("Try Again")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            purchaseStateRow
+
+            Divider()
+                .background(AppTheme.Colors.border)
+                .padding(.vertical, 2)
+
+            restoreButton(disabled: manager.purchaseState == .purchasing || manager.purchaseState == .restoring)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    // MARK: - Referral Code (85Blends 2.4.0 — Refer & Earn pre-purchase attribution)
+    //
+    // Free users only — an existing Pro subscriber never sees any part of this card, not even a
+    // "checking eligibility" spinner (this whole card only renders inside `freePaywallContent`,
+    // itself only reachable when `manager.isProUser` is false — see `body`).
+
+    @ViewBuilder
+    private var referralCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Referral Code", subtitle: "Optional — have a friend's code? Enter it before subscribing.")
+
+            referralCardContent
+
+            Text("Referral codes can't be added after the qualifying paid Pro purchase.")
+                .font(.caption)
                 .foregroundStyle(AppTheme.Colors.textMuted)
         }
         .padding(18)
@@ -247,171 +316,9 @@ struct ProUpgradeView: View {
         .background(AppTheme.Colors.surfaceElevated)
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    /// One selectable row per `ProPlan`. Annual always carries the "BEST VALUE" badge —
-    /// unconditionally, never tied to whether it's the current selection — and Monthly/3-Month
-    /// are never visually diminished to make room for it. A plan whose package failed to
-    /// resolve (see SubscriptionManager.canPurchase(_:)) is dimmed and labeled "Unavailable
-    /// right now" instead of a price, so it's never presented as purchasable — but the row stays
-    /// tappable so a person can still see it selected (and see exactly why the purchase button
-    /// below is disabled) rather than the row silently doing nothing.
-    private func planRow(_ plan: ProPlan) -> some View {
-        let isSelected = selectedPlan == plan
-        let isUnavailable = manager.hasAttemptedProductLoad && !manager.isLoadingProducts && !manager.canPurchase(plan)
-
-        return Button {
-            AppHaptics.selection()
-            selectedPlan = plan
-            hasUserManuallySelectedPlan = true
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(isSelected ? AppTheme.Colors.stationYellow : AppTheme.Colors.textMuted)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(plan.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                        if plan == .annual {
-                            Text("BEST VALUE")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(AppTheme.Colors.stationYellow)
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    if isUnavailable {
-                        Text("Unavailable right now")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.Colors.textMuted)
-                    } else {
-                        Text("\(manager.displayPrice(for: plan)) / \(billingPeriodSuffix(for: plan))")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                        if let equivalentLine = equivalentMonthlyLine(for: plan) {
-                            Text(equivalentLine)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.Colors.textMuted)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .opacity(isUnavailable ? 0.55 : 1)
-            .background(isSelected ? AppTheme.Colors.stationYellow.opacity(0.12) : AppTheme.Colors.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isSelected ? AppTheme.Colors.stationYellow.opacity(0.6) : AppTheme.Colors.border, lineWidth: isSelected ? 1.5 : 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        // 85Blends 2.4.0 — disabled while the referral-first purchase sequence is running, so the
-        // selected plan can't change out from under an in-flight apply/purchase (Phase 14 of this
-        // feature's own task spec).
-        .disabled(isApplyingReferralBeforePurchase)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    /// Natural-language billing-period suffix for a plan row's price line ("month" / "3 months" /
-    /// "year"). Prefers the real loaded StoreProduct's own subscriptionPeriod — same API this
-    /// file's existing subscriptionPeriodLabel(for:) already reads for the unlock button's
-    /// subtitle — and falls back to the plan's flat marketing label only before a package loads.
-    private func billingPeriodSuffix(for plan: ProPlan) -> String {
-        guard let product = manager.storeProduct(for: plan), let period = product.subscriptionPeriod else {
-            return plan.fallbackBillingPeriodLabel
-        }
-        switch period.unit {
-        case .month: return period.value == 1 ? "month" : "\(period.value) months"
-        case .year: return period.value == 1 ? "year" : "\(period.value) years"
-        case .week: return period.value == 1 ? "week" : "\(period.value) weeks"
-        case .day: return period.value == 1 ? "day" : "\(period.value) days"
-        @unknown default: return plan.fallbackBillingPeriodLabel
-        }
-    }
-
-    /// "≈ $X.XX/month" line for 3-Month/Annual rows (`nil` for Monthly — see
-    /// ProPlan.equivalentMonthlyAmount). Requires a REAL loaded StoreProduct: the arithmetic runs
-    /// on `product.price` (a `Decimal`, never a parsed `localizedPriceString`), and the result is
-    /// formatted with that SAME product's own `priceFormatter` — the exact `NumberFormatter`
-    /// `localizedPriceString` itself uses — so the equivalent amount always renders in the
-    /// product's actual storefront currency/locale, never a hardcoded U.S.-style fallback. `nil`
-    /// whenever a real product hasn't loaded yet, or lacks enough currency metadata to format
-    /// safely (no `priceFormatter`, or it fails to produce a string) — the row simply omits the
-    /// line rather than ever risk showing a wrong or misleading currency.
-    private func equivalentMonthlyLine(for plan: ProPlan) -> String? {
-        guard let product = manager.storeProduct(for: plan),
-              let amount = ProPlan.equivalentMonthlyAmount(price: product.price, plan: plan),
-              let formatter = product.priceFormatter,
-              let formatted = formatter.string(from: NSDecimalNumber(decimal: amount))
-        else { return nil }
-        return "≈ \(formatted)/month"
-    }
-
-    /// Called once, from `body`'s `.task`, right after the first `loadProducts()` call settles.
-    /// Leaves the Annual default alone whenever Annual is actually purchasable (the common case),
-    /// and never runs at all once the person has tapped a row themselves — see
-    /// hasUserManuallySelectedPlan's own header for why that guard has to be separate from this
-    /// one. Only steps in when Annual itself failed to resolve, moving the selection to the
-    /// best available plan per ProPlan.preferredDefault(among:) so the CTA isn't left pointed at
-    /// a plan nobody can actually buy.
-    private func applyDefaultPlanSelectionIfNeeded() {
-        guard !hasAppliedDefaultPlanSelection, !hasUserManuallySelectedPlan else { return }
-        hasAppliedDefaultPlanSelection = true
-
-        guard !manager.canPurchase(selectedPlan) else { return }
-
-        let availablePlans = Set(ProPlan.allCases.filter { manager.canPurchase($0) })
-        if let bestAvailable = ProPlan.preferredDefault(among: availablePlans) {
-            selectedPlan = bestAvailable
-        }
-    }
-
-    // MARK: - Referral Code (85Blends 2.4.0 — Refer & Earn pre-purchase attribution)
-    //
-    // Free users only — an existing Pro subscriber never sees any part of this card, not even a
-    // "checking eligibility" spinner (see Phase 7 of this feature's own task spec: "EXISTING PRO
-    // USER: No referral-code entry field"). `manager.isProUser` is read once here AND passed as
-    // the exact same value into `entryEligibility` below, so the two can never disagree about
-    // whether the user is Pro within a single render pass.
-
-    @ViewBuilder
-    private var referralCard: some View {
-        if !manager.isProUser {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Referral Code", subtitle: "Optional — have a friend's code? Enter it before subscribing.")
-
-                referralCardContent
-
-                Text("Referral codes can't be added after the qualifying paid Pro purchase.")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.surfaceElevated)
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        }
     }
 
     /// Mirrors ReferEarnView's own `content` switch over the SAME ReferralLoadState — never a
@@ -494,8 +401,9 @@ struct ProUpgradeView: View {
                 }
             case .blockedAlreadyPro:
                 // Structurally unreachable from this call site — this whole card only renders
-                // inside `if !manager.isProUser` above, and `isCurrentlyPro` here is that exact
-                // same value read in the same render pass. Handled for switch exhaustiveness only.
+                // inside `freePaywallContent`, itself only reachable when `manager.isProUser` is
+                // false, and `isCurrentlyPro` here is that exact same value read in the same
+                // render pass. Handled for switch exhaustiveness only.
                 EmptyView()
             case .blockedCannotApply:
                 EmptyView()
@@ -570,23 +478,94 @@ struct ProUpgradeView: View {
         }
     }
 
-    /// The load-bearing ordering guarantee this whole feature exists for — see
-    /// ReferralAwareProPurchaseCoordinator.swift's own header. Re-entrancy-guarded so a double tap
-    /// (on the CTA, or on "Apply & Continue" in the confirmation dialog) can never start two
-    /// applies or two purchases: the guard-check-then-set below has no `await` in between, so on
-    /// @MainActor's serial executor the first call to actually run always claims the flag before a
-    /// second overlapping call gets a chance to observe it as false.
-    ///
-    /// `backendAppliedReferralCode` is snapshotted HERE, at the start of the purchase action —
-    /// not read fresh mid-flight — so this one purchase attempt is judged against one consistent
-    /// view of backend attribution state, exactly like `normalizedReferralCode` is already
-    /// snapshotted by callers before this function is invoked.
-    private func beginPurchase(normalizedReferralCode: String) async {
-        guard isApplyingReferralBeforePurchase == false else { return }
-        guard manager.purchaseState != .purchasing, manager.purchaseState != .restoring else { return }
+    // MARK: - Purchase interception (85Blends 2.4.0 RevenueCatUI integration)
+    //
+    // RevenueCatUI's hosted paywall owns package selection and the purchase button itself, but a
+    // purchase must never bypass required referral attribution — see this feature's own
+    // "load-bearing" referral-before-purchase ordering requirement (ReferralAwareProPurchaseCoordinator
+    // .swift's header). `.onPurchaseInitiated` pauses RevenueCatUI's purchase flow until `resume`
+    // is called, which is exactly enough to run the same coordinator this app used with its old
+    // custom paywall — only its `purchase` closure changes meaning, from "call
+    // SubscriptionManager.purchasePro directly" to "let RevenueCatUI's own button proceed," so the
+    // referral ordering guarantee is identical either way.
+
+    /// `resume`'s real type is RevenueCatUI's own resume-action type, which this file never names —
+    /// the call site above type-erases it to this plain closure immediately, so nothing here (or
+    /// in tests) needs to depend on that SDK-internal type at all.
+    private func handlePurchaseInitiated(resume: @escaping (Bool) -> Void) async {
+        guard isApplyingReferralBeforePurchase == false else {
+            resume(false)
+            return
+        }
+        guard manager.purchaseState != .purchasing, manager.purchaseState != .restoring else {
+            resume(false)
+            return
+        }
+        // A prior purchase-initiated call is still waiting on the confirmation dialog's answer —
+        // never overwrite its captured `resume` (which would orphan that earlier RevenueCatUI
+        // purchase-flow instance) just because a second intent arrived before the user answered.
+        guard isShowingReferralConfirmation == false else {
+            resume(false)
+            return
+        }
 
         let alreadyAppliedCode = backendAppliedReferralCode
+        let codeToSubmit = normalizedReferralCode
 
+        // Exactly the same precedence rule the pre-RevenueCatUI paywall's CTA used to disable
+        // itself with (ReferralPresentation.shouldBlockPurchaseForReferralInput) — never a second,
+        // ad hoc reimplementation of this gate. A purchase must never proceed on an unconfirmed/
+        // invalid code just because RevenueCatUI's own purchase button doesn't know about this
+        // app's referral-validity gate.
+        guard ReferralPresentation.shouldBlockPurchaseForReferralInput(
+            backendAppliedReferralCode: alreadyAppliedCode,
+            normalizedReferralCode: codeToSubmit
+        ) == false else {
+            // The inline warning under referralCodeField is already visible regardless, but the
+            // tap otherwise produces no feedback at all inside RevenueCatUI's own paywall — a
+            // haptic at least confirms the tap was seen and intentionally refused.
+            AppHaptics.warning()
+            resume(false)
+            return
+        }
+
+        // Backend attribution state always wins over local/hidden UI state — see
+        // `backendAppliedReferralCode`'s own header. Checked FIRST, before any typed input.
+        if let alreadyAppliedCode, alreadyAppliedCode.isEmpty == false {
+            await runReferralAwarePurchase(normalizedReferralCode: "", alreadyAppliedCode: alreadyAppliedCode, resume: resume)
+            return
+        }
+
+        guard codeToSubmit.isEmpty == false else {
+            await runReferralAwarePurchase(normalizedReferralCode: "", alreadyAppliedCode: nil, resume: resume)
+            return
+        }
+
+        // A blank field or an already-applied code purchases immediately (handled above) — a
+        // fresh, valid, non-empty code always confirms first: referral codes are immutable once
+        // applied, so the user must explicitly opt in to spending that one-time attribution before
+        // the purchase runs.
+        pendingReferralCodeForConfirmation = codeToSubmit
+        pendingPurchaseResume = resume
+        isShowingReferralConfirmation = true
+    }
+
+    /// The load-bearing ordering guarantee this whole feature exists for — see
+    /// ReferralAwareProPurchaseCoordinator.swift's own header. Re-entrancy-guarded so a double tap
+    /// can never start two applies or two purchases.
+    private func runReferralAwarePurchase(
+        normalizedReferralCode: String,
+        alreadyAppliedCode: String?,
+        resume: @escaping (Bool) -> Void
+    ) async {
+        // Mirrors the old beginPurchase(normalizedReferralCode:)'s own re-entrancy guard, which
+        // lived in this shared worker rather than only in its dispatchers — this function has two
+        // call sites now (handlePurchaseInitiated directly, and the confirmation dialog's "Apply &
+        // Continue" button below), and both must be protected identically.
+        guard isApplyingReferralBeforePurchase == false else {
+            resume(false)
+            return
+        }
         isApplyingReferralBeforePurchase = true
         referralErrorMessage = nil
         defer { isApplyingReferralBeforePurchase = false }
@@ -595,336 +574,104 @@ struct ProUpgradeView: View {
             normalizedCode: normalizedReferralCode,
             alreadyAppliedCode: alreadyAppliedCode,
             applyReferralCode: { code in try await ReferralManager.shared.applyReferralCode(code) },
-            purchase: { await manager.purchasePro(selectedPlan) }
+            purchase: { resume(true) }
         )
 
         switch outcome {
         case .purchased:
-            break // SubscriptionManager.purchaseState already reflects the purchase outcome.
+            break // resume(true) already called by the coordinator's own `purchase` closure above.
         case .invalidCode:
-            // Structurally shouldn't be reachable — the CTA is already disabled whenever
-            // hasInvalidNonEmptyReferralCode is true — kept as a safe no-op rather than ever
-            // silently purchasing anyway on an invalid code.
-            break
+            // Structurally shouldn't be reachable — handlePurchaseInitiated already blocks an
+            // invalid code before this function is ever called — kept as a safe no-op rather than
+            // ever silently proceeding with the purchase on an invalid code.
+            resume(false)
         case .applyFailed(let message):
+            resume(false)
             AppHaptics.warning()
             referralErrorMessage = message
         case .confirmationMismatch:
+            resume(false)
             AppHaptics.warning()
             referralErrorMessage = ReferralPresentation.userFacingMessage(for: .invalidResponse)
         }
     }
 
-    // MARK: - Benefits
+    // MARK: - Existing Pro subscriber
+    //
+    // RevenueCatUI's hosted paywall is never shown to an existing subscriber — mirrors the old
+    // custom paywall's exact same branch (see `body`), satisfying "existing subscriber should not
+    // be asked to repurchase."
 
-    private var benefitsCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SectionHeader(title: "What's Included", subtitle: "Available now with 85Blends Pro.")
+    private var proActiveContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                activeProRow
+                purchaseStateRow
 
-            VStack(alignment: .leading, spacing: 16) {
-                ForEach(majorBenefits, id: \.title) { benefit in
-                    majorBenefitRow(benefit)
-                }
+                // Restore stays visible even when already Pro, as App Review expects. Tapping
+                // while Pro just re-verifies and confirms active status. This goes straight
+                // through SubscriptionManager.restorePurchases() (not RevenueCatUI, which isn't
+                // shown in this branch at all) — the exact same call/state path this file used
+                // before the RevenueCatUI integration.
+                Divider()
+                    .background(AppTheme.Colors.border)
+                    .padding(.vertical, 2)
+
+                restoreButton(disabled: manager.purchaseState == .purchasing || manager.purchaseState == .restoring)
+
+                legalDisclosureFooter
             }
+            .padding(16)
+            .frame(maxWidth: 600)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(AppTheme.Colors.charcoal)
     }
 
-    /// Full visual treatment — icon badge, headline-weight title — for the headline benefits
-    /// in `majorBenefits` (Trip Planning, Ad-Free Experience, Unlimited Vehicles, Nearby E85
-    /// Widget).
-    private func majorBenefitRow(_ benefit: (icon: String, title: String, detail: String)) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(AppTheme.Colors.stationYellow.opacity(0.16))
-                    .frame(width: 40, height: 40)
+    // MARK: - Legal disclosure
+    //
+    // App Store Guideline 3.1.2 requires auto-renewable subscription terms and Terms of Use /
+    // Privacy Policy links to be disclosed at the point of purchase. This is deliberately kept
+    // even though RevenueCatUI's own hosted "85Blends Pro · 2.4.0" paywall template may already
+    // include equivalent copy — that template's exact content is RevenueCat dashboard state this
+    // diff cannot see or verify, so this app-owned footer stays as a guaranteed fallback rather
+    // than trusting dashboard content alone for an App Review requirement. No longer tied to a
+    // single selected plan the way the pre-RevenueCatUI paywall's footerNote was (RevenueCatUI, not
+    // this file, now owns plan selection) — each plan's own price is already shown in RevenueCatUI's
+    // package rows above, so this stays deliberately plan-agnostic.
 
-                Image(systemName: benefit.icon)
-                    .font(.system(size: 17, weight: .semibold))
+    private var legalDisclosureFooter: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("85Blends Pro is an auto-renewable subscription. Payment is charged to your Apple ID at purchase confirmation. The subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Cancel anytime in App Store settings.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            legalLinksRow
+        }
+    }
+
+    private var legalLinksRow: some View {
+        HStack(spacing: 16) {
+            // Standard Apple EULA — used because the app has no custom Terms of Use.
+            if let termsURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/") {
+                Link("Terms of Use", destination: termsURL)
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.stationYellow)
             }
-            .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(benefit.title)
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                Text(benefit.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            // In-app privacy screen (already shipped under More → Privacy).
+            NavigationLink {
+                PrivacyView()
+            } label: {
+                Text("Privacy Policy")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
             }
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Coming soon
-
-    // A separate, visually secondary card so a quick scan never mistakes a roadmap item for a
-    // current entitlement. Reuses ProShellRow — the same muted "Coming soon" capsule already
-    // shipped in StationsView's and MoreView's Coming Soon sections for Advanced Fuel Analytics
-    // and Station Price Alerts — rather than inventing a new visual language for the same
-    // concept. Ethanol % Alerts (2.4.0) is new to this screen only; MoreView's Coming Soon still
-    // lists just the first two. Its copy deliberately says "reported" ethanol content rather
-    // than an exact percentage — the alert is community-reported/estimated, never a guaranteed
-    // pump composition. No CTA button (there is nothing to unlock yet) and no date/version
-    // promise, per product policy; "Planned for future 85Blends updates." is deliberately
-    // non-committal.
-    private var comingSoonCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SectionHeader(title: "Coming Soon to Pro", subtitle: "Planned for future 85Blends updates.")
-
-            VStack(alignment: .leading, spacing: 14) {
-                ProShellRow(
-                    icon: "chart.bar.fill",
-                    title: "Advanced Fuel Analytics",
-                    detail: "Deeper insights into fuel economy, costs, and trends."
-                )
-
-                Divider()
-                    .background(AppTheme.Colors.border)
-
-                ProShellRow(
-                    icon: "bell.badge.fill",
-                    title: "Station Price Alerts",
-                    detail: "Keep track of fuel prices at stations you care about."
-                )
-
-                Divider()
-                    .background(AppTheme.Colors.border)
-
-                ProShellRow(
-                    icon: "percent",
-                    title: "Ethanol % Alerts",
-                    detail: "Get notified when a station's reported ethanol content changes."
-                )
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // One elevation step flatter than benefitsCard (surface vs. surfaceElevated) — a
-        // deliberate, subtle visual demotion so this card reads as secondary to What's
-        // Included even before either section header is read.
-        .background(AppTheme.Colors.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    // MARK: - Support 85Blends
-
-    /// Compact, visually distinct funding note for Free users — not a feature bullet, so it
-    /// uses a smaller corner radius and a plain single-line layout instead of the icon-badge +
-    /// title/detail structure benefitsCard uses for actual entitlements. Pro subscribers never
-    /// see this; they see the equivalent message folded into activeProRow instead (see the
-    /// mutual-exclusivity comment at this view's only call site, in `body`).
-    private var supportCard: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "heart.fill")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.stationYellow)
-                .frame(width: 20)
-                .accessibilityHidden(true)
-
-            Text("Your Pro subscription helps support continued development, new features, and ongoing improvements to 85Blends.")
-                .font(.footnote)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(AppTheme.Colors.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Actions
-
-    @ViewBuilder
-    private var actionsSection: some View {
-        // 85Blends 2.4.0 — accounts for BOTH RevenueCat purchasing/restoring AND the referral
-        // pre-apply step (Phase 14 of this feature's own task spec), so the CTA/Continue/Restore
-        // row stays disabled for the whole referral-first purchase sequence, not just the final
-        // RevenueCat call.
-        let isWorking = manager.purchaseState == .purchasing || manager.purchaseState == .restoring || isApplyingReferralBeforePurchase
-
-        VStack(spacing: 12) {
-            if manager.isProUser {
-                activeProRow
-            } else {
-                // The CTA is disabled until the SELECTED plan's real RevenueCat package is
-                // loaded, so it never looks tappable when there's nothing to buy for that plan
-                // (offline / product missing). The blanket "subscriptions unavailable" note
-                // below is reserved for when EVERY plan has failed to resolve — a single
-                // unavailable plan is already communicated by that row's own "Unavailable right
-                // now" label in planRow, so it doesn't also need this global message. Also
-                // disabled while a non-empty typed referral code fails local format validation —
-                // never silently ignore an invalid code and purchase anyway — UNLESS backend
-                // attribution already exists, in which case that stale local input must never
-                // block a legitimate purchase (see shouldBlockPurchaseForInvalidReferralInput).
-                unlockButton(disabled: isWorking || !manager.canPurchase(selectedPlan) || shouldBlockPurchaseForInvalidReferralInput)
-
-                if !manager.anyPlanPurchasable {
-                    availabilityNote
-                }
-
-                continueFreeButton(disabled: isWorking)
-            }
-
-            purchaseStateRow
-
-            // Restore stays visible in every paywall state (including when already Pro), as
-            // App Review expects. Tapping while Pro just re-verifies and confirms active status.
-            Divider()
-                .background(AppTheme.Colors.border)
-                .padding(.vertical, 2)
-
-            restoreButton(disabled: isWorking)
-        }
-    }
-
-    /// Shown when no purchasable product is available.
-    /// Shows a loading indicator until the first fetch has completed; only then surfaces
-    /// the error + retry so the user never sees "unavailable" before any attempt is made.
-    @ViewBuilder
-    private var availabilityNote: some View {
-        if manager.isLoadingProducts || !manager.hasAttemptedProductLoad {
-            statusRow(icon: "arrow.triangle.2.circlepath", text: "Loading subscription…", color: AppTheme.Colors.textSecondary, spinning: true)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                statusRow(
-                    icon: "wifi.exclamationmark",
-                    text: "Subscriptions are temporarily unavailable. Check your connection and try again.",
-                    color: AppTheme.Colors.textSecondary
-                )
-
-                Button {
-                    Task { await manager.loadProducts() }
-                } label: {
-                    Text("Try Again")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.stationYellow)
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    /// A blank referral field purchases immediately — no gate, no dialog. A non-empty one always
-    /// confirms first: referral codes are immutable once applied (see
-    /// ReferralAwareProPurchaseCoordinator's own header), so the user must explicitly opt in to
-    /// spending that one-time attribution before the purchase runs, per this feature's own
-    /// "load-bearing" referral-before-purchase ordering requirement. Backend attribution state
-    /// (`backendAppliedReferralCode`) is checked FIRST, before the local text field at all: once
-    /// this installation already has a confirmed referral — even from an earlier purchase attempt
-    /// the user then cancelled in Apple's own StoreKit sheet — the confirmation dialog must never
-    /// reappear, and a stale, hidden `referralCodeInput` must never re-trigger another apply call
-    /// or block a legitimate purchase retry.
-    private func unlockButton(disabled: Bool) -> some View {
-        Button {
-            if backendAppliedReferralCode != nil {
-                // Already immutably attributed — purchase directly. beginPurchase snapshots
-                // backendAppliedReferralCode itself and the coordinator ignores normalizedCode
-                // entirely whenever that snapshot is non-empty, so what's passed here never
-                // matters — see ReferralAwareProPurchaseCoordinator.purchase's own header.
-                Task { await beginPurchase(normalizedReferralCode: "") }
-            } else if normalizedReferralCode.isEmpty {
-                Task { await beginPurchase(normalizedReferralCode: "") }
-            } else {
-                isShowingReferralConfirmation = true
-            }
-        } label: {
-            VStack(spacing: 3) {
-                if isApplyingReferralBeforePurchase {
-                    ProgressView()
-                        .tint(.black)
-                } else {
-                    Text("Unlock 85Blends Pro")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                    // Show subscription title, duration, and price once the package is loaded
-                    // so the user knows exactly what they're buying before tapping.
-                    if let product = manager.storeProduct(for: selectedPlan) {
-                        Text("\(product.localizedTitle) · \(subscriptionPeriodLabel(for: product)) · \(product.localizedPriceString)")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.black.opacity(0.7))
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(AppTheme.Colors.stationYellow)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .opacity(disabled ? 0.5 : 1)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .confirmationDialog(
-            "Apply referral code?",
-            isPresented: $isShowingReferralConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Apply & Continue") {
-                let code = normalizedReferralCode
-                Task { await beginPurchase(normalizedReferralCode: code) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Apply \(normalizedReferralCode) before subscribing?\n\nReferral codes can't be changed after they're applied.")
-        }
-    }
-
-    private func subscriptionPeriodLabel(for product: StoreProduct) -> String {
-        guard let period = product.subscriptionPeriod else { return "Monthly" }
-        switch period.unit {
-        case .month: return period.value == 1 ? "Monthly" : "\(period.value)-Month"
-        case .year:  return period.value == 1 ? "Yearly"  : "\(period.value)-Year"
-        case .week:  return period.value == 1 ? "Weekly"  : "\(period.value)-Week"
-        case .day:   return period.value == 1 ? "Daily"   : "\(period.value)-Day"
-        @unknown default: return "Monthly"
-        }
-    }
-
-    private func continueFreeButton(disabled: Bool) -> some View {
-        Button {
-            AppHaptics.selection()
-            dismiss()
-        } label: {
-            Text("Continue with Free Version")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(AppTheme.Colors.cardBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
     }
 
     private var activeProRow: some View {
@@ -940,9 +687,6 @@ struct ProUpgradeView: View {
                     .foregroundStyle(AppTheme.Colors.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                // The Free-user equivalent of this line lives in supportCard — the two are
-                // mutually exclusive (see body), so this is the only "supports development"
-                // message a subscriber sees.
                 Text("Your subscription helps fund continued development and new features.")
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
@@ -1020,55 +764,5 @@ struct ProUpgradeView: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-    }
-
-    // MARK: - Footer
-
-    private var footerNote: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("85Blends Pro is a \(billingChargeDescription(for: selectedPlan)) auto-renewable subscription. Payment is charged to your Apple ID at purchase confirmation. The subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Cancel anytime in App Store settings.")
-                .font(.caption2)
-                .foregroundStyle(AppTheme.Colors.textMuted)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            legalLinksRow
-        }
-    }
-
-    /// The only part of footerNote's auto-renewal sentence that varies by plan — everything
-    /// else in that sentence is preserved verbatim regardless of selection. Prefers the real
-    /// loaded price (via SubscriptionManager.displayPrice(for:), which itself already falls back
-    /// to ProPlan.fallbackDisplayPrice before a package loads) so this disclosure is never out of
-    /// sync with what unlockButton's own subtitle and planRow's price line show.
-    private func billingChargeDescription(for plan: ProPlan) -> String {
-        let price = manager.displayPrice(for: plan)
-        switch plan {
-        case .monthly: return "\(price)/month"
-        case .threeMonth: return "\(price) every 3 months"
-        case .annual: return "\(price)/year"
-        }
-    }
-
-    private var legalLinksRow: some View {
-        HStack(spacing: 16) {
-            // Standard Apple EULA — used because the app has no custom Terms of Use.
-            if let termsURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/") {
-                Link("Terms of Use", destination: termsURL)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-            }
-
-            // In-app privacy screen (already shipped under More → Privacy).
-            NavigationLink {
-                PrivacyView()
-            } label: {
-                Text("Privacy Policy")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-            }
-
-            Spacer(minLength: 0)
-        }
     }
 }

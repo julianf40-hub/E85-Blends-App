@@ -617,4 +617,54 @@ struct SubscriptionManagerTests {
         // that's the code-inspection fact in this section's own header above.
         #expect(SubscriptionManager.shared.hasAuthoritativeProStatus == false)
     }
+
+    // MARK: L. RevenueCatUI paywall integration — 85Blends 2.4.0
+    //
+    // ProUpgradeView now presents RevenueCatUI's hosted `PaywallView` instead of a custom
+    // package-picker UI (see that file's own header). Its `.onPurchaseCompleted`/
+    // `.onRestoreCompleted`/`.onPurchaseFailure`/`.onRestoreFailure`/`.onPurchaseCancelled` handlers
+    // mirror purchase/restore outcomes into `SubscriptionManager.purchaseState` via the SAME
+    // `RevenueCatSubscriptionService.purchaseOutcome(...)` and
+    // `SubscriptionManager.state(forPurchaseOutcome:)`/`state(forRestoreOutcome:wasProBefore:)`
+    // pure functions `purchase(_:)`/`restorePurchases()` already used — no new mapping logic was
+    // written, so sections C/D above already exhaustively cover the OUTPUT half of that new call
+    // path (given a `PurchaseOutcome`/`RestoreOutcome`, is the resulting `PurchaseState` correct).
+    //
+    // What sections C/D do NOT cover is the INPUT half: `purchaseOutcome(userCancelled:
+    // isProEntitlementActiveAfterPurchase:)` itself, which turns the two raw booleans RevenueCatUI's
+    // callbacks hand this app (a customerInfo's own entitlement-active flag; cancellation is always
+    // `false` for `.onPurchaseCompleted`, since RevenueCatUI reports that separately via
+    // `.onPurchaseCancelled`) into a `PurchaseOutcome`. This function existed before this feature
+    // (it's what `RevenueCatSubscriptionService.purchase(_:)` itself already called) but had no
+    // direct test — its only caller was that SDK-driven method, untestable in-process per this
+    // file's header. ProUpgradeView's new `.onPurchaseCompleted` handler is a second, equally real
+    // caller, so it earns direct coverage here: it takes plain values, needs no RevenueCat SDK fake,
+    // and is exactly the kind of pure decision function this suite exists to test.
+    //
+    // `SubscriptionManager.setPurchaseState(_:)` and `.defaultOffering` are not tested here — both
+    // are one-line stored-property passthroughs with no branching of their own, the same category
+    // as `setPaywallPresented`/`refreshProStatus()` in section K above.
+    //
+    // ReferralAwareProPurchaseCoordinator.swift — the referral-before-purchase ordering guarantee
+    // ProUpgradeView's new `.onPurchaseInitiated` interceptor still depends on — is completely
+    // unchanged by this feature; its own 18 tests in ReferralAwareProPurchaseCoordinatorTests.swift
+    // already exhaustively cover that guarantee and needed no changes.
+
+    @Test("purchaseOutcome: user-cancelled purchase is always .cancelled, regardless of entitlement")
+    func purchaseOutcome_userCancelled_isCancelledRegardlessOfEntitlement() {
+        #expect(RevenueCatSubscriptionService.purchaseOutcome(userCancelled: true, isProEntitlementActiveAfterPurchase: true) == .cancelled)
+        #expect(RevenueCatSubscriptionService.purchaseOutcome(userCancelled: true, isProEntitlementActiveAfterPurchase: false) == .cancelled)
+    }
+
+    @Test("purchaseOutcome: not cancelled + active pro entitlement → proActivated")
+    func purchaseOutcome_notCancelled_activeEntitlement_isProActivated() {
+        #expect(RevenueCatSubscriptionService.purchaseOutcome(userCancelled: false, isProEntitlementActiveAfterPurchase: true) == .proActivated)
+    }
+
+    @Test("purchaseOutcome: not cancelled + no active pro entitlement → notEntitled, never falsely proActivated")
+    func purchaseOutcome_notCancelled_inactiveEntitlement_isNotEntitled() {
+        let outcome = RevenueCatSubscriptionService.purchaseOutcome(userCancelled: false, isProEntitlementActiveAfterPurchase: false)
+        #expect(outcome == .notEntitled)
+        #expect(outcome != .proActivated)
+    }
 }
