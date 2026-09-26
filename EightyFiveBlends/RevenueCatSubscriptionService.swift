@@ -362,6 +362,23 @@ final class RevenueCatSubscriptionService {
         print("[85Blends][RevenueCat] CustomerInfo applied: pro=\(revenueCatIsPro)")
     }
 
+    /// 85Blends 2.4.0 RevenueCatUI integration — the narrow bridge for a CustomerInfo RevenueCatUI
+    /// itself already fetched by completing a purchase or restore directly (see `purchase(_:)`/
+    /// `restore()` below, which do the exact same thing for THIS type's own purchase/restore
+    /// calls). `PaywallView`'s `.onPurchaseCompleted`/`.onRestoreCompleted` callbacks are handed an
+    /// authoritative, already-resolved `CustomerInfo` — not a hint to go re-fetch one — so this
+    /// applies it immediately via the SAME `apply(_:)` every other success path uses, rather than
+    /// waiting on `customerInfoStream` to eventually emit the same data on its own schedule.
+    /// Callers: `revenueCatIsPro`/`isProUser`, `hasAuthoritativeProStatus`,
+    /// `customerInfoLastUpdatedAt`, and the widget entitlement mirror all update synchronously with
+    /// this call returning — never a second network request merely to re-derive what RevenueCatUI
+    /// already handed us. Deliberately does NOT duplicate `apply(_:)`'s body — this only exists
+    /// because `apply(_:)` itself is private and RevenueCatUI's own purchase/restore path lives
+    /// outside this type (in ProUpgradeView), unlike every other caller of `apply(_:)` below.
+    func applyAuthoritativeCustomerInfo(_ customerInfo: CustomerInfo) {
+        apply(customerInfo)
+    }
+
     /// Manual refresh — re-fetches CustomerInfo and nothing else. Used by the Internal/Debug
     /// diagnostics card and on scenePhase → .active (see EightyFiveBlendsApp.swift). RevenueCat's
     /// own CustomerInfo cache means this does not necessarily hit the network on every call.

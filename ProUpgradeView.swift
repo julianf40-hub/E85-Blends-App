@@ -201,6 +201,13 @@ struct ProUpgradeView: View {
                         manager.setPurchaseState(.purchasing)
                     }
                     .onPurchaseCompleted { customerInfo in
+                        // Apply this authoritative, already-resolved CustomerInfo IMMEDIATELY —
+                        // exactly like SubscriptionManager.purchase(_:) does for its own purchase
+                        // call — so revenueCatIsPro/isProUser/hasAuthoritativeProStatus and the
+                        // widget entitlement mirror update synchronously, never waiting on
+                        // customerInfoStream's own timing. See applyAuthoritativeCustomerInfo(_:)'s
+                        // own header.
+                        RevenueCatSubscriptionService.shared.applyAuthoritativeCustomerInfo(customerInfo)
                         manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: RevenueCatSubscriptionService.purchaseOutcome(
                             userCancelled: false,
                             isProEntitlementActiveAfterPurchase: RevenueCatSubscriptionService.isProEntitlementActive(
@@ -223,6 +230,13 @@ struct ProUpgradeView: View {
                         manager.setPurchaseState(.restoring)
                     }
                     .onRestoreCompleted { customerInfo in
+                        // Apply this authoritative, already-resolved CustomerInfo IMMEDIATELY —
+                        // exactly like SubscriptionManager.restorePurchases() does for its own
+                        // restore call — so revenueCatIsPro/isProUser/hasAuthoritativeProStatus and
+                        // the widget entitlement mirror update synchronously, never waiting on
+                        // customerInfoStream's own timing. See applyAuthoritativeCustomerInfo(_:)'s
+                        // own header.
+                        RevenueCatSubscriptionService.shared.applyAuthoritativeCustomerInfo(customerInfo)
                         let isActive = RevenueCatSubscriptionService.isProEntitlementActive(
                             entitlementIsActive: customerInfo.entitlements[RevenueCatSubscriptionService.proEntitlementID]?.isActive
                         )
@@ -241,11 +255,6 @@ struct ProUpgradeView: View {
             } else {
                 offeringUnavailableView
             }
-
-            legalDisclosureFooter
-                .padding(16)
-                .frame(maxWidth: 600)
-                .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(AppTheme.Colors.charcoal)
     }
@@ -257,7 +266,10 @@ struct ProUpgradeView: View {
     /// branch) — the old custom paywall kept Restore visible in every paywall state, including
     /// while offerings had failed to load (e.g. a reinstall with a real subscription hitting this
     /// screen on a flaky connection), and that App-Review-driven guarantee must not regress just
-    /// because the offering itself failed to fetch.
+    /// because the offering itself failed to fetch. Also carries its own `legalDisclosureFooter` —
+    /// unlike the PaywallView branch above, RevenueCatUI's hosted paywall (which already includes
+    /// its own recurring-subscription disclosure, Restore, and Terms/Privacy links) isn't shown
+    /// here at all, so this fallback state needs its own copy of that disclosure.
     @ViewBuilder
     private var offeringUnavailableView: some View {
         VStack(spacing: 16) {
@@ -289,6 +301,8 @@ struct ProUpgradeView: View {
                 .padding(.vertical, 2)
 
             restoreButton(disabled: manager.purchaseState == .purchasing || manager.purchaseState == .restoring)
+
+            legalDisclosureFooter
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -631,14 +645,17 @@ struct ProUpgradeView: View {
     // MARK: - Legal disclosure
     //
     // App Store Guideline 3.1.2 requires auto-renewable subscription terms and Terms of Use /
-    // Privacy Policy links to be disclosed at the point of purchase. This is deliberately kept
-    // even though RevenueCatUI's own hosted "85Blends Pro · 2.4.0" paywall template may already
-    // include equivalent copy — that template's exact content is RevenueCat dashboard state this
-    // diff cannot see or verify, so this app-owned footer stays as a guaranteed fallback rather
-    // than trusting dashboard content alone for an App Review requirement. No longer tied to a
+    // Privacy Policy links to be disclosed at the point of purchase. The published RevenueCat
+    // paywall ("85Blends Pro · 2.4.0") already carries its own recurring-subscription disclosure,
+    // Restore Purchases, Terms of Use, and Privacy Policy — RevenueCatUI's `PaywallView` is the
+    // single source of truth for that content whenever it's actually on screen, so this view is
+    // deliberately NEVER shown directly under/alongside it (see `freePaywallContent`, which shows
+    // `PaywallView` XOR `offeringUnavailableView`, never both). It's used only in the two states
+    // where RevenueCatUI's own paywall — and therefore its own legal footer — isn't rendered at
+    // all: `offeringUnavailableView` (offering still loading or failed to load) and
+    // `proActiveContent` (existing subscriber, no paywall shown either way). No longer tied to a
     // single selected plan the way the pre-RevenueCatUI paywall's footerNote was (RevenueCatUI, not
-    // this file, now owns plan selection) — each plan's own price is already shown in RevenueCatUI's
-    // package rows above, so this stays deliberately plan-agnostic.
+    // this file, owns plan selection whenever it's shown) — deliberately plan-agnostic.
 
     private var legalDisclosureFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
