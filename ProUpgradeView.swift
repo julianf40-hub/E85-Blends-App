@@ -1137,7 +1137,7 @@ struct ProUpgradeView: View {
                         .tracking(1.2)
                         .foregroundStyle(AppTheme.Colors.textMuted)
 
-                    Text("You're now on 85Blends Pro")
+                    Text("You have 85Blends Pro")
                         .font(.title2.weight(.bold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
