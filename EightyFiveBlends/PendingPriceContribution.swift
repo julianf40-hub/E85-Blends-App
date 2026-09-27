@@ -70,11 +70,66 @@ struct PendingPriceContribution: Codable, Equatable, Sendable {
     /// nil for a contribution recorded before this field existed (any pre-fix persisted blob —
     /// the key is simply absent from its JSON) or, in principle, for one that reached this
     /// initializer without going through
-    /// MapsRoutingHelper.recordPendingE85PriceContributionIfEligible. Optional with a `nil`
-    /// default (rather than a required parameter) so every pre-existing call site — including
-    /// other test files' own fixtures — keeps compiling unchanged; PendingPriceContributionStore.
-    /// current treats nil exactly like a corrupt/unrecognized payload and never surfaces it,
-    /// which is what lets an old, pre-fix blob decode cleanly and still be discarded, with no
-    /// separate migration step.
+    /// MapsRoutingHelper.recordPendingE85PriceContributionIfEligible. The `nil` default here is
+    /// for the plain memberwise initializer only (so every pre-existing non-JSON call site —
+    /// including other test files' own fixtures — keeps compiling unchanged); it plays no part
+    /// in JSON decoding, which is handled explicitly below via `init(from:)` rather than relying
+    /// on this default. PendingPriceContributionStore.current treats nil exactly like a
+    /// corrupt/unrecognized payload and never surfaces it, which is what lets an old, pre-fix
+    /// blob decode cleanly and still be discarded, with no separate migration step.
     let e85Evidence: PendingPriceContributionE85Evidence? = nil
+}
+
+// MARK: - Explicit Codable conformance
+//
+// Written by hand (in an extension, so the struct above keeps its free, compiler-synthesized
+// memberwise initializer — memberwise-init synthesis is only suppressed by a custom initializer
+// declared inside the struct's own primary body, never by one added via an extension) rather than
+// relying on Swift's synthesized Decodable, whose "an Optional property with no key present
+// decodes to nil" behavior is real but implicit. This makes that behavior an explicit,
+// intentional `decodeIfPresent` call instead, so a reviewer (or a future editor of this file)
+// doesn't have to know that synthesis detail to see how backward compatibility actually works.
+// Every OTHER field's wire format is unchanged — same keys, same optional-omits-when-nil
+// encoding — this only changes how e85Evidence specifically is decoded/documented.
+extension PendingPriceContribution {
+    private enum CodingKeys: String, CodingKey {
+        case stationKey, stationName, streetAddress, city, state, zip, latitude, longitude
+        case directionsOpenedAt, mapsProvider, e85Evidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stationKey = try container.decode(String.self, forKey: .stationKey)
+        stationName = try container.decode(String.self, forKey: .stationName)
+        streetAddress = try container.decodeIfPresent(String.self, forKey: .streetAddress)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        zip = try container.decodeIfPresent(String.self, forKey: .zip)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        directionsOpenedAt = try container.decode(Date.self, forKey: .directionsOpenedAt)
+        mapsProvider = try container.decodeIfPresent(String.self, forKey: .mapsProvider)
+        // THE explicit backward-compatibility point: a pre-fix blob's JSON has no "e85Evidence"
+        // key at all — decodeIfPresent returns nil for a missing key (never throws), exactly the
+        // "old JSON -> nil" behavior this fix requires. New JSON carrying "liveNRELSearch"/
+        // "nearbyE85Widget" decodes to that exact case; an unrecognized/corrupt string throws
+        // (caught by PendingPriceContributionStore.current's own `try?`, which already fails
+        // closed to nil for any decode error).
+        e85Evidence = try container.decodeIfPresent(PendingPriceContributionE85Evidence.self, forKey: .e85Evidence)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(stationKey, forKey: .stationKey)
+        try container.encode(stationName, forKey: .stationName)
+        try container.encodeIfPresent(streetAddress, forKey: .streetAddress)
+        try container.encodeIfPresent(city, forKey: .city)
+        try container.encodeIfPresent(state, forKey: .state)
+        try container.encodeIfPresent(zip, forKey: .zip)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+        try container.encode(directionsOpenedAt, forKey: .directionsOpenedAt)
+        try container.encodeIfPresent(mapsProvider, forKey: .mapsProvider)
+        try container.encodeIfPresent(e85Evidence, forKey: .e85Evidence)
+    }
 }

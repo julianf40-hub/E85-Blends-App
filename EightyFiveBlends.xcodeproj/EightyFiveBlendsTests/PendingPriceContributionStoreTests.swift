@@ -242,6 +242,21 @@ struct PendingPriceContributionStoreTests {
         #expect(store.current == nil)
     }
 
+    @Test("A newly recorded, verified contribution is returned by current — never discarded — for both evidence cases")
+    func current_newlyRecordedVerifiedContribution_isReturnedNotDiscarded() {
+        for evidence: PendingPriceContributionE85Evidence in [.liveNRELSearch, .nearbyE85Widget] {
+            let store = makeStore()
+            let contribution = makeContribution(stationName: "Circle K", e85Evidence: evidence)
+
+            store.record(contribution)
+
+            #expect(store.current != nil)
+            #expect(store.current == contribution)
+            #expect(store.current?.e85Evidence == evidence)
+            #expect(store.current?.stationName == "Circle K")
+        }
+    }
+
     @Test("A contribution recorded with approved E85 evidence is shown normally")
     func current_withEvidence_isShown() {
         let store = makeStore()
