@@ -1013,7 +1013,6 @@ struct StationsView: View {
                 noteInput: $priceNoteInput,
                 validationMessage: $priceValidationMessage,
                 isSubmittingCommunityPrice: isSubmittingCommunityPrice,
-                saveLocalAction: { savePriceUpdate(for: context, reportToCommunity: false) },
                 saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
                 cancelAction: { handlePriceUpdateCancel(for: context) },
                 remoteReportFailureMessage: $remoteReportFailureMessage,
@@ -4902,7 +4901,6 @@ private struct StationPriceUpdateSheet: View {
     @Binding var noteInput: String
     @Binding var validationMessage: String?
     let isSubmittingCommunityPrice: Bool
-    let saveLocalAction: () -> Void
     let saveAndReportAction: () -> Void
     let cancelAction: () -> Void
     /// 85Blends 2.4.0 post-navigation compact mode only — set when a community submission's
@@ -5036,50 +5034,35 @@ private struct StationPriceUpdateSheet: View {
                                 .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
                         }
 
-                        VStack(spacing: 10) {
-                            Button(action: saveLocalAction) {
-                                Text("Save Locally")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .background(AppTheme.Colors.surface)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .stroke(AppTheme.Colors.border, lineWidth: 1)
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
-
-                            if context.canReportToCommunity {
-                                Button(action: saveAndReportAction) {
-                                    HStack(spacing: 8) {
-                                        if isSubmittingCommunityPrice {
-                                            ProgressView()
-                                                .tint(AppTheme.Colors.textPrimary)
-                                        }
-                                        Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Save & Report Price")
-                                    }
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .background(AppTheme.Colors.primaryGreen)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        // 85Blends 2.4.x — "Save Locally" removed as a separate user choice: local
+                        // persistence is now an automatic, implicit part of reporting rather than
+                        // a distinct action. This button is the exact same saveAndReportAction
+                        // closure (→ savePriceUpdate(for:reportToCommunity: true)) the old "Save &
+                        // Report Price" button already called — the local-save step inside that
+                        // function has always run unconditionally before the community-submission
+                        // Task begins, so nothing about persistence, validation, eligibility, or
+                        // analytics changes here. When the station isn't eligible for community
+                        // reporting, savePriceUpdate's own existing fallback (local save +
+                        // "doesn't have enough location information" info message, no network
+                        // attempt) already handles it — the same fallback compactReportContent's
+                        // single "Submit Price" button has always relied on, never a new path.
+                        Button(action: saveAndReportAction) {
+                            HStack(spacing: 8) {
+                                if isSubmittingCommunityPrice {
+                                    ProgressView()
+                                        .tint(AppTheme.Colors.textPrimary)
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
-                            } else {
-                                Text("This station doesn't have enough location information for community reporting yet.")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 8)
+                                Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Report E85 Price")
                             }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(AppTheme.Colors.primaryGreen)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                     }
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
