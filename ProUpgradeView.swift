@@ -12,7 +12,8 @@
 //  never decide on its own:
 //    - whether a paywall should be shown at all (an existing subscriber never sees `PaywallView`
 //      — see `body` below)
-//    - referral pre-purchase attribution (`referralCard` + the `.onPurchaseInitiated` interceptor)
+//    - referral pre-purchase attribution (`compactReferralRow` + `referralCodeEntrySheet`
+//      + the `.onPurchaseInitiated` interceptor)
 //    - entitlement authority (still exclusively `SubscriptionManager`/`RevenueCatSubscriptionService`
 //      — RevenueCatUI never touches `pro` directly; see that type's own "KEY AUTHORITY INVARIANT")
 //    - presentation/routing (`presentationMode`, every existing call site is unchanged)
@@ -20,6 +21,11 @@
 //      exact same transitions `purchase(_:)`/`restorePurchases()` already produce)
 //  RevenueCatUI owns paywall rendering, package selection, purchase UI, restore UI, and the
 //  remote paywall content itself — this file never duplicates that in SwiftUI.
+//
+//  85Blends 2.4.0 paywall-layout refinement — the referral affordance above `PaywallView` is
+//  deliberately a single compact row, not a card: RevenueCatUI's hosted content (headline,
+//  benefits, plans, CTA) must be visible as high on the first screen as practical, and the app's
+//  own tab bar is hidden for the same reason (see `body`'s `.toolbar(.hidden, for: .tabBar)`).
 //
 
 import SwiftUI
@@ -66,6 +72,15 @@ struct ProUpgradeView: View {
     /// resulting message can distinguish a fresh restore from "already active" — mirrors
     /// `restorePurchases()`'s own `wasProBefore` snapshot.
     @State private var restoreWasProBefore = false
+    /// 85Blends 2.4.0 paywall-layout refinement — the compact referral row's "Add Code" affordance
+    /// presents the actual code-entry UI in this sheet instead of inline, so the main paywall stays
+    /// short enough that Pro's benefits/plans/CTA are visible without scrolling. See
+    /// `referralCodeEntrySheet`'s own header.
+    @State private var isShowingReferralCodeSheet = false
+    /// Snapshot of `referralCodeInput` taken when the sheet opens, so "Cancel" can discard whatever
+    /// was typed THIS sheet session without affecting a code typed in an earlier session (or
+    /// already-applied backend state, which this never touches either way).
+    @State private var referralCodeInputSnapshotBeforeSheet = ""
 
     private var referralManager: ReferralManager { ReferralManager.shared }
 
@@ -118,6 +133,28 @@ struct ProUpgradeView: View {
                     Button("Close") { dismiss() }
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
+            }
+        }
+        // 85Blends 2.4.0 paywall-layout refinement — a focused purchase screen shouldn't compete
+        // with the app's own tab bar for vertical space. Only affects a `.pushed` presentation
+        // (e.g. More → 85Blends Pro), which lives inside its tab's own NavigationStack and would
+        // otherwise keep the tab bar visible at the bottom by default; a safe no-op under `.modal`
+        // (`.sheet`) presentation, since there's no tab bar in that presentation context to hide.
+        // Standard SwiftUI API (iOS 16+), well under this project's 17.6/26.4 deployment targets.
+        // Restores automatically on Back/dismiss — this modifier only affects this view's own
+        // lifetime, never the tab bar's persistent state.
+        .toolbar(.hidden, for: .tabBar)
+        .sheet(isPresented: $isShowingReferralCodeSheet) {
+            referralCodeEntrySheet
+        }
+        // A CustomerInfo update (restore, family sharing, a purchase completed on another device)
+        // can flip isProUser to true while this sheet happens to be open — `body`'s Group already
+        // switches away from freePaywallContent to proActiveContent on its own, but a `.sheet` is a
+        // separate presentation layer that switch alone does not dismiss. An already-Pro user must
+        // never be left mid-referral-entry, so force it closed here.
+        .onChange(of: manager.isProUser) { _, isPro in
+            if isPro {
+                isShowingReferralCodeSheet = false
             }
         }
         .task {
@@ -174,9 +211,10 @@ struct ProUpgradeView: View {
 
     @ViewBuilder
     private var freePaywallContent: some View {
-        VStack(spacing: 0) {
-            referralCard
-                .padding(16)
+        VStack(spacing: 8) {
+            compactReferralRow
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
                 .frame(maxWidth: 600)
                 .frame(maxWidth: .infinity, alignment: .center)
 
@@ -310,143 +348,295 @@ struct ProUpgradeView: View {
 
     // MARK: - Referral Code (85Blends 2.4.0 — Refer & Earn pre-purchase attribution)
     //
-    // Free users only — an existing Pro subscriber never sees any part of this card, not even a
-    // "checking eligibility" spinner (this whole card only renders inside `freePaywallContent`,
+    // Free users only — an existing Pro subscriber never sees any part of this row, not even a
+    // "checking eligibility" spinner (this whole row only renders inside `freePaywallContent`,
     // itself only reachable when `manager.isProUser` is false — see `body`).
-
-    @ViewBuilder
-    private var referralCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "Referral Code", subtitle: "Optional — have a friend's code? Enter it before subscribing.")
-
-            referralCardContent
-
-            Text("Referral codes can't be added after the qualifying paid Pro purchase.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.Colors.textMuted)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
+    //
+    // 85Blends 2.4.0 paywall-layout refinement — this used to be a large, always-expanded card with
+    // the text field inline. Referral is an OPTIONAL affordance and must not visually compete with
+    // RevenueCatUI's hosted paywall for the user's first-screen attention, so it's now a single
+    // compact row; tapping it (when a code can actually be entered) presents the real entry UI —
+    // unchanged normalization/validation/errors, just relocated — in `referralCodeEntrySheet`
+    // below. The state machine itself (the switch over `referralManager.loadState` and
+    // `ReferralPresentation.entryEligibility`) is byte-for-byte the same as before; only how each
+    // case renders changed.
 
     /// Mirrors ReferEarnView's own `content` switch over the SAME ReferralLoadState — never a
     /// second referral network/state layer. `.idle`/`.loading` render identically, matching that
     /// screen's own convention.
     @ViewBuilder
-    private var referralCardContent: some View {
+    private var compactReferralRow: some View {
         switch referralManager.loadState {
         case .idle, .loading:
-            statusRow(icon: "arrow.triangle.2.circlepath", text: "Checking referral eligibility…", color: AppTheme.Colors.textSecondary, spinning: true)
+            compactReferralStatusRow(icon: "arrow.triangle.2.circlepath", text: "Checking referral eligibility…", spinning: true)
         case .waitingForRevenueCatIdentity:
-            referralPreparationRow(text: "Finishing referral setup…")
+            // Mirrors the old referralPreparationRow(text:) exactly: a spinner AND a retry
+            // action together, since this state (unlike .idle/.loading just above) can persist
+            // indefinitely if identity/environment resolution stalls, and previously offered a
+            // manual escape hatch rather than only ever waiting.
+            compactReferralRetryRow(
+                icon: "arrow.triangle.2.circlepath",
+                text: "Finishing referral setup…",
+                spinning: true,
+                action: { await referralManager.refresh() }
+            )
         case .waitingForStoreEnvironment:
-            referralPreparationRow(text: "Verifying the App Store environment for referrals…")
+            // Same reasoning as .waitingForRevenueCatIdentity just above.
+            compactReferralRetryRow(
+                icon: "arrow.triangle.2.circlepath",
+                text: "Verifying App Store environment…",
+                spinning: true,
+                action: { await referralManager.refresh() }
+            )
         case .failed(let error):
-            referralUnavailableRow(error: error)
+            // Never a raw backend string, error description, or OSStatus — only the same
+            // REF-XXXXX diagnostic support code already shown on the standalone Refer & Earn
+            // screen (see ReferralPresentation.diagnosticCode(for:)'s own header), folded into one
+            // line to stay compact.
+            compactReferralRetryRow(
+                icon: "exclamationmark.circle.fill",
+                text: "Referral setup unavailable (\(ReferralPresentation.diagnosticCode(for: error)))",
+                action: { await referralManager.refresh() }
+            )
         case .loaded(let status):
-            referralLoadedContent(status: status)
+            // Applied-code state always takes precedence, independent of Pro-entitlement-
+            // resolution state — checked FIRST, exactly like ReferEarnView's own
+            // referredBySection, before ever consulting entryEligibility below.
+            if ReferralPresentation.hasAppliedReferralCode(referredByCode: status.referredByCode) {
+                compactReferralAppliedRow(code: status.referredByCode)
+            } else {
+                // Reuses the EXACT SAME entryEligibility this feature's standalone Refer & Earn
+                // screen already uses — including its own hardening against a still-resolving or
+                // never-resolved RevenueCat entitlement fetch being misread as confirmed Free/Pro
+                // (see SubscriptionManager.hasAuthoritativeProStatus's own header). Never a second,
+                // paywall-specific eligibility rule.
+                switch ReferralPresentation.entryEligibility(
+                    canApplyReferralCode: status.canApplyReferralCode,
+                    isCurrentlyPro: manager.isProUser,
+                    isEntitlementResolutionPending: manager.isInitialEntitlementResolutionPending,
+                    hasAuthoritativeProStatus: manager.hasAuthoritativeProStatus
+                ) {
+                case .allowed:
+                    compactReferralAddCodeRow
+                case .waitingForSubscriptionStatus:
+                    compactReferralStatusRow(icon: "arrow.triangle.2.circlepath", text: "Checking Pro status…", spinning: true)
+                case .subscriptionStatusUnavailable:
+                    compactReferralRetryRow(
+                        icon: "exclamationmark.triangle.fill",
+                        text: "Unable to verify Pro status",
+                        action: { await SubscriptionManager.shared.refreshProStatus() }
+                    )
+                case .blockedAlreadyPro:
+                    // Structurally unreachable from this call site — this whole row only renders
+                    // inside `freePaywallContent`, itself only reachable when `manager.isProUser`
+                    // is false, and `isCurrentlyPro` here is that exact same value read in the
+                    // same render pass. Handled for switch exhaustiveness only.
+                    EmptyView()
+                case .blockedCannotApply:
+                    EmptyView()
+                }
+            }
         }
     }
 
-    private func referralPreparationRow(text: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            statusRow(icon: "arrow.triangle.2.circlepath", text: text, color: AppTheme.Colors.textSecondary, spinning: true)
-            referralRetryButton { await referralManager.refresh() }
-        }
+    /// Common chrome (padding/min-height/background/corner radius) shared by every compact
+    /// referral row below, so a future visual tweak (radius, padding) is one edit instead of four.
+    /// Each row adds its own optional border `.overlay` on top, since that varies by row (none for
+    /// informational rows, tinted for add-code/applied).
+    private func compactReferralRowChrome<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(minHeight: 44)
+            .frame(maxWidth: .infinity)
+            .background(AppTheme.Colors.surfaceElevated)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    /// Never a raw backend string, error description, or OSStatus — only the same REF-XXXXX
-    /// diagnostic support code already shown on the standalone Refer & Earn screen (see
-    /// ReferralPresentation.diagnosticCode(for:)'s own header).
-    private func referralUnavailableRow(error: ReferralServiceError) -> some View {
+    /// Tapping opens `referralCodeEntrySheet`. Disabled while a referral-first purchase sequence
+    /// is already running, matching the old inline text field's own `.disabled(...)`. Carries the
+    /// invalid-code/apply-failure warnings directly beneath it — exactly like the old inline text
+    /// field always did — since those only ever apply while THIS row (not a loading/applied/error
+    /// row) is what's showing. Suppressed while `referralCodeEntrySheet` itself is open (it shows
+    /// the identical text right next to the field already), so the same warning never appears
+    /// twice at once through the sheet's own `.medium` detent, which leaves this row visible behind
+    /// it.
+    @ViewBuilder
+    private var compactReferralAddCodeRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            statusRow(icon: "exclamationmark.circle.fill", text: "Referral setup temporarily unavailable", color: AppTheme.Colors.textSecondary)
-            Text("Support code: \(ReferralPresentation.diagnosticCode(for: error))")
-                .font(.caption2.monospaced())
-                .foregroundStyle(AppTheme.Colors.textMuted)
-            referralRetryButton { await referralManager.refresh() }
+            Button {
+                referralCodeInputSnapshotBeforeSheet = referralCodeInput
+                isShowingReferralCodeSheet = true
+            } label: {
+                compactReferralRowChrome {
+                    HStack(spacing: 10) {
+                        Image(systemName: "gift.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                            .frame(width: 20)
+                            .accessibilityHidden(true)
+
+                        Text("Have a referral code?")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                        Spacer(minLength: 8)
+
+                        HStack(spacing: 2) {
+                            Text("Add Code")
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isApplyingReferralBeforePurchase)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens a sheet to enter an optional referral code before subscribing")
+
+            if isShowingReferralCodeSheet == false {
+                if hasInvalidNonEmptyReferralCode {
+                    Text(ReferralPresentation.userFacingMessage(for: .api(.invalidReferralCode)))
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.warningRed)
+                        .padding(.horizontal, 4)
+                }
+
+                if let referralErrorMessage {
+                    Text(referralErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.warningRed)
+                        .padding(.horizontal, 4)
+                }
+            }
         }
     }
 
-    private func referralRetryButton(action: @escaping () async -> Void) -> some View {
+    private func compactReferralAppliedRow(code: String?) -> some View {
+        compactReferralRowChrome {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.primaryGreen)
+                    .frame(width: 20)
+                    .accessibilityHidden(true)
+
+                Text(code.map { "Referral \($0) applied" } ?? "Referral code applied")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Spacer(minLength: 8)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(AppTheme.Colors.primaryGreen.opacity(0.35), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Reuses the file's own existing `statusRow` (same icon/spinner/text layout `purchaseStateRow`
+    /// and `offeringUnavailableView` already use) rather than a second copy of that logic — this
+    /// only adds the compact row's own card chrome around it.
+    private func compactReferralStatusRow(icon: String, text: String, spinning: Bool = false) -> some View {
+        compactReferralRowChrome {
+            statusRow(icon: icon, text: text, color: AppTheme.Colors.textSecondary, spinning: spinning)
+        }
+    }
+
+    private func compactReferralRetryRow(icon: String, text: String, spinning: Bool = false, action: @escaping () async -> Void) -> some View {
         Button {
             Task { await action() }
         } label: {
-            Text("Try Again")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.stationYellow)
+            compactReferralRowChrome {
+                // Same .caption sizing as statusRow (reused by compactReferralStatusRow just
+                // above) and the old referralRetryButton's own "Try Again" — these two rows render
+                // in the same on-screen slot as referral setup resolves, so they must match in
+                // size or the row visibly jumps between states.
+                HStack(spacing: 8) {
+                    if spinning {
+                        ProgressView()
+                            .tint(AppTheme.Colors.textSecondary)
+                            .scaleEffect(0.85)
+                    } else {
+                        Image(systemName: icon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                    Text(text)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Text("Try Again")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                }
+            }
         }
         .buttonStyle(.plain)
     }
 
-    /// Applied-code state always takes precedence, independent of Pro-entitlement-resolution
-    /// state — checked FIRST, exactly like ReferEarnView's own referredBySection, before ever
-    /// consulting entryEligibility below.
-    @ViewBuilder
-    private func referralLoadedContent(status: ReferralStatus) -> some View {
-        if ReferralPresentation.hasAppliedReferralCode(referredByCode: status.referredByCode) {
-            appliedReferralRow(status: status)
-        } else {
-            // Reuses the EXACT SAME entryEligibility this feature's standalone Refer & Earn screen
-            // already uses — including its own hardening against a still-resolving or
-            // never-resolved RevenueCat entitlement fetch being misread as confirmed Free/Pro (see
-            // SubscriptionManager.hasAuthoritativeProStatus's own header). Never a second, paywall-
-            // specific eligibility rule.
-            switch ReferralPresentation.entryEligibility(
-                canApplyReferralCode: status.canApplyReferralCode,
-                isCurrentlyPro: manager.isProUser,
-                isEntitlementResolutionPending: manager.isInitialEntitlementResolutionPending,
-                hasAuthoritativeProStatus: manager.hasAuthoritativeProStatus
-            ) {
-            case .allowed:
+    /// 85Blends 2.4.0 paywall-layout refinement — the actual referral-code entry UI, unchanged from
+    /// before except that it now lives in a sheet (opened from `compactReferralAddCodeRow`)
+    /// instead of always-inline. `referralCodeField` below is the SAME view/state/validation this
+    /// screen always used — never a second validator — so a code typed here is immediately the
+    /// same `referralCodeInput`/`normalizedReferralCode` `handlePurchaseInitiated` already reads at
+    /// purchase time; dismissing this sheet (via "Done") does not clear or otherwise touch that
+    /// state, so the code remains available to the purchase-intercept gate exactly as before.
+    private var referralCodeEntrySheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Optional — have a friend's code? Enter it before subscribing.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
                 referralCodeField
-            case .waitingForSubscriptionStatus:
-                statusRow(icon: "arrow.triangle.2.circlepath", text: "Checking Pro status…", color: AppTheme.Colors.textSecondary, spinning: true)
-            case .subscriptionStatusUnavailable:
-                VStack(alignment: .leading, spacing: 6) {
-                    statusRow(icon: "exclamationmark.triangle.fill", text: "Unable to verify Pro status", color: AppTheme.Colors.textSecondary)
-                    referralRetryButton { await SubscriptionManager.shared.refreshProStatus() }
-                }
-            case .blockedAlreadyPro:
-                // Structurally unreachable from this call site — this whole card only renders
-                // inside `freePaywallContent`, itself only reachable when `manager.isProUser` is
-                // false, and `isCurrentlyPro` here is that exact same value read in the same
-                // render pass. Handled for switch exhaustiveness only.
-                EmptyView()
-            case .blockedCannotApply:
-                EmptyView()
+
+                Text("Referral codes can't be added after the qualifying paid Pro purchase.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+
+                Spacer(minLength: 0)
             }
-        }
-    }
-
-    private func appliedReferralRow(status: ReferralStatus) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.Colors.primaryGreen)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Referral code applied")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                if let code = status.referredByCode {
-                    Text(code)
-                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.charcoal)
+            .navigationTitle("Referral Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        // Discard whatever was (or wasn't) typed THIS sheet session only — never
+                        // touches backend-applied state, which this sheet never had authority over
+                        // anyway.
+                        referralCodeInput = referralCodeInputSnapshotBeforeSheet
+                        isShowingReferralCodeSheet = false
+                    }
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        isShowingReferralCodeSheet = false
+                    }
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
                 }
             }
-
-            Spacer(minLength: 0)
         }
-        .accessibilityElement(children: .combine)
+        .presentationDetents([.medium])
+        // Without this, a swipe-down dismissal sets isShowingReferralCodeSheet = false directly,
+        // bypassing Cancel's revert-to-snapshot entirely and silently keeping whatever was typed —
+        // as if Done had been tapped instead, contradicting Cancel's own guarantee above. Forcing
+        // Cancel/Done as the only two exits keeps that guarantee real regardless of how the user
+        // tries to leave.
+        .interactiveDismissDisabled()
     }
 
     /// Exactly ReferralPresentation's shared normalization/validation — see
