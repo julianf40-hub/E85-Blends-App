@@ -31,6 +31,7 @@
 import SwiftUI
 import RevenueCat
 import RevenueCatUI
+import StoreKit
 
 enum ProPresentationMode {
     case pushed
@@ -86,6 +87,13 @@ struct ProUpgradeView: View {
     /// was typed THIS sheet session without affecting a code typed in an earlier session (or
     /// already-applied backend state, which this never touches either way).
     @State private var referralCodeInputSnapshotBeforeSheet = ""
+
+    /// Pro-active-state redesign — drives Apple's own system "Manage Subscriptions" sheet via
+    /// StoreKit's `.manageSubscriptionsSheet(isPresented:)`. Purely a system UI presentation: no
+    /// RevenueCat call, no SubscriptionManager/entitlement read or write, nothing to apply when it
+    /// closes (the existing `customerInfoStream`/purchase-callback path is what already reflects
+    /// any resulting change, entirely unchanged by this).
+    @State private var isShowingManageSubscriptions = false
 
     private var referralManager: ReferralManager { ReferralManager.shared }
 
@@ -280,9 +288,9 @@ struct ProUpgradeView: View {
 
     /// Opaque — never translucent/glass — matching this file's own established card language
     /// (`AppTheme.Colors.surfaceElevated`, the same surface `compactReferralAddCodeRow`/
-    /// `activeProRow`/etc. already use), so it reads as intentionally part of 85Blends rather than
-    /// a generic system alert. Sized to grow vertically with Dynamic Type rather than clipping —
-    /// no fixed height anywhere in this view.
+    /// `proBenefitsCard`/etc. already use), so it reads as intentionally part of 85Blends rather
+    /// than a generic system alert. Sized to grow vertically with Dynamic Type rather than
+    /// clipping — no fixed height anywhere in this view.
     private var referralConfirmationCard: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 10) {
@@ -1027,8 +1035,9 @@ struct ProUpgradeView: View {
     private var proActiveContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                activeProRow
+                proActiveHeroCard
                 purchaseStateRow
+                proBenefitsCard
 
                 // Restore stays visible even when already Pro, as App Review expects. Tapping
                 // while Pro just re-verifies and confirms active status. This goes straight
@@ -1039,7 +1048,10 @@ struct ProUpgradeView: View {
                     .background(AppTheme.Colors.border)
                     .padding(.vertical, 2)
 
-                restoreButton(disabled: manager.purchaseState == .purchasing || manager.purchaseState == .restoring)
+                VStack(spacing: 10) {
+                    manageSubscriptionButton
+                    restoreButton(disabled: manager.purchaseState == .purchasing || manager.purchaseState == .restoring)
+                }
 
                 legalDisclosureFooter
             }
@@ -1048,6 +1060,10 @@ struct ProUpgradeView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(AppTheme.Colors.charcoal)
+        // Presentation-only: Apple's own system "Manage Subscriptions" sheet. No completion
+        // handler to wire up — whatever changes there (plan switch, cancellation) is already
+        // picked up by the existing customerInfoStream/purchase-callback path, unchanged by this.
+        .manageSubscriptionsSheet(isPresented: $isShowingManageSubscriptions)
     }
 
     // MARK: - Legal disclosure
@@ -1099,36 +1115,212 @@ struct ProUpgradeView: View {
         }
     }
 
-    private var activeProRow: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "checkmark.seal.fill")
+    // MARK: - Pro-active hero + benefits (real-device redesign)
+    //
+    // Replaces the old, plain single-line `activeProRow` with a richer success screen: a hero
+    // card (real app logo, headline, "Pro Active" status, thank-you message) and a "Your Pro
+    // Benefits" card listing the same four Pro features already promised elsewhere in the app
+    // (OnboardingView's Pro step, VehicleLimitUpsellView, the widget's own Pro gating) — nothing
+    // new is claimed here that isn't already real and shipping. Presentation only: reads
+    // `manager.isProUser`/`manager.purchaseState` exactly as the row it replaces did, and neither
+    // this section nor `manageSubscriptionButton` below writes to `SubscriptionManager`,
+    // RevenueCat, or referral state anywhere.
+
+    private var proActiveHeroCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                proHeroLogoBadge
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("85BLENDS PRO")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+
+                    Text("You're now on 85Blends Pro")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            proActiveStatusPill
+
+            Text("Thanks for supporting 85Blends. Your subscription unlocks premium features and helps fund continued development.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [AppTheme.Colors.stationYellow.opacity(0.22), AppTheme.Colors.surfaceElevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The real 85Blends app icon ("ProHeroLogo" — a plain imageset copy of
+    /// AppIcon.appiconset's own "85Blends icon.png", the same file used for the Home Screen icon;
+    /// see this file's own header for why a fixed brand mark is used here instead of reading
+    /// whichever appiconset the active scheme/configuration happens to build with). Decorative —
+    /// the hero card's own text already says everything a screen reader needs.
+    private var proHeroLogoBadge: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image("ProHeroLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 60, height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+
+            Image(systemName: "crown.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.black)
+                .padding(5)
+                .background(AppTheme.Colors.stationYellow)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(AppTheme.Colors.surfaceElevated, lineWidth: 2))
+                .offset(x: 6, y: 6)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var proActiveStatusPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .accessibilityHidden(true)
+            Text("Pro Active")
+                .font(.caption.weight(.bold))
+        }
+        .foregroundStyle(AppTheme.Colors.primaryGreen)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(AppTheme.Colors.softGreenBackground)
+        .clipShape(Capsule())
+    }
+
+    /// Icon/title/description for each row in `proBenefitsCard`, in display order. Every entry
+    /// names a feature that is genuinely implemented and Pro-gated today — see this property's
+    /// own header — never an aspirational or planned feature.
+    private static let proBenefitRows: [(icon: String, title: String, description: String)] = [
+        ("fuelpump.fill", "Nearby E85 Widget", "Quickly find E85 stations right from your Home Screen."),
+        ("map.fill", "Trip Planner", "Plan optimal routes with E85 stations along the way."),
+        ("car.fill", "Unlimited Vehicles", "Add and manage as many vehicles as you want."),
+        ("sparkles", "Ad-Free Experience", "Enjoy a cleaner, faster, ad-free experience across the app.")
+    ]
+
+    private var proBenefitsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Image(systemName: "crown.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                    .accessibilityHidden(true)
+
+                Text("Your Pro Benefits")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+            }
+
+            Text("Get the most out of 85Blends with these premium features.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 14) {
+                ForEach(Array(Self.proBenefitRows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 {
+                        Divider().background(AppTheme.Colors.border)
+                    }
+                    proBenefitRow(icon: row.icon, title: row.title, description: row.description)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func proBenefitRow(icon: String, title: String, description: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: icon)
                 .font(.title3)
-                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                .foregroundStyle(AppTheme.Colors.stationYellow)
+                .frame(width: 44, height: 44)
+                .background(AppTheme.Colors.stationYellow.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("You have 85Blends Pro. Thanks for your support!")
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
 
-                Text("Your subscription helps fund continued development and new features.")
+                Text(description)
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.primaryGreen)
+                .accessibilityHidden(true)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.surfaceElevated)
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(AppTheme.Colors.primaryGreen.opacity(0.4), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .combine)
+    }
+
+    /// Real system UI, not a fake settings row: opens Apple's own "Manage Subscriptions" sheet via
+    /// StoreKit (`.manageSubscriptionsSheet` on `proActiveContent` above). No RevenueCat call, no
+    /// SubscriptionManager read/write — Apple owns everything this button shows.
+    private var manageSubscriptionButton: some View {
+        Button {
+            AppHaptics.selection()
+            isShowingManageSubscriptions = true
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "gearshape.fill")
+                    .font(.subheadline.weight(.semibold))
+                Text("Manage Subscription")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 50)
+            .background(AppTheme.Colors.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens Apple's subscription management screen.")
     }
 
     @ViewBuilder
@@ -1139,7 +1331,7 @@ struct ProUpgradeView: View {
         case .restoring:
             statusRow(icon: "arrow.triangle.2.circlepath", text: "Restoring purchases…", color: AppTheme.Colors.textSecondary, spinning: true)
         case .succeeded:
-            EmptyView() // Purchase success is reflected by the active-Pro row above.
+            EmptyView() // Purchase success is reflected by the hero card above.
         case .restored:
             statusRow(icon: "checkmark.seal.fill", text: "85Blends Pro restored.", color: AppTheme.Colors.primaryGreen)
         case .info(let msg):
