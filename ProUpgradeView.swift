@@ -97,6 +97,15 @@ struct ProUpgradeView: View {
         normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode) == false
     }
 
+    /// True once the user has typed something non-empty that PASSES the shared format check but
+    /// hasn't been backend-confirmed yet (`backendAppliedReferralCode` is what answers "has the
+    /// backend actually confirmed this" — this property never claims that on its own). Drives the
+    /// compact row's "Ready to apply" state so the user gets some acknowledgement their code was
+    /// accepted, without ever implying it's permanently applied before the backend says so.
+    private var hasValidPendingReferralCode: Bool {
+        normalizedReferralCode.isEmpty == false && ReferralPresentation.referralCodeIsValid(normalizedReferralCode)
+    }
+
     /// The backend's own authoritative attribution for this installation, if any — reads ONLY
     /// `referralManager.loadState`, never `referralCodeInput`/`normalizedReferralCode`. Once a
     /// purchase attempt applies a code (e.g. a first attempt the user then cancels), this stays
@@ -203,7 +212,11 @@ struct ProUpgradeView: View {
                 pendingPurchaseResume = nil
             }
         } message: {
-            Text("Apply \(pendingReferralCodeForConfirmation) before subscribing?\n\nReferral codes can't be changed after they're applied.")
+            // 85Blends 2.4.0 real-device confirmation-copy polish — states what will actually
+            // happen (linked to your account) rather than repeating the code back as a question,
+            // while keeping the same permanent-consequence warning understandable without sounding
+            // alarming.
+            Text("\(pendingReferralCodeForConfirmation) will be linked to your account before subscribing.\n\nReferral codes can't be changed after they're applied.")
         }
     }
 
@@ -211,10 +224,16 @@ struct ProUpgradeView: View {
 
     @ViewBuilder
     private var freePaywallContent: some View {
-        VStack(spacing: 8) {
+        // 85Blends 2.4.0 real-device layout follow-up — every point here is vertical budget taken
+        // away from RevenueCatUI's own hosted content below, which owns its own internal scrolling
+        // and cannot be told to compress (see compactReferralRowChrome's header for why the
+        // template's own spacing/sizing isn't something this file can adjust). Kept as tight as a
+        // still-tappable, still-readable row allows: no top padding at all (the row's own 12pt
+        // vertical chrome padding is enough visual separation from the nav bar), tighter VStack
+        // spacing than before.
+        VStack(spacing: 4) {
             compactReferralRow
                 .padding(.horizontal, 16)
-                .padding(.top, 8)
                 .frame(maxWidth: 600)
                 .frame(maxWidth: .infinity, alignment: .center)
 
@@ -453,55 +472,109 @@ struct ProUpgradeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    /// Tapping opens `referralCodeEntrySheet`. Disabled while a referral-first purchase sequence
-    /// is already running, matching the old inline text field's own `.disabled(...)`. Carries the
-    /// invalid-code/apply-failure warnings directly beneath it — exactly like the old inline text
-    /// field always did — since those only ever apply while THIS row (not a loading/applied/error
-    /// row) is what's showing. Suppressed while `referralCodeEntrySheet` itself is open (it shows
-    /// the identical text right next to the field already), so the same warning never appears
-    /// twice at once through the sheet's own `.medium` detent, which leaves this row visible behind
-    /// it.
+    /// Three sub-states, none of them a second referral state machine — all still driven by
+    /// `referralCodeInput`/`hasValidPendingReferralCode`/`isApplyingReferralBeforePurchase`, the
+    /// same state `handlePurchaseInitiated` itself reads:
+    ///   - applying: a plain, non-tappable status row while the referral-first purchase sequence
+    ///     is actually running (see `isApplyingReferralBeforePurchase`'s own header) — one clear,
+    ///     app-owned "what's happening" signal near the row the user just interacted with,
+    ///     alongside whatever RevenueCatUI's own paused purchase button shows.
+    ///   - pending: a validly-formatted, not-yet-backend-confirmed code shows "Ready to apply" —
+    ///     never "applied," since only `backendAppliedReferralCode` (which this never reads) can
+    ///     claim that.
+    ///   - default: the original "Have a referral code? Add Code" affordance.
+    /// Tapping the row (pending or default) opens `referralCodeEntrySheet`. Carries the invalid-
+    /// code/apply-failure warnings directly beneath it — exactly like the old inline text field
+    /// always did — since those only ever apply while this row (not a loading/applied/error row)
+    /// is what's showing. Suppressed while `referralCodeEntrySheet` itself is open (it shows the
+    /// identical text right next to the field already), so the same warning never appears twice at
+    /// once through the sheet's own `.medium` detent, which leaves this row visible behind it.
     @ViewBuilder
     private var compactReferralAddCodeRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                referralCodeInputSnapshotBeforeSheet = referralCodeInput
-                isShowingReferralCodeSheet = true
-            } label: {
+            if isApplyingReferralBeforePurchase {
                 compactReferralRowChrome {
                     HStack(spacing: 10) {
-                        Image(systemName: "gift.fill")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.stationYellow)
-                            .frame(width: 20)
-                            .accessibilityHidden(true)
-
-                        Text("Have a referral code?")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-
+                        ProgressView()
+                            .tint(AppTheme.Colors.textSecondary)
+                            .scaleEffect(0.85)
+                        Text("Applying referral code…")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
                         Spacer(minLength: 8)
-
-                        HStack(spacing: 2) {
-                            Text("Add Code")
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.stationYellow)
                     }
                 }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
+            } else {
+                Button {
+                    referralCodeInputSnapshotBeforeSheet = referralCodeInput
+                    isShowingReferralCodeSheet = true
+                } label: {
+                    compactReferralRowChrome {
+                        if hasValidPendingReferralCode {
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                                    .frame(width: 20)
+                                    .accessibilityHidden(true)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(normalizedReferralCode)
+                                        .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    Text("Ready to apply")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                                }
+
+                                Spacer(minLength: 8)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textMuted)
+                            }
+                        } else {
+                            HStack(spacing: 10) {
+                                Image(systemName: "gift.fill")
+                                    .font(.subheadline)
+                                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                                    .frame(width: 20)
+                                    .accessibilityHidden(true)
+
+                                Text("Have a referral code?")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                                Spacer(minLength: 8)
+
+                                HStack(spacing: 2) {
+                                    Text("Add Code")
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.stationYellow)
+                            }
+                        }
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(
+                                hasValidPendingReferralCode ? AppTheme.Colors.stationYellow.opacity(0.4) : AppTheme.Colors.border,
+                                lineWidth: 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityHint(
+                    hasValidPendingReferralCode
+                        ? "Opens a sheet to review or change the referral code"
+                        : "Opens a sheet to enter an optional referral code before subscribing"
                 )
             }
-            .buttonStyle(.plain)
-            .disabled(isApplyingReferralBeforePurchase)
-            .accessibilityElement(children: .combine)
-            .accessibilityHint("Opens a sheet to enter an optional referral code before subscribing")
 
-            if isShowingReferralCodeSheet == false {
+            if isShowingReferralCodeSheet == false && isApplyingReferralBeforePurchase == false {
                 if hasInvalidNonEmptyReferralCode {
                     Text(ReferralPresentation.userFacingMessage(for: .api(.invalidReferralCode)))
                         .font(.caption)

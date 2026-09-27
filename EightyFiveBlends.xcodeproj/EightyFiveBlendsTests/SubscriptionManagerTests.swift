@@ -667,4 +667,76 @@ struct SubscriptionManagerTests {
         #expect(outcome == .notEntitled)
         #expect(outcome != .proActivated)
     }
+
+    // MARK: N. 85Blends 2.4.0 paywall layout + referral UX polish — real-device follow-up
+    //
+    // This round's diff is scoped entirely to ProUpgradeView.swift: a compact-row tightening pass,
+    // a "Ready to apply"/"Applying referral code…" pending state (hasValidPendingReferralCode, a
+    // pure composition of the already-tested ReferralPresentation.referralCodeIsValid — same
+    // untested-private-property category as hasInvalidNonEmptyReferralCode, per
+    // ReferralPresentationTests.swift's own Phase-20 section on why ProUpgradeView's private
+    // computed properties aren't reachable even via @testable import), and a confirmation-dialog
+    // copy change. None of it touches SubscriptionManager.swift, RevenueCatSubscriptionService.swift,
+    // or ReferralAwareProPurchaseCoordinator.swift. Below is the disposition of each of this
+    // feature's 10 requested test items — most are already covered by existing, unchanged test
+    // suites; the rest are code-inspection facts for the same reasons items 13/20/22 and section
+    // I/J/K/L above already establish (no constructible real RevenueCat SDK types in-process, and
+    // no ViewInspector-style library to reach into ProUpgradeView's private view state).
+    //
+    // 1. "Normal large-iPhone layout uses the intended non-scrolling path" — not unit-testable
+    //    (SwiftUI layout/rendering, plus RevenueCatUI's own internal template rendering, which this
+    //    test target cannot introspect at all). Code-inspection fact: freePaywallContent's own
+    //    vertical footprint above PaywallView is now a single ~44pt compact row with no top padding
+    //    and 4pt VStack spacing (ProUpgradeView.swift), the nav bar uses the compact `.inline`
+    //    title display mode, and the app's tab bar is hidden via `.toolbar(.hidden, for: .tabBar)`
+    //    — every point of app-owned chrome above RevenueCatUI's hosted content has been minimized.
+    //    Whether the REMAINING vertical budget is enough to avoid RevenueCatUI's own internal
+    //    scroll depends on the "85Blends Pro · 2.4.0" paywall template's own component
+    //    spacing/sizing, which is RevenueCat dashboard (Paywall Editor) content this diff cannot
+    //    see, verify, or change from source — see this PR's own report for the full audit.
+    // 2. "RevenueCat close/dismiss control is disabled" — not code-configurable, so nothing to unit
+    //    test: `displayCloseButton` is documented (RevenueCat's own current docs and staff
+    //    community responses) to have NO EFFECT on "Paywalls v2"/Paywall Builder templates — which
+    //    "85Blends Pro · 2.4.0" is — and `PaywallView` shows no close button by default when the
+    //    parameter is omitted entirely, which this file's own `PaywallView(offering:)` call site
+    //    does (confirmed by grep — this parameter appears nowhere in ProUpgradeView.swift). A
+    //    visible close control is therefore template content authored in RevenueCat's Paywall
+    //    Editor, not a boolean this codebase owns.
+    // 3. "Valid pending referral: purchase cannot start before successful referral application" —
+    //    already exhaustively covered by ReferralAwareProPurchaseCoordinatorTests.swift's
+    //    `validCode_confirmedByBackend_appliesThenPurchases` and
+    //    `purchaseNeverStartsBeforeApplyCompletes`; the coordinator is untouched by this diff.
+    // 4. "Referral application failure: RevenueCat purchase is NOT invoked" — already covered by
+    //    `applyThrowsServiceError_neverPurchases_usesSharedErrorCopy` and
+    //    `applyThrowsUnexpectedError_mapsToSafeNetworkFallback` in the same file.
+    // 5. "User cancels referral confirmation: no application, no purchase" — this is
+    //    ProUpgradeView's own confirmation-dialog Cancel button
+    //    (`pendingPurchaseResume?(false); pendingPurchaseResume = nil`), not the coordinator (which
+    //    is only ever invoked after "Apply & Continue", never on Cancel) — a two-line, directly-
+    //    inspectable SwiftUI button action with no branching logic and no pure function to extract,
+    //    same untestable-without-ViewInspector category as item 1.
+    // 6. "Invalid code: appropriate UI error, purchase state remains usable" — the error-copy
+    //    mapping itself is already exhaustively covered by ReferralPresentationTests.swift's
+    //    `errorCopy_*`/`diagnosticCode_*` tests. "Purchase state remains usable" (never stuck) is a
+    //    code-inspection fact: every path through `handlePurchaseInitiated` (ProUpgradeView.swift)
+    //    calls `resume(false)` or proceeds to `runReferralAwarePurchase` — there is no path that
+    //    leaves `resume` uncalled for an invalid-code tap.
+    // 7. "Valid referral + successful application: purchase called exactly once" — already covered
+    //    by `purchase_calledAtMostOnce` (parameterized) in
+    //    ReferralAwareProPurchaseCoordinatorTests.swift.
+    // 8. "Restore Purchases: does not apply pending referral" — code-inspection fact: neither
+    //    `restoreButton`'s action (`SubscriptionManager.restorePurchases()`) nor RevenueCatUI's own
+    //    `.onRestoreStarted`/`.onRestoreCompleted`/`.onRestoreFailure` callbacks in ProUpgradeView.swift
+    //    reference `referralCodeInput`, `ReferralManager`, or `ReferralAwareProPurchaseCoordinator`
+    //    anywhere — confirmed by reading every restore-related call site in that file.
+    // 9. "Monthly/3-month/annual selections still map to correct RevenueCat packages" — already
+    //    exhaustively covered by this file's own `resolvePackage_monthly/threeMonth/annual_
+    //    expectedProduct_isReady` and legacy-quarterly-rejection tests (section D2/D3 area);
+    //    unaffected by this diff, and still independently guarded at the offering level by
+    //    `SubscriptionManager.hasUnexpectedProductInDefaultOffering` (added in the prior
+    //    RevenueCatUI-integration PR, unchanged here).
+    // 10. "Existing pro entitlement behavior remains unchanged" — already covered by section A's
+    //     tests; `SubscriptionManager.isPro`/`RevenueCatSubscriptionService.apply(_:)`/
+    //     `isProEntitlementActive` are not touched anywhere in this diff, which is scoped entirely
+    //     to ProUpgradeView.swift.
 }
