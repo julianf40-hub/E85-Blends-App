@@ -3138,20 +3138,23 @@ struct StationsView: View {
     }
 
     private func directionsMessage(for station: LiveFuelStation) -> String? {
-        let message = MapsRoutingHelper.openDirections(
-            to: MapsRoutingDestination(
-                name: station.name,
-                streetAddress: station.address,
-                city: station.city,
-                state: station.state,
-                zip: station.zip,
-                latitude: station.latitude == 0 ? nil : station.latitude,
-                longitude: station.longitude == 0 ? nil : station.longitude
-            )
+        let destination = MapsRoutingDestination(
+            name: station.name,
+            streetAddress: station.address,
+            city: station.city,
+            state: station.state,
+            zip: station.zip,
+            latitude: station.latitude == 0 ? nil : station.latitude,
+            longitude: station.longitude == 0 ? nil : station.longitude
         )
+        let message = MapsRoutingHelper.openDirections(to: destination)
 
         if message == nil {
             AppHaptics.selection()
+            // Price-prompt data-quality fix — `station` here always came from
+            // NLRStationService.fetchNearbyE85Stations (queried with fuel_type=E85), so this is
+            // affirmative E85 evidence — see recordPendingE85PriceContributionIfEligible's header.
+            MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: destination, evidence: .liveNRELSearch)
         }
 
         return message

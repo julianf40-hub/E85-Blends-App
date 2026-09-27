@@ -31,21 +31,34 @@ final class PendingPriceContributionStore {
         self.defaults = defaults
     }
 
-    /// The single persisted contribution, or `nil` if none exists — or if the persisted payload
-    /// is corrupt/unreadable, which fails closed to `nil` rather than crashing. A decode failure
-    /// is not itself repaired (the corrupt bytes stay on disk) — the next `record(_:)` or
-    /// `clear()` call overwrites/removes them normally.
+    /// The single persisted contribution, or `nil` if none exists — if the persisted payload is
+    /// corrupt/unreadable, which fails closed to `nil` rather than crashing — or if it decodes
+    /// fine but carries no `e85Evidence` (see that field's own doc comment). That last case
+    /// covers any contribution persisted by a build before the E85 price-prompt data-quality fix:
+    /// its JSON simply has no `e85Evidence` key, so it decodes successfully with that field `nil`
+    /// and is discarded here exactly like a corrupt payload, rather than ever being surfaced —
+    /// this is the one place that guarantee is enforced, so every reader (the display banner and
+    /// the "Report Price" pre-fill alike) gets it for free. A decode failure or missing evidence
+    /// is not itself repaired (the stale bytes stay on disk) — the next `record(_:)` or `clear()`
+    /// call overwrites/removes them normally.
     var current: PendingPriceContribution? {
         guard let data = defaults.data(forKey: AppPreferenceKey.pendingPriceContribution) else {
             return nil
         }
-        return try? decoder.decode(PendingPriceContribution.self, from: data)
+        guard let contribution = try? decoder.decode(PendingPriceContribution.self, from: data) else {
+            return nil
+        }
+        guard contribution.e85Evidence != nil else { return nil }
+        return contribution
     }
 
     /// Persists `contribution`, replacing any contribution already pending. A JSON-encoding
     /// failure (not reachable for this all-scalar-field type in practice) fails silently rather
     /// than throwing — recording a contribution is never allowed to interrupt or fail the
-    /// Directions handoff that triggered it (see MapsRoutingHelper.openDirections).
+    /// Directions handoff that triggered it (see MapsRoutingHelper.openDirections). Callers are
+    /// responsible for only ever recording a contribution that already carries approved E85
+    /// evidence — see MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for:evidence:),
+    /// the only production caller of this method.
     func record(_ contribution: PendingPriceContribution) {
         guard let data = try? encoder.encode(contribution) else { return }
         defaults.set(data, forKey: AppPreferenceKey.pendingPriceContribution)

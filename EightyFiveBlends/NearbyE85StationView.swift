@@ -34,9 +34,17 @@ struct NearbyE85StationView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Button("Get directions", systemImage: "arrow.triangle.turn.up.right.diamond") {
-                    directionsError = MapsRoutingHelper.openDirections(to: .init(
+                    let destination = MapsRoutingDestination(
                         name: station.name, streetAddress: station.address, city: "", state: "", zip: "",
-                        latitude: station.latitude, longitude: station.longitude))
+                        latitude: station.latitude, longitude: station.longitude)
+                    directionsError = MapsRoutingHelper.openDirections(to: destination)
+                    if directionsError == nil {
+                        // Price-prompt data-quality fix — `station` here is a NearbyE85Station
+                        // from the widget's own snapshot, built exclusively from a LiveFuelStation
+                        // NREL fuel_type=E85 search result (see
+                        // StationsView.publishNearbyWidgetSnapshot()) — affirmative E85 evidence.
+                        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: destination, evidence: .nearbyE85Widget)
+                    }
                 }
                 if let directionsError { Text(directionsError).foregroundStyle(.secondary) }
             }
