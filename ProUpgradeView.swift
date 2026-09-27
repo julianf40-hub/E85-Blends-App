@@ -39,6 +39,11 @@ enum ProPresentationMode {
 
 struct ProUpgradeView: View {
     @Environment(\.dismiss) private var dismiss
+    /// 85Blends 2.4.0 real-device confirmation-UI polish — governs whether
+    /// `referralConfirmationOverlay`'s entrance/exit animates with a scale component at all (see
+    /// that view's own header); a plain fade is kept either way rather than disabling animation
+    /// entirely, per Phase 7's "respect Reduce Motion where practical."
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let presentationMode: ProPresentationMode
 
@@ -127,12 +132,24 @@ struct ProUpgradeView: View {
     }
 
     var body: some View {
-        Group {
-            if manager.isProUser {
-                proActiveContent
-            } else {
-                freePaywallContent
+        ZStack {
+            Group {
+                if manager.isProUser {
+                    proActiveContent
+                } else {
+                    freePaywallContent
+                }
             }
+            // 85Blends 2.4.0 real-device confirmation-UI polish — while the custom referral
+            // confirmation overlay below is up, the paywall/RevenueCatUI content underneath must
+            // be neither interactable (already true structurally: the overlay's full-bleed scrim
+            // sits on top in z-order and consumes any tap within its bounds) nor VoiceOver-
+            // reachable (NOT true for free — SwiftUI's accessibility tree isn't purely z-order-
+            // based, so this is required explicitly) — otherwise VoiceOver focus could land on
+            // RevenueCatUI's own purchase CTA behind the modal.
+            .accessibilityHidden(isShowingReferralConfirmation)
+
+            referralConfirmationOverlay
         }
         .navigationTitle("85Blends Pro")
         .navigationBarTitleDisplayMode(.inline)
@@ -141,6 +158,13 @@ struct ProUpgradeView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                         .foregroundStyle(AppTheme.Colors.textSecondary)
+                        // The referral confirmation overlay below is app-owned UI, not a true
+                        // system-modal presentation — unlike the `.confirmationDialog` it
+                        // replaced, it cannot itself block a sibling toolbar button. Disabled
+                        // explicitly so Close can never tear down this view (and silently orphan
+                        // RevenueCatUI's paused purchase-flow `resume`) while the user is still
+                        // mid-confirmation.
+                        .disabled(isShowingReferralConfirmation)
                 }
             }
         }
@@ -194,30 +218,151 @@ struct ProUpgradeView: View {
         // touches entitlement or purchasing state.
         .onAppear { manager.setPaywallPresented(true) }
         .onDisappear { manager.setPaywallPresented(false) }
-        .confirmationDialog(
-            "Apply referral code?",
-            isPresented: $isShowingReferralConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Apply & Continue") {
-                let code = pendingReferralCodeForConfirmation
-                let resume = pendingPurchaseResume
-                pendingPurchaseResume = nil
-                Task {
-                    await runReferralAwarePurchase(normalizedReferralCode: code, alreadyAppliedCode: nil, resume: resume ?? { _ in })
-                }
+        // A plain, declarative animation tied to the state value itself — every state change that
+        // shows/hides the overlay (Cancel, Apply & Continue, or a future call site) picks it up
+        // automatically, with no risk of a call site forgetting to wrap its own state change in
+        // `withAnimation`. `nil` under Reduce Motion disables the transition's motion entirely
+        // rather than merely shortening it (Phase 7's "respect Reduce Motion where practical").
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: isShowingReferralConfirmation)
+    }
+
+    // MARK: - Referral confirmation overlay (85Blends 2.4.0 real-device confirmation-UI polish)
+    //
+    // Replaces a previous `.confirmationDialog` (a native action sheet on iPhone) with a custom,
+    // centered, opaque modal card — the system action sheet read as "translucent... visually
+    // disconnected" against RevenueCatUI's own polished hosted paywall on real devices. This is
+    // presentation ONLY: `confirmReferralApplication()`/`cancelReferralConfirmation()` below run
+    // the EXACT SAME two code paths the old dialog's two buttons ran (see the diff this replaced),
+    // just with an explicit `isShowingReferralConfirmation = false` where SwiftUI's own
+    // `confirmationDialog(isPresented:)` used to dismiss itself automatically on any button tap.
+    // Nothing about `handlePurchaseInitiated`/`runReferralAwarePurchase`/
+    // `ReferralAwareProPurchaseCoordinator` changed at all.
+    //
+    // KNOWN RESIDUAL GAP (present before this change too, not introduced by it): a true
+    // system-modal presentation (the `.confirmationDialog` this replaces, and the app's own
+    // `.sheet`-based `referralCodeEntrySheet`, which uses `.interactiveDismissDisabled()`) blocks
+    // ALL other interaction, including a NavigationStack's interactive edge-swipe-back gesture and
+    // an enclosing `.sheet`'s own swipe-to-dismiss — neither of which any plain SwiftUI overlay can
+    // intercept, since both are UIKit-level gestures on a sibling layer this view doesn't own. The
+    // toolbar Close button is explicitly disabled above while this overlay is up (the one such path
+    // this view DOES own), but the edge-swipe-back gesture and an outer call site's own `.sheet`
+    // swipe-to-dismiss are not blocked here, and could tear this view down mid-confirmation,
+    // orphaning RevenueCatUI's paused purchase-flow `resume`. Tracked separately, not fixed here —
+    // fixing it would mean disabling `UINavigationController.interactivePopGestureRecognizer`
+    // and/or adding `.interactiveDismissDisabled()` at every outer call site that presents this
+    // view modally, both bigger changes than this presentation-only polish pass.
+
+    /// Full-bleed dim scrim + centered card, shown only while `isShowingReferralConfirmation` is
+    /// true. Tapping the scrim cancels — the same outcome a swipe-to-dismiss on the old
+    /// `confirmationDialog` already had, so this isn't a new dismissal path, just the same one on
+    /// a different presentation surface.
+    @ViewBuilder
+    private var referralConfirmationOverlay: some View {
+        if isShowingReferralConfirmation {
+            ZStack {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+                    .onTapGesture { cancelReferralConfirmation() }
+
+                referralConfirmationCard
+                    .padding(.horizontal, 24)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
             }
-            Button("Cancel", role: .cancel) {
-                pendingPurchaseResume?(false)
-                pendingPurchaseResume = nil
-            }
-        } message: {
-            // 85Blends 2.4.0 real-device confirmation-copy polish — states what will actually
-            // happen (linked to your account) rather than repeating the code back as a question,
-            // while keeping the same permanent-consequence warning understandable without sounding
-            // alarming.
-            Text("\(pendingReferralCodeForConfirmation) will be linked to your account before subscribing.\n\nReferral codes can't be changed after they're applied.")
+            .accessibilityAddTraits(.isModal)
+            // The system `.confirmationDialog` this replaced supported VoiceOver's standard
+            // two-finger-scrub "escape" gesture to dismiss for free (any true modal presentation
+            // does); a custom overlay does not get this automatically, so it's wired explicitly —
+            // same outcome as Cancel, matching escape's usual "back out, don't confirm" semantics.
+            .accessibilityAction(.escape) { cancelReferralConfirmation() }
         }
+    }
+
+    /// Opaque — never translucent/glass — matching this file's own established card language
+    /// (`AppTheme.Colors.surfaceElevated`, the same surface `compactReferralAddCodeRow`/
+    /// `activeProRow`/etc. already use), so it reads as intentionally part of 85Blends rather than
+    /// a generic system alert. Sized to grow vertically with Dynamic Type rather than clipping —
+    /// no fixed height anywhere in this view.
+    private var referralConfirmationCard: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: "gift.fill")
+                    .font(.title2)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                    .accessibilityHidden(true)
+
+                Text("Apply referral code?")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                (
+                    Text("Use referral code ")
+                        + Text(pendingReferralCodeForConfirmation).fontWeight(.semibold)
+                        + Text(" before subscribing?\n\nThis code will be linked to your account and can't be changed after it's applied.")
+                )
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    confirmReferralApplication()
+                } label: {
+                    Text("Apply & Continue")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(AppTheme.Colors.stationYellow)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    cancelReferralConfirmation()
+                } label: {
+                    Text("Cancel")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 24)
+        .frame(maxWidth: 330)
+        .background(AppTheme.Colors.surfaceElevated)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Exactly the old `confirmationDialog`'s "Apply & Continue" button body, plus the explicit
+    /// dismissal that modifier used to handle on its own. `runReferralAwarePurchase` (unchanged) is
+    /// what actually runs the coordinator, checks the backend result, and calls `resume` — this
+    /// function only ever calls it once, from one call site.
+    private func confirmReferralApplication() {
+        let code = pendingReferralCodeForConfirmation
+        let resume = pendingPurchaseResume
+        pendingPurchaseResume = nil
+        isShowingReferralConfirmation = false
+        Task {
+            await runReferralAwarePurchase(normalizedReferralCode: code, alreadyAppliedCode: nil, resume: resume ?? { _ in })
+        }
+    }
+
+    /// Exactly the old `confirmationDialog`'s "Cancel" button body, plus the explicit dismissal —
+    /// resumes RevenueCatUI's paused purchase flow with `false` (never starts StoreKit) and never
+    /// touches referral state at all.
+    private func cancelReferralConfirmation() {
+        pendingPurchaseResume?(false)
+        pendingPurchaseResume = nil
+        isShowingReferralConfirmation = false
     }
 
     // MARK: - Free user: referral entry + RevenueCatUI hosted paywall
