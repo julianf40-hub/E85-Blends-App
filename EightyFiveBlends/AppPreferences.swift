@@ -67,9 +67,11 @@ enum AppPreferenceKey {
     static let reviewLastRequestAppVersion = "reviewLastRequestAppVersion"
     static let reviewEligibilityReachedAt = "reviewEligibilityReachedAt"
     // 85Blends 2.4.0 post-navigation price-contribution prompt — the single persisted, JSON-
-    // encoded PendingPriceContribution (at most one at a time; a new Directions success always
-    // replaces whatever was already pending). Local-only, ephemeral (see
-    // PendingPriceContributionEligibility.maximumAge) — never synced. See
+    // encoded PendingPriceContribution (at most one at a time; a new eligible recording always
+    // replaces whatever was already pending). Only recorded via
+    // MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for:evidence:) — a generic
+    // Directions success alone is not enough (see that function's own header). Local-only,
+    // ephemeral (see PendingPriceContributionEligibility.maximumAge) — never synced. See
     // PendingPriceContributionStore.swift.
     static let pendingPriceContribution = "pendingPriceContribution"
 }
@@ -297,9 +299,7 @@ enum MapsRoutingHelper {
             return MapsRoutingError.insufficientLocationInformation.localizedDescription
         }
 
-        let preferredMapsApp = MapsAppOption(
-            rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.preferredMapsApp) ?? ""
-        ) ?? .appleMaps
+        let preferredMapsApp = resolvedPreferredMapsApp()
 
         switch preferredMapsApp {
         case .appleMaps:
@@ -321,28 +321,76 @@ enum MapsRoutingHelper {
         // reached on the early-return error path above.
         ReviewRequestManager.shared.recordStationDirection()
 
-        // 85Blends 2.4.0 post-navigation price-contribution prompt — a SIBLING action alongside
-        // the review-request bookkeeping above, never a replacement or a wrapper around it: it
-        // runs unconditionally right after that call, at the exact same successful-handoff
-        // boundary, and can never prevent, delay, or otherwise affect the Maps/Waze/Google Maps
-        // open call itself (which already happened in the switch above by the time either line
-        // here runs). See recordPendingPriceContributionIfReportable's own doc comment for the
-        // eligibility gate and failure handling.
-        recordPendingPriceContributionIfReportable(for: destination, mapsProvider: preferredMapsApp)
+        // Price-prompt data-quality fix — this generic success path deliberately does NOT record
+        // a PendingPriceContribution anymore. openDirections(to:) has no way to know whether
+        // `destination` actually sells E85 (it's reachable from a saved/manual FuelStation with
+        // no fuel-type field at all, not only from a verified NREL/widget source) — see
+        // recordPendingE85PriceContributionIfEligible(for:evidence:)'s own header for the small
+        // number of call sites with affirmative evidence, which call that function explicitly,
+        // immediately after a nil (success) result from this one.
 
         return nil
     }
 
-    /// Only a station that already satisfies `CommunityPriceEligibility.canReport` — the exact
-    /// same rule that gates the actual community-report submission this prompt eventually leads
-    /// to — becomes a pending contribution, so returning from Maps can never offer a report the
-    /// existing pipeline would then refuse. A persistence failure inside
-    /// `PendingPriceContributionStore.record(_:)` fails silently (see that method) and can never
-    /// surface here or affect navigation, which has already completed by the time this runs.
-    private static func recordPendingPriceContributionIfReportable(
+    /// The user's current Preferred Maps App setting, resolved exactly as it always was inside
+    /// openDirections(to:) — extracted so recordPendingE85PriceContributionIfEligible(for:evidence:)
+    /// (called separately, after openDirections(to:) has already returned) reuses the identical
+    /// fallback rule rather than a second, potentially-drifting copy of it.
+    private static func resolvedPreferredMapsApp() -> MapsAppOption {
+        MapsAppOption(
+            rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.preferredMapsApp) ?? ""
+        ) ?? .appleMaps
+    }
+
+    /// The ONLY production entry point that may create a `PendingPriceContribution`. Deliberately
+    /// separate from `openDirections(to:)` itself, which any generic "get directions to this
+    /// station" call site may use — including ones with no E85 provenance at all, since
+    /// `MapsRoutingDestination` is just name/address/coordinates and carries no fuel-type
+    /// information (see that struct's own header). A caller may pass one of the two
+    /// `PendingPriceContributionE85Evidence` cases ONLY when it has affirmative evidence the
+    /// destination sells E85:
+    ///
+    /// - `.liveNRELSearch` — `destination` was built from a `LiveFuelStation` returned by
+    ///   `NLRStationService.fetchNearbyE85Stations`, which queries NREL's alt-fuel-station API
+    ///   with `fuel_type=E85` (see NRELStationService.swift) — StationsView's live/nearby search
+    ///   "Get Directions" button.
+    /// - `.nearbyE85Widget` — `destination` was built from a `NearbyE85Station` in the Nearby E85
+    ///   widget's own cached snapshot, which `StationsView.publishNearbyWidgetSnapshot()` builds
+    ///   exclusively from that same `fetchNearbyE85Stations` result (see that function) — never
+    ///   from a saved/manual `FuelStation` — the widget deep-link handoff and the widget's own
+    ///   station-detail "Get directions" button.
+    ///
+    /// A saved/manual `FuelStation`'s own "Get Directions" button (StationsView) has no such
+    /// evidence available — `FuelStation` carries no fuel-type field at all and can be created
+    /// from a bare typed name (Fuel Log, manual Add Station) with no E85 verification whatsoever
+    /// — so that call site must never call this function; navigation still works normally there,
+    /// it simply never arms this prompt.
+    ///
+    /// Callers are expected to call this only after `openDirections(to:)` itself returned `nil`
+    /// (success) for the SAME `destination` — this function does not re-attempt navigation and
+    /// does not gate on it itself, so calling it after a failed handoff would incorrectly record a
+    /// contribution for a station the user was never actually routed to.
+    ///
+    /// Reuses the exact same `CommunityPriceEligibility.canReport` / `CommunityStationKey.
+    /// canonicalKey` / `PendingPriceContributionStore` / preferred-maps-app resolution / `.now`
+    /// timestamp behavior `openDirections(to:)` used to perform internally — this is a relocation
+    /// of that existing logic behind an explicit, E85-gated call site, not a reimplementation. A
+    /// station that already satisfies `CommunityPriceEligibility.canReport` — the exact same rule
+    /// that gates the actual community-report submission this prompt eventually leads to — becomes
+    /// a pending contribution, so returning from Maps can never offer a report the existing
+    /// pipeline would then refuse. A persistence failure inside `PendingPriceContributionStore.
+    /// record(_:)` fails silently (see that method) and can never surface here.
+    ///
+    /// - Parameter store: Injectable for tests (mirrors `openDirections(to:)`'s own I/O seams) —
+    ///   production always uses `.shared`.
+    /// - Returns: `true` if a contribution was actually recorded, `false` if `destination` didn't
+    ///   carry enough identifying data to satisfy `CommunityPriceEligibility.canReport`.
+    @discardableResult
+    static func recordPendingE85PriceContributionIfEligible(
         for destination: MapsRoutingDestination,
-        mapsProvider: MapsAppOption
-    ) {
+        evidence: PendingPriceContributionE85Evidence,
+        store: PendingPriceContributionStore = .shared
+    ) -> Bool {
         guard CommunityPriceEligibility.canReport(
             name: destination.name,
             streetAddress: destination.streetAddress,
@@ -352,7 +400,7 @@ enum MapsRoutingHelper {
             latitude: destination.latitude,
             longitude: destination.longitude
         ) else {
-            return
+            return false
         }
 
         guard let stationKey = CommunityStationKey.canonicalKey(
@@ -364,10 +412,10 @@ enum MapsRoutingHelper {
             latitude: destination.latitude,
             longitude: destination.longitude
         ) else {
-            return
+            return false
         }
 
-        PendingPriceContributionStore.shared.record(
+        store.record(
             PendingPriceContribution(
                 stationKey: stationKey,
                 stationName: destination.name,
@@ -378,9 +426,11 @@ enum MapsRoutingHelper {
                 latitude: destination.latitude,
                 longitude: destination.longitude,
                 directionsOpenedAt: .now,
-                mapsProvider: mapsProvider.rawValue
+                mapsProvider: resolvedPreferredMapsApp().rawValue,
+                e85Evidence: evidence
             )
         )
+        return true
     }
 
     private static func openAppleMaps(to destination: MapsRoutingDestination, open: (URL) -> Void, openMapItem: (MKMapItem) -> Void) {

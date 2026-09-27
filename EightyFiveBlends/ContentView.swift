@@ -340,7 +340,15 @@ struct ContentView: View {
         case .openDirections(let mapsDestination):
             // One action, start to finish: no detail screen, no intermediate 85Blends UI beyond
             // the Stations tab already selected underneath.
-            MapsRoutingHelper.openDirections(to: mapsDestination)
+            let message = MapsRoutingHelper.openDirections(to: mapsDestination)
+            if message == nil {
+                // Price-prompt data-quality fix — mapsDestination here always originates from a
+                // NearbyE85Station in the widget's own cached snapshot (see
+                // NearbyE85WidgetRouting.resolve), which StationsView.publishNearbyWidgetSnapshot()
+                // builds exclusively from a LiveFuelStation NREL fuel_type=E85 search result —
+                // never from a saved/manual FuelStation — so this is affirmative E85 evidence.
+                MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: mapsDestination, evidence: .nearbyE85Widget)
+            }
         case .showStationDetail(let station, let snapshot):
             widgetSnapshot = snapshot
             widgetStation = station

@@ -25,7 +25,12 @@ struct PendingPriceContributionStoreTests {
     private func makeContribution(
         stationKey: String = "shell|1 test st|testville|co|80000",
         stationName: String = "Shell",
-        directionsOpenedAt: Date = Date(timeIntervalSince1970: 1_800_000_000)
+        directionsOpenedAt: Date = Date(timeIntervalSince1970: 1_800_000_000),
+        // Price-prompt data-quality fix — defaults to a verified evidence case so every
+        // pre-existing test below (which never mentions evidence) keeps exercising genuine store
+        // mechanics unaffected by the new "no evidence -> discarded" gate; see the dedicated
+        // "E85 provenance gating" tests near the bottom of this file for that gate itself.
+        e85Evidence: PendingPriceContributionE85Evidence? = .liveNRELSearch
     ) -> PendingPriceContribution {
         PendingPriceContribution(
             stationKey: stationKey,
@@ -37,7 +42,8 @@ struct PendingPriceContributionStoreTests {
             latitude: 39.0,
             longitude: -104.0,
             directionsOpenedAt: directionsOpenedAt,
-            mapsProvider: "Apple Maps"
+            mapsProvider: "Apple Maps",
+            e85Evidence: e85Evidence
         )
     }
 
@@ -136,12 +142,14 @@ struct PendingPriceContributionStoreTests {
             latitude: 33.4622,
             longitude: -112.1866,
             directionsOpenedAt: Date(timeIntervalSince1970: 1_800_500_000),
-            mapsProvider: "Waze"
+            mapsProvider: "Waze",
+            e85Evidence: .nearbyE85Widget
         )
 
         store.record(contribution)
         let restored = store.current
 
+        #expect(restored?.e85Evidence == contribution.e85Evidence)
         #expect(restored?.stationKey == contribution.stationKey)
         #expect(restored?.stationName == contribution.stationName)
         #expect(restored?.streetAddress == contribution.streetAddress)
@@ -216,5 +224,79 @@ struct PendingPriceContributionStoreTests {
         // the store, untouched, since no caller would have had a reason to clear it.
         #expect(store.current == contribution)
         #expect(defaults.data(forKey: AppPreferenceKey.pendingPriceContribution) != nil)
+    }
+
+    // MARK: - E85 provenance gating (price-prompt data-quality fix)
+    //
+    // A PendingPriceContribution may only ever be shown when it carries affirmative E85 evidence
+    // (see PendingPriceContribution.e85Evidence's own doc comment and
+    // MapsRoutingHelper.recordPendingE85PriceContributionIfEligible). `current` is the one choke
+    // point that enforces this for every reader (the display banner and the "Report Price"
+    // pre-fill alike).
+
+    @Test("A contribution recorded with no E85 evidence is discarded — current treats it exactly like corrupt data")
+    func current_noEvidence_isDiscarded() {
+        let store = makeStore()
+        store.record(makeContribution(e85Evidence: nil))
+
+        #expect(store.current == nil)
+    }
+
+    @Test("A contribution recorded with approved E85 evidence is shown normally")
+    func current_withEvidence_isShown() {
+        let store = makeStore()
+        store.record(makeContribution(e85Evidence: .nearbyE85Widget))
+
+        #expect(store.current?.e85Evidence == .nearbyE85Widget)
+    }
+
+    @Test("A genuinely pre-fix persisted blob — no e85Evidence key at all in its JSON, not merely null — is discarded, never shown")
+    func current_legacyBlobMissingEvidenceKey_isDiscarded() {
+        let suiteName = "pending-price-contribution-store-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        // Hand-authored to mirror exactly the JSON shape a build before this fix would have
+        // persisted for a real report like this one — every field this old shape ever had,
+        // and nothing more; "e85Evidence" is not present at all.
+        let legacyJSON = """
+        {
+            "stationKey": "circlek|123 main st|phoenix|az|85001",
+            "stationName": "Circle K",
+            "streetAddress": "123 Main St",
+            "city": "Phoenix",
+            "state": "AZ",
+            "zip": "85001",
+            "latitude": 33.45,
+            "longitude": -112.07,
+            "directionsOpenedAt": 0.0,
+            "mapsProvider": "Apple Maps"
+        }
+        """
+        defaults.set(Data(legacyJSON.utf8), forKey: AppPreferenceKey.pendingPriceContribution)
+        let store = PendingPriceContributionStore(defaults: defaults)
+
+        #expect(store.current == nil)
+    }
+
+    @Test("A store remains usable after discarding a legacy no-evidence blob — a later, verified recording is shown normally")
+    func store_remainsUsableAfterDiscardingLegacyBlob() {
+        let suiteName = "pending-price-contribution-store-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let legacyJSON = """
+        {
+            "stationKey": "circlek|123 main st|phoenix|az|85001",
+            "stationName": "Circle K",
+            "directionsOpenedAt": 0.0
+        }
+        """
+        defaults.set(Data(legacyJSON.utf8), forKey: AppPreferenceKey.pendingPriceContribution)
+        let store = PendingPriceContributionStore(defaults: defaults)
+        #expect(store.current == nil)
+
+        let contribution = makeContribution()
+        store.record(contribution)
+
+        #expect(store.current == contribution)
     }
 }

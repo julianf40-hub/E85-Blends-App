@@ -561,49 +561,28 @@ struct MapsRoutingHelperTests {
         }
     }
 
-    // MARK: - 85Blends 2.4.0 post-navigation price-contribution prompt
+    // MARK: - Price-prompt data-quality fix — generic openDirections no longer records anything
     //
-    // Additive to the review-request tests above — MapsRoutingHelper.openDirections also
-    // records a PendingPriceContribution as a SIBLING action, never a replacement or wrapper,
-    // alongside ReviewRequestManager.shared.recordStationDirection(). Like those tests, this
-    // hits the real PendingPriceContributionStore.shared singleton (backed by
-    // UserDefaults.standard) — there is no injectable seam for this either, matching the same
-    // "do not weaken production architecture merely to satisfy a test" tradeoff already
-    // accepted above — so each test clears the store first and asserts the exact resulting
-    // state directly, never a delta, since at most one contribution is ever pending at a time.
+    // openDirections(to:) itself must never create a PendingPriceContribution, regardless of
+    // destination shape or outcome — that responsibility moved to the explicit, E85-gated
+    // recordPendingE85PriceContributionIfEligible(for:evidence:) below. Like the review-request
+    // tests above, this hits the real PendingPriceContributionStore.shared singleton (backed by
+    // UserDefaults.standard) — there is no injectable seam on openDirections(to:) itself — so
+    // each test clears the store first and asserts the exact resulting state directly.
 
-    @Test func successfulHandoffToReportableStationRecordsExactlyOnePendingContribution() {
-        withPreferredMapsApp(.appleMaps) {
-            PendingPriceContributionStore.shared.clear()
-            _ = MapsRoutingHelper.openDirections(
-                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
-            let pending = PendingPriceContributionStore.shared.current
-            #expect(pending != nil)
-            #expect(pending?.stationName == destination.name)
-            #expect(pending?.mapsProvider == MapsAppOption.appleMaps.rawValue)
-            PendingPriceContributionStore.shared.clear()
-        }
-    }
-
-    @Test func successfulHandoffToUnreportableStationDoesNotRecordAPendingContribution() {
-        // Enough to open Apple Maps (a bare name resolves a non-nil addressQuery) but not
-        // enough to satisfy CommunityPriceEligibility.canReport (no coordinate, no sufficient
-        // address) — exactly the "insufficient for reporting" case
-        // recordPendingPriceContributionIfReportable must refuse, even on an otherwise
-        // successful handoff.
-        let unreportable = MapsRoutingDestination(
-            name: "Unknown Station", streetAddress: "", city: "", state: "", zip: "",
-            latitude: nil, longitude: nil)
+    @Test func openDirectionsAloneNeverRecordsAPendingContributionOnSuccess() {
+        // `destination` has a full, reportable name/address/coordinate — exactly the shape that
+        // DID create a contribution before this fix. It must not anymore.
         withPreferredMapsApp(.appleMaps) {
             PendingPriceContributionStore.shared.clear()
             let result = MapsRoutingHelper.openDirections(
-                to: unreportable, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
             #expect(result == nil) // confirms this genuinely reached the success path
             #expect(PendingPriceContributionStore.shared.current == nil)
         }
     }
 
-    @Test func failedHandoffDoesNotRecordAPendingContribution() {
+    @Test func openDirectionsAloneNeverRecordsAPendingContributionOnFailure() {
         let empty = MapsRoutingDestination(name: "", streetAddress: "", city: "", state: "", zip: "", latitude: nil, longitude: nil)
         PendingPriceContributionStore.shared.clear()
         let result = MapsRoutingHelper.openDirections(
@@ -612,41 +591,120 @@ struct MapsRoutingHelperTests {
         #expect(PendingPriceContributionStore.shared.current == nil)
     }
 
-    @Test func aNewSuccessfulHandoffReplacesAnyPriorPendingContribution() {
-        let firstDestination = MapsRoutingDestination(
-            name: "First Station", streetAddress: "1 First St", city: "Phoenix", state: "AZ", zip: "85001",
-            latitude: 33.1, longitude: -112.1)
-        let secondDestination = MapsRoutingDestination(
-            name: "Second Station", streetAddress: "2 Second St", city: "Phoenix", state: "AZ", zip: "85002",
-            latitude: 33.2, longitude: -112.2)
-        withPreferredMapsApp(.appleMaps) {
-            PendingPriceContributionStore.shared.clear()
-            _ = MapsRoutingHelper.openDirections(
-                to: firstDestination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
-            #expect(PendingPriceContributionStore.shared.current?.stationName == "First Station")
-
-            _ = MapsRoutingHelper.openDirections(
-                to: secondDestination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
-            #expect(PendingPriceContributionStore.shared.current?.stationName == "Second Station")
-            PendingPriceContributionStore.shared.clear()
-        }
-    }
-
-    @Test func successfulHandoffRecordsReviewCountAndPendingContributionTogetherFromOneCall() {
-        // Non-regression: the new pending-contribution recording is a sibling, never a
-        // replacement — successfulHandoffIncrementsReviewStationDirectionsCountExactlyOnce
-        // above already proves the review counter alone; this proves both side effects happen
-        // together from the exact same single successful call, neither one suppressing or
-        // duplicating the other.
+    @Test func successfulHandoffStillIncrementsReviewCountWithNoContributionRecorded() {
+        // Non-regression: removing the automatic pending-contribution recording must never
+        // affect the unrelated review-request bookkeeping that shares this same success path —
+        // successfulHandoffIncrementsReviewStationDirectionsCountExactlyOnce above already
+        // proves the counter alone; this additionally confirms no contribution rides along.
         withPreferredMapsApp(.appleMaps) {
             PendingPriceContributionStore.shared.clear()
             let before = ReviewRequestManager.shared.stationDirectionsCount
             _ = MapsRoutingHelper.openDirections(
                 to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
             #expect(ReviewRequestManager.shared.stationDirectionsCount == before + 1)
-            #expect(PendingPriceContributionStore.shared.current != nil)
-            PendingPriceContributionStore.shared.clear()
+            #expect(PendingPriceContributionStore.shared.current == nil)
         }
+    }
+
+    // MARK: - recordPendingE85PriceContributionIfEligible(for:evidence:) — the new, explicit,
+    // E85-gated recorder. Unlike openDirections(to:)'s ReviewRequestManager.shared coupling, this
+    // function has its own injectable `store:` parameter (mirroring openDirections(to:)'s own
+    // canOpenURL/open/openMapItem seams), so these tests never touch UserDefaults.standard and
+    // never need `.serialized`/manual clearing.
+
+    private func makeIsolatedStore() -> PendingPriceContributionStore {
+        let suiteName = "maps-routing-helper-e85-evidence-test-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return PendingPriceContributionStore(defaults: defaults)
+    }
+
+    @Test func liveNRELEvidenceRecordsAPendingContributionCarryingThatEvidence() {
+        let store = makeIsolatedStore()
+
+        let recorded = MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: destination, evidence: .liveNRELSearch, store: store)
+
+        #expect(recorded == true)
+        #expect(store.current?.stationName == destination.name)
+        #expect(store.current?.e85Evidence == .liveNRELSearch)
+    }
+
+    @Test func nearbyE85WidgetEvidenceRecordsAPendingContributionCarryingThatEvidence() {
+        let store = makeIsolatedStore()
+
+        let recorded = MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: destination, evidence: .nearbyE85Widget, store: store)
+
+        #expect(recorded == true)
+        #expect(store.current?.stationName == destination.name)
+        #expect(store.current?.e85Evidence == .nearbyE85Widget)
+    }
+
+    @Test func unreportableDestinationRecordsNothingRegardlessOfEvidence() {
+        // Same "insufficient for reporting" shape as before this fix (no coordinate, no
+        // sufficient address) — CommunityPriceEligibility.canReport still refuses it even with
+        // affirmative E85 evidence attached.
+        let unreportable = MapsRoutingDestination(
+            name: "Unknown Station", streetAddress: "", city: "", state: "", zip: "",
+            latitude: nil, longitude: nil)
+        let store = makeIsolatedStore()
+
+        let recorded = MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: unreportable, evidence: .liveNRELSearch, store: store)
+
+        #expect(recorded == false)
+        #expect(store.current == nil)
+    }
+
+    @Test func aSecondEligibleCallReplacesAnyPriorPendingContribution() {
+        let firstDestination = MapsRoutingDestination(
+            name: "First Station", streetAddress: "1 First St", city: "Phoenix", state: "AZ", zip: "85001",
+            latitude: 33.1, longitude: -112.1)
+        let secondDestination = MapsRoutingDestination(
+            name: "Second Station", streetAddress: "2 Second St", city: "Phoenix", state: "AZ", zip: "85002",
+            latitude: 33.2, longitude: -112.2)
+        let store = makeIsolatedStore()
+
+        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: firstDestination, evidence: .liveNRELSearch, store: store)
+        #expect(store.current?.stationName == "First Station")
+
+        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: secondDestination, evidence: .nearbyE85Widget, store: store)
+        #expect(store.current?.stationName == "Second Station")
+        #expect(store.current?.e85Evidence == .nearbyE85Widget)
+    }
+
+    @Test func oneNavigationActionAtAnE85VerifiedCallSiteRecordsExactlyOneContribution() {
+        // Simulates exactly what an E85-verified call site does: one openDirections(to:) call,
+        // followed by one recordPendingE85PriceContributionIfEligible call guarded on success —
+        // never a double-recording for one user action.
+        withPreferredMapsApp(.appleMaps) {
+            let store = makeIsolatedStore()
+            let message = MapsRoutingHelper.openDirections(
+                to: destination, canOpenURL: { _ in true }, open: { _ in }, openMapItem: { _ in })
+            #expect(message == nil)
+            if message == nil {
+                MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: destination, evidence: .liveNRELSearch, store: store)
+            }
+
+            #expect(store.current?.stationName == destination.name)
+            #expect(store.current?.e85Evidence == .liveNRELSearch)
+        }
+    }
+
+    @Test func aFailedHandoffMustNotBeFollowedByRecordingEvenIfCallerMisusesIt() {
+        // recordPendingE85PriceContributionIfEligible does not itself re-check navigation
+        // success — callers are documented to call it only after a nil (success) result. This
+        // locks in that the ONLY thing keeping a failed handoff from recording is the call-site
+        // pattern (guarding on `message == nil`), by confirming the real production destination
+        // shape used at the failure call site above is also unreportable on its own merits.
+        let empty = MapsRoutingDestination(name: "", streetAddress: "", city: "", state: "", zip: "", latitude: nil, longitude: nil)
+        let store = makeIsolatedStore()
+
+        let recorded = MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: empty, evidence: .liveNRELSearch, store: store)
+
+        #expect(recorded == false)
+        #expect(store.current == nil)
     }
 }
 }
