@@ -5041,28 +5041,41 @@ private struct StationPriceUpdateSheet: View {
                         // Report Price" button already called — the local-save step inside that
                         // function has always run unconditionally before the community-submission
                         // Task begins, so nothing about persistence, validation, eligibility, or
-                        // analytics changes here. When the station isn't eligible for community
-                        // reporting, savePriceUpdate's own existing fallback (local save +
-                        // "doesn't have enough location information" info message, no network
-                        // attempt) already handles it — the same fallback compactReportContent's
-                        // single "Submit Price" button has always relied on, never a new path.
-                        Button(action: saveAndReportAction) {
-                            HStack(spacing: 8) {
-                                if isSubmittingCommunityPrice {
-                                    ProgressView()
-                                        .tint(AppTheme.Colors.textPrimary)
+                        // analytics changes here.
+                        //
+                        // Gated on context.canReportToCommunity (unchanged eligibility rule) so an
+                        // ineligible station never shows a "Report E85 Price" button that can only
+                        // ever silently fall back to a local-only save — that would be exactly the
+                        // misleading "says Report, does nothing communal" UX this button exists to
+                        // avoid. Ineligible stations get the same explanatory text this section
+                        // showed before this feature, and no price button at all — never a
+                        // reintroduced "Save Locally" fallback, per this feature's whole point.
+                        if context.canReportToCommunity {
+                            Button(action: saveAndReportAction) {
+                                HStack(spacing: 8) {
+                                    if isSubmittingCommunityPrice {
+                                        ProgressView()
+                                            .tint(AppTheme.Colors.textPrimary)
+                                    }
+                                    Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Report E85 Price")
                                 }
-                                Text(isSubmittingCommunityPrice ? "Reporting Price…" : "Report E85 Price")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(AppTheme.Colors.primaryGreen)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(AppTheme.Colors.primaryGreen)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .buttonStyle(.plain)
+                            .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
+                        } else {
+                            Text("This station doesn't have enough location information for community reporting yet.")
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
                     }
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
