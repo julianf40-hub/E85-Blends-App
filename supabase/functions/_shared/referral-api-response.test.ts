@@ -12,6 +12,7 @@ test("buildReferralStatusResponse: no attribution -> can_apply_referral_code tru
     pendingReferralCount: 0,
     rewards: [],
     ownAttribution: null,
+    issuedRewardCode: null,
   });
   assert.equal(response.can_apply_referral_code, true);
   assert.equal(response.referred_by_code, null);
@@ -27,6 +28,7 @@ test("buildReferralStatusResponse: existing attribution -> can_apply_referral_co
       pendingReferralCount: 0,
       rewards: [],
       ownAttribution: { referralCodeUsed: "WXYZ6789", status },
+      issuedRewardCode: null,
     });
     assert.equal(response.can_apply_referral_code, false, `status=${status}`);
     assert.equal(response.referred_by_code, "WXYZ6789", `status=${status}`);
@@ -46,6 +48,7 @@ test("buildReferralStatusResponse: earned_months_available counts only 'earned' 
       { milestoneNumber: 4, status: "revoked" },
     ],
     ownAttribution: null,
+    issuedRewardCode: null,
   });
   assert.equal(response.earned_months_available, 2);
   assert.equal(response.fulfilled_months, 1);
@@ -58,6 +61,7 @@ test("buildReferralStatusResponse: never includes any field beyond the fixed cli
     pendingReferralCount: 1,
     rewards: [],
     ownAttribution: null,
+    issuedRewardCode: null,
   });
   const allowedKeys = new Set([
     "referral_code",
@@ -71,6 +75,11 @@ test("buildReferralStatusResponse: never includes any field beyond the fixed cli
     "can_apply_referral_code",
     "referred_by_code",
     "referred_status",
+    // 85Blends 2.4.0 Referral Reward Redemption.
+    "issued_reward_product_id",
+    "issued_reward_offer_reference_name",
+    "issued_reward_code",
+    "issued_reward_expires_at",
   ]);
   for (const key of Object.keys(response)) {
     assert.equal(allowedKeys.has(key), true, `unexpected key in status response: ${key}`);
@@ -85,8 +94,65 @@ test("buildReferralStatusResponse: propagates next-milestone math from computeNe
     pendingReferralCount: 0,
     rewards: [{ milestoneNumber: 1, status: "fulfilled" }],
     ownAttribution: null,
+    issuedRewardCode: null,
   });
   assert.equal(response.next_milestone_number, 2);
   assert.equal(response.next_reward_at, 10);
   assert.equal(response.referrals_needed, 6);
+});
+
+// MARK: 85Blends 2.4.0 Referral Reward Redemption — issued reward code fields
+
+test("buildReferralStatusResponse: no issued code -> all four issued_reward_* fields are null", () => {
+  const response = buildReferralStatusResponse({
+    referralCode: "ABCD2345",
+    qualifiedReferralCount: 5,
+    pendingReferralCount: 0,
+    rewards: [{ milestoneNumber: 1, status: "earned" }],
+    ownAttribution: null,
+    issuedRewardCode: null,
+  });
+  assert.equal(response.issued_reward_product_id, null);
+  assert.equal(response.issued_reward_offer_reference_name, null);
+  assert.equal(response.issued_reward_code, null);
+  assert.equal(response.issued_reward_expires_at, null);
+});
+
+test("buildReferralStatusResponse: an issued code populates all four fields, expiration as an ISO 8601 string", () => {
+  const expiresAt = new Date("2026-12-31T00:00:00.000Z");
+  const response = buildReferralStatusResponse({
+    referralCode: "ABCD2345",
+    qualifiedReferralCount: 5,
+    pendingReferralCount: 0,
+    rewards: [{ milestoneNumber: 1, status: "earned" }],
+    ownAttribution: null,
+    issuedRewardCode: {
+      productId: "com.85blends.subscription.monthly",
+      offerReferenceName: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+      appleCode: "ABCD1234EFGH",
+      appleExpiresAt: expiresAt,
+    },
+  });
+  assert.equal(response.issued_reward_product_id, "com.85blends.subscription.monthly");
+  assert.equal(response.issued_reward_offer_reference_name, "REFERRAL_REWARD_MONTHLY_1M_FREE");
+  assert.equal(response.issued_reward_code, "ABCD1234EFGH");
+  assert.equal(response.issued_reward_expires_at, "2026-12-31T00:00:00.000Z");
+});
+
+test("buildReferralStatusResponse: an issued code with no expiration reports issued_reward_expires_at as null, other three fields still populated", () => {
+  const response = buildReferralStatusResponse({
+    referralCode: "ABCD2345",
+    qualifiedReferralCount: 5,
+    pendingReferralCount: 0,
+    rewards: [{ milestoneNumber: 1, status: "earned" }],
+    ownAttribution: null,
+    issuedRewardCode: {
+      productId: "com.85blends.subscription.annual",
+      offerReferenceName: "REFERRAL_REWARD_ANNUAL_1M_FREE",
+      appleCode: "WXYZ9876",
+      appleExpiresAt: null,
+    },
+  });
+  assert.equal(response.issued_reward_code, "WXYZ9876");
+  assert.equal(response.issued_reward_expires_at, null);
 });

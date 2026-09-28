@@ -90,11 +90,17 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
     var bootstrapResult: Result<ReferralBootstrapResponse, Error> = .failure(ReferralServiceError.notConfigured)
     var statusResult: Result<ReferralStatus, Error> = .failure(ReferralServiceError.notConfigured)
     var applyCodeResult: Result<ReferralApplyCodeResponse, Error> = .failure(ReferralServiceError.notConfigured)
+    /// 85Blends 2.4.0 Referral Reward Redemption.
+    var claimRewardResult: Result<ReferralClaimRewardResponse, Error> = .failure(ReferralServiceError.notConfigured)
 
     private(set) var bootstrapCallCount = 0
     private(set) var statusCallCount = 0
     private(set) var applyCodeCallCount = 0
+    private(set) var claimRewardCallCount = 0
     private(set) var lastAppliedCode: String?
+    /// The requestedProductID actually received by the most recent `claimReward(...)` call — check
+    /// `claimRewardCallCount` first to distinguish "never called" from "called with nil".
+    private(set) var lastClaimRewardRequestedProductID: String?
     /// The App User ID actually received by the most recent `bootstrap(...)` call — lets tests
     /// prove the value ReferralManager forwards is exactly what its injected identityProvider
     /// reported (see `bootstrap_usesIdentityProviderValueExactly`), not some other source.
@@ -109,6 +115,8 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
     var statusGate: TestGate?
     /// When set, `applyCode(_:credential:)` suspends here before returning.
     var applyCodeGate: TestGate?
+    /// When set, `claimReward(requestedProductID:credential:)` suspends here before returning.
+    var claimRewardGate: TestGate?
 
     func bootstrap(
         credential: ReferralInstallationCredential,
@@ -142,6 +150,18 @@ final class FakeReferralAPIService: ReferralAPIServicing, @unchecked Sendable {
         // picking up CODE2's result (see `overlappingApply_...` tests).
         let resultToReturn = applyCodeResult
         await applyCodeGate?.wait()
+        return try resultToReturn.get()
+    }
+
+    /// 85Blends 2.4.0 Referral Reward Redemption.
+    func claimReward(
+        requestedProductID: String?,
+        credential: ReferralInstallationCredential
+    ) async throws -> ReferralClaimRewardResponse {
+        claimRewardCallCount += 1
+        lastClaimRewardRequestedProductID = requestedProductID
+        let resultToReturn = claimRewardResult
+        await claimRewardGate?.wait()
         return try resultToReturn.get()
     }
 }
@@ -577,6 +597,101 @@ struct ReferralManagerTests {
             return
         }
         #expect(status.canApplyReferralCode == false)
+    }
+
+    // MARK: 85Blends 2.4.0 Referral Reward Redemption — claimReward
+
+    @Test("A successful claimReward updates loadState to the backend's new status")
+    func claimReward_success_updatesLoadState() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+
+        let issuedStatus = ReferralStatus(
+            referralCode: "ABCD2345", qualifiedReferrals: 5, pendingReferrals: 0,
+            earnedMonthsAvailable: 1, fulfilledMonths: 0, nextMilestoneNumber: 2, nextRewardAt: 10,
+            referralsNeeded: 5, canApplyReferralCode: false, referredByCode: nil, referredStatus: nil,
+            issuedRewardProductID: "com.85blends.subscription.monthly",
+            issuedRewardOfferReferenceName: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+            issuedRewardCode: "ABCD1234EFGH",
+            issuedRewardExpiresAtRaw: "2026-12-31T00:00:00.000Z"
+        )
+        service.claimRewardResult = .success(
+            ReferralClaimRewardResponse(status: issuedStatus, claimStatus: "claimed", rewardMilestoneNumber: 1)
+        )
+
+        let response = try await manager.claimReward(requestedProductID: nil)
+
+        #expect(response.claimStatus == "claimed")
+        #expect(response.status.issuedRewardCode == "ABCD1234EFGH")
+        guard case .loaded(let status) = manager.loadState else {
+            Issue.record("Expected .loaded")
+            return
+        }
+        #expect(status.issuedRewardCode == "ABCD1234EFGH")
+    }
+
+    @Test("claimReward forwards the exact requestedProductID it was given to the service")
+    func claimReward_forwardsRequestedProductIDExactly() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+        service.claimRewardResult = .success(
+            ReferralClaimRewardResponse(status: sampleStatus(), claimStatus: "claimed")
+        )
+
+        _ = try await manager.claimReward(requestedProductID: "com.85blends.subscription.annual")
+
+        #expect(service.lastClaimRewardRequestedProductID == "com.85blends.subscription.annual")
+    }
+
+    @Test("A non-'claimed' domain outcome (e.g. no codes available) still updates loadState — never treated as a thrown error")
+    func claimReward_noCodeAvailable_stillUpdatesLoadStateWithoutThrowing() async throws {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+        service.claimRewardResult = .success(
+            ReferralClaimRewardResponse(status: sampleStatus(), claimStatus: "no_code_available", rewardMilestoneNumber: 1)
+        )
+
+        let response = try await manager.claimReward(requestedProductID: nil)
+
+        #expect(response.claimStatus == "no_code_available")
+        // Never locally fabricated: loadState reflects EXACTLY the backend's own status, no reward
+        // is invented as issued/fulfilled just because a claim attempt happened.
+        guard case .loaded(let status) = manager.loadState else {
+            Issue.record("Expected .loaded")
+            return
+        }
+        #expect(status.issuedRewardCode == nil)
+    }
+
+    @Test("A thrown service error from claimReward propagates and never updates loadState to .loaded")
+    func claimReward_serviceError_propagatesAndDoesNotFabricateLoadedState() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service)
+        await manager.bootstrapIfNeeded()
+        service.claimRewardResult = .failure(ReferralServiceError.network("offline"))
+
+        await #expect(throws: ReferralServiceError.self) {
+            _ = try await manager.claimReward(requestedProductID: nil)
+        }
+    }
+
+    @Test("claimReward before any successful bootstrap retries bootstrap first, never calls claim_reward if that retry fails")
+    func claimReward_beforeBootstrap_retriesBootstrapFirst() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .failure(ReferralServiceError.network("offline"))
+        let manager = makeManager(service: service)
+
+        await #expect(throws: ReferralServiceError.self) {
+            _ = try await manager.claimReward(requestedProductID: nil)
+        }
+        #expect(service.claimRewardCallCount == 0)
     }
 
     // MARK: 22/35. Concurrent calls dedupe onto a single bootstrap attempt

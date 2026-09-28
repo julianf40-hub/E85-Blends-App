@@ -14,6 +14,20 @@ export interface OwnAttributionSummary {
   status: string;
 }
 
+/** 85Blends 2.4.0 Referral Reward Redemption — this installation's own currently ISSUED (not yet
+ *  redeemed) reward code, if any. Deliberately the raw Apple code itself: rule 5 of this feature's
+ *  task spec permits returning it "to the authenticated installation they were assigned to," and the
+ *  client needs it available across app relaunches (e.g. the user backgrounds the app before ever
+ *  tapping "Redeem in App Store" and returns later) — see referral-api/index.ts's own header on why
+ *  this is safe: this whole response is only ever reachable after authenticateInstallation succeeds
+ *  for THIS installation. Never populated from another participant's row. */
+export interface IssuedRewardCodeSummary {
+  productId: string;
+  offerReferenceName: string;
+  appleCode: string;
+  appleExpiresAt: Date | null;
+}
+
 export interface ReferralStatusInput {
   referralCode: string;
   qualifiedReferralCount: number;
@@ -22,6 +36,8 @@ export interface ReferralStatusInput {
   /** This installation's own attribution as the REFERRED party, if it has ever applied a code —
    *  never another participant's data. */
   ownAttribution: OwnAttributionSummary | null;
+  /** `null` when no reward currently has a live issued code for this participant. */
+  issuedRewardCode: IssuedRewardCodeSummary | null;
 }
 
 export interface ReferralStatusResponse {
@@ -36,15 +52,18 @@ export interface ReferralStatusResponse {
   can_apply_referral_code: boolean;
   referred_by_code: string | null;
   referred_status: string | null;
+  issued_reward_product_id: string | null;
+  issued_reward_offer_reference_name: string | null;
+  issued_reward_code: string | null;
+  issued_reward_expires_at: string | null;
 }
 
-/** Builds the exact client-safe status payload — used by both the `status` action and (merged
- *  with a couple of extra fields) `bootstrap`/`apply_code`'s success responses, so all three
- *  actions always report referral progress the same way. `earned_months_available` deliberately
- *  counts only `status = 'earned'` rewards — a `revoked` reward is neither available nor ever
- *  counted here again once its milestone is no longer justified by the current qualified count
- *  (see the SQL migration's shrink logic), and a `fulfilled` reward is reported separately, not as
- *  "available" (it has already been redeemed — redemption itself is out of scope for this API). */
+/** Builds the exact client-safe status payload — used by `status`, `bootstrap`, `apply_code`, and
+ *  (85Blends 2.4.0) `claim_reward`'s success responses, so every action always reports referral
+ *  progress the same way. `earned_months_available` deliberately counts only `status = 'earned'`
+ *  rewards — a `revoked` reward is neither available nor ever counted here again once its milestone
+ *  is no longer justified by the current qualified count (see the SQL migration's shrink logic), and
+ *  a `fulfilled` reward is reported separately, not as "available" (it has already been redeemed). */
 export function buildReferralStatusResponse(input: ReferralStatusInput): ReferralStatusResponse {
   const progress = computeNextMilestoneProgress(input.rewards, input.qualifiedReferralCount);
   const earnedMonthsAvailable = input.rewards.filter((reward) => reward.status === "earned").length;
@@ -66,5 +85,9 @@ export function buildReferralStatusResponse(input: ReferralStatusInput): Referra
     can_apply_referral_code: input.ownAttribution === null,
     referred_by_code: input.ownAttribution?.referralCodeUsed ?? null,
     referred_status: input.ownAttribution?.status ?? null,
+    issued_reward_product_id: input.issuedRewardCode?.productId ?? null,
+    issued_reward_offer_reference_name: input.issuedRewardCode?.offerReferenceName ?? null,
+    issued_reward_code: input.issuedRewardCode?.appleCode ?? null,
+    issued_reward_expires_at: input.issuedRewardCode?.appleExpiresAt?.toISOString() ?? null,
   };
 }

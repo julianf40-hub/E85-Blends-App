@@ -25,14 +25,17 @@
 // verify_jwt = false (see supabase/config.toml) because 85Blends does not use Supabase Auth
 // sessions; gate A above replaces the platform JWT gate that setting would otherwise remove.
 //
-// OUT OF SCOPE for this revision (see the referral-api task spec): reward redemption, granting
-// Pro, marking any reward `fulfilled`, and any RevenueCat entitlement mutation. This function only
-// ever reads reward state and writes participant/alias/attribution rows — never touches
-// private.referral_rewards.status beyond what private.process_referral_subscription_event already
-// does on its own (this function never calls that function at all).
+// 85Blends 2.4.0 Referral Reward Redemption: this function now ALSO exposes `claim_reward` — the
+// one client path that issues a real Apple subscription Offer Code against an earned reward (see
+// handleClaimReward below, and private.claim_referral_reward in
+// supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql). It still never
+// GRANTS Pro or marks a reward `fulfilled` directly — that only ever happens via
+// supabase/functions/revenuecat-webhook, once a real RevenueCat transaction confirms redemption
+// (see this feature's own task spec, rule 3/4: issuing a code is never itself fulfillment). This
+// function also still never calls private.process_referral_subscription_event.
 
 import { createDatabaseClient, type Sql } from "../_shared/database.ts";
-import { resolveReferralApiEnvConfig } from "../_shared/referral-api-env.ts";
+import { resolveReferralApiEnvConfig, type ReferralApiEnvConfig } from "../_shared/referral-api-env.ts";
 import { hasMatchingClientApiKey } from "../_shared/referral-api-auth.ts";
 import { constantTimeEqual } from "../_shared/hmac.ts";
 import { sha256Hex } from "../_shared/hash.ts";
@@ -43,10 +46,18 @@ import {
   type BootstrapRequest,
   type StatusRequest,
   type ApplyCodeRequest,
+  type ClaimRewardRequest,
 } from "../_shared/referral-api-validation.ts";
-import { buildReferralStatusResponse, type ReferralStatusResponse } from "../_shared/referral-api-response.ts";
+import {
+  buildReferralStatusResponse,
+  type ReferralStatusResponse,
+  type IssuedRewardCodeSummary,
+} from "../_shared/referral-api-response.ts";
 import { mapReferralFunctionError, buildSafeErrorLogMetadata } from "../_shared/referral-api-errors.ts";
 import type { RewardMilestoneRow } from "../_shared/referral-milestones.ts";
+import { fetchCustomerSubscriptions } from "../_shared/revenuecat-api.ts";
+import type { RevenueCatSubscription } from "../_shared/revenuecat-types.ts";
+import { resolveActiveProAndProduct } from "../_shared/referral-active-product.ts";
 
 /** Best-effort extraction of a Postgres SQLSTATE from a caught error, for SAFE structured
  *  logging only (see buildSafeErrorLogMetadata) — never for response classification, which stays
@@ -140,10 +151,36 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
     where referred_participant_id = ${participantId}
   `;
 
+  // 85Blends 2.4.0 Referral Reward Redemption — this participant's own currently issued (not yet
+  // redeemed) code, if any. See referral-api-response.ts's IssuedRewardCodeSummary header for why
+  // returning the raw apple_code here is safe: this whole function only ever runs after
+  // authenticateInstallation has already confirmed the CALLER owns `participantId`.
+  const [issuedCodeRow] = await sql<{
+    product_id: string;
+    offer_reference_name: string;
+    apple_code: string;
+    apple_expires_at: Date | null;
+  }[]>`
+    select product_id, offer_reference_name, apple_code, apple_expires_at
+    from private.referral_reward_offer_codes
+    where referrer_participant_id = ${participantId}
+      and status = 'issued'
+    limit 1
+  `;
+
   const rewards: RewardMilestoneRow[] = rewardRows.map((row) => ({
     milestoneNumber: row.milestone_number,
     status: row.status as "earned" | "fulfilled" | "revoked",
   }));
+
+  const issuedRewardCode: IssuedRewardCodeSummary | null = issuedCodeRow
+    ? {
+        productId: issuedCodeRow.product_id,
+        offerReferenceName: issuedCodeRow.offer_reference_name,
+        appleCode: issuedCodeRow.apple_code,
+        appleExpiresAt: issuedCodeRow.apple_expires_at,
+      }
+    : null;
 
   return buildReferralStatusResponse({
     referralCode: participantRow.referral_code,
@@ -153,6 +190,7 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
     ownAttribution: ownAttributionRow
       ? { referralCodeUsed: ownAttributionRow.referral_code_used, status: ownAttributionRow.status }
       : null,
+    issuedRewardCode,
   });
 }
 
@@ -374,6 +412,121 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
   return jsonResponse(200, { status: "applied", ...status });
 }
 
+/** 85Blends 2.4.0 Referral Reward Redemption — resolves this participant's currently active Pro
+ *  status AND product BACKEND-AUTHORITATIVELY, via a fresh RevenueCat REST API v2 call (never
+ *  trusting a client-supplied claim — see this feature's task spec, Phase 1). Queries subscriptions
+ *  for EVERY PRODUCTION RevenueCat identity (app_user_id) this participant has ever bootstrapped
+ *  with (see private.referral_participant_aliases) — almost always exactly one in practice, but
+ *  never assumed to be — and merges the results before applying the same qualifying-subscription
+ *  rule entitlement.ts's calculatePro uses, so this can never disagree with the canonical
+ *  entitlement mirror about whether Pro is active.
+ *
+ *  Returns `{ kind: "ok" }` with the resolved state, or `{ kind: "lookup_failed" }` if this
+ *  participant has at least one PRODUCTION identity but a RevenueCat API call for it failed — NEVER
+ *  falls back to guessing `proIsActive: false` in that case, which could otherwise let a real active
+ *  subscriber's claim be misrouted through the "choose any of the three products" path (Phase 12's
+ *  "client-supplied active-product spoofing" risk, applied here to an accidental failure rather than
+ *  a malicious client). A participant with ZERO PRODUCTION identities (e.g. a SANDBOX-only test
+ *  installation that nonetheless legitimately earned a reward by referring others) is reported as
+ *  `proIsActive: false` with no RevenueCat API call at all — there is nothing to look up. */
+async function resolveAuthoritativeActiveProduct(
+  sql: Sql,
+  env: ReferralApiEnvConfig,
+  participantId: string,
+): Promise<{ kind: "ok"; proIsActive: boolean; activeProductId: string | null } | { kind: "lookup_failed" }> {
+  const aliasRows = await sql<{ app_user_id: string }[]>`
+    select app_user_id from private.referral_participant_aliases
+    where participant_id = ${participantId} and environment = 'PRODUCTION'
+  `;
+
+  if (aliasRows.length === 0) {
+    return { kind: "ok", proIsActive: false, activeProductId: null };
+  }
+
+  const allSubscriptions: RevenueCatSubscription[] = [];
+  for (const row of aliasRows) {
+    const apiResult = await fetchCustomerSubscriptions(
+      { projectId: env.revenueCatProjectId, secretApiKey: env.revenueCatV2SecretApiKey },
+      row.app_user_id,
+      "production",
+    );
+    if (apiResult.kind !== "ok") {
+      logWebhookEvent("error", "referral-api claim_reward: RevenueCat lookup failed", {
+        kind: apiResult.kind,
+        statusCategory: apiResult.statusCategory,
+      });
+      return { kind: "lookup_failed" };
+    }
+    allSubscriptions.push(...apiResult.subscriptions);
+  }
+
+  const resolved = resolveActiveProAndProduct(allSubscriptions);
+  return { kind: "ok", proIsActive: resolved.proIsActive, activeProductId: resolved.activeProductId };
+}
+
+async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: ClaimRewardRequest): Promise<Response> {
+  const auth = await authenticateInstallation(sql, request.clientInstallationId, request.installationSecret);
+  if (!auth.ok) return auth.response;
+
+  const activeProduct = await resolveAuthoritativeActiveProduct(sql, env, auth.participantId);
+  if (activeProduct.kind === "lookup_failed") {
+    return errorResponse(503, "revenuecat_lookup_failed");
+  }
+
+  type ClaimRow = {
+    outcome: string;
+    reward_id: string | null;
+    milestone_number: number | null;
+    product_id: string | null;
+    offer_reference_name: string | null;
+    apple_code: string | null;
+    apple_expires_at: Date | null;
+  };
+  let claimRow: ClaimRow;
+  try {
+    const rows = await sql<ClaimRow[]>`
+      select * from private.claim_referral_reward(
+        ${auth.participantId}::uuid,
+        ${activeProduct.proIsActive},
+        ${activeProduct.activeProductId},
+        ${request.requestedProductId}
+      )
+    `;
+    claimRow = rows[0];
+  } catch (error) {
+    // private.claim_referral_reward never raises for an expected outcome (every legitimate result
+    // is a typed row — see its own RETURNS TABLE) — a caught error here is always either a genuine
+    // unexpected database failure, or this feature's migration not being deployed yet (42883/42P01,
+    // the same deployment-ordering guard used elsewhere in this codebase). Neither is safe to
+    // guess a response for; both map to the same generic, safe 503/500 the client already knows how
+    // to treat as "temporarily unavailable, try again."
+    const code = sqlStateOf(error);
+    logWebhookEvent("error", "referral-api claim_reward failure", buildSafeErrorLogMetadata(code));
+    if (code === "42883" || code === "42P01") {
+      return errorResponse(503, "service_unavailable");
+    }
+    return errorResponse(500, "internal_error");
+  }
+
+  // Re-loaded AFTER the claim commits, so `issued_reward_*` here already reflects whatever this
+  // claim attempt just did (a freshly issued code, an unchanged already-issued one, or nothing —
+  // see loadStatusResponse's own issuedRewardCode query). Never duplicated as separate top-level
+  // fields alongside `...status` below — `reward_milestone_number` is the one piece of information
+  // this response needs that status alone doesn't carry (which specific milestone this claim
+  // attempt concerned), so it is the only field added outside of `status`/`...status`.
+  const status = await loadStatusResponse(sql, auth.participantId);
+  // Every SQL outcome maps 1:1 to a response `status` string — see claim_referral_reward's own
+  // RETURNS TABLE comment for the full set. Deliberately always HTTP 200 here (auth/request-shape
+  // failures already returned above) — mirrors apply_code's existing "200 + status field" pattern
+  // for every DOMAIN outcome, never an HTTP error for a legitimate "nothing to claim right now"/
+  // "no codes available" result (this feature's task spec, Section 11, test 9).
+  return jsonResponse(200, {
+    status: claimRow.outcome,
+    reward_milestone_number: claimRow.milestone_number,
+    ...status,
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return errorResponse(405, "method_not_allowed");
@@ -423,6 +576,8 @@ Deno.serve(async (req: Request) => {
         return await handleStatus(sql, parsed.request);
       case "apply_code":
         return await handleApplyCode(sql, parsed.request);
+      case "claim_reward":
+        return await handleClaimReward(sql, env, parsed.request);
     }
   } catch (error) {
     logWebhookEvent("error", "referral-api unexpected failure", buildSafeErrorLogMetadata(sqlStateOf(error)));

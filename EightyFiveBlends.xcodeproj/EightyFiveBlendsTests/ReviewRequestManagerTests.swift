@@ -230,4 +230,27 @@ struct AppStoreDestinationTests {
     func share_isExactURL() {
         #expect(AppStoreDestination.share.absoluteString == "https://apps.apple.com/app/id6762037468")
     }
+
+    // MARK: - 85Blends 2.4.0 Referral Reward Redemption — Offer Code redemption URL
+
+    @Test("redeemOfferCode builds Apple's documented offer-code redemption URL with the exact app id and code")
+    func redeemOfferCode_isExactURL() throws {
+        let url = try #require(AppStoreDestination.redeemOfferCode("ABCD1234EFGH"))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.scheme == "https")
+        #expect(components.host == "apps.apple.com")
+        #expect(components.path == "/redeem")
+        let queryItems = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+        #expect(queryItems["ctx"] == "offercodes")
+        #expect(queryItems["id"] == "6762037468")
+        #expect(queryItems["code"] == "ABCD1234EFGH")
+    }
+
+    @Test("redeemOfferCode percent-encodes a code containing characters that are not URL-safe")
+    func redeemOfferCode_percentEncodesUnsafeCharacters() throws {
+        let url = try #require(AppStoreDestination.redeemOfferCode("AB CD&EF"))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let queryItems = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+        #expect(queryItems["code"] == "AB CD&EF")
+    }
 }

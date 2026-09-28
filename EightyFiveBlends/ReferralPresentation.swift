@@ -272,6 +272,7 @@ enum ReferralPresentation {
         case .rateLimited: "REF-RATE"
         case .serviceUnavailable: "REF-SERVICE"
         case .internalError: "REF-INTERNAL"
+        case .revenueCatLookupFailed: "REF-RC-LOOKUP"
         case .unrecognized: "REF-API-OTHER"
         }
     }
@@ -288,6 +289,68 @@ enum ReferralPresentation {
         App version: \(appVersion)
         Build: \(buildNumber)
         """
+    }
+
+    // MARK: - Reward redemption (85Blends 2.4.0 Referral Reward Redemption)
+
+    /// Defensive dual-format ISO 8601 parse for `ReferralStatus.issuedRewardExpiresAtRaw` — tries
+    /// with fractional seconds first (what this feature's own backend actually emits, via
+    /// JavaScript's `Date.prototype.toISOString()`), then falls back to the plain form, so this
+    /// never depends on exactly which subset of ISO 8601 the backend happens to produce. Returns
+    /// `nil` for `nil`/malformed input — never guessed, and never crashes.
+    static func parseISO8601Date(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        let withFractionalSeconds = ISO8601DateFormatter()
+        withFractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFractionalSeconds.date(from: raw) { return date }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: raw)
+    }
+
+    /// "1 Free Month Ready" / "2 Free Months Ready" — the reward card headline this feature's task
+    /// spec calls for, pluralized correctly.
+    static func rewardCardHeadline(earnedMonthsAvailable: Int) -> String {
+        earnedMonthsAvailable == 1 ? "1 Free Month Ready" : "\(earnedMonthsAvailable) Free Months Ready"
+    }
+
+    /// The pre-claim confirmation disclosure this feature's task spec requires ("Before requesting
+    /// claim_reward, show a clear confirmation") — `renewalPriceLine` is always a REAL, currently
+    /// loaded price/period string from SubscriptionManager.displayPrice(for:)/ProPlan, never a
+    /// hardcoded duplicate (see this feature's task spec: "Do not claim these prices from duplicated
+    /// hardcoded data").
+    static func redemptionConfirmationCopy(renewalPriceLine: String) -> String {
+        "You'll receive 1 month of 85Blends Pro free. After the free month, this subscription renews at \(renewalPriceLine) unless cancelled."
+    }
+
+    /// "$3.99/month after the free month" style renewal line — built from REAL, currently loaded
+    /// SubscriptionManager values, never a second hardcoded price table. `billingPeriodLabel` mirrors
+    /// ProPlan.fallbackBillingPeriodLabel's own wording ("month" / "3 months" / "year").
+    static func renewalPriceLine(displayPrice: String, billingPeriodLabel: String) -> String {
+        "\(displayPrice)/\(billingPeriodLabel) after the free month"
+    }
+
+    /// Safe, user-facing copy for every `ReferralClaimRewardResponse.claimStatus` value — never the
+    /// raw backend string (same "never print raw status strings" discipline as
+    /// `appliedStatusPresentation` above). `nil` for `"claimed"`, which the view handles as its own
+    /// success state rather than an informational message.
+    static func claimStatusMessage(_ claimStatus: String) -> String? {
+        switch claimStatus {
+        case "claimed":
+            nil
+        case "no_eligible_reward":
+            "You don't have a free month available to redeem right now."
+        case "no_code_available":
+            "We're temporarily out of redemption codes for this plan. Please check back soon — your reward is still saved."
+        case "legacy_or_unsupported_product_active", "invalid_product":
+            "We couldn't match your current plan to a supported reward. Please contact support."
+        case "outstanding_reward_exists":
+            "You already have a redemption in progress. Finish that one first."
+        case "invalid_participant":
+            temporarilyUnavailableMessage
+        default:
+            temporarilyUnavailableMessage
+        }
     }
 
     // MARK: - Share text (Phase 9)

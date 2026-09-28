@@ -9,6 +9,7 @@ import {
   isReferralQualifyingEvent,
   isReferralRefundReversalEvent,
   isReferralRelevantEventType,
+  isReferralRenewalQualificationCandidate,
   isReferralRequalificationEvent,
   REFERRAL_QUALIFYING_PRODUCT_IDS,
   type NormalEventReferralContext,
@@ -38,7 +39,24 @@ test("extractReferralWebhookFields: full normal INITIAL_PURCHASE envelope extrac
     transactionId: "txn_1",
     originalTransactionId: "orig_txn_1",
     purchasedAtMs: 1_700_000_000_000,
+    offerCode: null,
   });
+});
+
+// 85Blends 2.4.0 Referral Reward Redemption.
+test("extractReferralWebhookFields: offer_code is extracted when present", () => {
+  const envelope = {
+    event: {
+      type: "INITIAL_PURCHASE",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_1",
+      original_transaction_id: "orig_txn_1",
+      offer_code: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+    },
+  };
+  assert.equal(extractReferralWebhookFields(envelope)?.offerCode, "REFERRAL_REWARD_MONTHLY_1M_FREE");
 });
 
 test("extractReferralWebhookFields: missing optional fields become null, never throw or reject", () => {
@@ -52,6 +70,7 @@ test("extractReferralWebhookFields: missing optional fields become null, never t
     transactionId: null,
     originalTransactionId: null,
     purchasedAtMs: null,
+    offerCode: null,
   });
 });
 
@@ -79,6 +98,7 @@ function baseQualifyingFields(overrides: Partial<ReferralWebhookFields> = {}): R
     transactionId: "txn_1",
     originalTransactionId: "orig_txn_1",
     purchasedAtMs: 1_700_000_000_000,
+    offerCode: null,
     ...overrides,
   };
 }
@@ -187,6 +207,73 @@ test("isReferralQualifyingEvent: missing original_transaction_id -> false (integ
   assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ originalTransactionId: null })), false);
 });
 
+// MARK: 85Blends 2.4.0 Referral Reward Redemption — offer-code exclusion + RENEWAL qualification
+
+test("isReferralQualifyingEvent: a referral-reward offer code on an otherwise-qualifying INITIAL_PURCHASE -> false", () => {
+  for (const offerCode of [
+    "REFERRAL_REWARD_MONTHLY_1M_FREE",
+    "REFERRAL_REWARD_3MONTH_1M_FREE",
+    "REFERRAL_REWARD_ANNUAL_1M_FREE",
+  ]) {
+    assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ offerCode })), false, `expected ${offerCode} to be excluded`);
+  }
+});
+
+test("isReferralQualifyingEvent: an unrelated/public offer code never excludes an otherwise-qualifying purchase", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ offerCode: "85BLENDS_LAUNCH_PROMO" })), true);
+});
+
+test("isReferralRenewalQualificationCandidate: RENEWAL + PRODUCTION + NORMAL + supported product -> true", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(baseQualifyingFields({ eventType: "RENEWAL" })),
+    true,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: INITIAL_PURCHASE (not RENEWAL) -> false — the two are mutually exclusive triggers", () => {
+  assert.equal(isReferralRenewalQualificationCandidate(baseQualifyingFields()), false);
+});
+
+test("isReferralRenewalQualificationCandidate: a RENEWAL carrying a referral-reward offer code -> false", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", offerCode: "REFERRAL_REWARD_ANNUAL_1M_FREE" }),
+    ),
+    false,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: SANDBOX RENEWAL -> false", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(baseQualifyingFields({ eventType: "RENEWAL", environment: "SANDBOX" })),
+    false,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: legacy quarterly product -> false", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", productId: "com.85blends.subscription.quarterly" }),
+    ),
+    false,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: missing transaction/original_transaction id -> false", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", transactionId: null }),
+    ),
+    false,
+  );
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", originalTransactionId: null }),
+    ),
+    false,
+  );
+});
+
 // MARK: isReferralRefundReversalEvent — Phase 17
 
 function baseRefundFields(overrides: Partial<ReferralWebhookFields> = {}): ReferralWebhookFields {
@@ -199,6 +286,7 @@ function baseRefundFields(overrides: Partial<ReferralWebhookFields> = {}): Refer
     transactionId: "txn_1",
     originalTransactionId: "orig_txn_1",
     purchasedAtMs: null,
+    offerCode: null,
     ...overrides,
   };
 }
@@ -250,6 +338,7 @@ test("isReferralRequalificationEvent: PRODUCTION REFUND_REVERSED -> requalificat
       transactionId: "txn_1",
       originalTransactionId: "orig_txn_1",
       purchasedAtMs: null,
+      offerCode: null,
     }),
     true,
   );
@@ -266,6 +355,7 @@ test("isReferralRequalificationEvent: SANDBOX REFUND_REVERSED -> false", () => {
       transactionId: null,
       originalTransactionId: null,
       purchasedAtMs: null,
+      offerCode: null,
     }),
     false,
   );
@@ -282,6 +372,7 @@ test("isReferralRequalificationEvent: other event types -> false", () => {
       transactionId: null,
       originalTransactionId: null,
       purchasedAtMs: null,
+      offerCode: null,
     }),
     false,
   );
@@ -298,6 +389,7 @@ test("isReferralRequalificationEvent: missing original_transaction_id -> false (
       transactionId: null,
       originalTransactionId: null,
       purchasedAtMs: null,
+      offerCode: null,
     }),
     false,
   );
@@ -305,14 +397,17 @@ test("isReferralRequalificationEvent: missing original_transaction_id -> false (
 
 // MARK: isReferralRelevantEventType — cheap pre-filter
 
-test("isReferralRelevantEventType: true only for INITIAL_PURCHASE, CANCELLATION, REFUND_REVERSED", () => {
+test("isReferralRelevantEventType: true for INITIAL_PURCHASE, RENEWAL, CANCELLATION, REFUND_REVERSED", () => {
   assert.equal(isReferralRelevantEventType("INITIAL_PURCHASE"), true);
+  // 85Blends 2.4.0 Referral Reward Redemption — RENEWAL is now relevant (see
+  // isReferralRenewalQualificationCandidate's own header for why).
+  assert.equal(isReferralRelevantEventType("RENEWAL"), true);
   assert.equal(isReferralRelevantEventType("CANCELLATION"), true);
   assert.equal(isReferralRelevantEventType("REFUND_REVERSED"), true);
 });
 
 test("isReferralRelevantEventType: false for every other lifecycle event", () => {
-  for (const type of ["RENEWAL", "PRODUCT_CHANGE", "EXPIRATION", "BILLING_ISSUE", "UNCANCELLATION", "TRANSFER", "TEST", "TEMPORARY_ENTITLEMENT_GRANT", "NON_RENEWING_PURCHASE"]) {
+  for (const type of ["PRODUCT_CHANGE", "EXPIRATION", "BILLING_ISSUE", "UNCANCELLATION", "TRANSFER", "TEST", "TEMPORARY_ENTITLEMENT_GRANT", "NON_RENEWING_PURCHASE"]) {
     assert.equal(isReferralRelevantEventType(type), false, `expected ${type} to be referral-irrelevant`);
   }
 });
@@ -352,7 +447,46 @@ test("determineReferralAction: qualifying INITIAL_PURCHASE -> a 'qualify' action
     transactionId: "txn_1",
     originalTransactionId: "orig_txn_1",
     canonicalProIsActive: true,
+    // 85Blends 2.4.0 Referral Reward Redemption — never required for an INITIAL_PURCHASE-triggered
+    // qualify (see isReferralRenewalQualificationCandidate's own header for why only a RENEWAL-
+    // triggered one needs the extra database-backed proof).
+    requiresRewardRedemptionProof: false,
   });
+});
+
+// 85Blends 2.4.0 Referral Reward Redemption.
+test("determineReferralAction: qualifying RENEWAL -> a 'qualify' action with requiresRewardRedemptionProof true", () => {
+  const envelope = {
+    event: {
+      type: "RENEWAL",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_2",
+      original_transaction_id: "orig_txn_1",
+      purchased_at_ms: 1_700_100_000_000,
+    },
+  };
+  const result = determineReferralAction(context({ eventType: "RENEWAL" }), envelope, true);
+  assert.equal(result?.action, "qualify");
+  assert.equal(result?.requiresRewardRedemptionProof, true);
+  assert.equal(result?.purchasedAtMs, 1_700_100_000_000);
+});
+
+test("determineReferralAction: a RENEWAL carrying a referral-reward offer code never qualifies (excluded like any other offer-code purchase)", () => {
+  const envelope = {
+    event: {
+      type: "RENEWAL",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_2",
+      original_transaction_id: "orig_txn_1",
+      offer_code: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+    },
+  };
+  const result = determineReferralAction(context({ eventType: "RENEWAL" }), envelope, true);
+  assert.equal(result, undefined);
 });
 
 test("determineReferralAction: canonicalProIsActive is passed through verbatim, never re-derived", () => {
@@ -397,8 +531,23 @@ test("determineReferralAction: PRODUCTION REFUND_REVERSED -> a 'refund_reversed'
   assert.equal(result?.action, "refund_reversed");
 });
 
-test("determineReferralAction: referral-irrelevant event type (e.g. RENEWAL) -> undefined without even reading the envelope", () => {
-  const result = determineReferralAction(context({ eventType: "RENEWAL" }), { event: { type: "RENEWAL" } }, true);
+test("determineReferralAction: referral-irrelevant event type (e.g. PRODUCT_CHANGE) -> undefined without even reading the envelope", () => {
+  const result = determineReferralAction(context({ eventType: "PRODUCT_CHANGE" }), { event: { type: "PRODUCT_CHANGE" } }, true);
+  assert.equal(result, undefined);
+});
+
+test("determineReferralAction: a non-qualifying-shaped RENEWAL (e.g. SANDBOX) -> undefined, never a bare 'relevant type' pass-through", () => {
+  const envelope = {
+    event: {
+      type: "RENEWAL",
+      environment: "SANDBOX",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_2",
+      original_transaction_id: "orig_txn_1",
+    },
+  };
+  const result = determineReferralAction(context({ eventType: "RENEWAL", environment: "SANDBOX" }), envelope, true);
   assert.equal(result, undefined);
 });
 

@@ -20,6 +20,66 @@ import Foundation
 @testable import EightyFiveBlends
 
 struct ReferralPresentationTests {
+    // MARK: - 85Blends 2.4.0 Referral Reward Redemption — pure presentation helpers
+
+    @Test("parseISO8601Date parses the fractional-seconds form this feature's own backend emits")
+    func parseISO8601Date_fractionalSeconds() {
+        let date = ReferralPresentation.parseISO8601Date("2026-12-31T00:00:00.000Z")
+        #expect(date != nil)
+    }
+
+    @Test("parseISO8601Date falls back to the plain (no fractional seconds) form")
+    func parseISO8601Date_plainForm() {
+        let date = ReferralPresentation.parseISO8601Date("2026-12-31T00:00:00Z")
+        #expect(date != nil)
+    }
+
+    @Test("parseISO8601Date returns nil for nil or malformed input, never throws/crashes")
+    func parseISO8601Date_nilOrMalformed() {
+        #expect(ReferralPresentation.parseISO8601Date(nil) == nil)
+        #expect(ReferralPresentation.parseISO8601Date("not-a-date") == nil)
+        #expect(ReferralPresentation.parseISO8601Date("") == nil)
+    }
+
+    @Test("rewardCardHeadline pluralizes correctly")
+    func rewardCardHeadline_pluralization() {
+        #expect(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: 1) == "1 Free Month Ready")
+        #expect(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: 2) == "2 Free Months Ready")
+    }
+
+    @Test("renewalPriceLine composes the real, passed-in display price and billing period label")
+    func renewalPriceLine_composesRealValues() {
+        let line = ReferralPresentation.renewalPriceLine(displayPrice: "$3.99", billingPeriodLabel: "month")
+        #expect(line == "$3.99/month after the free month")
+    }
+
+    @Test("redemptionConfirmationCopy embeds the exact renewal price line it is given")
+    func redemptionConfirmationCopy_embedsRenewalLine() {
+        let copy = ReferralPresentation.redemptionConfirmationCopy(renewalPriceLine: "$3.99/month after the free month")
+        #expect(copy.contains("$3.99/month after the free month"))
+        #expect(copy.contains("1 month of 85Blends Pro free"))
+    }
+
+    @Test("claimStatusMessage returns nil only for the success outcome, never for any other")
+    func claimStatusMessage_nilOnlyForClaimed() {
+        #expect(ReferralPresentation.claimStatusMessage("claimed") == nil)
+        #expect(ReferralPresentation.claimStatusMessage("no_eligible_reward") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("no_code_available") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("legacy_or_unsupported_product_active") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("invalid_product") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("outstanding_reward_exists") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("some_future_unknown_outcome") != nil)
+    }
+
+    @Test("claimStatusMessage never echoes the raw backend status string verbatim")
+    func claimStatusMessage_neverEchoesRawStatus() {
+        let rawStatuses = ["no_eligible_reward", "no_code_available", "outstanding_reward_exists", "invalid_product"]
+        for raw in rawStatuses {
+            let message = ReferralPresentation.claimStatusMessage(raw)
+            #expect(message?.contains(raw) != true)
+        }
+    }
+
     // MARK: - Input validation (1-10)
 
     @Test("A valid 8-character code from the allowed alphabet is accepted")

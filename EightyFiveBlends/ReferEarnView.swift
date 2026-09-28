@@ -5,10 +5,11 @@
 //  85Blends 2.4.0 — Refer & Earn UI. Available to every user, Free and Pro alike (see
 //  MoreView.swift's own placement — never wrapped in an appExperienceMode/isProUser gate).
 //  ReferralManager.shared is the ONLY referral-state authority this screen (or
-//  ReferralCodeEntrySheet) ever reads — no URLSession, Keychain, RevenueCat App User ID, or direct
-//  Supabase access here, and no local qualification/reward computation: every number shown comes
-//  straight from the backend's own ReferralStatus. Reward redemption is intentionally not
-//  implemented here — see Phase 20 of this feature's own task spec.
+//  ReferralCodeEntrySheet/ReferralRewardRedemptionSheet) ever reads — no URLSession, Keychain,
+//  RevenueCat App User ID, or direct Supabase access here, and no local qualification/reward
+//  computation: every number shown comes straight from the backend's own ReferralStatus. Reward
+//  redemption (85Blends 2.4.0) lives in ReferralRewardRedemptionSheet.swift, presented from
+//  `earnedMonthsBanner` below — this file never talks to claim_reward itself.
 //
 
 import SwiftUI
@@ -255,6 +256,7 @@ struct ReferEarnLoadedContent: View {
     let onEnterCode: () -> Void
 
     @State private var didCopy = false
+    @State private var isShowingRedemptionSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -264,6 +266,9 @@ struct ReferEarnLoadedContent: View {
             statsSection
             referredBySection
             howItWorksCard
+        }
+        .sheet(isPresented: $isShowingRedemptionSheet) {
+            ReferralRewardRedemptionSheet()
         }
     }
 
@@ -368,44 +373,52 @@ struct ReferEarnLoadedContent: View {
         }
     }
 
-    // MARK: Earned months (display only — no redemption)
+    // MARK: Earned months — 85Blends 2.4.0 Referral Reward Redemption
 
+    /// Tapping opens ReferralRewardRedemptionSheet, the real redemption flow — this card itself
+    /// never talks to claim_reward or decides eligibility; `status.earnedMonthsAvailable`/
+    /// `status.issuedRewardCode` (both backend-sourced) are the only things it reads.
     @ViewBuilder
     private var earnedMonthsBanner: some View {
         if status.earnedMonthsAvailable > 0 {
-            HStack(spacing: 12) {
-                Image(systemName: "gift.fill")
-                    .font(.title2)
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .accessibilityHidden(true)
+            Button {
+                AppHaptics.selection()
+                isShowingRedemptionSheet = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "gift.fill")
+                        .font(.title2)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                        .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(earnedMonthsHeadline)
-                        .font(.headline)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("Reward redemption is coming in a future update.")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status.earnedMonthsAvailable))
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        Text(status.issuedRewardCode != nil ? "You have a code ready to redeem." : "Tap to redeem your free month.")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
                 }
-
-                Spacer(minLength: 0)
+                .padding(16)
+                .background(AppTheme.Colors.stationYellow.opacity(0.14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(AppTheme.Colors.stationYellow.opacity(0.4), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-            .padding(16)
-            .background(AppTheme.Colors.stationYellow.opacity(0.14))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(AppTheme.Colors.stationYellow.opacity(0.4), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(earnedMonthsHeadline)
+            .accessibilityLabel(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status.earnedMonthsAvailable))
+            .accessibilityHint("Opens reward redemption")
         }
-    }
-
-    private var earnedMonthsHeadline: String {
-        status.earnedMonthsAvailable == 1
-            ? "1 free month earned"
-            : "\(status.earnedMonthsAvailable) free months earned"
     }
 
     // MARK: Stats
@@ -654,7 +667,11 @@ private func previewStatus(
     referralsNeeded: Int = 3,
     canApplyReferralCode: Bool = true,
     referredByCode: String? = nil,
-    referredStatus: String? = nil
+    referredStatus: String? = nil,
+    issuedRewardProductID: String? = nil,
+    issuedRewardOfferReferenceName: String? = nil,
+    issuedRewardCode: String? = nil,
+    issuedRewardExpiresAtRaw: String? = nil
 ) -> ReferralStatus {
     ReferralStatus(
         referralCode: referralCode,
@@ -667,7 +684,11 @@ private func previewStatus(
         referralsNeeded: referralsNeeded,
         canApplyReferralCode: canApplyReferralCode,
         referredByCode: referredByCode,
-        referredStatus: referredStatus
+        referredStatus: referredStatus,
+        issuedRewardProductID: issuedRewardProductID,
+        issuedRewardOfferReferenceName: issuedRewardOfferReferenceName,
+        issuedRewardCode: issuedRewardCode,
+        issuedRewardExpiresAtRaw: issuedRewardExpiresAtRaw
     )
 }
 
@@ -759,6 +780,29 @@ private func previewStatus(
     ScrollView {
         ReferEarnLoadedContent(
             status: previewStatus(canApplyReferralCode: false, referredByCode: "WXYZ6789", referredStatus: "qualified"),
+            isProUser: false,
+            isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
+            onEnterCode: {}
+        )
+        .padding(16)
+    }
+    .background(AppTheme.Colors.charcoal)
+}
+
+#Preview("Reward code issued") {
+    ScrollView {
+        ReferEarnLoadedContent(
+            status: previewStatus(
+                qualifiedReferrals: 5,
+                pendingReferrals: 0,
+                earnedMonthsAvailable: 1,
+                referralsNeeded: 0,
+                issuedRewardProductID: "com.85blends.subscription.monthly",
+                issuedRewardOfferReferenceName: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+                issuedRewardCode: "ABCD1234EFGH",
+                issuedRewardExpiresAtRaw: "2026-12-31T00:00:00.000Z"
+            ),
             isProUser: false,
             isEntitlementResolutionPending: false,
             hasAuthoritativeProStatus: true,
