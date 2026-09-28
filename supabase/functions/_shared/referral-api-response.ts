@@ -56,6 +56,17 @@ export interface ReferralStatusResponse {
   issued_reward_offer_reference_name: string | null;
   issued_reward_code: string | null;
   issued_reward_expires_at: string | null;
+  /** 85Blends 2.4.0 third correctness hardening pass — CLIENT-SAFE RECOVERY SIGNAL. `true` exactly
+   *  when this participant has a reward at `status = 'issued'` (in this environment) but no
+   *  currently-live (unexpired) issued code — i.e. the code expired before the client ever called
+   *  `claim_reward` again to let `private.claim_referral_reward` run its own expiration-revalidation
+   *  branch (void the dead code, then either reissue or revoke). Never exposes the expired code
+   *  itself (`issued_reward_code` stays `null` in this case) or any internal identifier — this is a
+   *  plain boolean computed from data already fetched for this response, not a new query, and reading
+   *  it never mutates anything (the status endpoint stays read-only). The client's only correct
+   *  response to `true` is to call `claim_reward` again — see ReferEarnView.swift/
+   *  ReferralRewardRedemptionSheet.swift's "needs refresh" UI state. */
+  issued_reward_needs_refresh: boolean;
 }
 
 /** Builds the exact client-safe status payload — used by `status`, `bootstrap`, `apply_code`, and
@@ -71,6 +82,11 @@ export function buildReferralStatusResponse(input: ReferralStatusInput): Referra
   const progress = computeNextMilestoneProgress(input.rewards, input.qualifiedReferralCount);
   const earnedMonthsAvailable = input.rewards.filter((reward) => reward.status === "earned").length;
   const fulfilledMonths = input.rewards.filter((reward) => reward.status === "fulfilled").length;
+  // Third correctness hardening pass — see issued_reward_needs_refresh's own doc comment above.
+  // At most one reward can ever be 'issued' at a time (the migration's own partial unique index),
+  // so "any" here is never ambiguous about WHICH reward it refers to.
+  const hasIssuedReward = input.rewards.some((reward) => reward.status === "issued");
+  const issuedRewardNeedsRefresh = hasIssuedReward && input.issuedRewardCode === null;
 
   return {
     referral_code: input.referralCode,
@@ -92,5 +108,6 @@ export function buildReferralStatusResponse(input: ReferralStatusInput): Referra
     issued_reward_offer_reference_name: input.issuedRewardCode?.offerReferenceName ?? null,
     issued_reward_code: input.issuedRewardCode?.appleCode ?? null,
     issued_reward_expires_at: input.issuedRewardCode?.appleExpiresAt?.toISOString() ?? null,
+    issued_reward_needs_refresh: issuedRewardNeedsRefresh,
   };
 }

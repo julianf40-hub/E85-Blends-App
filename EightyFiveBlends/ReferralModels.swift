@@ -125,6 +125,17 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
     /// none, to avoid any risk of affecting other decoding). See
     /// ReferralPresentation.parseISO8601Date(_:) for the actual, defensive parse a view should use.
     let issuedRewardExpiresAtRaw: String?
+    /// 85Blends 2.4.0 third correctness hardening pass — CLIENT-SAFE RECOVERY SIGNAL. `true` exactly
+    /// when this installation has a reward at `status = 'issued'` on the backend but no currently-
+    /// live issued code (the code expired before the client ever called `claim_reward` again to let
+    /// the backend's own expiration-revalidation logic run). Never exposes the expired code itself —
+    /// `issuedRewardCode` stays `nil` in this case. See ReferralPresentation.rewardCardState(_:_:_:)
+    /// for how this, `earnedMonthsAvailable`, and `issuedRewardCode` together decide what Refer &
+    /// Earn's reward card shows: earned/issued/needs-refresh are NOT mutually redundant signals —
+    /// once a reward is claimed, `earnedMonthsAvailable` drops to 0 (it's no longer "available to
+    /// claim"), so this and `issuedRewardCode` are the ONLY remaining entry points back into the
+    /// redemption sheet.
+    let issuedRewardNeedsRefresh: Bool
 
     enum CodingKeys: String, CodingKey {
         case referralCode = "referral_code"
@@ -142,16 +153,17 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
         case issuedRewardOfferReferenceName = "issued_reward_offer_reference_name"
         case issuedRewardCode = "issued_reward_code"
         case issuedRewardExpiresAtRaw = "issued_reward_expires_at"
+        case issuedRewardNeedsRefresh = "issued_reward_needs_refresh"
     }
 
     /// Explicit initializer (mirrors PendingPriceContribution's own — a `let` property with a
     /// declaration-time default is excluded entirely from Swift's synthesized memberwise
     /// initializer, not merely given a defaultable parameter, so the four 2.4.0 fields' defaults
     /// live on this initializer's own parameters instead). Every pre-2.4.0 call site (previews,
-    /// tests) that omits them keeps compiling unchanged; this does NOT suppress the synthesized
-    /// `init(from:)` Decodable conformance this struct still relies on — writing your OWN
-    /// memberwise-shaped initializer only suppresses the AUTOMATIC memberwise init, never a
-    /// separately-synthesized protocol conformance.
+    /// tests) that omits them keeps compiling unchanged. Writing this memberwise-shaped initializer
+    /// only suppresses the AUTOMATIC memberwise init, never a separately-synthesized protocol
+    /// conformance — but as of the third correctness hardening pass, `init(from:)` below is no
+    /// longer that automatic synthesis; see its own header for why.
     init(
         referralCode: String,
         qualifiedReferrals: Int,
@@ -167,7 +179,8 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
         issuedRewardProductID: String? = nil,
         issuedRewardOfferReferenceName: String? = nil,
         issuedRewardCode: String? = nil,
-        issuedRewardExpiresAtRaw: String? = nil
+        issuedRewardExpiresAtRaw: String? = nil,
+        issuedRewardNeedsRefresh: Bool = false
     ) {
         self.referralCode = referralCode
         self.qualifiedReferrals = qualifiedReferrals
@@ -184,6 +197,37 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
         self.issuedRewardOfferReferenceName = issuedRewardOfferReferenceName
         self.issuedRewardCode = issuedRewardCode
         self.issuedRewardExpiresAtRaw = issuedRewardExpiresAtRaw
+        self.issuedRewardNeedsRefresh = issuedRewardNeedsRefresh
+    }
+
+    /// Explicit `init(from:)` (third correctness hardening pass) — REPLACES Swift's synthesized
+    /// Decodable conformance, which this struct previously relied on. Needed specifically because
+    /// `issuedRewardNeedsRefresh` is a non-optional `Bool` with no declaration-time default: the
+    /// synthesized decoder would require `issued_reward_needs_refresh` present in EVERY response,
+    /// which would break `ReferralModelsTests.statusResponse_missingIssuedRewardCodeKeys_decodesNil`'s
+    /// own documented contract — that a response shape predating a given 2.4.0 addition must still
+    /// decode without throwing. `decodeIfPresent(...) ?? false` preserves that contract for this one
+    /// field exactly the way every other 2.4.0 field here already tolerates absence via its own
+    /// Optional type. Every other field's decoding behavior is otherwise unchanged from the
+    /// synthesized version this replaces.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        referralCode = try container.decode(String.self, forKey: .referralCode)
+        qualifiedReferrals = try container.decode(Int.self, forKey: .qualifiedReferrals)
+        pendingReferrals = try container.decode(Int.self, forKey: .pendingReferrals)
+        earnedMonthsAvailable = try container.decode(Int.self, forKey: .earnedMonthsAvailable)
+        fulfilledMonths = try container.decode(Int.self, forKey: .fulfilledMonths)
+        nextMilestoneNumber = try container.decode(Int.self, forKey: .nextMilestoneNumber)
+        nextRewardAt = try container.decode(Int.self, forKey: .nextRewardAt)
+        referralsNeeded = try container.decode(Int.self, forKey: .referralsNeeded)
+        canApplyReferralCode = try container.decode(Bool.self, forKey: .canApplyReferralCode)
+        referredByCode = try container.decodeIfPresent(String.self, forKey: .referredByCode)
+        referredStatus = try container.decodeIfPresent(String.self, forKey: .referredStatus)
+        issuedRewardProductID = try container.decodeIfPresent(String.self, forKey: .issuedRewardProductID)
+        issuedRewardOfferReferenceName = try container.decodeIfPresent(String.self, forKey: .issuedRewardOfferReferenceName)
+        issuedRewardCode = try container.decodeIfPresent(String.self, forKey: .issuedRewardCode)
+        issuedRewardExpiresAtRaw = try container.decodeIfPresent(String.self, forKey: .issuedRewardExpiresAtRaw)
+        issuedRewardNeedsRefresh = try container.decodeIfPresent(Bool.self, forKey: .issuedRewardNeedsRefresh) ?? false
     }
 }
 

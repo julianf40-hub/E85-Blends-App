@@ -32,6 +32,23 @@
 --       transaction) on an impossible partial-update condition, rather than returning a typed
 --       "this failed" outcome after the Apple code has already been marked redeemed. See Section 3.
 --
+-- THIRD CORRECTNESS HARDENING PASS (post-second-hardening-pass independent review) — one further
+-- user-facing bug plus one further transactional hardening item, both fixed in this revision (SQL
+-- changes only — the client-visible fix lives in supabase/functions/_shared/referral-api-response.ts
+-- and the iOS layer; see this feature's deployment doc §7d for the full design):
+--   (d) An issued reward whose code has EXPIRED, but which no client has re-claimed yet, produced
+--       `earned_months_available = 0` AND `issued_reward_code = null` with no other signal — every
+--       client entry point back into the redemption flow disappeared, stranding a reward this same
+--       migration's own claim_referral_reward already knows how to recover. Fixed ENTIRELY in
+--       TypeScript (no SQL schema/function change needed): `buildReferralStatusResponse` derives a
+--       new `issued_reward_needs_refresh` boolean purely from data this migration's own schema
+--       already exposes (a `status = 'issued'` reward row with no live issued code) — see that
+--       file's own doc comment.
+--   (e) private.claim_referral_reward's final code-issuance + reward earned -> issued pair (and the
+--       expiration-revalidation branch's own transitions) now carry the SAME `GET DIAGNOSTICS`
+--       row-count-verified RAISE discipline (c) above added to fulfill_referral_reward_offer_code —
+--       see Section 2's own "TRANSACTION-INVARIANT HARDENING" comment.
+--
 -- COMPLETES the existing, deliberately-unfinished promise: every 5 qualified paid referrals earns
 -- one private.referral_rewards row (status: earned/fulfilled/revoked) — this migration adds the
 -- backend foundation to actually REDEEM an earned reward as a real Apple subscription Offer Code,
@@ -541,6 +558,22 @@ comment on column private.referral_client_installations.current_app_user_id is
 -- THIS function's own expiration-revalidation branch, and only once its code has already gone void
 -- (see the guard trigger, Section 1c, which makes "revoked while a live issued code exists"
 -- impossible regardless of which code path is running).
+--
+-- TRANSACTION-INVARIANT HARDENING (THIRD HARDENING PASS): mirrors
+-- fulfill_referral_reward_offer_code's own discipline (Section 3) — every UPDATE in this function
+-- that targets a row already locked (`for update`) and already confirmed matching its expected
+-- status earlier in the SAME call now verifies via `GET DIAGNOSTICS ... row_count` that it actually
+-- affected exactly one row, and RAISEs on a zero-row result rather than ever returning 'claimed' (or
+-- silently proceeding) on top of a partial mutation. Covers the expired-code void, both branches of
+-- the expiration-revalidation reward transition, and the final code-issuance + reward earned ->
+-- issued pair. Verified the same way as fulfill_referral_reward_offer_code's own layer-2 check: a
+-- forced-failure test using a test-only copy of the final code+reward pair, with the REWARD
+-- UPDATE's WHERE clause deliberately mismatched, confirmed the call raises, the whole surrounding
+-- transaction is poisoned (a subsequent statement is rejected with "current transaction is
+-- aborted"), and after an explicit ROLLBACK the code is back to 'available' (never left 'issued')
+-- and the reward is back to 'earned' — proving the ALREADY-SUCCEEDED code-issuance UPDATE is rolled
+-- back too, not just the failing statement's own effect (see this feature's deployment doc for the
+-- full methodology).
 create or replace function private.claim_referral_reward(
   p_referrer_participant_id uuid,
   p_environment text,
@@ -567,6 +600,7 @@ declare
   v_target_product text;
   v_qualified_count integer;
   v_desired_milestones integer;
+  v_updated_rows integer;
   v_supported_products constant text[] := array[
     'com.85blends.subscription.monthly',
     'com.85blends.subscription.threemonth',
@@ -639,7 +673,17 @@ begin
     if v_existing_code.id is not null then
       update private.referral_reward_offer_codes
       set status = 'void'
-      where id = v_existing_code.id;
+      where id = v_existing_code.id
+        and status = 'issued';
+
+      -- THIRD HARDENING PASS: this row is held `for update` from the select above and was just
+      -- confirmed `status = 'issued'` moments ago — a zero-row result here is a genuine invariant
+      -- violation, never a condition to paper over. Raising aborts this whole call before it can
+      -- ever misreport a claim outcome built on top of a code that didn't actually void.
+      get diagnostics v_updated_rows = row_count;
+      if v_updated_rows = 0 then
+        raise exception 'referral_reward_offer_code_expiration_void_invariant_violation: code % expected status issued but the update matched zero rows', v_existing_code.id;
+      end if;
     end if;
 
     select count(*) into v_qualified_count
@@ -656,6 +700,13 @@ begin
       set status = 'earned'
       where id = v_reward.id
         and status = 'issued';
+
+      -- THIRD HARDENING PASS: v_reward is held `for update` since Step 1 and was confirmed
+      -- `status = 'issued'` there — a zero-row result is a genuine invariant violation.
+      get diagnostics v_updated_rows = row_count;
+      if v_updated_rows = 0 then
+        raise exception 'referral_reward_expiration_revalidation_invariant_violation: reward % expected status issued but the earned-transition update matched zero rows', v_reward.id;
+      end if;
     else
       -- NO LONGER JUSTIFIED: the reward is revoked outright and NO replacement is ever issued. Safe
       -- under the guard trigger (Section 1c) — the code above is already 'void' by the time this
@@ -664,6 +715,11 @@ begin
       set status = 'revoked', revoked_at = now(), revoke_reason = 'expired_unclaimed_below_milestone'
       where id = v_reward.id
         and status = 'issued';
+
+      get diagnostics v_updated_rows = row_count;
+      if v_updated_rows = 0 then
+        raise exception 'referral_reward_expiration_revalidation_invariant_violation: reward % expected status issued but the revoke-transition update matched zero rows', v_reward.id;
+      end if;
 
       return query select 'expired_no_longer_qualified'::text, v_reward.id, v_reward.milestone_number, null::text, null::text, null::text, null::timestamptz;
       return;
@@ -750,17 +806,39 @@ begin
   -- Atomically attach the allocated code AND transition the reward earned -> issued together — the
   -- pairing invariant this entire hardening pass depends on: a code is never 'issued' without its
   -- reward also being 'issued', and vice versa.
+  --
+  -- THIRD HARDENING PASS (transaction invariant hardening — mirrors
+  -- fulfill_referral_reward_offer_code's own discipline, Section 3): both rows below are locked
+  -- (`for update`/`for update skip locked`) and freshly confirmed matching their expected status
+  -- moments earlier in this SAME function call, so a zero-row result on either UPDATE is a genuine,
+  -- structurally-impossible invariant violation — never a condition to paper over by returning
+  -- 'claimed' anyway. Each check RAISEs on failure, aborting this ENTIRE function call (and, since
+  -- referral-api invokes this inside no wrapping transaction of its own beyond this single
+  -- statement, the failing call's own partial work) rather than ever reporting success on top of a
+  -- partial mutation — a real Apple code must never be silently handed out while its paired reward
+  -- failed to transition, or vice versa.
   update private.referral_reward_offer_codes
   set status = 'issued',
       reward_id = v_reward.id,
       referrer_participant_id = p_referrer_participant_id,
       issued_at = now()
-  where id = v_allocated.id;
+  where id = v_allocated.id
+    and status = 'available';
+
+  get diagnostics v_updated_rows = row_count;
+  if v_updated_rows = 0 then
+    raise exception 'referral_reward_offer_code_claim_invariant_violation: code % expected status available but the issuance update matched zero rows', v_allocated.id;
+  end if;
 
   update private.referral_rewards
   set status = 'issued'
   where id = v_reward.id
     and status = 'earned';
+
+  get diagnostics v_updated_rows = row_count;
+  if v_updated_rows = 0 then
+    raise exception 'referral_reward_claim_invariant_violation: reward % expected status earned but the issuance update matched zero rows', v_reward.id;
+  end if;
 
   return query select 'claimed'::text, v_reward.id, v_reward.milestone_number,
     v_allocated.product_id, v_allocated.offer_reference_name,

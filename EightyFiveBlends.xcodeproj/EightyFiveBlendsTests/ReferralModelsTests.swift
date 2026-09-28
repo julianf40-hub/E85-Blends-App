@@ -140,13 +140,14 @@ struct ReferralModelsTests {
     func statusResponse_decodesIssuedRewardCode() throws {
         let json = """
         {"referral_code":"ABCD2345","qualified_referrals":5,"pending_referrals":0,
-         "earned_months_available":1,"fulfilled_months":0,"next_milestone_number":2,
+         "earned_months_available":0,"fulfilled_months":0,"next_milestone_number":2,
          "next_reward_at":10,"referrals_needed":5,"can_apply_referral_code":false,
          "referred_by_code":null,"referred_status":null,
          "issued_reward_product_id":"com.85blends.subscription.monthly",
          "issued_reward_offer_reference_name":"REFERRAL_REWARD_MONTHLY_1M_FREE",
          "issued_reward_code":"ABCD1234EFGH",
-         "issued_reward_expires_at":"2026-12-31T00:00:00.000Z"}
+         "issued_reward_expires_at":"2026-12-31T00:00:00.000Z",
+         "issued_reward_needs_refresh":false}
         """.data(using: .utf8)!
 
         let status = try Self.decoder.decode(ReferralStatus.self, from: json)
@@ -154,13 +155,21 @@ struct ReferralModelsTests {
         #expect(status.issuedRewardOfferReferenceName == "REFERRAL_REWARD_MONTHLY_1M_FREE")
         #expect(status.issuedRewardCode == "ABCD1234EFGH")
         #expect(status.issuedRewardExpiresAtRaw == "2026-12-31T00:00:00.000Z")
+        #expect(status.issuedRewardNeedsRefresh == false)
+        // The real backend state after claiming the only earned reward — see
+        // ReferralPresentation.RewardCardState's own header for why this is NOT a bug: a claimed
+        // reward's own status is 'issued', not 'earned', so it correctly drops out of this count.
+        #expect(status.earnedMonthsAvailable == 0)
     }
 
-    @Test("Status response missing the issued-reward-code keys entirely (pre-2.4.0-shaped payload) decodes them as nil, never throws")
+    @Test("Status response missing the issued-reward-code keys entirely (pre-this-feature-shaped payload) decodes them as nil/false, never throws")
     func statusResponse_missingIssuedRewardCodeKeys_decodesNil() throws {
         // Byte-for-byte the SAME JSON this file's own pre-existing `statusResponse_decodesWithReferredBy`
-        // test already used, before this feature ever added the four new keys — proves backward
-        // compatibility with a response shape that predates this feature.
+        // test already used, before this feature ever added these keys — proves backward
+        // compatibility with a response shape that predates this feature, including
+        // issued_reward_needs_refresh (third correctness hardening pass) — this is exactly the case
+        // that requires ReferralStatus's own explicit `init(from:)` (see its header): a plain
+        // non-optional Bool with no key present would otherwise throw, not default to false.
         let json = """
         {"referral_code":"ABCD2345","qualified_referrals":0,"pending_referrals":0,
          "earned_months_available":0,"fulfilled_months":0,"next_milestone_number":1,
@@ -173,6 +182,24 @@ struct ReferralModelsTests {
         #expect(status.issuedRewardOfferReferenceName == nil)
         #expect(status.issuedRewardCode == nil)
         #expect(status.issuedRewardExpiresAtRaw == nil)
+        #expect(status.issuedRewardNeedsRefresh == false)
+    }
+
+    @Test("Status response decodes issued_reward_needs_refresh true when the backend reports an expired, unrecovered issued reward")
+    func statusResponse_decodesIssuedRewardNeedsRefresh() throws {
+        let json = """
+        {"referral_code":"ABCD2345","qualified_referrals":5,"pending_referrals":0,
+         "earned_months_available":0,"fulfilled_months":0,"next_milestone_number":2,
+         "next_reward_at":10,"referrals_needed":5,"can_apply_referral_code":false,
+         "referred_by_code":null,"referred_status":null,
+         "issued_reward_product_id":null,"issued_reward_offer_reference_name":null,
+         "issued_reward_code":null,"issued_reward_expires_at":null,
+         "issued_reward_needs_refresh":true}
+        """.data(using: .utf8)!
+
+        let status = try Self.decoder.decode(ReferralStatus.self, from: json)
+        #expect(status.issuedRewardNeedsRefresh == true)
+        #expect(status.issuedRewardCode == nil)
     }
 
     // MARK: 85Blends 2.4.0 Referral Reward Redemption — claim_reward response decoding

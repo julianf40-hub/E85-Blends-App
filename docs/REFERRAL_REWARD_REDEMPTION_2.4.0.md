@@ -94,6 +94,46 @@ issues, all fixed in this revision (see §7c, §3, and §2 respectively for the 
 clean database**, including a dedicated forced-invariant-failure test for issue 3 (see §2) — not
 merely reasoned about.
 
+## 0c. Third correctness hardening pass
+
+A third, independent review of the second hardening pass's revision found one remaining
+user-facing state-machine bug and one further transactional hardening item, both fixed in this
+revision (see §7d and §2 respectively for the full design of each):
+
+1. **Issued-reward reentry / expired-reward recovery was broken** — `buildReferralStatusResponse`
+   correctly excludes an `issued` reward from `earned_months_available` (§0b issue 1 made this
+   true), but `ReferEarnView`'s reward card and `ReferralRewardRedemptionSheet`'s content both still
+   gated ENTIRELY on `earnedMonthsAvailable > 0`. The exact 5-referral scenario this broke: claim
+   succeeds → reward becomes `issued` → `earnedMonthsAvailable` correctly drops to 0 →
+   `issuedRewardCode` is present → the reward card (and the sheet's own reopening path) disappeared
+   anyway, because the ONLY gate checked was the now-zero count. A second, related bug: an issued
+   code that EXPIRES before the client ever calls `claim_reward` again produces
+   `earnedMonthsAvailable = 0 AND issuedRewardCode = null` — with no signal at all, the reward could
+   become PERMANENTLY STRANDED even though `claim_referral_reward` already knows exactly how to
+   recover it (void the dead code, revalidate, reissue or revoke). Fixed with a new CLIENT-SAFE
+   RECOVERY SIGNAL, `issued_reward_needs_refresh` — a boolean, `true` exactly when a reward is
+   `issued` but has no live code — computed entirely from data this migration's schema already
+   exposes (no new query, no mutation, the status endpoint stays read-only). iOS now gates on
+   `earnedMonthsAvailable > 0 OR issuedRewardCode != nil OR issuedRewardNeedsRefresh` via a single
+   `ReferralPresentation.rewardCardState` decision function, with three distinct card/sheet states
+   (earned / issued / needs-refresh) — see §7d.
+2. **`claim_referral_reward`'s own final code+reward issuance wasn't held to the same invariant
+   discipline as `fulfill_referral_reward_offer_code`** — both rows are locked and freshly confirmed
+   matching their expected status moments earlier in the same call, so a zero-row result on either
+   final UPDATE is a structurally-impossible invariant violation, but nothing verified that before
+   this pass. Fixed: the same `GET DIAGNOSTICS ... row_count` + `RAISE EXCEPTION` discipline §0b
+   issue 3 added to `fulfill_referral_reward_offer_code` now also covers `claim_referral_reward`'s
+   expired-code void, both branches of the expiration-revalidation reward transition, and the final
+   code-issuance + reward earned -> issued pair. Proven with a forced-invariant-failure test using
+   the SAME methodology as §0b issue 3's own test — see §2.
+
+**Every one of these was independently exercised against a real local Postgres 16 replay, from a
+clean database**, including a second dedicated forced-invariant-failure test (this time for
+`claim_referral_reward`'s own final issuance pair — see §2) — not merely reasoned about. Issue 1's
+fix was additionally verified via 4 new Node tests covering the exact live-code/expired-code/
+no-reward/environment-already-scoped cases, and new Swift Testing cases pinning the card-state
+decision logic (no Xcode toolchain in this environment — see §11 for what that leaves unverified).
+
 ## 1. Architecture
 
 ```
@@ -130,13 +170,14 @@ place across both revisions of this PR — never deployed, so editing it directl
 stacking a second migration on top, is correct here; see CLAUDE.md's own migration hygiene, which
 only forbids editing an already-*applied* migration).
 
-**Verified via a real local Postgres 16 replay, THREE times** (this container has full
+**Verified via a real local Postgres 16 replay, FOUR times** (this container has full
 `postgres`/`initdb` server binaries, not just the `psql` client) — once against the first revision
-of this PR, again against the first hardening pass, and again, fully from a clean database, against
-this second hardening pass. Every replay applied the ENTIRE existing migration chain in order
-(skipping only the one pre-existing, unrelated migration that requires the `pg_cron` extension,
-which this sandbox doesn't have installed), then this migration. The first replay caught and fixed
-one real bug before it ever reached the original PR: several `where`/`order by` clauses referenced
+of this PR, again against the first hardening pass, again against the second hardening pass, and
+again, fully from a clean database, against this third hardening pass. Every replay applied the
+ENTIRE existing migration chain in order (skipping only the one pre-existing, unrelated migration
+that requires the `pg_cron` extension, which this sandbox doesn't have installed), then this
+migration. The first replay caught and fixed one real bug before it ever reached the original PR:
+several `where`/`order by` clauses referenced
 `reward_id`/`milestone_number`/`product_id`/`apple_expires_at`/`referrer_participant_id`
 unqualified, which PL/pgSQL treated as ambiguous against those same names appearing as this
 function's own `RETURNS TABLE` columns ("column reference ... is ambiguous") — fixed by
@@ -145,12 +186,16 @@ colliding with a `RETURNS TABLE` name — was independently found by a prior, un
 DIFFERENT migration in this repo, `20260921000000_promo_campaign_foundation.sql`, whose own
 `.test.ts` file documents it could only be caught by a real Postgres instance, never a static text
 check; this feature's own local replay is exactly that missing verification step, now actually
-performed.) The THIRD replay, for this second hardening pass, caught a second real bug the same
+performed.) The THIRD replay, for the second hardening pass, caught a second real bug the same
 way: the baseline migration's own `referral_rewards_status` CHECK constraint only ever permitted
 `status in ('earned', 'fulfilled', 'revoked')` — with no `'issued'` value — so the very first
 `UPDATE ... SET status = 'issued'` under the new state machine failed outright with a constraint
-violation until this migration's own Section 1c widened it. Neither bug was found by static
-reading; both were found only by actually executing the SQL.
+violation until this migration's own Section 1c widened it. The FOURTH replay, for this third
+hardening pass, introduced no new schema objects (issue 1 is a TypeScript/iOS-only fix — see below
+— and issue 2 only adds `GET DIAGNOSTICS` checks to existing UPDATE statements) and confirmed zero
+regressions across the full scenario suite from all three prior passes, plus a new dedicated
+forced-invariant-failure test for `claim_referral_reward`'s own final issuance pair. None of these
+bugs was found by static reading; all were found only by actually executing the SQL.
 
 The first hardening pass's replay exercised, with real data: 5 and 10 qualifying referrals producing
 the expected earned reward(s); idempotent repeat claims; expired-code auto-void-and-replace;
@@ -191,13 +236,30 @@ harder case where the CODE update had already genuinely succeeded before the REW
 one forced to fail, proving the already-mutated code gets rolled back too, not just the failing
 statement's own effect.
 
+**This third hardening pass's replay**, fully from a clean database, re-ran the ENTIRE scenario
+suite from both prior hardening passes with zero regressions (the new `GET DIAGNOSTICS` checks
+never fired a false positive against any legitimate path), then added a dedicated
+forced-invariant-failure test for `claim_referral_reward`'s own final code+reward issuance pair —
+the exact same methodology as the second pass's fulfillment test: a test-only copy of the function
+with the REWARD UPDATE's `WHERE` clause deliberately mismatched (the CODE UPDATE immediately before
+it genuinely succeeds first), confirmed that (a) the call raises, (b) a subsequent statement in the
+SAME transaction is rejected with "current transaction is aborted," and (c) after an explicit
+`ROLLBACK` the code is back to `available` (never left `issued`) and the reward is back to `earned`
+(never left `issued`) — proving the ALREADY-SUCCEEDED code-issuance UPDATE is rolled back too, then
+confirmed the real, unmodified `claim_referral_reward` still succeeds normally on the same
+untouched fixture afterward (this was a forced test artifact, not a real bug). Issue 1's
+`issued_reward_needs_refresh` fix required no new Postgres scenario — it reads data the second
+pass's own scenarios (4 and 5, expiration in both directions) already exercised at the SQL layer;
+its own new coverage is 4 Node tests plus new Swift Testing cases (§11).
+
 **Every pure `_shared/*.ts` Node test in this feature was also actually EXECUTED** (not merely
 written) — `node --test supabase/functions/_shared/*.test.ts` runs cleanly under this container's
-Node 22 (native TypeScript support, no transpile step needed): **348 tests, 348 passing, 0
+Node 22 (native TypeScript support, no transpile step needed): **352 tests, 352 passing, 0
 failing**, across every shared module this feature touches or added (347 after the first hardening
-pass, +1 new test for the `'issued'` milestone-progress case added by this second pass). An earlier
-revision of this document said Deno-file testing was entirely unavailable in this environment; that
-undersold what Node 22 can actually execute here — corrected in an earlier revision.
+pass, 348 after the second, +4 new tests for `issued_reward_needs_refresh` added by this third
+pass). An earlier revision of this document said Deno-file testing was entirely unavailable in this
+environment; that undersold what Node 22 can actually execute here — corrected in an earlier
+revision.
 
 **Zero changes to any existing FUNCTION'S body** — in particular,
 `private.process_referral_subscription_event` (the existing qualification/refund function) is
@@ -358,6 +420,10 @@ returns a reward/participant UUID, another participant's data, or unused code-po
 now()`, so an issued code that has already expired (but not yet reclaimed by a subsequent
 `claim_reward` call — see §2's Step 5b) is never shown to the client as redeemable; the next
 `claim_reward` call is what actually voids it and allocates a fresh one.
+
+**Third hardening pass:** a fifth field, `issued_reward_needs_refresh` (boolean), is now ALWAYS
+present (never omitted) — see §7d for the full client-safe-recovery-signal design this closes a
+real user-facing bug for, and §0c issue 1 for the bug itself.
 
 ## 7. Paid-referral qualification after a free reward month
 
@@ -553,6 +619,61 @@ code change. `computeNextMilestoneProgress` (`_shared/referral-milestones.ts`) D
 `'fulfilled'` — otherwise an issued-but-not-yet-fulfilled milestone would incorrectly stop counting
 as "reached," regressing the next-milestone target. Covered by a new Node test.
 
+## 7d. Issued-reward reentry / expired-reward recovery (third hardening pass)
+
+**The bug (§0c issue 1):** once `earned_months_available` correctly excludes an `issued` reward
+(§7c/§0b issue 1), a client that gates its ENTIRE redemption entry point on
+`earned_months_available > 0` alone loses that entry point the instant a claim succeeds — the exact
+5-referral scenario: claim succeeds → reward `issued` → `earned_months_available` drops to 0 →
+`issued_reward_code` is populated → but the UI never checked that field for VISIBILITY, only for
+copy. A second, more serious form of the same bug: an issued code that EXPIRES before the client
+ever calls `claim_reward` again produces `earned_months_available = 0 AND issued_reward_code =
+null` — with literally no signal, every client entry point back into the redemption flow vanishes,
+even though `claim_referral_reward` (§7c) already knows exactly how to recover this exact reward
+(void the dead code, revalidate against the current qualified count, reissue or revoke). The reward
+could become PERMANENTLY STRANDED — never fulfilled, never explicitly resolved — purely because the
+client had no way to know it needed to ask again.
+
+**The fix — a client-safe recovery signal, not a client-side decision:** `buildReferralStatusResponse`
+(`_shared/referral-api-response.ts`) computes a new boolean, `issued_reward_needs_refresh`, purely
+from data this response already assembles — `true` exactly when `input.rewards` contains a
+`status = 'issued'` row AND `input.issuedRewardCode` is `null` (an issued reward with no live code).
+No new query: `loadStatusResponse` already fetches both. No mutation: the status endpoint stays
+strictly read-only — reading it never voids a code, revalidates a milestone, or changes any
+`referral_rewards`/`referral_reward_offer_codes` row; only a `claim_reward` call does that (§7c).
+Never exposes the expired code itself (`issued_reward_code` stays `null` in this case) or any
+internal identifier. The client's only correct response to `true` is to call `claim_reward` again —
+the SAME atomic operation as a normal claim; `private.claim_referral_reward` alone decides whether
+that reissues a fresh code or revokes the reward outright, exactly as it already did before this
+signal existed (§7c) — this fix adds a way to KNOW to ask, never a new way to decide the answer.
+
+**iOS:** `ReferralPresentation.rewardCardState(earnedMonthsAvailable:issuedRewardCode:
+issuedRewardNeedsRefresh:)` is the single decision function both `ReferEarnView`'s reward card and
+`ReferralRewardRedemptionSheet`'s content switch on, returning one of three states (or `nil` for
+"nothing to show"): `.earned(count:)` (the normal, pre-existing "go claim it" state),
+`.issuedCode` (a live code exists — reopen the sheet to see/copy/redeem it, never re-claim), and
+`.needsRefresh` (the code expired — the ONLY remaining way back to `claim_referral_reward`'s own
+recovery logic is calling `claim_reward` again). Precedence is fixed and total: a live issued code
+always wins (it is structurally the most specific, most actionable state), then `earned`, then
+`needsRefresh`. The redemption sheet's `.needsRefresh` state shows a "Refresh Reward" action that
+calls the IDENTICAL `ReferralManager.shared.claimReward(requestedProductID:)` a normal claim uses
+(same plan-picker/active-subscriber branching when a plan choice is needed) — the sheet never
+duplicates `claim_referral_reward`'s own reissue-vs-revoke decision; it only picks copy ("Refresh
+Reward" vs. "Redeem Free Month") based on which state triggered the confirmation. After the
+response: a `"claimed"` outcome re-renders from the backend's fresh status (a new code now
+appears); any other outcome (including `expired_no_longer_qualified` — §7c) surfaces its existing
+explanatory copy, now also shown in the "nothing to redeem" fallback state so a refresh attempt that
+ends there isn't silently unexplained.
+
+**Why this couldn't be caught by the second hardening pass's own tests:** every existing Swift
+preview/test for the "reward code issued" state had `earnedMonthsAvailable: 1` alongside a
+populated `issuedRewardCode` — a combination the real backend NEVER produces once rule 3's
+`earned -> issued -> fulfilled` lifecycle is in effect (§7c), since `earned_months_available`
+excludes `issued` rows by construction. That artificial combination happened to keep the
+`earnedMonthsAvailable > 0` gate satisfied, masking the exact bug this pass fixes. The "Reward code
+issued" preview is corrected to `earnedMonthsAvailable: 0` (the real post-claim state), and a new
+"Reward needs refresh" preview models the expired-code state explicitly — see §11.
+
 ## 8. Files changed
 
 **Migrations:** `supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql` (new).
@@ -567,7 +688,8 @@ current-installation environment resolution; `resolveClaimEnvironment` removed),
 `supabase/functions/_shared/referral-api-env.ts`,
 `supabase/functions/_shared/referral-api-validation.ts`,
 `supabase/functions/_shared/referral-api-response.ts` (second hardening pass — comment only:
-`'issued'` exclusion from `earned_months_available`),
+`'issued'` exclusion from `earned_months_available`; THIRD hardening pass — new
+`issued_reward_needs_refresh` field/derivation, see §7d),
 `supabase/functions/_shared/referral-milestones.ts` (second hardening pass — `'issued'` added to
 `RewardMilestoneRow.status`; `computeNextMilestoneProgress` treats it like `earned`/`fulfilled`),
 `supabase/functions/_shared/revenuecat-types.ts`,
@@ -577,25 +699,38 @@ current-installation environment resolution; `resolveClaimEnvironment` removed),
 **Tests (Node, `_shared/*.test.ts`):**
 `referral-reward-offer-codes.test.ts` (new), `referral-active-product.test.ts` (new),
 `referral-classification.test.ts`, `referral-api-validation.test.ts`,
-`referral-api-response.test.ts` (second hardening pass — new `'issued'`-exclusion case),
+`referral-api-response.test.ts` (second hardening pass — new `'issued'`-exclusion case; THIRD
+hardening pass — 4 new `issued_reward_needs_refresh` cases),
 `referral-api-env.test.ts`,
 `referral-milestones.test.ts` (second hardening pass — new `'issued'`-counts-as-reached case).
 
 **iOS:**
 `EightyFiveBlends/ReferralModels.swift` (second hardening pass — doc comments: new
-`expired_no_longer_qualified` claim outcome, broadened `environmentUnresolvable` scope),
+`expired_no_longer_qualified` claim outcome, broadened `environmentUnresolvable` scope; THIRD
+hardening pass — new `issuedRewardNeedsRefresh` field, and a new explicit `init(from:)` replacing
+the synthesized Decodable conformance so a response missing this key still decodes it as `false`
+rather than throwing — see §7d/§11),
 `ReferralAPIService.swift`, `ReferralManager.swift` (second hardening pass — doc-comment-only
 re-bootstrap verification note; no behavior change), `ReferralPresentation.swift` (second hardening
-pass — new `claimStatusMessage` case for `expired_no_longer_qualified`), `ReferEarnView.swift`,
+pass — new `claimStatusMessage` case for `expired_no_longer_qualified`; THIRD hardening pass — new
+`RewardCardState` enum + `rewardCardState`/`rewardCardHeadline(for:)`/`rewardCardSubtitle(for:)`,
+see §7d), `ReferEarnView.swift` (THIRD hardening pass — reward card now gates on `rewardCardState`
+instead of `earnedMonthsAvailable > 0` alone; "Reward code issued" preview corrected, new "Reward
+needs refresh" preview),
 `ReviewRequestManager.swift` (new `AppStoreDestination.redeemOfferCode(_:)`),
-`ReferralRewardRedemptionSheet.swift` (new — the real redemption UI),
+`ReferralRewardRedemptionSheet.swift` (new — the real redemption UI; THIRD hardening pass — content
+now switches on the same `rewardCardState`, new `.needsRefresh` "Refresh Reward" flow reusing the
+identical `claimReward` call, `fulfilledOrNothingToRedeemSection` now surfaces a lingering
+`claimMessage`),
 `RevenueCatSubscriptionService.swift` (first hardening pass — new
 `RevenueCatClient.syncPurchases()` + `syncAfterExternalRedemption()`), `SubscriptionManager.swift`
 (first hardening pass — thin `syncAfterExternalRedemption()` wrapper).
 
-**iOS tests:** `ReferralModelsTests.swift`, `ReferralPresentationTests.swift` (second hardening
-pass — new `expired_no_longer_qualified` cases), `ReferralManagerTests.swift`,
-`ReviewRequestManagerTests.swift`.
+**iOS tests:** `ReferralModelsTests.swift` (THIRD hardening pass — new
+`issued_reward_needs_refresh` decode cases, including the critical missing-key-defaults-to-false
+backward-compatibility case), `ReferralPresentationTests.swift` (second hardening pass — new
+`expired_no_longer_qualified` cases; THIRD hardening pass — new `rewardCardState` test suite),
+`ReferralManagerTests.swift`, `ReviewRequestManagerTests.swift`.
 
 **Untouched, as scoped:** the Nearby E85 widget, station/ethanol reporting, Trip Planner, ads, the
 general promo-campaign system (`20260921000000_promo_campaign_foundation.sql` remains unapplied and
@@ -717,6 +852,19 @@ manually in App Store Connect).
   nonexistent separate "Offer Identifier" field. See §0 issue 1 and §4. This matters for security
   review specifically because a misconfigured field in App Store Connect would silently break
   webhook fulfillment matching in production with no client-visible error.
+- **Recovery-signal read-only guarantee (third hardening pass):** `issued_reward_needs_refresh`
+  (§7d) is computed purely from already-fetched data inside `buildReferralStatusResponse` — reading
+  it (`status`/`bootstrap`/`apply_code`, none of which call `claim_reward`) never voids a code,
+  revalidates a milestone, or writes to `referral_rewards`/`referral_reward_offer_codes`. It never
+  exposes the expired code itself or any internal identifier; the only state it can influence is
+  whether the CLIENT decides to call `claim_reward` again, and that call's own outcome is decided
+  entirely server-side, exactly as before this signal existed.
+- **Claim partial-update integrity (third hardening pass):** `claim_referral_reward`'s final
+  code-issuance + reward earned -> issued pair (and its own expiration-revalidation transitions) now
+  carry the SAME `GET DIAGNOSTICS` + `RAISE EXCEPTION` discipline §0b issue 3 added to
+  `fulfill_referral_reward_offer_code` — an impossible zero-row result aborts the whole call rather
+  than ever returning `'claimed'` on top of a partial mutation. Proven with a second dedicated
+  forced-invariant-failure test. See §2/§7c.
 
 Raw Apple codes are treated as sensitive credentials throughout — never stored in app source, never
 logged, never in analytics, never reachable through anon/authenticated PostgREST, and returned only
@@ -726,38 +874,44 @@ to the authenticated installation they were assigned to.
 
 - **The migration's SQL was actually executed and verified**, against a real, temporary local
   Postgres 16 server (this container has the full server binaries, not just `psql`) replaying the
-  entire existing migration chain — THREE times (once before, once after the first hardening pass,
-  and once more, fully from a clean database, after this second hardening pass) — see §2 for exactly
-  what was exercised, including both real bugs this process found and fixed (a column-ambiguity bug
-  in the first pass; the `referral_rewards_status` CHECK constraint gap in the second), and the full
-  scenario lists for both passes (expiration replacement in both directions, revocation immunity
-  while issued, requalification, a same-participant PRODUCTION/SANDBOX switch, status-response
-  environment scoping, and a dedicated forced-invariant-failure test proving the fulfillment
-  transaction-rollback mechanism, all exercised with real data via `psql`). What that local replay
-  does **not** cover: genuine multi-connection concurrency (SKIP LOCKED behavior under two truly
-  simultaneous claims, lock-ordering under load), RLS enforcement from an actual
-  `anon`/`authenticated` role connection (grants were verified by reading them, not by attempting a
-  live denied connection), and anything specific to Supabase's own connection pooler/transaction
-  mode.
+  entire existing migration chain — FOUR times (once before, once after the first hardening pass,
+  once after the second, and once more, fully from a clean database, after this third hardening
+  pass) — see §2 for exactly what was exercised, including all real bugs this process found and
+  fixed (a column-ambiguity bug in the first pass; the `referral_rewards_status` CHECK constraint gap
+  in the second), and the full scenario lists across all three passes (expiration replacement in both
+  directions, revocation immunity while issued, requalification, a same-participant
+  PRODUCTION/SANDBOX switch, status-response environment scoping, and TWO dedicated
+  forced-invariant-failure tests proving the transaction-rollback mechanism in both
+  `fulfill_referral_reward_offer_code` and `claim_referral_reward`, all exercised with real data via
+  `psql`). What that local replay does **not** cover: genuine multi-connection concurrency (SKIP
+  LOCKED behavior under two truly simultaneous claims, lock-ordering under load), RLS enforcement
+  from an actual `anon`/`authenticated` role connection (grants were verified by reading them, not by
+  attempting a live denied connection), and anything specific to Supabase's own connection
+  pooler/transaction mode.
 - **Correction to an earlier revision of this document:** an earlier revision said Deno-file testing
   was "entirely unavailable" in this environment, implying the `_shared/*.test.ts` suite was only
   written/reviewed, not actually run. That undersold what this environment can do: Node.js 22 is
   installed (`/opt/node22/bin/node`) with native TypeScript stripping, and `node --test
   supabase/functions/_shared/*.test.ts` directly executes the entire pure-TS, Deno-free `_shared`
   test suite for real — no transpile step, no Deno runtime needed for these files specifically.
-  That run currently passes **348/348** (0 failing; 347 after the first hardening pass, +1 new test
-  for the `'issued'`-counts-as-reached milestone-progress case added by this second pass). What
-  genuinely remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
+  That run currently passes **352/352** (0 failing; 347 after the first hardening pass, 348 after the
+  second, +4 new tests for `issued_reward_needs_refresh` added by this third pass). What genuinely
+  remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
   `revenuecat-webhook/index.ts` themselves (the HTTP handler entry points) and `database.ts` (which
   only runs under Deno's `npm:postgres` specifier) still require an actual Deno runtime, which is
   not available here — those three files remain static-review-only, including the second hardening
   pass's own `authenticateInstallation`/`handleBootstrap` rewrite. Every `_shared/*.ts` module they
   call into, including `referral-milestones.ts`'s `'issued'`-state handling,
-  `referral-reward-offer-codes.ts`, and `referral-active-product.ts` logic, was Node-executed.
+  `referral-reward-offer-codes.ts`, `referral-active-product.ts`, and
+  `referral-api-response.ts`'s `issued_reward_needs_refresh` derivation, was Node-executed.
 - **No Xcode/xcodebuild/swift toolchain was available** — every Swift file in this PR, including
-  `RevenueCatSubscriptionService.swift`'s new `syncPurchases()`/`syncAfterExternalRedemption()` and
-  the redemption sheet's updated `scenePhase` handler, is static-review-only; nothing was compiled
-  or run. Do not treat anything in this document as a claim of successful Swift compilation.
+  `RevenueCatSubscriptionService.swift`'s new `syncPurchases()`/`syncAfterExternalRedemption()`, the
+  redemption sheet's updated `scenePhase` handler, and this third hardening pass's own
+  `ReferralPresentation.rewardCardState`/`ReferEarnView`/`ReferralRewardRedemptionSheet`/
+  `ReferralStatus.init(from:)` changes, is static-review-only; nothing was compiled or run. New Swift
+  Testing cases for `rewardCardState` and the new decode paths were written and carefully
+  hand-traced against Swift's actual `Decodable`/enum semantics, but never compiled or executed — do
+  not treat anything in this document as a claim of successful Swift compilation.
 - **No real App Store Connect access** — the three Offer Code offers, their exact behavior for
   New/Existing/Expired subscribers, and the `apps.apple.com/redeem?ctx=offercodes&id=…&code=…`
   redemption URL format could not be opened/verified end-to-end against a live app. The URL format
@@ -774,22 +928,22 @@ to the authenticated installation they were assigned to.
   behavior and timing after a real external Offer Code redemption (§0 issue 4) is based on
   RevenueCat's own SDK source/changelog documentation, not an observed live call in this
   environment.
-- **41 backend test scenarios, 14 iOS test scenarios** were specified across the original PR and
-  both hardening passes (28 original + 5 from the first pass + 8 from this second pass's own
-  required-tests list: earned->issued, refund-after-issuance immunity, redemption-after-refund,
-  expiration-while-still-qualified, expiration-after-count-drop, a same-participant
-  PRODUCTION/SANDBOX switch, status-response environment scoping, and the fulfillment
-  transaction-rollback invariant). All are backed by new or updated Node/Swift Testing unit tests in
-  this PR (pure classification, validation, response-shape, and manager-level logic — 348/348 Node
-  tests passing, see above), and every SQL-level scenario among them — across BOTH hardening
-  passes — was additionally exercised directly against a local Postgres replay: qualification
-  counts, claim issuance and idempotency, legacy-product/invalid-product safe failure, fulfillment
-  matching/rejection/idempotency, code void-and-replacement, terminal-state enforcement,
+- **47 backend test scenarios, 18 iOS test scenarios** were specified across the original PR and all
+  three hardening passes (28 original + 5 from the first pass + 8 from the second + 6 from this
+  third pass's own required-tests list: issued-reward-with-live-code, expired-issued-code,
+  wrong-environment-never-triggers-refresh, claim-from-needs-refresh-still-qualified,
+  claim-from-needs-refresh-no-longer-qualified, and the claim-issuance transaction-rollback
+  invariant). All are backed by new or updated Node/Swift Testing unit tests in this PR (pure
+  classification, validation, response-shape, card-state-decision, and manager-level logic —
+  352/352 Node tests passing, see above), and every SQL-level scenario among them — across all three
+  hardening passes — was additionally exercised directly against a local Postgres replay:
+  qualification counts, claim issuance and idempotency, legacy-product/invalid-product safe failure,
+  fulfillment matching/rejection/idempotency, code void-and-replacement, terminal-state enforcement,
   expired-issued-code replacement in both directions (still-qualified and no-longer-qualified),
   revoke-immunity while issued, requalification after revocation, sandbox/production isolation at
-  both the claim and fulfillment layers including a same-participant multi-environment case, status-
-  response environment scoping, and the fulfillment invariant-violation-forces-full-rollback
-  behavior (via the dedicated forced-failure test, §2). What remains genuinely unverified even after
-  all three replays: TRUE multi-connection concurrent claims (one code total under a real race, not
-  just sequential calls), and anything requiring an actual `anon`/`authenticated` Postgres role
-  connection to prove RLS denial rather than reading the grants.
+  both the claim and fulfillment layers including a same-participant multi-environment case,
+  status-response environment scoping, and TWO forced-invariant-violation-forces-full-rollback
+  behaviors (fulfillment and claim issuance, via two dedicated forced-failure tests, §2). What
+  remains genuinely unverified even after all four replays: TRUE multi-connection concurrent claims
+  (one code total under a real race, not just sequential calls), and anything requiring an actual
+  `anon`/`authenticated` Postgres role connection to prove RLS denial rather than reading the grants.
