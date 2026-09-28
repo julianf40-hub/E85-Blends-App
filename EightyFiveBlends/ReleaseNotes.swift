@@ -26,6 +26,7 @@ enum ReleaseNotes {
         "More Pro Plan Options — 85Blends Pro now offers Monthly, 3 Months, and Annual billing, giving you new ways to save on Pro.",
         "Improved Pro Experience — a refreshed upgrade and subscriber experience makes managing Pro, restoring purchases, and accessing benefits easier.",
         "Refreshed More & Settings — important Pro, referral, preference, help, and support options are easier to find.",
+        "Review & Share 85Blends — easier ways to leave feedback on the App Store and share 85Blends with other E85 drivers.",
         "Widget & UI Polish — improved widget layouts, map presentation, ethanol displays, and how quickly your Pro status updates.",
         "Bug Fixes & Reliability — improvements across station reporting, referrals, subscriptions, navigation, and general app stability.",
     ]
