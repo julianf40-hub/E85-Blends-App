@@ -70,27 +70,59 @@ struct PendingPriceContribution: Codable, Equatable, Sendable {
     /// nil for a contribution recorded before this field existed (any pre-fix persisted blob —
     /// the key is simply absent from its JSON) or, in principle, for one that reached this
     /// initializer without going through
-    /// MapsRoutingHelper.recordPendingE85PriceContributionIfEligible. The `nil` default here is
-    /// for the plain memberwise initializer only (so every pre-existing non-JSON call site —
-    /// including other test files' own fixtures — keeps compiling unchanged); it plays no part
-    /// in JSON decoding, which is handled explicitly below via `init(from:)` rather than relying
-    /// on this default. PendingPriceContributionStore.current treats nil exactly like a
-    /// corrupt/unrecognized payload and never surfaces it, which is what lets an old, pre-fix
-    /// blob decode cleanly and still be discarded, with no separate migration step.
-    let e85Evidence: PendingPriceContributionE85Evidence? = nil
+    /// MapsRoutingHelper.recordPendingE85PriceContributionIfEligible. PendingPriceContributionStore
+    /// .current treats nil exactly like a corrupt/unrecognized payload and never surfaces it,
+    /// which is what lets an old, pre-fix blob decode cleanly and still be discarded, with no
+    /// separate migration step. JSON decoding is handled explicitly below via `init(from:)`,
+    /// never via this property's own default — see the explicit `init(...)` right below for why
+    /// this has no declaration-time default of its own.
+    let e85Evidence: PendingPriceContributionE85Evidence?
+
+    /// Explicit initializer (a Swift `let` property with a declaration-time default is excluded
+    /// from the compiler-synthesized memberwise initializer entirely — not merely given a
+    /// defaultable parameter, the way a `var` with a default would be — so `e85Evidence` cannot
+    /// have `= nil` on the property itself and still be passable here; the default instead lives
+    /// on this initializer's own parameter). Every pre-existing call site that omits `e85Evidence`
+    /// (including other test files' own fixtures) keeps compiling via that parameter default; the
+    /// three E85-verified call sites in MapsRoutingHelper pass it explicitly.
+    init(
+        stationKey: String,
+        stationName: String,
+        streetAddress: String?,
+        city: String?,
+        state: String?,
+        zip: String?,
+        latitude: Double?,
+        longitude: Double?,
+        directionsOpenedAt: Date,
+        mapsProvider: String?,
+        e85Evidence: PendingPriceContributionE85Evidence? = nil
+    ) {
+        self.stationKey = stationKey
+        self.stationName = stationName
+        self.streetAddress = streetAddress
+        self.city = city
+        self.state = state
+        self.zip = zip
+        self.latitude = latitude
+        self.longitude = longitude
+        self.directionsOpenedAt = directionsOpenedAt
+        self.mapsProvider = mapsProvider
+        self.e85Evidence = e85Evidence
+    }
 }
 
 // MARK: - Explicit Codable conformance
 //
-// Written by hand (in an extension, so the struct above keeps its free, compiler-synthesized
-// memberwise initializer — memberwise-init synthesis is only suppressed by a custom initializer
-// declared inside the struct's own primary body, never by one added via an extension) rather than
-// relying on Swift's synthesized Decodable, whose "an Optional property with no key present
-// decodes to nil" behavior is real but implicit. This makes that behavior an explicit,
-// intentional `decodeIfPresent` call instead, so a reviewer (or a future editor of this file)
-// doesn't have to know that synthesis detail to see how backward compatibility actually works.
-// Every OTHER field's wire format is unchanged — same keys, same optional-omits-when-nil
-// encoding — this only changes how e85Evidence specifically is decoded/documented.
+// Written by hand, in an extension, rather than relying on Swift's synthesized Decodable — whose
+// "an Optional property with no key present decodes to nil" behavior is real but implicit. This
+// makes that behavior an explicit, intentional `decodeIfPresent` call instead, so a reviewer (or
+// a future editor of this file) doesn't have to know that synthesis detail to see how backward
+// compatibility actually works. `init(from:)` here is a DIFFERENT initializer from the explicit
+// memberwise-style `init(stationKey:...)` declared above (distinct parameter lists) — the two
+// coexist without conflict; neither one suppresses the other. Every OTHER field's wire format is
+// unchanged — same keys, same optional-omits-when-nil encoding — this only changes how
+// e85Evidence specifically is decoded/documented.
 extension PendingPriceContribution {
     private enum CodingKeys: String, CodingKey {
         case stationKey, stationName, streetAddress, city, state, zip, latitude, longitude
