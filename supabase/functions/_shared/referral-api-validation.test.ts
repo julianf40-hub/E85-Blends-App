@@ -10,6 +10,7 @@ import {
   isValidRevenueCatEnvironment,
   isValidReferralCodeFormat,
   isValidAppVersion,
+  isValidClaimRewardProductId,
   normalizeReferralCode,
   parseApiRequest,
   MIN_INSTALLATION_SECRET_LENGTH,
@@ -282,4 +283,83 @@ test("parseApiRequest: bootstrap with app_version at exactly 64 chars is accepte
 test("parseApiRequest: bootstrap with a non-string app_version is rejected", () => {
   const result = parseApiRequest(bootstrapBody({ app_version: 240 }));
   assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
+});
+
+// MARK: 85Blends 2.4.0 Referral Reward Redemption — claim_reward
+
+test("isValidClaimRewardProductId: accepts exactly the three shipping products", () => {
+  assert.equal(isValidClaimRewardProductId("com.85blends.subscription.monthly"), true);
+  assert.equal(isValidClaimRewardProductId("com.85blends.subscription.threemonth"), true);
+  assert.equal(isValidClaimRewardProductId("com.85blends.subscription.annual"), true);
+});
+
+test("isValidClaimRewardProductId: rejects the legacy quarterly product, an unrelated string, and non-strings", () => {
+  assert.equal(isValidClaimRewardProductId("com.85blends.subscription.quarterly"), false);
+  assert.equal(isValidClaimRewardProductId("com.example.unrelated"), false);
+  assert.equal(isValidClaimRewardProductId(""), false);
+  assert.equal(isValidClaimRewardProductId(null), false);
+  assert.equal(isValidClaimRewardProductId(42), false);
+});
+
+test("parseApiRequest: valid claim_reward request with a requested product parses cleanly", () => {
+  const result = parseApiRequest({
+    action: "claim_reward",
+    client_installation_id: VALID_UUID,
+    installation_secret: VALID_SECRET,
+    requested_product_id: "com.85blends.subscription.annual",
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    request: {
+      action: "claim_reward",
+      clientInstallationId: VALID_UUID,
+      installationSecret: VALID_SECRET,
+      requestedProductId: "com.85blends.subscription.annual",
+    },
+  });
+});
+
+test("parseApiRequest: claim_reward with absent/null requested_product_id -> requestedProductId null (the active-subscriber path)", () => {
+  const absent = parseApiRequest({
+    action: "claim_reward",
+    client_installation_id: VALID_UUID,
+    installation_secret: VALID_SECRET,
+  });
+  assert.equal(absent.ok, true);
+  if (absent.ok && absent.request.action === "claim_reward") {
+    assert.equal(absent.request.requestedProductId, null);
+  } else {
+    assert.fail("expected a parsed claim_reward request");
+  }
+
+  const explicitNull = parseApiRequest({
+    action: "claim_reward",
+    client_installation_id: VALID_UUID,
+    installation_secret: VALID_SECRET,
+    requested_product_id: null,
+  });
+  assert.equal(explicitNull.ok, true);
+  if (explicitNull.ok && explicitNull.request.action === "claim_reward") {
+    assert.equal(explicitNull.request.requestedProductId, null);
+  } else {
+    assert.fail("expected a parsed claim_reward request");
+  }
+});
+
+test("parseApiRequest: claim_reward with an unsupported/legacy requested_product_id -> invalid_request_body", () => {
+  const result = parseApiRequest({
+    action: "claim_reward",
+    client_installation_id: VALID_UUID,
+    installation_secret: VALID_SECRET,
+    requested_product_id: "com.85blends.subscription.quarterly",
+  });
+  assert.deepEqual(result, { ok: false, code: "invalid_request_body" });
+});
+
+test("parseApiRequest: claim_reward missing/malformed credentials -> invalid_request_body", () => {
+  assert.deepEqual(parseApiRequest({ action: "claim_reward" }), { ok: false, code: "invalid_request_body" });
+  assert.deepEqual(
+    parseApiRequest({ action: "claim_reward", client_installation_id: "not-a-uuid", installation_secret: VALID_SECRET }),
+    { ok: false, code: "invalid_request_body" },
+  );
 });

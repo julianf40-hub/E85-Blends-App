@@ -200,4 +200,24 @@ enum AppStoreDestination {
     static var share: URL {
         URL(string: "https://apps.apple.com/app/id\(appStoreID)")!
     }
+
+    /// 85Blends 2.4.0 Referral Reward Redemption — Apple's documented Offer Code redemption
+    /// universal link (`ctx=offercodes`), which opens directly into the App Store's own redemption
+    /// sheet for the given one-time code, pre-filled — see this feature's own deployment
+    /// documentation for the Sandbox verification step this URL format still needs before its first
+    /// real production use (this environment has no way to open a live URL to confirm it directly).
+    /// Unlike `writeReview`/`share` above, `code` is DYNAMIC, backend-issued content, so this
+    /// returns `URL?` and builds the query string via `URLComponents` (correct percent-encoding)
+    /// rather than raw string interpolation — never force-unwrapped. Never logs, persists outside
+    /// the view's own transient state, or includes in analytics — the caller (ReferEarnView) is
+    /// this URL's only reader, exactly like `code` itself.
+    static func redeemOfferCode(_ code: String) -> URL? {
+        var components = URLComponents(string: "https://apps.apple.com/redeem")
+        components?.queryItems = [
+            URLQueryItem(name: "ctx", value: "offercodes"),
+            URLQueryItem(name: "id", value: appStoreID),
+            URLQueryItem(name: "code", value: code),
+        ]
+        return components?.url
+    }
 }

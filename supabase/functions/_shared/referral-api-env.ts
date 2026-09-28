@@ -22,10 +22,20 @@
 // make the configuration usable; it is valid only when SUPABASE_DB_URL is present AND at least one
 // usable key exists from EITHER source.
 
+// 85Blends 2.4.0 Referral Reward Redemption — REVENUECAT_PROJECT_ID/REVENUECAT_V2_SECRET_API_KEY
+// are now also required. claim_reward must determine an ACTIVE Pro subscriber's currently active
+// product BACKEND-AUTHORITATIVELY (never trust a client-supplied product id — see this feature's
+// own task spec, Phase 1), which means fetching this participant's canonical RevenueCat
+// subscription state via the SAME REST API v2 client revenuecat-webhook already uses (see
+// _shared/revenuecat-api.ts's fetchCustomerSubscriptions, reused as-is — not reimplemented here).
+// REVENUECAT_V2_SECRET_API_KEY is a genuinely sensitive credential — never logged, embedded in a
+// response, or exposed to the client, exactly like SUPABASE_DB_URL above.
 export const REFERRAL_API_ENV_VAR_NAMES = [
   "SUPABASE_DB_URL",
   "SUPABASE_PUBLISHABLE_KEYS",
   "SUPABASE_ANON_KEY",
+  "REVENUECAT_PROJECT_ID",
+  "REVENUECAT_V2_SECRET_API_KEY",
 ] as const;
 
 export interface ReferralApiEnvConfig {
@@ -34,6 +44,14 @@ export interface ReferralApiEnvConfig {
    *  plus (if present) the legacy SUPABASE_ANON_KEY. A request's key is accepted if it matches ANY
    *  entry — see referral-api/index.ts. Never logged. */
   clientApiKeys: string[];
+  /** 85Blends 2.4.0 Referral Reward Redemption — same RevenueCat project id revenuecat-webhook
+   *  already uses (see _shared/env.ts's WebhookEnvConfig.revenueCatProjectId). Not itself secret,
+   *  but never logged regardless, for the same "don't build a habit of it" discipline this codebase
+   *  already applies to every other configuration value. */
+  revenueCatProjectId: string;
+  /** 85Blends 2.4.0 Referral Reward Redemption — same RevenueCat v2 secret API key
+   *  revenuecat-webhook already uses. Genuinely sensitive — never logged. */
+  revenueCatV2SecretApiKey: string;
 }
 
 export type ResolveReferralApiEnvResult =
@@ -77,6 +95,8 @@ export function resolveReferralApiEnvConfig(
   const dbUrl = getValue("SUPABASE_DB_URL");
   const publishableKeys = parsePublishableKeys(getValue("SUPABASE_PUBLISHABLE_KEYS"));
   const anonKey = getValue("SUPABASE_ANON_KEY");
+  const revenueCatProjectId = getValue("REVENUECAT_PROJECT_ID");
+  const revenueCatV2SecretApiKey = getValue("REVENUECAT_V2_SECRET_API_KEY");
 
   const clientApiKeys = [...publishableKeys];
   if (isPresent(anonKey)) {
@@ -86,6 +106,8 @@ export function resolveReferralApiEnvConfig(
   const missing: string[] = [];
   if (!isPresent(dbUrl)) missing.push("SUPABASE_DB_URL");
   if (clientApiKeys.length === 0) missing.push("SUPABASE_PUBLISHABLE_KEYS or SUPABASE_ANON_KEY");
+  if (!isPresent(revenueCatProjectId)) missing.push("REVENUECAT_PROJECT_ID");
+  if (!isPresent(revenueCatV2SecretApiKey)) missing.push("REVENUECAT_V2_SECRET_API_KEY");
 
   if (missing.length > 0) {
     return { ok: false, missing };
@@ -96,6 +118,8 @@ export function resolveReferralApiEnvConfig(
     config: {
       supabaseDbUrl: dbUrl as string,
       clientApiKeys,
+      revenueCatProjectId: revenueCatProjectId as string,
+      revenueCatV2SecretApiKey: revenueCatV2SecretApiKey as string,
     },
   };
 }

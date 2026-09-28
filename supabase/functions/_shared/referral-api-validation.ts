@@ -97,7 +97,36 @@ export interface ApplyCodeRequest {
   referralCode: string;
 }
 
-export type ReferralApiRequest = BootstrapRequest | StatusRequest | ApplyCodeRequest;
+/** The only three products claim_reward will ever issue a code for — mirrors
+ *  _shared/referral-active-product.ts's REFERRAL_REWARD_SUPPORTED_PRODUCT_IDS exactly (kept as an
+ *  independent literal here, not imported, so this pure validation module has no dependency on that
+ *  RevenueCat-adjacent one — see this file's own header on why it stays Deno/Postgres-free). */
+const CLAIM_REWARD_SUPPORTED_PRODUCT_IDS = [
+  "com.85blends.subscription.monthly",
+  "com.85blends.subscription.threemonth",
+  "com.85blends.subscription.annual",
+] as const;
+
+export function isValidClaimRewardProductId(value: unknown): value is string {
+  return typeof value === "string" && (CLAIM_REWARD_SUPPORTED_PRODUCT_IDS as readonly string[]).includes(value);
+}
+
+export interface ClaimRewardRequest {
+  action: "claim_reward";
+  clientInstallationId: string;
+  installationSecret: string;
+  /** Only meaningful when the authenticated participant is NOT currently an active Pro subscriber
+   *  (this feature's task spec, Phase 4: "FREE / EXPIRED USER — allow them to choose"). Silently
+   *  IGNORED by referral-api/index.ts's claim_reward handler for an active subscriber — their code
+   *  is always issued for their own currently active product, never a client-requested one (Phase
+   *  1's "backend is authoritative" rule) — so accepting-but-ignoring this field for that case,
+   *  rather than rejecting the request outright, is a deliberate choice, not an oversight. `null`
+   *  when the client hasn't made a selection (always valid; only relevant once the backend confirms
+   *  a selection is actually needed). */
+  requestedProductId: string | null;
+}
+
+export type ReferralApiRequest = BootstrapRequest | StatusRequest | ApplyCodeRequest | ClaimRewardRequest;
 
 export type ParsedApiRequest =
   | { ok: true; request: ReferralApiRequest }
@@ -121,7 +150,12 @@ export function parseApiRequest(body: unknown): ParsedApiRequest {
   const record = body as Record<string, unknown>;
   const action = record.action;
 
-  if (action !== "bootstrap" && action !== "status" && action !== "apply_code") {
+  if (
+    action !== "bootstrap" &&
+    action !== "status" &&
+    action !== "apply_code" &&
+    action !== "claim_reward"
+  ) {
     return { ok: false, code: "unknown_action" };
   }
 
@@ -133,6 +167,22 @@ export function parseApiRequest(body: unknown): ParsedApiRequest {
 
   if (action === "status") {
     return { ok: true, request: { action, clientInstallationId, installationSecret } };
+  }
+
+  if (action === "claim_reward") {
+    const rawRequestedProductId = record.requested_product_id;
+    let requestedProductId: string | null;
+    if (rawRequestedProductId === undefined || rawRequestedProductId === null) {
+      requestedProductId = null;
+    } else if (isValidClaimRewardProductId(rawRequestedProductId)) {
+      requestedProductId = rawRequestedProductId;
+    } else {
+      return { ok: false, code: "invalid_request_body" };
+    }
+    return {
+      ok: true,
+      request: { action, clientInstallationId, installationSecret, requestedProductId },
+    };
   }
 
   if (action === "apply_code") {

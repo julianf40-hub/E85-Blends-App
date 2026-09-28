@@ -34,7 +34,8 @@ import {
 import { calculatePro } from "../_shared/entitlement.ts";
 import { toApiEnvironment, type RevenueCatWebhookEnvironment } from "../_shared/revenuecat-types.ts";
 import { fetchCustomerSubscriptions } from "../_shared/revenuecat-api.ts";
-import { determineReferralAction } from "../_shared/referral-classification.ts";
+import { determineReferralAction, extractReferralWebhookFields } from "../_shared/referral-classification.ts";
+import { determineReferralRewardFulfillmentCandidate } from "../_shared/referral-reward-offer-codes.ts";
 import {
   applyRefreshPlansAndMarkProcessed,
   claimLedgerEvent,
@@ -168,10 +169,32 @@ async function handleNormalEvent(
     built.plan.entitlement.proIsActive,
   );
 
+  // 85Blends 2.4.0 Referral Reward Redemption — checked on EVERY normal event, independent of
+  // `referralAction`/isReferralRelevantEventType (see determineReferralRewardFulfillmentCandidate's
+  // own header for why fulfillment detection is not event-type-gated). A RENEWAL carrying one of
+  // our own dedicated referral-reward offer codes is simultaneously "not itself referral-relevant to
+  // qualify anything" (isReferralRenewalQualificationCandidate excludes it) and "exactly the event
+  // fulfillment exists to detect" — the two checks are independent and both may fire for the same
+  // event, or neither may.
+  const referralFields = extractReferralWebhookFields(envelope);
+  const rewardFulfillmentCandidate = referralFields
+    ? determineReferralRewardFulfillmentCandidate(referralFields, {
+        appUserIdSet: parsed.aliasSet,
+        eventId: parsed.core.id,
+      })
+    : null;
+
   // ONE transaction: resolve/insert-or-update the customer, verify/insert aliases, optionally
-  // process one referral action, and mark the ledger row processed, all atomically (Phase B1
-  // review Finding 4; referral processing extends this same guarantee, 85Blends 2.4.0).
-  const outcome = await applyRefreshPlansAndMarkProcessed(sql, parsed.core.id, [built.plan], referralAction);
+  // process one referral action and/or one reward fulfillment candidate, and mark the ledger row
+  // processed, all atomically (Phase B1 review Finding 4; referral processing extends this same
+  // guarantee, 85Blends 2.4.0).
+  const outcome = await applyRefreshPlansAndMarkProcessed(
+    sql,
+    parsed.core.id,
+    [built.plan],
+    referralAction,
+    rewardFulfillmentCandidate ?? undefined,
+  );
 
   if (outcome.kind === "conflict") {
     await markLedgerError(sql, parsed.core.id, `identity conflict: ${outcome.detail}`);
@@ -192,6 +215,17 @@ async function handleNormalEvent(
       outcome: outcome.referralResult.outcome,
       referrerParticipantId: maskIdentifier(outcome.referralResult.referrerParticipantId),
       qualifiedCount: outcome.referralResult.qualifiedCount,
+    });
+  }
+
+  if (outcome.rewardFulfillmentResult) {
+    // Never logs the offer reference/product/apple code — only the SAFE outcome string and a
+    // masked participant id, mirroring the referral action log above. See this feature's own
+    // security review: raw Apple codes are never read by this file at all, let alone logged.
+    logWebhookEvent("info", "referral reward fulfillment processed", {
+      eventId: maskIdentifier(parsed.core.id),
+      outcome: outcome.rewardFulfillmentResult.outcome,
+      referrerParticipantId: maskIdentifier(outcome.rewardFulfillmentResult.referrerParticipantId),
     });
   }
 

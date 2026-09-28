@@ -105,6 +105,120 @@ struct ReferralModelsTests {
         #expect(json["referral_code"] as? String == "ABCD2345")
     }
 
+    // MARK: 85Blends 2.4.0 Referral Reward Redemption — claim_reward request exact field names
+
+    @Test("Claim-reward request (free/expired user, a plan chosen) encodes exactly the fields the backend expects")
+    func claimRewardRequest_withRequestedProduct_exactFieldNames() throws {
+        let request = ReferralClaimRewardRequest(
+            clientInstallationID: UUID(),
+            installationSecret: String(repeating: "s", count: 32),
+            requestedProductID: "com.85blends.subscription.monthly"
+        )
+        let json = try Self.encodedJSON(request)
+
+        #expect(Set(json.keys) == ["action", "client_installation_id", "installation_secret", "requested_product_id"])
+        #expect(json["action"] as? String == "claim_reward")
+        #expect(json["requested_product_id"] as? String == "com.85blends.subscription.monthly")
+    }
+
+    @Test("Claim-reward request (active Pro subscriber) still encodes requested_product_id as null, never omits it")
+    func claimRewardRequest_activeSubscriber_nilProductStillEncodesKey() throws {
+        let request = ReferralClaimRewardRequest(
+            clientInstallationID: UUID(),
+            installationSecret: String(repeating: "s", count: 32),
+            requestedProductID: nil
+        )
+        let data = try Self.encoder.encode(request)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json.keys.contains("requested_product_id"))
+        #expect(json["requested_product_id"] is NSNull)
+    }
+
+    // MARK: 85Blends 2.4.0 Referral Reward Redemption — ReferralStatus issued-code fields
+
+    @Test("Status response decodes the four issued-reward-code fields when a code is currently issued")
+    func statusResponse_decodesIssuedRewardCode() throws {
+        let json = """
+        {"referral_code":"ABCD2345","qualified_referrals":5,"pending_referrals":0,
+         "earned_months_available":1,"fulfilled_months":0,"next_milestone_number":2,
+         "next_reward_at":10,"referrals_needed":5,"can_apply_referral_code":false,
+         "referred_by_code":null,"referred_status":null,
+         "issued_reward_product_id":"com.85blends.subscription.monthly",
+         "issued_reward_offer_reference_name":"REFERRAL_REWARD_MONTHLY_1M_FREE",
+         "issued_reward_code":"ABCD1234EFGH",
+         "issued_reward_expires_at":"2026-12-31T00:00:00.000Z"}
+        """.data(using: .utf8)!
+
+        let status = try Self.decoder.decode(ReferralStatus.self, from: json)
+        #expect(status.issuedRewardProductID == "com.85blends.subscription.monthly")
+        #expect(status.issuedRewardOfferReferenceName == "REFERRAL_REWARD_MONTHLY_1M_FREE")
+        #expect(status.issuedRewardCode == "ABCD1234EFGH")
+        #expect(status.issuedRewardExpiresAtRaw == "2026-12-31T00:00:00.000Z")
+    }
+
+    @Test("Status response missing the issued-reward-code keys entirely (pre-2.4.0-shaped payload) decodes them as nil, never throws")
+    func statusResponse_missingIssuedRewardCodeKeys_decodesNil() throws {
+        // Byte-for-byte the SAME JSON this file's own pre-existing `statusResponse_decodesWithReferredBy`
+        // test already used, before this feature ever added the four new keys — proves backward
+        // compatibility with a response shape that predates this feature.
+        let json = """
+        {"referral_code":"ABCD2345","qualified_referrals":0,"pending_referrals":0,
+         "earned_months_available":0,"fulfilled_months":0,"next_milestone_number":1,
+         "next_reward_at":5,"referrals_needed":5,"can_apply_referral_code":false,
+         "referred_by_code":"WXYZ6789","referred_status":"pending"}
+        """.data(using: .utf8)!
+
+        let status = try Self.decoder.decode(ReferralStatus.self, from: json)
+        #expect(status.issuedRewardProductID == nil)
+        #expect(status.issuedRewardOfferReferenceName == nil)
+        #expect(status.issuedRewardCode == nil)
+        #expect(status.issuedRewardExpiresAtRaw == nil)
+    }
+
+    // MARK: 85Blends 2.4.0 Referral Reward Redemption — claim_reward response decoding
+
+    @Test("Claim-reward response decodes the claim status, reward milestone number, and full status")
+    func claimRewardResponse_decodes() throws {
+        let json = """
+        {"status":"claimed","reward_milestone_number":1,
+         "referral_code":"ABCD2345","qualified_referrals":5,"pending_referrals":0,
+         "earned_months_available":1,"fulfilled_months":0,"next_milestone_number":2,
+         "next_reward_at":10,"referrals_needed":5,"can_apply_referral_code":false,
+         "referred_by_code":null,"referred_status":null,
+         "issued_reward_product_id":"com.85blends.subscription.monthly",
+         "issued_reward_offer_reference_name":"REFERRAL_REWARD_MONTHLY_1M_FREE",
+         "issued_reward_code":"ABCD1234EFGH",
+         "issued_reward_expires_at":"2026-12-31T00:00:00.000Z"}
+        """.data(using: .utf8)!
+
+        let response = try Self.decoder.decode(ReferralClaimRewardResponse.self, from: json)
+        #expect(response.claimStatus == "claimed")
+        #expect(response.rewardMilestoneNumber == 1)
+        #expect(response.status.issuedRewardCode == "ABCD1234EFGH")
+    }
+
+    @Test("Claim-reward response with no available code decodes a nil issued code and reward_milestone_number, never throws")
+    func claimRewardResponse_noCodeAvailable_decodesNilFields() throws {
+        let json = """
+        {"status":"no_code_available","reward_milestone_number":2,
+         "referral_code":"ABCD2345","qualified_referrals":10,"pending_referrals":0,
+         "earned_months_available":2,"fulfilled_months":0,"next_milestone_number":3,
+         "next_reward_at":15,"referrals_needed":5,"can_apply_referral_code":false,
+         "referred_by_code":null,"referred_status":null}
+        """.data(using: .utf8)!
+
+        let response = try Self.decoder.decode(ReferralClaimRewardResponse.self, from: json)
+        #expect(response.claimStatus == "no_code_available")
+        #expect(response.status.issuedRewardCode == nil)
+    }
+
+    @Test("revenuecat_lookup_failed maps to its own typed case and to the safe temporarilyUnavailable UX bucket")
+    func revenueCatLookupFailedErrorCode_mapsExactly() {
+        let error = ReferralAPIError(code: "revenuecat_lookup_failed", statusCode: 503)
+        #expect(error == .revenueCatLookupFailed)
+        #expect(error.userFacing == .temporarilyUnavailable)
+    }
+
     // MARK: 15. Bootstrap response decoding
 
     @Test("Bootstrap response decodes status fields plus created")

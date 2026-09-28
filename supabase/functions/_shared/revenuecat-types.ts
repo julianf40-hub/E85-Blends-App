@@ -72,6 +72,12 @@ export interface RevenueCatSubscriptionsPage {
 export interface RevenueCatSubscription {
   /** Whether RevenueCat says the customer should currently receive access via this subscription. */
   gives_access?: unknown;
+  /** 85Blends 2.4.0 Referral Reward Redemption — the RevenueCat product id this subscription is
+   *  for (RevenueCat's Subscription Data Model documents this as `product_id`, 1-255 characters,
+   *  nullable). Used only by _shared/referral-active-product.ts to determine which of the three
+   *  supported Pro products an ACTIVE subscriber's referral-reward Offer Code must be issued for —
+   *  never used by entitlement.ts's calculatePro, which remains unchanged and plan-agnostic. */
+  product_id?: unknown;
   /** sandbox/production, as reported by RevenueCat on the subscription itself — see
    *  normalizeApiEnvironment(). Every returned subscription is validated against the
    *  environment that was actually requested before it's ever used for entitlement (Phase B1

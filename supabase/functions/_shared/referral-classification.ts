@@ -15,6 +15,7 @@
 // No Deno-specific APIs — fully unit-testable under Node, see referral-classification.test.ts.
 
 import type { RevenueCatWebhookEnvironment } from "./revenuecat-types.ts";
+import { isReferralRewardOfferReference } from "./referral-reward-offer-codes.ts";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -51,6 +52,13 @@ export interface ReferralWebhookFields {
   transactionId: string | null;
   originalTransactionId: string | null;
   purchasedAtMs: number | null;
+  /** 85Blends 2.4.0 Referral Reward Redemption — RevenueCat's own `offer_code` field: "Offer or
+   *  promotion code used for the transaction," present (when applicable at all) on
+   *  INITIAL_PURCHASE/RENEWAL/NON_RENEWING_PURCHASE events. This is the App Store Connect OFFER
+   *  IDENTIFIER, never the literal one-time Apple code the customer typed (RevenueCat does not
+   *  expose that) — see _shared/referral-reward-offer-codes.ts's own header. `null` for an
+   *  ordinary, non-promotional purchase. */
+  offerCode: string | null;
 }
 
 /**
@@ -80,6 +88,7 @@ export function extractReferralWebhookFields(envelope: unknown): ReferralWebhook
     transactionId: asNonEmptyTrimmedString(eventRecord.transaction_id),
     originalTransactionId: asNonEmptyTrimmedString(eventRecord.original_transaction_id),
     purchasedAtMs: asFiniteNumber(eventRecord.purchased_at_ms),
+    offerCode: asNonEmptyTrimmedString(eventRecord.offer_code),
   };
 }
 
@@ -94,36 +103,85 @@ export const REFERRAL_QUALIFYING_PRODUCT_IDS: readonly string[] = [
 ];
 
 /**
- * TRUE only for a genuine, production, first-time, normal-priced paid purchase of one of the three
- * qualifying products. This is the "trusted v1 paid-conversion rule" — deliberately checked on the
- * webhook event's own shape alone (never requires price fields, which RevenueCat documents as
- * optional): RENEWAL, PRODUCT_CHANGE, CANCELLATION, EXPIRATION, BILLING_ISSUE,
- * TEMPORARY_ENTITLEMENT_GRANT, NON_RENEWING_PURCHASE, trial/intro/promotional periods (anything
- * whose period_type isn't exactly `"NORMAL"`), and SANDBOX/TEST events are all excluded by
- * construction. This function alone is NOT sufficient to qualify a referral — see
- * ReferralQualificationEligibility's own header: the caller must ALSO have a successful canonical
- * RevenueCat subscriber refresh confirming active `pro` before ever calling the database
- * qualification function (Phase 9 of the referral task — no "best effort" qualification from the
- * webhook payload alone).
+ * Shared core of a "genuine, production, normal-priced paid purchase of one of the three qualifying
+ * products" check, parameterized by which single event TYPE is being tested — see
+ * `isReferralQualifyingEvent` (INITIAL_PURCHASE) and `isReferralRenewalQualificationCandidate`
+ * (RENEWAL) below. Deliberately checked on the webhook event's own shape alone (never requires price
+ * fields, which RevenueCat documents as optional): PRODUCT_CHANGE, CANCELLATION, EXPIRATION,
+ * BILLING_ISSUE, TEMPORARY_ENTITLEMENT_GRANT, NON_RENEWING_PURCHASE, trial/intro/promotional periods
+ * (anything whose period_type isn't exactly `"NORMAL"`), and SANDBOX/TEST events are all excluded by
+ * construction. Neither function alone is sufficient to qualify a referral — the caller must ALSO
+ * have a successful canonical RevenueCat subscriber refresh confirming active `pro` before ever
+ * calling the database qualification function (Phase 9 of the referral task — no "best effort"
+ * qualification from the webhook payload alone).
  *
  * Also requires `transactionId`/`originalTransactionId` to both be present (integrity hardening):
  * `originalTransactionId` is the sole match key a later refund/REFUND_REVERSED event uses to find
  * this exact attribution again (see the migration's `process_referral_subscription_event`) — an
  * event missing either id can never be reversed or re-confirmed later, so it must never qualify in
  * the first place, regardless of how otherwise-eligible it looks. RevenueCat documents both ids as
- * always present on a genuine INITIAL_PURCHASE; a qualifying-shaped event missing one is treated as
- * malformed, not as eligible.
+ * always present on a genuine INITIAL_PURCHASE/RENEWAL; a qualifying-shaped event missing one is
+ * treated as malformed, not as eligible.
+ *
+ * 85Blends 2.4.0 Referral Reward Redemption hardening: also excludes ANY event whose own
+ * `offerCode` is one of the three dedicated referral-reward offer references
+ * (isReferralRewardOfferReference) — a user must never generate a qualified referral (for whoever
+ * referred THEM) merely by redeeming a free reward month someone else earned. This is a pure,
+ * per-event check; it can never by itself distinguish "this person was never referred" from "this
+ * free month's later real paid renewal should still be allowed to qualify a still-pending
+ * attribution" — that second, narrower question is answered by
+ * `isReferralRenewalQualificationCandidate` plus a database-backed proof check in
+ * _shared/database.ts's applyReferralAction (see that file's own comment for the full loophole
+ * analysis of why a bare timing check alone would be unsafe).
  */
-export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolean {
+function isCandidatePaidQualifyingEvent(fields: ReferralWebhookFields, eventType: string): boolean {
   return (
-    fields.eventType === "INITIAL_PURCHASE" &&
+    fields.eventType === eventType &&
     fields.environment === "PRODUCTION" &&
     fields.periodType === "NORMAL" &&
     fields.productId !== null &&
     REFERRAL_QUALIFYING_PRODUCT_IDS.includes(fields.productId) &&
     fields.transactionId !== null &&
-    fields.originalTransactionId !== null
+    fields.originalTransactionId !== null &&
+    !isReferralRewardOfferReference(fields.offerCode)
   );
+}
+
+/** TRUE only for a genuine, production, first-time, normal-priced paid INITIAL_PURCHASE of one of
+ *  the three qualifying products. See `isCandidatePaidQualifyingEvent`'s own header for the shared
+ *  rule this applies. */
+export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolean {
+  return isCandidatePaidQualifyingEvent(fields, "INITIAL_PURCHASE");
+}
+
+/**
+ * 85Blends 2.4.0 Referral Reward Redemption — TRUE for a RENEWAL event that otherwise looks exactly
+ * like a qualifying paid purchase (see `isCandidatePaidQualifyingEvent`). This alone is NEVER
+ * sufficient to qualify a referral: unlike an INITIAL_PURCHASE, a RENEWAL can belong to a
+ * subscription that has been running for months, completely unrelated to when its participant
+ * happened to apply someone's referral code — a bare `attributed_at <= this renewal's purchased_at`
+ * timing check would let someone apply a code AFTER already being an unrelated, long-standing Pro
+ * subscriber and have their very next ordinary renewal incorrectly "qualify" that late code
+ * application. That is the exact loophole this feature's task spec prohibits ("Do not create a
+ * loophole where someone can enter a referral code after becoming Pro and later qualify it.").
+ *
+ * The legitimate case this exists FOR: a participant applies a referral code before ever
+ * subscribing, then redeems a referral-reward Offer Code as their very first purchase (excluded
+ * from qualifying by `isCandidatePaidQualifyingEvent`'s own offer-code check, correctly — it's
+ * free), and that subscription later renews for real money. THAT renewal should be allowed to
+ * qualify the still-pending attribution. The two cases are only distinguishable with backend state
+ * this pure classifier does not have access to (was this original_transaction_id's original
+ * purchase actually one of our own referral-reward redemptions?) — see
+ * _shared/database.ts's applyReferralAction, which performs that additional database-backed proof
+ * check (querying private.referral_reward_offer_codes for a 'redeemed' row matching this same
+ * original_transaction_id) BEFORE ever calling process_referral_subscription_event for a candidate
+ * produced by this function — never for one produced by `isReferralQualifyingEvent`, which needs no
+ * such extra proof (an INITIAL_PURCHASE is always the FIRST event for its own original_transaction_id,
+ * so the ordinary `attributed_at <= purchased_at` check the database function already performs is
+ * sufficient on its own).
+ */
+export function isReferralRenewalQualificationCandidate(fields: ReferralWebhookFields): boolean {
+  return isCandidatePaidQualifyingEvent(fields, "RENEWAL");
 }
 
 /**
@@ -174,15 +232,28 @@ export function isReferralRequalificationEvent(fields: ReferralWebhookFields): b
 
 /**
  * Cheap pre-filter for index.ts: whether this event's TYPE is even potentially referral-relevant
- * at all, before doing any alias/attribution lookup. Every other event type (RENEWAL,
- * PRODUCT_CHANGE, EXPIRATION, BILLING_ISSUE, UNCANCELLATION, a non-CUSTOMER_SUPPORT CANCELLATION,
- * TRANSFER, TEST, TEMPORARY_ENTITLEMENT_GRANT, ...) is a clean no-op for referral purposes — the
- * existing entitlement mirror still processes it exactly as before, referral processing is simply
- * never invoked for it (see this task's Phase 15 — a referral no-op must never affect entitlement
+ * at all, before doing any alias/attribution lookup. Every other event type (PRODUCT_CHANGE,
+ * EXPIRATION, BILLING_ISSUE, UNCANCELLATION, a non-CUSTOMER_SUPPORT CANCELLATION, TRANSFER, TEST,
+ * TEMPORARY_ENTITLEMENT_GRANT, ...) is a clean no-op for referral purposes — the existing
+ * entitlement mirror still processes it exactly as before, referral processing is simply never
+ * invoked for it (see this task's Phase 15 — a referral no-op must never affect entitlement
  * mirroring, and the cheapest possible no-op is not calling the referral path at all).
+ *
+ * 85Blends 2.4.0 Referral Reward Redemption: RENEWAL is now included — see
+ * `isReferralRenewalQualificationCandidate`'s own header for why a RENEWAL can (narrowly) qualify a
+ * still-pending attribution. This does mean referral processing is now attempted on the single
+ * highest-volume RevenueCat event type (every renewal, for every Pro subscriber, fires this check),
+ * not just the rarer INITIAL_PURCHASE/CANCELLATION/REFUND_REVERSED — an accepted, modest cost (one
+ * additional indexed lookup per renewal in the common case where nothing is pending) documented in
+ * this feature's own report, not an oversight.
  */
 export function isReferralRelevantEventType(eventType: string): boolean {
-  return eventType === "INITIAL_PURCHASE" || eventType === "CANCELLATION" || eventType === "REFUND_REVERSED";
+  return (
+    eventType === "INITIAL_PURCHASE" ||
+    eventType === "RENEWAL" ||
+    eventType === "CANCELLATION" ||
+    eventType === "REFUND_REVERSED"
+  );
 }
 
 // MARK: — Database call shape (plain data only; database.ts imports these as types)
@@ -203,6 +274,14 @@ export interface ReferralActionInput {
    *  this is supplied by the caller (a successful canonical RevenueCat refresh already performed
    *  for the SAME event, see index.ts's handleNormalEvent) rather than re-derived here. */
   canonicalProIsActive: boolean;
+  /** 85Blends 2.4.0 Referral Reward Redemption — true only for a 'qualify' action produced from a
+   *  RENEWAL event (see `isReferralRenewalQualificationCandidate`'s own header). Tells
+   *  _shared/database.ts's applyReferralAction to perform the additional database-backed proof
+   *  check (this original_transaction_id traces back to one of our own redeemed referral-reward
+   *  offer codes) BEFORE ever calling process_referral_subscription_event — never set for a
+   *  'qualify' action produced from an INITIAL_PURCHASE (which needs no such proof) or for
+   *  'refund_reversal'/'refund_reversed' (irrelevant to either). */
+  requiresRewardRedemptionProof: boolean;
 }
 
 /** Mirrors private.process_referral_subscription_event's exact RETURNS TABLE shape. */
@@ -253,13 +332,40 @@ export function determineReferralAction(
   };
 
   if (isReferralQualifyingEvent(fields)) {
-    return { ...shared, action: "qualify", purchasedAtMs: fields.purchasedAtMs, canonicalProIsActive };
+    return {
+      ...shared,
+      action: "qualify",
+      purchasedAtMs: fields.purchasedAtMs,
+      canonicalProIsActive,
+      requiresRewardRedemptionProof: false,
+    };
+  }
+  if (isReferralRenewalQualificationCandidate(fields)) {
+    return {
+      ...shared,
+      action: "qualify",
+      purchasedAtMs: fields.purchasedAtMs,
+      canonicalProIsActive,
+      requiresRewardRedemptionProof: true,
+    };
   }
   if (isReferralRefundReversalEvent(fields)) {
-    return { ...shared, action: "refund_reversal", purchasedAtMs: null, canonicalProIsActive };
+    return {
+      ...shared,
+      action: "refund_reversal",
+      purchasedAtMs: null,
+      canonicalProIsActive,
+      requiresRewardRedemptionProof: false,
+    };
   }
   if (isReferralRequalificationEvent(fields)) {
-    return { ...shared, action: "refund_reversed", purchasedAtMs: null, canonicalProIsActive };
+    return {
+      ...shared,
+      action: "refund_reversed",
+      purchasedAtMs: null,
+      canonicalProIsActive,
+      requiresRewardRedemptionProof: false,
+    };
   }
   return undefined;
 }

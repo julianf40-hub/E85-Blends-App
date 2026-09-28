@@ -264,6 +264,40 @@ final class ReferralManager {
         return try await resultTask.value
     }
 
+    /// 85Blends 2.4.0 Referral Reward Redemption — claims (issues an Apple Offer Code for) this
+    /// installation's oldest eligible earned reward. See ReferralAPIService's own header on why
+    /// `requestedProductID` is only meaningful for a non-active-Pro participant; this method never
+    /// decides that itself (backend is authoritative — this feature's task spec, Phase 1).
+    ///
+    /// Same "never fire-and-forget, never locally invent a result" discipline as
+    /// `applyReferralCode(_:)`: this never returns until the BACKEND has answered, `loadState` is
+    /// only ever updated from that real response, and the reward is NEVER treated as fulfilled
+    /// here — only a real webhook-confirmed redemption ever sets `fulfilledMonths`/clears the
+    /// issued code (see ReferEarnView's own "do NOT locally mark fulfilled" requirement).
+    ///
+    /// STATE-CONSISTENCY: serialized behind `operationTail` exactly like `applyReferralCode(_:)` —
+    /// never deduplicated against a concurrent claim/refresh/apply, always reaches the backend, and
+    /// a later-requested refresh correctly waits for an earlier-requested claim to finish first (see
+    /// this type's header, "REQUEST-ORDER EDGE CASE").
+    func claimReward(requestedProductID: String?) async throws -> ReferralClaimRewardResponse {
+        let previousTail = operationTail
+        operationGeneration += 1
+        let resultTask = Task { [weak self] () async throws -> ReferralClaimRewardResponse in
+            guard let self else { throw ReferralServiceError.notConfigured }
+            try await self.ensureBootstrapped()
+            guard let credential = self.credential else {
+                throw ReferralServiceError.notConfigured
+            }
+            await previousTail?.value
+            let service = try self.serviceFactory()
+            let response = try await service.claimReward(requestedProductID: requestedProductID, credential: credential)
+            self.loadState = .loaded(response.status)
+            return response
+        }
+        operationTail = Task { _ = try? await resultTask.value }
+        return try await resultTask.value
+    }
+
     /// The single preparation gate every backend-calling entry point above goes through before
     /// talking to referral-api. Guarantees a durably-persisted credential AND a successful backend
     /// `bootstrap` call have both completed at least once for this installation before ANY

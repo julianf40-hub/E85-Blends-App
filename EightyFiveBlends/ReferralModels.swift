@@ -22,6 +22,7 @@ enum ReferralAction: String, Codable, Sendable {
     case bootstrap
     case status
     case applyCode = "apply_code"
+    case claimReward = "claim_reward"
 }
 
 // MARK: - Requests
@@ -70,6 +71,25 @@ struct ReferralApplyCodeRequest: Encodable, Sendable {
     }
 }
 
+/// 85Blends 2.4.0 Referral Reward Redemption. `requestedProductID` is only consulted by the
+/// backend when this installation is NOT currently an active Pro subscriber (see referral-api's
+/// own claim_reward handler) — always `nil` when redeeming as an active subscriber, since the
+/// backend issues that code for the subscriber's own currently active product regardless of what
+/// this field carries (backend is authoritative — see this feature's task spec, Phase 1).
+struct ReferralClaimRewardRequest: Encodable, Sendable {
+    let action = ReferralAction.claimReward
+    let clientInstallationID: UUID
+    let installationSecret: String
+    let requestedProductID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case clientInstallationID = "client_installation_id"
+        case installationSecret = "installation_secret"
+        case requestedProductID = "requested_product_id"
+    }
+}
+
 // MARK: - Responses
 
 /// The client-safe progress shape every one of referral-api's three actions returns — bootstrap
@@ -87,6 +107,24 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
     let canApplyReferralCode: Bool
     let referredByCode: String?
     let referredStatus: String?
+    /// 85Blends 2.4.0 Referral Reward Redemption — non-nil only while a reward currently has a LIVE
+    /// issued (not yet redeemed) Apple Offer Code for THIS installation. All four travel together:
+    /// either all are non-nil (a code is currently issued) or all are nil (nothing is currently
+    /// issued) — never a partial state, since referral-api's own issuedRewardCode is one query
+    /// result, never assembled from independent fields.
+    let issuedRewardProductID: String?
+    let issuedRewardOfferReferenceName: String?
+    /// The raw Apple one-time-use code itself. Safe to hold here — this response only ever reaches
+    /// the authenticated installation it was issued to (see ReferralAPIService's own header) — but
+    /// still never logged, never included in analytics, and never shown anywhere outside Refer &
+    /// Earn's own redemption UI (see ReferEarnView.swift).
+    let issuedRewardCode: String?
+    /// Raw ISO 8601 wire value — deliberately not decoded as `Date` here (this struct relies on
+    /// Swift's synthesized `Decodable` conformance, which uses the app-wide default
+    /// JSONDecoder().dateDecodingStrategy unless one is set; ReferralAPIService's decoder sets
+    /// none, to avoid any risk of affecting other decoding). See
+    /// ReferralPresentation.parseISO8601Date(_:) for the actual, defensive parse a view should use.
+    let issuedRewardExpiresAtRaw: String?
 
     enum CodingKeys: String, CodingKey {
         case referralCode = "referral_code"
@@ -100,6 +138,52 @@ struct ReferralStatus: Decodable, Equatable, Sendable {
         case canApplyReferralCode = "can_apply_referral_code"
         case referredByCode = "referred_by_code"
         case referredStatus = "referred_status"
+        case issuedRewardProductID = "issued_reward_product_id"
+        case issuedRewardOfferReferenceName = "issued_reward_offer_reference_name"
+        case issuedRewardCode = "issued_reward_code"
+        case issuedRewardExpiresAtRaw = "issued_reward_expires_at"
+    }
+
+    /// Explicit initializer (mirrors PendingPriceContribution's own — a `let` property with a
+    /// declaration-time default is excluded entirely from Swift's synthesized memberwise
+    /// initializer, not merely given a defaultable parameter, so the four 2.4.0 fields' defaults
+    /// live on this initializer's own parameters instead). Every pre-2.4.0 call site (previews,
+    /// tests) that omits them keeps compiling unchanged; this does NOT suppress the synthesized
+    /// `init(from:)` Decodable conformance this struct still relies on — writing your OWN
+    /// memberwise-shaped initializer only suppresses the AUTOMATIC memberwise init, never a
+    /// separately-synthesized protocol conformance.
+    init(
+        referralCode: String,
+        qualifiedReferrals: Int,
+        pendingReferrals: Int,
+        earnedMonthsAvailable: Int,
+        fulfilledMonths: Int,
+        nextMilestoneNumber: Int,
+        nextRewardAt: Int,
+        referralsNeeded: Int,
+        canApplyReferralCode: Bool,
+        referredByCode: String?,
+        referredStatus: String?,
+        issuedRewardProductID: String? = nil,
+        issuedRewardOfferReferenceName: String? = nil,
+        issuedRewardCode: String? = nil,
+        issuedRewardExpiresAtRaw: String? = nil
+    ) {
+        self.referralCode = referralCode
+        self.qualifiedReferrals = qualifiedReferrals
+        self.pendingReferrals = pendingReferrals
+        self.earnedMonthsAvailable = earnedMonthsAvailable
+        self.fulfilledMonths = fulfilledMonths
+        self.nextMilestoneNumber = nextMilestoneNumber
+        self.nextRewardAt = nextRewardAt
+        self.referralsNeeded = referralsNeeded
+        self.canApplyReferralCode = canApplyReferralCode
+        self.referredByCode = referredByCode
+        self.referredStatus = referredStatus
+        self.issuedRewardProductID = issuedRewardProductID
+        self.issuedRewardOfferReferenceName = issuedRewardOfferReferenceName
+        self.issuedRewardCode = issuedRewardCode
+        self.issuedRewardExpiresAtRaw = issuedRewardExpiresAtRaw
     }
 }
 
@@ -156,6 +240,44 @@ extension ReferralApplyCodeResponse {
     }
 }
 
+/// 85Blends 2.4.0 Referral Reward Redemption.
+struct ReferralClaimRewardResponse: Decodable, Equatable, Sendable {
+    let status: ReferralStatus
+    /// Raw backend claim outcome — see private.claim_referral_reward's own RETURNS TABLE comment
+    /// for the full set ("claimed", "no_eligible_reward", "no_code_available",
+    /// "legacy_or_unsupported_product_active", "invalid_product", "outstanding_reward_exists", …).
+    /// Kept as a plain String (not a closed enum), same rationale as
+    /// `ReferralApplyCodeResponse.applyStatus` — a future backend addition can never fail decoding
+    /// here. See ReferralManager.claimReward(requestedProductID:) for how this maps to a typed,
+    /// UI-facing outcome.
+    let claimStatus: String
+    /// The specific milestone this claim attempt concerned, when the backend resolved one (nil only
+    /// for `invalid_participant`/`no_eligible_reward`, which never reach a specific reward at all).
+    let rewardMilestoneNumber: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case claimStatus = "status"
+        case rewardMilestoneNumber = "reward_milestone_number"
+    }
+
+    init(from decoder: Decoder) throws {
+        status = try ReferralStatus(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        claimStatus = try container.decode(String.self, forKey: .claimStatus)
+        rewardMilestoneNumber = try container.decodeIfPresent(Int.self, forKey: .rewardMilestoneNumber)
+    }
+}
+
+extension ReferralClaimRewardResponse {
+    /// Memberwise construction for tests — same rationale as `ReferralBootstrapResponse`'s own
+    /// test-convenience initializer above.
+    init(status: ReferralStatus, claimStatus: String, rewardMilestoneNumber: Int? = nil) {
+        self.status = status
+        self.claimStatus = claimStatus
+        self.rewardMilestoneNumber = rewardMilestoneNumber
+    }
+}
+
 struct ReferralAPIErrorResponse: Decodable, Sendable {
     let error: String
 }
@@ -178,6 +300,11 @@ enum ReferralAPIError: Error, Equatable, Sendable {
     case rateLimited
     case serviceUnavailable
     case internalError
+    /// 85Blends 2.4.0 Referral Reward Redemption — claim_reward could not authoritatively determine
+    /// this installation's active Pro status/product via RevenueCat right now (see referral-api's
+    /// own resolveAuthoritativeActiveProduct header: this never falls back to guessing). Routine
+    /// and retryable, never a hard failure.
+    case revenueCatLookupFailed
     case unrecognized(code: String, statusCode: Int)
 
     init(code: String, statusCode: Int) {
@@ -194,6 +321,7 @@ enum ReferralAPIError: Error, Equatable, Sendable {
         case "rate_limited": self = .rateLimited
         case "service_unavailable": self = .serviceUnavailable
         case "internal_error": self = .internalError
+        case "revenuecat_lookup_failed": self = .revenueCatLookupFailed
         default: self = .unrecognized(code: code, statusCode: statusCode)
         }
     }
@@ -222,7 +350,7 @@ extension ReferralAPIError {
         case .revenueCatIdentityConflict: .identityConflict
         case .rateLimited: .rateLimited
         case .serviceUnavailable, .invalidAPIKey, .invalidInstallationCredentials,
-             .invalidRequestBody, .unknownAction, .internalError, .unrecognized:
+             .invalidRequestBody, .unknownAction, .internalError, .revenueCatLookupFailed, .unrecognized:
             .temporarilyUnavailable
         }
     }

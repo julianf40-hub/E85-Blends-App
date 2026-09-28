@@ -5,8 +5,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveReferralApiEnvConfig } from "./referral-api-env.ts";
 
+// 85Blends 2.4.0 Referral Reward Redemption — REVENUECAT_PROJECT_ID/REVENUECAT_V2_SECRET_API_KEY
+// are now also required (see referral-api-env.ts's own header). Every pre-existing test in this
+// file predates that and only ever configured SUPABASE_DB_URL/SUPABASE_PUBLISHABLE_KEYS/
+// SUPABASE_ANON_KEY — `fakeEnv` below now merges those two RevenueCat vars in by default (a fully
+// valid baseline), so every pre-existing test keeps testing exactly the ONE thing it always tested,
+// without needing its own body changed. A value explicitly set to `undefined` in a call's own
+// `values` argument overrides the default and is treated as genuinely absent, exactly like
+// `resolveReferralApiEnvConfig`'s own `isPresent` check already treats it elsewhere.
+const VALID_REVENUECAT_DEFAULTS = {
+  REVENUECAT_PROJECT_ID: "proj_abc123",
+  REVENUECAT_V2_SECRET_API_KEY: "sk_test_abc123",
+};
+
 function fakeEnv(values: Record<string, string | undefined>): (name: string) => string | undefined {
-  return (name) => values[name];
+  const merged: Record<string, string | undefined> = { ...VALID_REVENUECAT_DEFAULTS, ...values };
+  return (name) => merged[name];
 }
 
 test("resolveReferralApiEnvConfig: publishable-key-only configuration succeeds", () => {
@@ -128,11 +142,18 @@ test("resolveReferralApiEnvConfig: missing SUPABASE_DB_URL is reported even with
   }
 });
 
-test("resolveReferralApiEnvConfig: nothing configured at all reports both problems", () => {
-  const result = resolveReferralApiEnvConfig(fakeEnv({}));
+test("resolveReferralApiEnvConfig: nothing configured at all reports every missing var", () => {
+  const result = resolveReferralApiEnvConfig(
+    fakeEnv({ REVENUECAT_PROJECT_ID: undefined, REVENUECAT_V2_SECRET_API_KEY: undefined }),
+  );
   assert.equal(result.ok, false);
   if (!result.ok) {
-    assert.deepEqual(result.missing, ["SUPABASE_DB_URL", "SUPABASE_PUBLISHABLE_KEYS or SUPABASE_ANON_KEY"]);
+    assert.deepEqual(result.missing, [
+      "SUPABASE_DB_URL",
+      "SUPABASE_PUBLISHABLE_KEYS or SUPABASE_ANON_KEY",
+      "REVENUECAT_PROJECT_ID",
+      "REVENUECAT_V2_SECRET_API_KEY",
+    ]);
   }
 });
 
@@ -151,5 +172,60 @@ test("resolveReferralApiEnvConfig: blank/whitespace-only SUPABASE_ANON_KEY does 
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.deepEqual(result.missing, ["SUPABASE_PUBLISHABLE_KEYS or SUPABASE_ANON_KEY"]);
+  }
+});
+
+// MARK: 85Blends 2.4.0 Referral Reward Redemption — REVENUECAT_PROJECT_ID/REVENUECAT_V2_SECRET_API_KEY
+
+test("resolveReferralApiEnvConfig: a fully valid configuration also resolves the two RevenueCat values", () => {
+  const result = resolveReferralApiEnvConfig(
+    fakeEnv({ SUPABASE_DB_URL: "postgresql://example", SUPABASE_ANON_KEY: "anon-key-value" }),
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.config.revenueCatProjectId, "proj_abc123");
+    assert.equal(result.config.revenueCatV2SecretApiKey, "sk_test_abc123");
+  }
+});
+
+test("resolveReferralApiEnvConfig: missing REVENUECAT_PROJECT_ID is reported even with everything else valid", () => {
+  const result = resolveReferralApiEnvConfig(
+    fakeEnv({
+      SUPABASE_DB_URL: "postgresql://example",
+      SUPABASE_ANON_KEY: "anon-key-value",
+      REVENUECAT_PROJECT_ID: undefined,
+    }),
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.deepEqual(result.missing, ["REVENUECAT_PROJECT_ID"]);
+  }
+});
+
+test("resolveReferralApiEnvConfig: missing REVENUECAT_V2_SECRET_API_KEY is reported even with everything else valid", () => {
+  const result = resolveReferralApiEnvConfig(
+    fakeEnv({
+      SUPABASE_DB_URL: "postgresql://example",
+      SUPABASE_ANON_KEY: "anon-key-value",
+      REVENUECAT_V2_SECRET_API_KEY: undefined,
+    }),
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.deepEqual(result.missing, ["REVENUECAT_V2_SECRET_API_KEY"]);
+  }
+});
+
+test("resolveReferralApiEnvConfig: blank/whitespace-only REVENUECAT_V2_SECRET_API_KEY is treated as missing", () => {
+  const result = resolveReferralApiEnvConfig(
+    fakeEnv({
+      SUPABASE_DB_URL: "postgresql://example",
+      SUPABASE_ANON_KEY: "anon-key-value",
+      REVENUECAT_V2_SECRET_API_KEY: "   ",
+    }),
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.deepEqual(result.missing, ["REVENUECAT_V2_SECRET_API_KEY"]);
   }
 });

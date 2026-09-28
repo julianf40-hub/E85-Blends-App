@@ -35,6 +35,13 @@ protocol ReferralAPIServicing: Sendable {
         _ referralCode: String,
         credential: ReferralInstallationCredential
     ) async throws -> ReferralApplyCodeResponse
+
+    /// 85Blends 2.4.0 Referral Reward Redemption. `requestedProductID` is only meaningful when NOT
+    /// currently an active Pro subscriber — see `ReferralClaimRewardRequest`'s own header.
+    func claimReward(
+        requestedProductID: String?,
+        credential: ReferralInstallationCredential
+    ) async throws -> ReferralClaimRewardResponse
 }
 
 struct ReferralAPIService: ReferralAPIServicing {
@@ -96,6 +103,17 @@ struct ReferralAPIService: ReferralAPIServicing {
             clientInstallationID: credential.installationID,
             installationSecret: credential.installationSecret,
             referralCode: normalizedCode
+        ))
+    }
+
+    func claimReward(
+        requestedProductID: String?,
+        credential: ReferralInstallationCredential
+    ) async throws -> ReferralClaimRewardResponse {
+        try await perform(ReferralClaimRewardRequest(
+            clientInstallationID: credential.installationID,
+            installationSecret: credential.installationSecret,
+            requestedProductID: requestedProductID
         ))
     }
 

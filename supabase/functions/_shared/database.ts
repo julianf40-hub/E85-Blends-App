@@ -41,6 +41,7 @@ import {
 } from "./customer-resolution.ts";
 import type { EntitlementCalculationResult } from "./entitlement.ts";
 import type { ReferralActionInput, ReferralActionResult } from "./referral-classification.ts";
+import type { ReferralRewardFulfillmentCandidate } from "./referral-reward-offer-codes.ts";
 import { maskIdentifier, logWebhookEvent } from "./logging.ts";
 
 export type Sql = ReturnType<typeof postgres>;
@@ -306,6 +307,41 @@ async function applyIdentityRefresh(tx: Sql, plan: RefreshPlan): Promise<void> {
  */
 async function applyReferralAction(tx: Sql, input: ReferralActionInput): Promise<ReferralActionResult> {
   type Row = { outcome: string; attribution_id: string | null; referrer_participant_id: string | null; qualified_count: number | null };
+
+  // 85Blends 2.4.0 Referral Reward Redemption — the additional database-backed proof check
+  // referral-classification.ts's isReferralRenewalQualificationCandidate's own header describes:
+  // a RENEWAL-triggered 'qualify' attempt may proceed ONLY if THIS original_transaction_id traces
+  // back to one of our own redeemed referral-reward offer codes — i.e. this subscription's
+  // original purchase was legitimately excluded from qualifying (it was free), and this renewal is
+  // its first genuinely paid transaction. Never applied to an INITIAL_PURCHASE-triggered qualify
+  // (which needs no such proof — see that same header for why). A missing proof row is a clean,
+  // safe no-op — never an error, and never falls through to calling
+  // process_referral_subscription_event at all, so no attribution/reward state is touched.
+  if (input.action === "qualify" && input.requiresRewardRedemptionProof) {
+    let proven: boolean;
+    try {
+      const proofRows = await tx<{ proven: boolean }[]>`
+        select exists(
+          select 1 from private.referral_reward_offer_codes
+          where redemption_original_transaction_id = ${input.originalTransactionId}
+            and status = 'redeemed'
+        ) as proven
+      `;
+      proven = proofRows[0].proven;
+    } catch (error) {
+      // Same deployment-ordering guard as the try/catch below — this feature's own migration may
+      // not be deployed yet. Degrades to a clean skip, never a rollback of the entitlement mirror.
+      const code = (error as { code?: string } | null)?.code;
+      if (code === "42883" || code === "42P01") {
+        return { outcome: "referral_reward_schema_unavailable", attributionId: null, referrerParticipantId: null, qualifiedCount: null };
+      }
+      throw error;
+    }
+    if (!proven) {
+      return { outcome: "reward_redemption_not_proven", attributionId: null, referrerParticipantId: null, qualifiedCount: null };
+    }
+  }
+
   let rows: Row[];
   try {
     rows = await tx<Row[]>`
@@ -347,42 +383,98 @@ async function applyReferralAction(tx: Sql, input: ReferralActionInput): Promise
   };
 }
 
+/**
+ * 85Blends 2.4.0 Referral Reward Redemption — invokes
+ * private.fulfill_referral_reward_offer_code(...) using the TRANSACTION-scoped `tx` handle, so a
+ * confirmed redemption lands in the SAME transaction as the entitlement-mirror write and the ledger
+ * `processed` mark — same "referral processing must never roll back the entitlement mirror" posture
+ * as applyReferralAction above (a candidate's own normal outcomes are never errors), and the same
+ * deployment-ordering guard (this feature's migration may not be deployed yet).
+ */
+async function applyReferralRewardFulfillment(
+  tx: Sql,
+  candidate: ReferralRewardFulfillmentCandidate,
+): Promise<{ outcome: string; rewardId: string | null; referrerParticipantId: string | null }> {
+  type Row = { outcome: string; reward_id: string | null; referrer_participant_id: string | null };
+  let rows: Row[];
+  try {
+    rows = await tx<Row[]>`
+      select * from private.fulfill_referral_reward_offer_code(
+        ${tx.array(candidate.appUserIdSet)},
+        ${candidate.environment},
+        ${candidate.productId},
+        ${candidate.offerReferenceName},
+        ${candidate.transactionId},
+        ${candidate.originalTransactionId},
+        ${candidate.eventId}
+      )
+    `;
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (code === "42883" || code === "42P01") {
+      logWebhookEvent("warn", "referral reward schema not yet deployed — skipping fulfillment for this event", {});
+      return { outcome: "referral_reward_schema_unavailable", rewardId: null, referrerParticipantId: null };
+    }
+    throw error;
+  }
+  const row = rows[0];
+  return { outcome: row.outcome, rewardId: row.reward_id, referrerParticipantId: row.referrer_participant_id };
+}
+
 export type ApplyRefreshResult =
-  | { kind: "applied"; referralResult?: ReferralActionResult }
+  | {
+      kind: "applied";
+      referralResult?: ReferralActionResult;
+      rewardFulfillmentResult?: { outcome: string; rewardId: string | null; referrerParticipantId: string | null };
+    }
   | { kind: "conflict"; detail: string };
 
 /**
- * Applies EVERY plan in `plans`, optionally processes ONE referral action, and marks the ledger
- * row `processed` — all inside ONE transaction (Phase B1 review Finding 4; referral processing
- * extends this same guarantee, 85Blends 2.4.0). For a normal event, `plans` has exactly one entry.
- * For a TRANSFER event, callers must have already fetched RevenueCat's canonical state for every
- * group/environment combination BEFORE calling this — this function performs no RevenueCat API
- * calls of its own, only database writes, so nothing here ever blocks on outbound HTTP.
+ * Applies EVERY plan in `plans`, optionally processes ONE referral action and/or ONE referral
+ * reward fulfillment candidate, and marks the ledger row `processed` — all inside ONE transaction
+ * (Phase B1 review Finding 4; referral processing extends this same guarantee, 85Blends 2.4.0). For
+ * a normal event, `plans` has exactly one entry. For a TRANSFER event, callers must have already
+ * fetched RevenueCat's canonical state for every group/environment combination BEFORE calling this
+ * — this function performs no RevenueCat API calls of its own, only database writes, so nothing
+ * here ever blocks on outbound HTTP.
  *
  * `referralAction` is omitted entirely for TRANSFER events and for any normal event that isn't
- * referral-relevant (see referral-classification.ts's isReferralRelevantEventType) — when
- * omitted, this function's behavior is byte-for-byte identical to before 85Blends 2.4.0.
+ * referral-relevant (see referral-classification.ts's isReferralRelevantEventType).
+ * `rewardFulfillmentCandidate` (85Blends 2.4.0) is omitted for TRANSFER events and for any normal
+ * event whose own offer code isn't one of the three dedicated referral-reward offer references (see
+ * referral-reward-offer-codes.ts's determineReferralRewardFulfillmentCandidate) — a normal event can
+ * be BOTH referral-irrelevant AND a fulfillment candidate (a RENEWAL carrying a referral-reward
+ * offer code is never itself referral-relevant to qualify anything, since isReferralQualifyingEvent/
+ * isReferralRenewalQualificationCandidate both exclude referral-reward offer codes — but that exact
+ * same event IS what fulfillment exists to detect). When both are omitted, this function's behavior
+ * is byte-for-byte identical to before 85Blends 2.4.0.
  *
- * If ANY plan hits an identity conflict, OR the referral action throws a genuine error, the ENTIRE
- * transaction rolls back — including any earlier plan in the same batch that had already written
- * its customer/alias rows within this same call. A referral action's own NORMAL outcomes (no
- * participant, no attribution, identity conflict, too late, already processed, …) are never
- * errors and never roll back anything — see applyReferralAction's header.
+ * If ANY plan hits an identity conflict, OR the referral action/fulfillment call throws a genuine
+ * error, the ENTIRE transaction rolls back — including any earlier plan in the same batch that had
+ * already written its customer/alias rows within this same call. Either call's own NORMAL outcomes
+ * (no participant, no attribution, identity conflict, too late, already processed, already
+ * fulfilled, no outstanding code, …) are never errors and never roll back anything — see each
+ * function's own header.
  */
 export async function applyRefreshPlansAndMarkProcessed(
   sql: Sql,
   eventId: string,
   plans: RefreshPlan[],
   referralAction?: ReferralActionInput,
+  rewardFulfillmentCandidate?: ReferralRewardFulfillmentCandidate,
 ): Promise<ApplyRefreshResult> {
   try {
     let referralResult: ReferralActionResult | undefined;
+    let rewardFulfillmentResult: { outcome: string; rewardId: string | null; referrerParticipantId: string | null } | undefined;
     await sql.begin(async (tx) => {
       for (const plan of plans) {
         await applyIdentityRefresh(tx, plan);
       }
       if (referralAction) {
         referralResult = await applyReferralAction(tx, referralAction);
+      }
+      if (rewardFulfillmentCandidate) {
+        rewardFulfillmentResult = await applyReferralRewardFulfillment(tx, rewardFulfillmentCandidate);
       }
       await tx`
         update private.revenuecat_webhook_events
@@ -392,7 +484,7 @@ export async function applyRefreshPlansAndMarkProcessed(
         where event_id = ${eventId}
       `;
     });
-    return { kind: "applied", referralResult };
+    return { kind: "applied", referralResult, rewardFulfillmentResult };
   } catch (error) {
     if (error instanceof IdentityConflictError) {
       return { kind: "conflict", detail: error.message };
