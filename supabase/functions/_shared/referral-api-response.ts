@@ -62,8 +62,11 @@ export interface ReferralStatusResponse {
  *  (85Blends 2.4.0) `claim_reward`'s success responses, so every action always reports referral
  *  progress the same way. `earned_months_available` deliberately counts only `status = 'earned'`
  *  rewards — a `revoked` reward is neither available nor ever counted here again once its milestone
- *  is no longer justified by the current qualified count (see the SQL migration's shrink logic), and
- *  a `fulfilled` reward is reported separately, not as "available" (it has already been redeemed). */
+ *  is no longer justified by the current qualified count (see the SQL migration's shrink logic), a
+ *  `fulfilled` reward is reported separately, not as "available" (it has already been redeemed), and
+ *  (85Blends 2.4.0 second correctness hardening pass) an `issued` reward is ALSO excluded — it
+ *  already has a real Apple code handed out for it, surfaced separately via `issued_reward_*` below,
+ *  so counting it as "available to claim" too would double-report the same reward two ways. */
 export function buildReferralStatusResponse(input: ReferralStatusInput): ReferralStatusResponse {
   const progress = computeNextMilestoneProgress(input.rewards, input.qualifiedReferralCount);
   const earnedMonthsAvailable = input.rewards.filter((reward) => reward.status === "earned").length;

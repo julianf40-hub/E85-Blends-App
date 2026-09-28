@@ -36,7 +36,7 @@ test("buildReferralStatusResponse: existing attribution -> can_apply_referral_co
   }
 });
 
-test("buildReferralStatusResponse: earned_months_available counts only 'earned' rows, never revoked or fulfilled", () => {
+test("buildReferralStatusResponse: earned_months_available counts only 'earned' rows, never revoked, issued, or fulfilled", () => {
   const response = buildReferralStatusResponse({
     referralCode: "ABCD2345",
     qualifiedReferralCount: 15,
@@ -46,6 +46,7 @@ test("buildReferralStatusResponse: earned_months_available counts only 'earned' 
       { milestoneNumber: 2, status: "earned" },
       { milestoneNumber: 3, status: "earned" },
       { milestoneNumber: 4, status: "revoked" },
+      { milestoneNumber: 5, status: "issued" },
     ],
     ownAttribution: null,
     issuedRewardCode: null,

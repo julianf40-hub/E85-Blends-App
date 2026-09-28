@@ -68,12 +68,13 @@ struct ReferralPresentationTests {
         #expect(ReferralPresentation.claimStatusMessage("legacy_or_unsupported_product_active") != nil)
         #expect(ReferralPresentation.claimStatusMessage("invalid_product") != nil)
         #expect(ReferralPresentation.claimStatusMessage("outstanding_reward_exists") != nil)
+        #expect(ReferralPresentation.claimStatusMessage("expired_no_longer_qualified") != nil)
         #expect(ReferralPresentation.claimStatusMessage("some_future_unknown_outcome") != nil)
     }
 
     @Test("claimStatusMessage never echoes the raw backend status string verbatim")
     func claimStatusMessage_neverEchoesRawStatus() {
-        let rawStatuses = ["no_eligible_reward", "no_code_available", "outstanding_reward_exists", "invalid_product"]
+        let rawStatuses = ["no_eligible_reward", "no_code_available", "outstanding_reward_exists", "invalid_product", "expired_no_longer_qualified"]
         for raw in rawStatuses {
             let message = ReferralPresentation.claimStatusMessage(raw)
             #expect(message?.contains(raw) != true)
