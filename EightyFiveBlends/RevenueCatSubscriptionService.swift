@@ -65,6 +65,16 @@ protocol RevenueCatClient: Sendable {
     func fetchOfferings() async throws -> Offerings
     func purchase(package: Package) async throws -> PurchaseResultData
     func restorePurchases() async throws -> CustomerInfo
+    /// 85Blends 2.4.0 Referral Reward Redemption — syncs App Store transactions to RevenueCat
+    /// WITHOUT the "restore" UI/semantics `restorePurchases()` above carries. See
+    /// `RevenueCatSubscriptionService.syncAfterExternalRedemption()`'s own header for the one
+    /// narrow reason this exists: reconciling a subscription an Apple Offer Code redemption
+    /// created via the external App Store redemption URL, which the SDK cannot otherwise learn
+    /// about until its own next scheduled receipt check. RevenueCat's own public SDK method
+    /// (`Purchases.shared.syncPurchases() async throws -> CustomerInfo`) — a real, long-standing
+    /// SDK API (confirmed against the SDK's own source and changelog), never `restorePurchases()`
+    /// under a different name.
+    func syncPurchases() async throws -> CustomerInfo
     /// 85Blends 2.4.0 referral client foundation — the REAL (unmasked) current RevenueCat App
     /// User ID. See `RevenueCatSubscriptionService.currentRevenueCatAppUserID`'s own header for
     /// the one narrow, explicit reason this exists and its handling rules.
@@ -87,6 +97,10 @@ struct LiveRevenueCatClient: RevenueCatClient {
 
     func restorePurchases() async throws -> CustomerInfo {
         try await Purchases.shared.restorePurchases()
+    }
+
+    func syncPurchases() async throws -> CustomerInfo {
+        try await Purchases.shared.syncPurchases()
     }
 
     var currentAppUserID: String { Purchases.shared.appUserID }
@@ -528,6 +542,46 @@ final class RevenueCatSubscriptionService {
         } catch {
             lastErrorDescription = error.localizedDescription
             return .failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: - External redemption reconciliation (85Blends 2.4.0 Referral Reward Redemption)
+
+    /// Reconciles RevenueCat's own subscription state after the user redeems an Apple Offer Code
+    /// through the EXTERNAL App Store redemption URL (see ReferralRewardRedemptionSheet.swift) —
+    /// a purchase this app's own StoreKit/RevenueCat purchase flow never directly observes, since
+    /// it happens entirely inside the App Store app. RevenueCat's own documented flow for exactly
+    /// this situation is `syncPurchases()`, NOT `restorePurchases()`: the two are deliberately
+    /// distinct SDK calls — `syncPurchases()` is a silent transaction sync meant for exactly this
+    /// kind of out-of-band reconciliation, with no "restore" semantics/UI implied, while
+    /// `restorePurchases()` carries user-facing restore semantics (and, per `restore()` above,
+    /// this app's own restore button/UI) that a redemption-return flow must never trigger.
+    ///
+    /// Reuses the SAME `apply(_:)` bridge as every other CustomerInfo-producing path in this file
+    /// (`refreshCustomerInfoNow()`, `purchase(_:)`, `restore()`, `customerInfoStream`) — this
+    /// function duplicates NO entitlement logic of its own; a successful sync updates
+    /// `revenueCatIsPro`/`customerInfoLastUpdatedAt`/the widget entitlement mirror exactly like any
+    /// other successful CustomerInfo fetch would.
+    ///
+    /// Never throws and never surfaces a hard failure to its caller — mirrors
+    /// `refreshCustomerInfoNow()`'s own "a transient failure must never clear a previously-
+    /// established entitlement" discipline (`revenueCatIsProAfterFailedRefresh`), and this
+    /// feature's own task spec: "preserve errors as neutral 'confirmation pending' behavior."
+    /// Redemption confirmation is ultimately owned by the RevenueCat webhook -> referral-api status
+    /// response, never by whether this ONE sync call happened to succeed on the first try — the
+    /// caller (ReferralRewardRedemptionSheet) always follows this with a
+    /// `ReferralManager.shared.refresh()` regardless of this method's own outcome, and a failed sync
+    /// here is not itself shown as an error.
+    @discardableResult
+    func syncAfterExternalRedemption() async -> Bool {
+        guard configurationState == .configured else { return false }
+        do {
+            let customerInfo = try await client.syncPurchases()
+            apply(customerInfo)
+            return true
+        } catch {
+            lastErrorDescription = error.localizedDescription
+            return false
         }
     }
 

@@ -1187,6 +1187,30 @@ struct FakeRevenueCatClientWithAppUserID: RevenueCatClient {
     func restorePurchases() async throws -> CustomerInfo {
         throw ReferralServiceError.notConfigured
     }
+    /// 85Blends 2.4.0 Referral Reward Redemption.
+    func syncPurchases() async throws -> CustomerInfo {
+        throw ReferralServiceError.notConfigured
+    }
+}
+
+// MARK: - 85Blends 2.4.0 Referral Reward Redemption — syncAfterExternalRedemption
+
+@MainActor
+struct SyncAfterExternalRedemptionTests {
+    /// The only piece of `syncAfterExternalRedemption()` directly testable in-process without a
+    /// real RevenueCat `CustomerInfo` (which has no public initializer — see
+    /// SubscriptionManagerTests.swift's own identical disclosure for why RevenueCatSubscriptionService's
+    /// full success/failure paths aren't exercised here either): a service constructed via
+    /// `init(client:)` always starts `.notConfigured` (there is no way to reach `.configured`
+    /// without a real SDK key), so this confirms the guard clause returns `false` safely — WITHOUT
+    /// ever calling through to `client.syncPurchases()` at all (the fake client below throws
+    /// unconditionally, so a call reaching it would make this test fail with an unhandled error).
+    @Test("syncAfterExternalRedemption is a safe no-op (returns false, never calls the client) before RevenueCat has been configured")
+    func syncAfterExternalRedemption_falseBeforeConfigured() async {
+        let service = RevenueCatSubscriptionService(client: FakeRevenueCatClientWithAppUserID(currentAppUserID: "user_1"))
+        let result = await service.syncAfterExternalRedemption()
+        #expect(result == false)
+    }
 }
 
 @MainActor

@@ -305,6 +305,13 @@ enum ReferralAPIError: Error, Equatable, Sendable {
     /// own resolveAuthoritativeActiveProduct header: this never falls back to guessing). Routine
     /// and retryable, never a hard failure.
     case revenueCatLookupFailed
+    /// 85Blends 2.4.0 Referral Reward Redemption correctness hardening pass — claim_reward could
+    /// not authoritatively resolve which RevenueCat/Apple environment (SANDBOX/PRODUCTION) this
+    /// installation's claim belongs to (see referral-api's own resolveClaimEnvironment header).
+    /// Expected to be unreachable in practice — a participant only ever reaches claim_reward after
+    /// a successful bootstrap, which always creates at least one alias row — but never guessed or
+    /// defaulted to either environment on an environment-isolation-integrity path.
+    case environmentUnresolvable
     case unrecognized(code: String, statusCode: Int)
 
     init(code: String, statusCode: Int) {
@@ -322,6 +329,7 @@ enum ReferralAPIError: Error, Equatable, Sendable {
         case "service_unavailable": self = .serviceUnavailable
         case "internal_error": self = .internalError
         case "revenuecat_lookup_failed": self = .revenueCatLookupFailed
+        case "environment_unresolvable": self = .environmentUnresolvable
         default: self = .unrecognized(code: code, statusCode: statusCode)
         }
     }
@@ -350,7 +358,8 @@ extension ReferralAPIError {
         case .revenueCatIdentityConflict: .identityConflict
         case .rateLimited: .rateLimited
         case .serviceUnavailable, .invalidAPIKey, .invalidInstallationCredentials,
-             .invalidRequestBody, .unknownAction, .internalError, .revenueCatLookupFailed, .unrecognized:
+             .invalidRequestBody, .unknownAction, .internalError, .revenueCatLookupFailed,
+             .environmentUnresolvable, .unrecognized:
             .temporarilyUnavailable
         }
     }

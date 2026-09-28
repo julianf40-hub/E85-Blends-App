@@ -273,6 +273,7 @@ enum ReferralPresentation {
         case .serviceUnavailable: "REF-SERVICE"
         case .internalError: "REF-INTERNAL"
         case .revenueCatLookupFailed: "REF-RC-LOOKUP"
+        case .environmentUnresolvable: "REF-ENV-UNRESOLVED"
         case .unrecognized: "REF-API-OTHER"
         }
     }

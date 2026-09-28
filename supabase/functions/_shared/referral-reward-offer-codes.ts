@@ -1,11 +1,14 @@
 // 85Blends 2.4.0 — Referral Reward Redemption. Pure constants + classification for the three
 // dedicated Apple subscription Offer Codes referral rewards are redeemed through.
 //
-// These offer reference names identify the App Store Connect OFFER IDENTIFIER (the developer-
-// facing value actually communicated through StoreKit/RevenueCat) — never App Store Connect's
-// separate, internal-only "Reference Name" field, which is never exposed to StoreKit, RevenueCat,
-// or any webhook. See this feature's deployment documentation for the exact App Store Connect field
-// each of these three values must be entered into.
+// These three values ARE the App Store Connect subscription Offer Code's own REFERENCE NAME field
+// (Subscriptions > offer codes > create) — the value Apple uses to identify the offer in App Store
+// Connect's own Reports, and the SAME value RevenueCat's webhook exposes as `event.offer_code`.
+// CORRECTION: an earlier revision of this file described these as a separate "Offer Identifier"
+// distinct from an internal-only "Reference Name" — that two-field distinction belongs to a
+// DIFFERENT Apple mechanism (signed Promotional Offers), not Offer Codes, which have only the one
+// Reference Name field. See this feature's deployment documentation for exactly where in App Store
+// Connect each of these three values must be entered.
 //
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-reward-offer-codes.test.ts).
@@ -57,7 +60,14 @@ export interface ReferralRewardFulfillmentFields {
 
 export interface ReferralRewardFulfillmentCandidate {
   appUserIdSet: string[];
-  environment: "PRODUCTION";
+  /** 85Blends 2.4.0 correctness hardening pass — SANDBOX or PRODUCTION, no longer hardcoded to
+   *  PRODUCTION only. A reward/code can legitimately be SANDBOX-tagged (an operator-seeded test
+   *  reward for pre-release Sandbox/TestFlight verification — see this feature's deployment
+   *  documentation) — excluding every SANDBOX event here would make that verification impossible.
+   *  The real cross-environment isolation guarantee lives in
+   *  private.fulfill_referral_reward_offer_code itself, which only ever matches an issued code
+   *  whose OWN `environment` column equals this exact value — see that function's own header. */
+  environment: RevenueCatWebhookEnvironment;
   offerReferenceName: ReferralRewardOfferReferenceName;
   productId: string;
   transactionId: string;
@@ -80,20 +90,27 @@ export interface ReferralRewardFulfillmentCandidate {
  * A mismatch between the event's offer reference and its own product id (see
  * REFERRAL_REWARD_PRODUCT_BY_OFFER_REFERENCE) is treated as NOT a candidate at all — never trusted,
  * never "corrected" to the expected product.
+ *
+ * 85Blends 2.4.0 correctness hardening pass: `fields.environment` must be a KNOWN value (SANDBOX or
+ * PRODUCTION) but is no longer required to be exactly PRODUCTION — see
+ * `ReferralRewardFulfillmentCandidate.environment`'s own header for why, and
+ * private.fulfill_referral_reward_offer_code for where the real per-environment isolation is
+ * actually enforced (an exact match against the code's own `environment` column, never a blanket
+ * exclusion of one environment here).
  */
 export function determineReferralRewardFulfillmentCandidate(
   fields: ReferralRewardFulfillmentFields,
   context: { appUserIdSet: string[]; eventId: string },
 ): ReferralRewardFulfillmentCandidate | null {
   if (!isReferralRewardOfferReference(fields.offerCode)) return null;
-  if (fields.environment !== "PRODUCTION") return null;
+  if (fields.environment === null) return null;
   if (fields.productId === null) return null;
   if (REFERRAL_REWARD_PRODUCT_BY_OFFER_REFERENCE[fields.offerCode] !== fields.productId) return null;
   if (fields.transactionId === null || fields.originalTransactionId === null) return null;
 
   return {
     appUserIdSet: context.appUserIdSet,
-    environment: "PRODUCTION",
+    environment: fields.environment,
     offerReferenceName: fields.offerCode,
     productId: fields.productId,
     transactionId: fields.transactionId,

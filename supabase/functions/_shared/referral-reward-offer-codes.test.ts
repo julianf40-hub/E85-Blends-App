@@ -87,11 +87,15 @@ test("determineReferralRewardFulfillmentCandidate: the public/unrelated launch p
   );
 });
 
-test("determineReferralRewardFulfillmentCandidate: SANDBOX -> null even with a valid offer code (v1 scope lock)", () => {
-  assert.equal(
-    determineReferralRewardFulfillmentCandidate(baseFields({ environment: "SANDBOX" }), context),
-    null,
-  );
+// 85Blends 2.4.0 correctness hardening pass: SANDBOX is now a valid candidate environment — the
+// real per-environment isolation is enforced downstream, in
+// private.fulfill_referral_reward_offer_code's own exact-match against the code's own
+// `environment` column, not by excluding SANDBOX here (which would make Sandbox/TestFlight
+// end-to-end verification of this entire feature impossible before release).
+test("determineReferralRewardFulfillmentCandidate: SANDBOX with a valid offer code -> a SANDBOX-environment candidate", () => {
+  const result = determineReferralRewardFulfillmentCandidate(baseFields({ environment: "SANDBOX" }), context);
+  assert.equal(result?.environment, "SANDBOX");
+  assert.equal(result?.offerReferenceName, "REFERRAL_REWARD_MONTHLY_1M_FREE");
 });
 
 test("determineReferralRewardFulfillmentCandidate: missing environment -> null", () => {
