@@ -47,6 +47,91 @@ struct ReferralPresentationTests {
         #expect(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: 2) == "2 Free Months Ready")
     }
 
+    // MARK: - rewardCardState (85Blends 2.4.0 third correctness hardening pass)
+    //
+    // The exact 5-referral scenario from the reported bug: after claim_reward succeeds,
+    // earnedMonthsAvailable correctly drops to 0 (the reward's own status is now 'issued', not
+    // 'earned') — issuedRewardCode is the ONLY remaining signal keeping the redemption entry point
+    // visible. These tests pin the state-decision logic ReferEarnView's card AND
+    // ReferralRewardRedemptionSheet's content both delegate to, independent of any SwiftUI
+    // rendering this environment cannot compile/run (see this feature's own task spec: no Xcode
+    // available here).
+
+    @Test("Normal issued-code reentry: earnedMonthsAvailable=0 with a live issued code still exposes the entry point (.issuedCode) — this is the exact backend state after claiming the only earned reward")
+    func rewardCardState_issuedCodeAfterClaim_stillExposesEntryPoint() {
+        let state = ReferralPresentation.rewardCardState(
+            earnedMonthsAvailable: 0,
+            issuedRewardCode: "ABCD1234EFGH",
+            issuedRewardNeedsRefresh: false
+        )
+        #expect(state == .issuedCode)
+        #expect(state != nil)
+    }
+
+    @Test("Needs-refresh reentry: earnedMonthsAvailable=0, no issued code, needsRefresh=true still exposes the entry point (.needsRefresh)")
+    func rewardCardState_needsRefresh_stillExposesEntryPoint() {
+        let state = ReferralPresentation.rewardCardState(
+            earnedMonthsAvailable: 0,
+            issuedRewardCode: nil,
+            issuedRewardNeedsRefresh: true
+        )
+        #expect(state == .needsRefresh)
+        #expect(state != nil)
+    }
+
+    @Test("A freshly earned, unclaimed reward is .earned(count:)")
+    func rewardCardState_earnedUnclaimed() {
+        #expect(
+            ReferralPresentation.rewardCardState(earnedMonthsAvailable: 1, issuedRewardCode: nil, issuedRewardNeedsRefresh: false)
+                == .earned(count: 1)
+        )
+        #expect(
+            ReferralPresentation.rewardCardState(earnedMonthsAvailable: 3, issuedRewardCode: nil, issuedRewardNeedsRefresh: false)
+                == .earned(count: 3)
+        )
+    }
+
+    @Test("Nothing earned, nothing issued, no refresh needed -> nil (card hidden entirely)")
+    func rewardCardState_nothingToShow_isNil() {
+        #expect(ReferralPresentation.rewardCardState(earnedMonthsAvailable: 0, issuedRewardCode: nil, issuedRewardNeedsRefresh: false) == nil)
+    }
+
+    @Test("A live issued code always wins precedence over earnedMonthsAvailable or needsRefresh, however they're combined")
+    func rewardCardState_issuedCodeTakesPrecedence() {
+        #expect(
+            ReferralPresentation.rewardCardState(earnedMonthsAvailable: 1, issuedRewardCode: "CODE1", issuedRewardNeedsRefresh: false)
+                == .issuedCode
+        )
+        #expect(
+            ReferralPresentation.rewardCardState(earnedMonthsAvailable: 0, issuedRewardCode: "CODE1", issuedRewardNeedsRefresh: true)
+                == .issuedCode
+        )
+    }
+
+    @Test("earnedMonthsAvailable > 0 wins precedence over needsRefresh when both are somehow true")
+    func rewardCardState_earnedTakesPrecedenceOverNeedsRefresh() {
+        #expect(
+            ReferralPresentation.rewardCardState(earnedMonthsAvailable: 1, issuedRewardCode: nil, issuedRewardNeedsRefresh: true)
+                == .earned(count: 1)
+        )
+    }
+
+    @Test("Each rewardCardState has distinct, non-empty headline and subtitle copy, and never echoes the raw Apple code")
+    func rewardCardState_headlineAndSubtitleAreDistinctAndSafe() {
+        let states: [ReferralPresentation.RewardCardState] = [.earned(count: 1), .issuedCode, .needsRefresh]
+        let headlines = states.map { ReferralPresentation.rewardCardHeadline(for: $0) }
+        let subtitles = states.map { ReferralPresentation.rewardCardSubtitle(for: $0) }
+        #expect(Set(headlines).count == states.count)
+        #expect(Set(subtitles).count == states.count)
+        for copy in headlines + subtitles {
+            #expect(copy.isEmpty == false)
+            #expect(copy.contains("ABCD1234EFGH") == false)
+        }
+        #expect(ReferralPresentation.rewardCardHeadline(for: .earned(count: 1)) == "1 Free Month Ready")
+        #expect(ReferralPresentation.rewardCardHeadline(for: .issuedCode) == "Free Month Ready to Redeem")
+        #expect(ReferralPresentation.rewardCardHeadline(for: .needsRefresh) == "Free Month Needs Refresh")
+    }
+
     @Test("renewalPriceLine composes the real, passed-in display price and billing period label")
     func renewalPriceLine_composesRealValues() {
         let line = ReferralPresentation.renewalPriceLine(displayPrice: "$3.99", billingPeriodLabel: "month")

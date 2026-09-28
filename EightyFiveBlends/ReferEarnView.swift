@@ -375,12 +375,22 @@ struct ReferEarnLoadedContent: View {
 
     // MARK: Earned months — 85Blends 2.4.0 Referral Reward Redemption
 
-    /// Tapping opens ReferralRewardRedemptionSheet, the real redemption flow — this card itself
-    /// never talks to claim_reward or decides eligibility; `status.earnedMonthsAvailable`/
-    /// `status.issuedRewardCode` (both backend-sourced) are the only things it reads.
+    /// 85Blends 2.4.0 third correctness hardening pass — `earnedMonthsAvailable > 0` alone is NOT
+    /// sufficient to decide whether this card should show: it drops to 0 the moment a reward is
+    /// claimed (see `ReferralPresentation.RewardCardState`'s own header for exactly why), which would
+    /// otherwise strand the card's only entry point back to the redemption sheet the instant a code
+    /// is issued OR the instant an issued code expires unclaimed. `rewardCardState` is the single
+    /// source of truth for whether this card shows at all AND which of its three states it's in;
+    /// tapping opens ReferralRewardRedemptionSheet in every case — this card itself never talks to
+    /// claim_reward or decides eligibility.
     @ViewBuilder
     private var earnedMonthsBanner: some View {
-        if status.earnedMonthsAvailable > 0 {
+        if let state = ReferralPresentation.rewardCardState(
+            earnedMonthsAvailable: status.earnedMonthsAvailable,
+            issuedRewardCode: status.issuedRewardCode,
+            issuedRewardNeedsRefresh: status.issuedRewardNeedsRefresh
+        ) {
+            let headline = ReferralPresentation.rewardCardHeadline(for: state)
             Button {
                 AppHaptics.selection()
                 isShowingRedemptionSheet = true
@@ -392,10 +402,10 @@ struct ReferEarnLoadedContent: View {
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status.earnedMonthsAvailable))
+                        Text(headline)
                             .font(.headline)
                             .foregroundStyle(AppTheme.Colors.textPrimary)
-                        Text(status.issuedRewardCode != nil ? "You have a code ready to redeem." : "Tap to redeem your free month.")
+                        Text(ReferralPresentation.rewardCardSubtitle(for: state))
                             .font(.caption)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -416,7 +426,7 @@ struct ReferEarnLoadedContent: View {
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status.earnedMonthsAvailable))
+            .accessibilityLabel(headline)
             .accessibilityHint("Opens reward redemption")
         }
     }
@@ -671,7 +681,8 @@ private func previewStatus(
     issuedRewardProductID: String? = nil,
     issuedRewardOfferReferenceName: String? = nil,
     issuedRewardCode: String? = nil,
-    issuedRewardExpiresAtRaw: String? = nil
+    issuedRewardExpiresAtRaw: String? = nil,
+    issuedRewardNeedsRefresh: Bool = false
 ) -> ReferralStatus {
     ReferralStatus(
         referralCode: referralCode,
@@ -688,7 +699,8 @@ private func previewStatus(
         issuedRewardProductID: issuedRewardProductID,
         issuedRewardOfferReferenceName: issuedRewardOfferReferenceName,
         issuedRewardCode: issuedRewardCode,
-        issuedRewardExpiresAtRaw: issuedRewardExpiresAtRaw
+        issuedRewardExpiresAtRaw: issuedRewardExpiresAtRaw,
+        issuedRewardNeedsRefresh: issuedRewardNeedsRefresh
     )
 }
 
@@ -791,17 +803,48 @@ private func previewStatus(
 }
 
 #Preview("Reward code issued") {
+    // 85Blends 2.4.0 third correctness hardening pass — this is the REAL backend state after
+    // claiming the only earned reward: earnedMonthsAvailable drops to 0 (the reward's own status is
+    // now 'issued', not 'earned' — see buildReferralStatusResponse's own doc comment), and
+    // issuedRewardCode is the ONLY signal keeping the redemption entry point visible. An earlier
+    // revision of this preview artificially set earnedMonthsAvailable: 1 alongside an issued code,
+    // which is not a state the real backend ever produces (rule 3's earned -> issued -> fulfilled
+    // lifecycle) and would have hidden the exact bug this pass fixes from every preview.
     ScrollView {
         ReferEarnLoadedContent(
             status: previewStatus(
                 qualifiedReferrals: 5,
                 pendingReferrals: 0,
-                earnedMonthsAvailable: 1,
+                earnedMonthsAvailable: 0,
                 referralsNeeded: 0,
                 issuedRewardProductID: "com.85blends.subscription.monthly",
                 issuedRewardOfferReferenceName: "REFERRAL_REWARD_MONTHLY_1M_FREE",
                 issuedRewardCode: "ABCD1234EFGH",
                 issuedRewardExpiresAtRaw: "2026-12-31T00:00:00.000Z"
+            ),
+            isProUser: false,
+            isEntitlementResolutionPending: false,
+            hasAuthoritativeProStatus: true,
+            onEnterCode: {}
+        )
+        .padding(16)
+    }
+    .background(AppTheme.Colors.charcoal)
+}
+
+#Preview("Reward needs refresh") {
+    // 85Blends 2.4.0 third correctness hardening pass — an issued code expired before the client
+    // ever called claim_reward again: earnedMonthsAvailable is 0 (still 'issued', not yet
+    // revalidated), issuedRewardCode is nil (the expired code is never shown as redeemable), and
+    // issuedRewardNeedsRefresh is the ONLY remaining signal keeping the entry point visible.
+    ScrollView {
+        ReferEarnLoadedContent(
+            status: previewStatus(
+                qualifiedReferrals: 5,
+                pendingReferrals: 0,
+                earnedMonthsAvailable: 0,
+                referralsNeeded: 0,
+                issuedRewardNeedsRefresh: true
             ),
             isProUser: false,
             isEntitlementResolutionPending: false,

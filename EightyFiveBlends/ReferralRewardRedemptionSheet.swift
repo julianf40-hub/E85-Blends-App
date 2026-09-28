@@ -114,11 +114,11 @@ struct ReferralRewardRedemptionSheet: View {
             }
         }
         .confirmationDialog(
-            "Redeem your free month?",
+            currentClaimMode == .refresh ? "Refresh your reward?" : "Redeem your free month?",
             isPresented: $isShowingConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Redeem Free Month") {
+            Button(buttonTitle(for: currentClaimMode ?? .newClaim)) {
                 Task { await claim() }
             }
             Button("Cancel", role: .cancel) {}
@@ -127,38 +127,96 @@ struct ReferralRewardRedemptionSheet: View {
         }
     }
 
+    /// Recomputed from `status` rather than captured `@State` at the moment the confirmation was
+    /// requested — no network call happens between opening the confirmation and the user's answer,
+    /// so `status` cannot have changed underneath it, and this keeps the dialog's own copy in sync
+    /// with `content(for:)` above by construction rather than a second, independently-tracked flag.
+    private var currentClaimMode: ClaimMode? {
+        guard let status else { return nil }
+        switch cardState(for: status) {
+        case .earned: return .newClaim
+        case .needsRefresh: return .refresh
+        case .issuedCode, nil: return nil
+        }
+    }
+
     // MARK: - Content
+
+    /// 85Blends 2.4.0 third correctness hardening pass — the SAME `ReferralPresentation.rewardCardState`
+    /// ReferEarnView's own card uses, so the sheet's content and the card that opened it can never
+    /// disagree about which of the three states applies. `nil` (nothing to redeem) is the one case
+    /// this sheet still handles itself, below.
+    private func cardState(for status: ReferralStatus) -> ReferralPresentation.RewardCardState? {
+        ReferralPresentation.rewardCardState(
+            earnedMonthsAvailable: status.earnedMonthsAvailable,
+            issuedRewardCode: status.issuedRewardCode,
+            issuedRewardNeedsRefresh: status.issuedRewardNeedsRefresh
+        )
+    }
 
     @ViewBuilder
     private func content(for status: ReferralStatus) -> some View {
-        if status.issuedRewardCode != nil {
+        switch cardState(for: status) {
+        case .issuedCode:
             issuedCodeSection(status: status)
-        } else if status.earnedMonthsAvailable > 0 {
-            eligibilitySection
-        } else {
-            // Defensive — ReferEarnView only ever presents this sheet while earnedMonthsAvailable
-            // > 0 or a code is already issued; a fulfillment confirmed while this sheet happened to
-            // already be open lands here instead (earnedMonthsAvailable dropped, no issued code
-            // remains) and is exactly the success state to show.
+        case .earned:
+            eligibilitySection(mode: .newClaim)
+        case .needsRefresh:
+            eligibilitySection(mode: .refresh)
+        case nil:
+            // Defensive — ReferEarnView only ever presents this sheet while `rewardCardState` is
+            // non-nil; a fulfillment (or a no-longer-qualified revocation from a refresh attempt)
+            // confirmed while this sheet happened to already be open lands here instead, and is
+            // exactly the state to show — including any explanatory `claimMessage` from that same
+            // refresh attempt (see `claim()`).
             fulfilledOrNothingToRedeemSection
         }
     }
 
-    private var eligibilitySection: some View {
+    /// Distinguishes claiming a fresh reward from refreshing one whose issued code already expired
+    /// — both ultimately call the SAME `ReferralManager.shared.claimReward(requestedProductID:)`;
+    /// `private.claim_referral_reward` alone decides what actually happens (reissue vs. revoke —
+    /// see this file's own header, "BACKEND IS AUTHORITATIVE"). This enum only ever picks COPY.
+    private enum ClaimMode {
+        case newClaim
+        case refresh
+    }
+
+    private func eligibilitySection(mode: ClaimMode) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status?.earnedMonthsAvailable ?? 0))
+            Text(headline(for: mode))
                 .font(.title3.weight(.bold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
+
+            if mode == .refresh {
+                Text("Your previous code expired unused. We'll check whether your reward is still available and issue a new code if so.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
 
             if let claimMessage {
                 WarningCard(title: "Redemption unavailable", message: claimMessage, systemImage: "exclamationmark.triangle.fill")
             }
 
             if isActiveProSubscriber {
-                activeSubscriberCard
+                activeSubscriberCard(mode: mode)
             } else {
-                planPickerCard
+                planPickerCard(mode: mode)
             }
+        }
+    }
+
+    private func headline(for mode: ClaimMode) -> String {
+        switch mode {
+        case .newClaim: ReferralPresentation.rewardCardHeadline(earnedMonthsAvailable: status?.earnedMonthsAvailable ?? 0)
+        case .refresh: "Refresh Your Reward"
+        }
+    }
+
+    private func buttonTitle(for mode: ClaimMode) -> String {
+        switch mode {
+        case .newClaim: "Redeem Free Month"
+        case .refresh: "Refresh Reward"
         }
     }
 
@@ -166,21 +224,21 @@ struct ReferralRewardRedemptionSheet: View {
         SubscriptionManager.shared.hasAuthoritativeProStatus && SubscriptionManager.shared.isProUser
     }
 
-    private var activeSubscriberCard: some View {
+    private func activeSubscriberCard(mode: ClaimMode) -> some View {
         AppCard {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Apply 1 free month to your current 85Blends Pro plan.")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
 
-                redeemButton(title: "Redeem Free Month", isEnabled: true) {
+                redeemButton(title: buttonTitle(for: mode), isEnabled: true) {
                     isShowingConfirmation = true
                 }
             }
         }
     }
 
-    private var planPickerCard: some View {
+    private func planPickerCard(mode: ClaimMode) -> some View {
         AppCard {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Choose a plan for your free month:")
@@ -191,7 +249,7 @@ struct ReferralRewardRedemptionSheet: View {
                     planRow(plan)
                 }
 
-                redeemButton(title: "Redeem Free Month", isEnabled: selectedPlan != nil) {
+                redeemButton(title: buttonTitle(for: mode), isEnabled: selectedPlan != nil) {
                     isShowingConfirmation = true
                 }
             }
@@ -258,6 +316,9 @@ struct ReferralRewardRedemptionSheet: View {
     }
 
     private var confirmationMessage: String {
+        if currentClaimMode == .refresh {
+            return "We'll check whether your reward is still available and issue a new code if so. If it's no longer available, we'll let you know."
+        }
         if isActiveProSubscriber {
             // No specific renewal price shown here — this app has no backend-authoritative signal
             // for WHICH of the three plans an active subscriber is currently on (see
@@ -348,11 +409,22 @@ struct ReferralRewardRedemptionSheet: View {
     }
 
     private var fulfilledOrNothingToRedeemSection: some View {
-        InfoCard(
-            title: "You're all set",
-            message: "There's nothing to redeem right now. Keep referring friends to earn your next free month.",
-            systemImage: "checkmark.circle.fill"
-        )
+        VStack(alignment: .leading, spacing: 16) {
+            // Surfaces a one-time explanatory message from a JUST-COMPLETED refresh attempt that
+            // landed here (e.g. `expired_no_longer_qualified` — the reward is gone, not merely
+            // "nothing new yet") — see `claim()` and `ReferralPresentation.claimStatusMessage(_:)`.
+            // `claimMessage` is never set outside a `claim()` call, so this never shows stale copy
+            // for a user who simply opened the sheet with nothing to redeem.
+            if let claimMessage {
+                WarningCard(title: "Reward update", message: claimMessage, systemImage: "info.circle.fill")
+            }
+
+            InfoCard(
+                title: "You're all set",
+                message: "There's nothing to redeem right now. Keep referring friends to earn your next free month.",
+                systemImage: "checkmark.circle.fill"
+            )
+        }
     }
 
     // MARK: - Actions

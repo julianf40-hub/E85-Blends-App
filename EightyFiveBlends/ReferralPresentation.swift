@@ -315,6 +315,66 @@ enum ReferralPresentation {
         earnedMonthsAvailable == 1 ? "1 Free Month Ready" : "\(earnedMonthsAvailable) Free Months Ready"
     }
 
+    /// 85Blends 2.4.0 third correctness hardening pass. Refer & Earn's reward card/redemption sheet
+    /// has THREE distinct backend-driven states, not one — `earnedMonthsAvailable > 0` is never
+    /// sufficient on its own: the moment `claim_reward` succeeds, the reward's own status becomes
+    /// `issued` and `earnedMonthsAvailable` correctly drops to 0 (it's no longer "available to
+    /// claim" — see `buildReferralStatusResponse`'s own doc comment), yet the user still needs an
+    /// entry point back to the sheet to see/copy/redeem the code they just claimed. Likewise, an
+    /// issued code that expires unused before the client ever calls `claim_reward` again produces
+    /// `earnedMonthsAvailable == 0 && issuedRewardCode == nil` — with no signal at all, EVERY client
+    /// entry point capable of recovering the reward would disappear, stranding it permanently even
+    /// though the backend's own `claim_referral_reward` already knows how to recover it (void the
+    /// dead code, revalidate, reissue or revoke). `issuedRewardNeedsRefresh` closes that gap. Order
+    /// matters: a live issued code always wins over a stale `earnedMonthsAvailable` (structurally
+    /// they're never both meaningfully true at once, but a live code is the more specific, more
+    /// actionable state either way).
+    enum RewardCardState: Equatable, Sendable {
+        /// One or more rewards are `earned` and unclaimed — the normal "go claim it" state.
+        case earned(count: Int)
+        /// A reward already has a LIVE, unexpired issued Apple code — reopen the sheet to see/copy/
+        /// redeem it, never re-claim.
+        case issuedCode
+        /// A reward is `issued` but its code has expired — the ONLY remaining way back to the
+        /// backend's own expiration-revalidation logic is calling `claim_reward` again.
+        case needsRefresh
+    }
+
+    /// Returns `nil` when there is nothing at all for the reward card to show — no fields threaded
+    /// through beyond the three backend-sourced primitives this already needs, matching this file's
+    /// existing "pass primitives, not the whole model" convention (see `entryEligibility` above).
+    static func rewardCardState(
+        earnedMonthsAvailable: Int,
+        issuedRewardCode: String?,
+        issuedRewardNeedsRefresh: Bool
+    ) -> RewardCardState? {
+        if issuedRewardCode != nil { return .issuedCode }
+        if earnedMonthsAvailable > 0 { return .earned(count: earnedMonthsAvailable) }
+        if issuedRewardNeedsRefresh { return .needsRefresh }
+        return nil
+    }
+
+    /// The reward card's headline for each state — "1 Free Month Ready" reuses
+    /// `rewardCardHeadline(earnedMonthsAvailable:)` above; the other two states are never about an
+    /// available-to-claim count, so they get their own fixed copy.
+    static func rewardCardHeadline(for state: RewardCardState) -> String {
+        switch state {
+        case .earned(let count): rewardCardHeadline(earnedMonthsAvailable: count)
+        case .issuedCode: "Free Month Ready to Redeem"
+        case .needsRefresh: "Free Month Needs Refresh"
+        }
+    }
+
+    /// The reward card's subtitle for each state — never the raw Apple code or expiration itself
+    /// (that lives inside the redemption sheet only).
+    static func rewardCardSubtitle(for state: RewardCardState) -> String {
+        switch state {
+        case .earned: "Tap to redeem your free month."
+        case .issuedCode: "You have a code ready in the App Store."
+        case .needsRefresh: "Tap to refresh your referral reward."
+        }
+    }
+
     /// The pre-claim confirmation disclosure this feature's task spec requires ("Before requesting
     /// claim_reward, show a clear confirmation") — `renewalPriceLine` is always a REAL, currently
     /// loaded price/period string from SubscriptionManager.displayPrice(for:)/ProPlan, never a
