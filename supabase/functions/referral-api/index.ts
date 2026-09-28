@@ -56,7 +56,7 @@ import {
 import { mapReferralFunctionError, buildSafeErrorLogMetadata } from "../_shared/referral-api-errors.ts";
 import type { RewardMilestoneRow } from "../_shared/referral-milestones.ts";
 import { fetchCustomerSubscriptions } from "../_shared/revenuecat-api.ts";
-import type { RevenueCatSubscription } from "../_shared/revenuecat-types.ts";
+import { toApiEnvironment, type RevenueCatSubscription, type RevenueCatWebhookEnvironment } from "../_shared/revenuecat-types.ts";
 import { resolveActiveProAndProduct } from "../_shared/referral-active-product.ts";
 
 /** Best-effort extraction of a Postgres SQLSTATE from a caught error, for SAFE structured
@@ -155,16 +155,25 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
   // redeemed) code, if any. See referral-api-response.ts's IssuedRewardCodeSummary header for why
   // returning the raw apple_code here is safe: this whole function only ever runs after
   // authenticateInstallation has already confirmed the CALLER owns `participantId`.
+  //
+  // Correctness hardening pass — REAL BUG this closes (found in review): an issued code that has
+  // EXPIRED before ever being redeemed must never be exposed here as if it were still redeemable.
+  // `claim_referral_reward` already auto-voids an expired issued code the moment the SAME reward is
+  // claimed again (see that function's own Step 5b), but a participant who never re-opens the
+  // redemption sheet after their code expires would otherwise see a permanently stale, dead code in
+  // their own status response forever. `apple_expires_at > now()` is the authoritative filter
+  // (apple_expires_at is NOT NULL — every code this pool ever holds has a known expiration).
   const [issuedCodeRow] = await sql<{
     product_id: string;
     offer_reference_name: string;
     apple_code: string;
-    apple_expires_at: Date | null;
+    apple_expires_at: Date;
   }[]>`
     select product_id, offer_reference_name, apple_code, apple_expires_at
     from private.referral_reward_offer_codes
     where referrer_participant_id = ${participantId}
       and status = 'issued'
+      and apple_expires_at > now()
     limit 1
   `;
 
@@ -412,31 +421,76 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
   return jsonResponse(200, { status: "applied", ...status });
 }
 
+/** 85Blends 2.4.0 Referral Reward Redemption, correctness hardening pass — resolves which
+ *  RevenueCat/Apple environment THIS installation's claim belongs to, BACKEND-AUTHORITATIVELY,
+ *  from its own private.referral_participant_aliases rows — never a client-supplied string (the
+ *  request has no such field at all — see ClaimRewardRequest). A participant with any PRODUCTION
+ *  alias is ALWAYS treated as PRODUCTION, even if they also carry older SANDBOX aliases (e.g. from
+ *  a development build, or dogfooding before a real install) — a real production identity always
+ *  wins over a stale test one. Only a participant with SANDBOX aliases and NO PRODUCTION alias at
+ *  all (an operator-designated test participant — see this feature's deployment documentation) is
+ *  treated as SANDBOX. Returns `null` if this participant has no aliases at all yet — never
+ *  guessed/defaulted; see handleClaimReward's own handling of that case.
+ *
+ *  This is the "how can claim_reward authoritatively know which environment the CURRENT caller is
+ *  in" answer this feature's correctness hardening pass required: reusing the SAME alias rows
+ *  every other identity-scoped decision in this backend already trusts (process_referral_subscription_event's
+ *  own zero/one/many resolution, revenuecat-webhook's canonical customer mirror), never a new,
+ *  parallel identity mechanism. */
+async function resolveClaimEnvironment(
+  sql: Sql,
+  participantId: string,
+): Promise<RevenueCatWebhookEnvironment | null> {
+  const rows = await sql<{ environment: string }[]>`
+    select distinct environment from private.referral_participant_aliases
+    where participant_id = ${participantId}
+  `;
+  const environments = new Set(rows.map((row) => row.environment));
+  if (environments.has("PRODUCTION")) return "PRODUCTION";
+  if (environments.has("SANDBOX")) return "SANDBOX";
+  return null;
+}
+
 /** 85Blends 2.4.0 Referral Reward Redemption — resolves this participant's currently active Pro
  *  status AND product BACKEND-AUTHORITATIVELY, via a fresh RevenueCat REST API v2 call (never
  *  trusting a client-supplied claim — see this feature's task spec, Phase 1). Queries subscriptions
- *  for EVERY PRODUCTION RevenueCat identity (app_user_id) this participant has ever bootstrapped
- *  with (see private.referral_participant_aliases) — almost always exactly one in practice, but
- *  never assumed to be — and merges the results before applying the same qualifying-subscription
- *  rule entitlement.ts's calculatePro uses, so this can never disagree with the canonical
- *  entitlement mirror about whether Pro is active.
+ *  for EVERY RevenueCat identity (app_user_id) this participant has ever bootstrapped with IN THE
+ *  GIVEN ENVIRONMENT (see private.referral_participant_aliases) — almost always exactly one in
+ *  practice, but never assumed to be — and merges the results before applying the same
+ *  qualifying-subscription rule entitlement.ts's calculatePro uses, so this can never disagree with
+ *  the canonical entitlement mirror about whether Pro is active.
+ *
+ *  `environment` is the value resolveClaimEnvironment already resolved for this exact participant —
+ *  correctness hardening pass: this function used to be hardcoded to PRODUCTION only; it now
+ *  queries/calls RevenueCat scoped to whichever environment this specific claim actually belongs
+ *  to, so a SANDBOX test participant's own claim can exercise this SAME real code path (including
+ *  the "active Pro subscriber gets their own product" branch) during Sandbox/TestFlight
+ *  verification, not just the "choose a plan" branch.
  *
  *  Returns `{ kind: "ok" }` with the resolved state, or `{ kind: "lookup_failed" }` if this
- *  participant has at least one PRODUCTION identity but a RevenueCat API call for it failed — NEVER
- *  falls back to guessing `proIsActive: false` in that case, which could otherwise let a real active
- *  subscriber's claim be misrouted through the "choose any of the three products" path (Phase 12's
- *  "client-supplied active-product spoofing" risk, applied here to an accidental failure rather than
- *  a malicious client). A participant with ZERO PRODUCTION identities (e.g. a SANDBOX-only test
- *  installation that nonetheless legitimately earned a reward by referring others) is reported as
- *  `proIsActive: false` with no RevenueCat API call at all — there is nothing to look up. */
+ *  participant has at least one identity in this environment but a RevenueCat API call for it
+ *  failed — NEVER falls back to guessing `proIsActive: false` in that case, which could otherwise
+ *  let a real active subscriber's claim be misrouted through the "choose any of the three products"
+ *  path (Phase 12's "client-supplied active-product spoofing" risk, applied here to an accidental
+ *  failure rather than a malicious client). A participant with ZERO identities in this environment
+ *  is reported as `proIsActive: false` with no RevenueCat API call at all — there is nothing to
+ *  look up. */
 async function resolveAuthoritativeActiveProduct(
   sql: Sql,
   env: ReferralApiEnvConfig,
   participantId: string,
+  environment: RevenueCatWebhookEnvironment,
 ): Promise<{ kind: "ok"; proIsActive: boolean; activeProductId: string | null } | { kind: "lookup_failed" }> {
+  const apiEnvironment = toApiEnvironment(environment);
+  if (!apiEnvironment) {
+    // Unreachable — `environment` only ever comes from resolveClaimEnvironment, which only ever
+    // returns 'SANDBOX'/'PRODUCTION'/null — but never assumed away on an environment-isolation path.
+    return { kind: "lookup_failed" };
+  }
+
   const aliasRows = await sql<{ app_user_id: string }[]>`
     select app_user_id from private.referral_participant_aliases
-    where participant_id = ${participantId} and environment = 'PRODUCTION'
+    where participant_id = ${participantId} and environment = ${environment}
   `;
 
   if (aliasRows.length === 0) {
@@ -448,7 +502,7 @@ async function resolveAuthoritativeActiveProduct(
     const apiResult = await fetchCustomerSubscriptions(
       { projectId: env.revenueCatProjectId, secretApiKey: env.revenueCatV2SecretApiKey },
       row.app_user_id,
-      "production",
+      apiEnvironment,
     );
     if (apiResult.kind !== "ok") {
       logWebhookEvent("error", "referral-api claim_reward: RevenueCat lookup failed", {
@@ -468,7 +522,15 @@ async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: C
   const auth = await authenticateInstallation(sql, request.clientInstallationId, request.installationSecret);
   if (!auth.ok) return auth.response;
 
-  const activeProduct = await resolveAuthoritativeActiveProduct(sql, env, auth.participantId);
+  const environment = await resolveClaimEnvironment(sql, auth.participantId);
+  if (!environment) {
+    // Unreachable in practice — a participant only ever reaches here after a successful bootstrap,
+    // which always creates at least one alias row — but never guessed/defaulted on an
+    // environment-isolation-integrity path. Never PRODUCTION, never SANDBOX: an outright refusal.
+    return errorResponse(409, "environment_unresolvable");
+  }
+
+  const activeProduct = await resolveAuthoritativeActiveProduct(sql, env, auth.participantId, environment);
   if (activeProduct.kind === "lookup_failed") {
     return errorResponse(503, "revenuecat_lookup_failed");
   }
@@ -487,6 +549,7 @@ async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: C
     const rows = await sql<ClaimRow[]>`
       select * from private.claim_referral_reward(
         ${auth.participantId}::uuid,
+        ${environment},
         ${activeProduct.proIsActive},
         ${activeProduct.activeProductId},
         ${request.requestedProductId}

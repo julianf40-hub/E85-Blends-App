@@ -173,6 +173,18 @@ final class SubscriptionManager {
         await RevenueCatSubscriptionService.shared.refreshCustomerInfoNow()
     }
 
+    /// 85Blends 2.4.0 Referral Reward Redemption — narrow feature-facing wrapper so
+    /// ReferralRewardRedemptionSheet's return-from-App-Store path can reconcile RevenueCat after an
+    /// EXTERNAL Apple Offer Code redemption without reaching into RevenueCatSubscriptionService
+    /// directly from SwiftUI. Delegates entirely to
+    /// `RevenueCatSubscriptionService.syncAfterExternalRedemption()` — see that method's own header
+    /// for why this calls RevenueCat's `syncPurchases()`, never `restorePurchases()`/
+    /// `refreshCustomerInfoNow()`, and why a failed sync is never surfaced as a hard error here.
+    @discardableResult
+    func syncAfterExternalRedemption() async -> Bool {
+        await RevenueCatSubscriptionService.shared.syncAfterExternalRedemption()
+    }
+
     // MARK: - Feature access (all derived from `isPro`)
     var canAccessTripPlanner: Bool       { isPro }
     var canAccessAdvancedAnalytics: Bool { isPro }

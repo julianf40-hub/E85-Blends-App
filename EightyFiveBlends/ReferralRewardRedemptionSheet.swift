@@ -92,10 +92,24 @@ struct ReferralRewardRedemptionSheet: View {
         // sheet actually sent the user to the App Store this session; an unrelated background/
         // foreground cycle (e.g. the user just switched to another app and back) never triggers an
         // extra referral-backend/RevenueCat call it didn't need to make.
+        //
+        // syncAfterExternalRedemption() — NOT refreshProStatus()/refreshCustomerInfoNow() — is the
+        // correct reconciliation call here: an Offer Code redeemed through the EXTERNAL App Store
+        // redemption URL creates a subscription transaction this app's own RevenueCat SDK instance
+        // never directly observed, and RevenueCat's own documented flow for exactly this situation
+        // is `syncPurchases()` (see RevenueCatSubscriptionService.syncAfterExternalRedemption()'s
+        // own header), not a plain CustomerInfo refresh (which only re-reads RevenueCat's existing
+        // cached/server state — it does not itself prompt RevenueCat to go sync anything new from
+        // the App Store) and not `restorePurchases()` (user-facing restore semantics/UI this
+        // automatic return-from-redemption path must never trigger). Its own result is never
+        // treated as success/failure here — a failed sync is still followed by the SAME
+        // ReferralManager refresh below, and this sheet's own UI stays in its existing neutral
+        // "pending confirmation" state regardless (see issuedCodeSection) until the backend/webhook
+        // actually confirms fulfillment — never a locally-fabricated fulfilled state either way.
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active, hasOpenedRedemptionURL else { return }
             Task {
-                await SubscriptionManager.shared.refreshProStatus()
+                await SubscriptionManager.shared.syncAfterExternalRedemption()
                 await ReferralManager.shared.refresh()
             }
         }
