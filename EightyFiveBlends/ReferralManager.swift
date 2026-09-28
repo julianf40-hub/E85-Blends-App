@@ -66,6 +66,24 @@
 //  operation instead, behind whatever is now current. See ReferralManagerTests.swift's own
 //  "REQUEST-ORDER EDGE CASE" section.
 //
+//  RE-BOOTSTRAP VERIFICATION (2.4.0 Referral Reward Redemption, second correctness hardening
+//  pass): audited whether `hasBootstrappedThisLaunch`'s once-per-PROCESS gate (below) can ever
+//  serve a STALE RevenueCat identity/environment to a later `claim_reward`/`status` call within the
+//  same launch. Conclusion: no correction needed here. Both signals `performBootstrap()` reads are
+//  architecturally fixed for the entire lifetime of one installed binary, not merely "unlikely to
+//  change": `identityProvider.currentAppUserID()` is RevenueCat's own anonymous device identity —
+//  85Blends has no account system and never calls `Purchases.shared.logIn(_:)`/`logOut()` (see
+//  RevenueCatSubscriptionService.swift's own "ANONYMOUS ONLY" header) — and
+//  `environmentProvider.currentEnvironment()` is derived from `AppTransaction.shared`, which
+//  reflects this app's own ORIGINAL DOWNLOAD environment, not live purchase/account state (see
+//  ReferralRevenueEnvironmentProvider.swift's own header on why it deliberately does NOT use
+//  entitlement/receipt/DEBUG signals that could actually change at runtime). The only event that
+//  can change either value is a reinstall — which is always itself a fresh process launch, and a
+//  fresh launch already re-bootstraps (this type's own "backend status is authoritative" header,
+//  above). So "bootstrap once per launch" already picks up the only case that can actually occur;
+//  there is no mid-launch staleness window for the backend's own current-installation-environment
+//  tracking (private.referral_client_installations.current_environment) to fall behind.
+//
 
 import Foundation
 import Observation

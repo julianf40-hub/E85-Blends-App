@@ -6,14 +6,31 @@
 -- (20260910000000_referral_backend_baseline.sql, 20260919150000_referral_paid_qualification_foundation.sql,
 -- 20260919183430_referral_client_api_foundation.sql): one new table (private.referral_reward_offer_codes),
 -- three new functions (private.claim_referral_reward, private.fulfill_referral_reward_offer_code,
--- private.referral_rewards_void_issued_code_on_revoke), one new trigger, and one additive column
--- (`environment`, plus a supporting index) on the EXISTING private.referral_rewards table — see
--- Section 1b for why that one column addition is both necessary and safe. Zero changes to any
--- existing FUNCTION — in particular, private.process_referral_subscription_event's own body is NOT
--- touched by this migration; the one new qualification-timing rule this feature needs (see
+-- private.referral_rewards_guard_transition), one new trigger, and additive columns on TWO existing
+-- tables — `environment` (plus a supporting index) on private.referral_rewards (Section 1b), and
+-- `current_environment`/`current_app_user_id` on private.referral_client_installations (Section 1e)
+-- — see each section's own header for why those additions are both necessary and safe. Zero changes
+-- to any existing FUNCTION — in particular, private.process_referral_subscription_event's own body
+-- is NOT touched by this migration; the one new qualification-timing rule this feature needs (see
 -- Section 3's own header) is enforced in TypeScript (_shared/database.ts's applyReferralAction),
 -- as an additional check performed BEFORE that existing, already-reviewed function is ever called
 -- — not by changing its signature or logic.
+--
+-- SECOND CORRECTNESS HARDENING PASS (post-first-hardening-pass independent review) — three further
+-- issues, all fixed in this revision (see each numbered rule/section below for the exact fix):
+--   (a) private.referral_rewards now has a REAL three-state lifecycle — earned -> issued ->
+--       fulfilled — instead of treating "issued" as a fact recorded only on the CODE row while the
+--       reward itself stayed 'earned' the whole time. This required widening the baseline
+--       migration's own `referral_rewards_status` CHECK constraint to permit `'issued'` — a real gap
+--       caught only by actually executing this migration against local Postgres (see Section 1c).
+--       See rule 3 and Section 1c/2/3 below.
+--   (b) private.referral_client_installations now stores the CURRENT RevenueCat environment/App
+--       User ID this installation's most recent bootstrap reported, and claim_reward/status derive
+--       environment from THAT — never from scanning every alias this participant has ever
+--       accumulated and letting PRODUCTION win. See Section 1e and rule 9's own updated text.
+--   (c) private.fulfill_referral_reward_offer_code now RAISES (aborting the whole surrounding
+--       transaction) on an impossible partial-update condition, rather than returning a typed
+--       "this failed" outcome after the Apple code has already been marked redeemed. See Section 3.
 --
 -- COMPLETES the existing, deliberately-unfinished promise: every 5 qualified paid referrals earns
 -- one private.referral_rewards row (status: earned/fulfilled/revoked) — this migration adds the
@@ -26,9 +43,15 @@
 -- spec for the full list):
 --   1. Every 5 qualified paid referrals creates one one-month-Pro reward (unchanged, pre-existing).
 --   2. One earned reward may be redeemed exactly once.
---   3. An earned reward must NOT become fulfilled merely because we hand a user an Apple Offer Code
---      — issuing a code (`status = 'issued'`) is never itself fulfillment; only a confirmed
---      REDEEMED transaction (via the webhook) ever sets `status = 'fulfilled'` on the reward.
+--   3. A reward's lifecycle is `earned -> issued -> fulfilled` (second hardening pass): the MOMENT
+--      claim_referral_reward hands out a real Apple code, BOTH the code AND the reward it belongs
+--      to become `status = 'issued'` together — issuing a code is never itself fulfillment, but it
+--      is also no longer merely a fact recorded on the code row while the reward pretends nothing
+--      happened. Only a confirmed REDEEMED transaction (via the webhook) ever sets
+--      `status = 'fulfilled'` on the reward, and only from `status = 'issued'` — never directly from
+--      `earned`. `revoked` applies only while there is no live (`status = 'issued'`) Apple code
+--      outstanding for that reward — structurally guaranteed by the new
+--      private.referral_rewards_guard_transition trigger (Section 1c), not merely a convention.
 --   4. Reward status becomes fulfilled only after a real Apple/RevenueCat subscription transaction
 --      confirms use of the dedicated referral-reward offer (see Section 3's fulfillment function).
 --   5. Raw Apple one-time-use codes must never be exposed publicly, stored in app source, logged,
@@ -50,18 +73,34 @@
 --      PRODUCTION code can never be returned to a SANDBOX test claim — enforced by tagging BOTH
 --      private.referral_rewards and private.referral_reward_offer_codes with `environment`, and
 --      requiring an exact match at every claim/allocation/fulfillment step (see Section 1b's own
---      design note for why the reward row itself needed this, not just the code pool).
---  10. An earned reward that is later revoked (a qualifying referral it depended on was refunded)
---      must never be fulfillable, even if an Apple Offer Code was already issued for it before the
---      revocation — see Section 1c's auto-void trigger and Section 3's own defensive reward-status
---      check, both added by this hardening pass.
+--      design note for why the reward row itself needed this, not just the code pool). SECOND
+--      HARDENING PASS: which environment a `claim_reward` call itself belongs to is now resolved
+--      from private.referral_client_installations' own `current_environment` column (Section 1e) —
+--      the CURRENT authenticated installation's own most-recently-bootstrapped identity — never by
+--      scanning every alias this participant has ever accumulated across its lifetime and letting
+--      PRODUCTION win whenever both exist. A participant/installation that is CURRENTLY
+--      SANDBOX-bootstrapped can always claim from SANDBOX even if it also carries an older,
+--      historical PRODUCTION alias from a prior reinstall/build.
+--  10. An issued reward whose Apple code is still valid (unexpired, `status = 'issued'`) must never
+--      be revoked merely because the referrer's qualified-referral count later drops — the pairing
+--      invariant (reward `status = 'issued'` for exactly as long as its code is) already keeps it
+--      out of reach of the pre-existing milestone shrink logic, which is scoped to
+--      `status = 'earned'` only (unmodified — see 20260919150000's own Section 3). SECOND HARDENING
+--      PASS: when that reward's code instead EXPIRES unused, claim_referral_reward revalidates the
+--      reward against the referrer's CURRENT qualified-referral count before deciding its fate — see
+--      Section 2's own "expiration revalidation" comment for the full earned-vs-revoked branch.
+--  11. A reward that is revoked must never be fulfillable — structurally impossible under the new
+--      state machine, since `fulfill_referral_reward_offer_code` requires `status = 'issued'`
+--      (rule 3) and the guard trigger (Section 1c) makes it impossible for a reward to ever be BOTH
+--      `revoked` and paired with a live `issued` code in the first place.
 --
 -- A PARTICIPANT MAY HAVE AT MOST ONE OUTSTANDING ISSUED REFERRAL REWARD AT A TIME (an eliminate-
 -- ambiguity requirement for webhook fulfillment matching, not merely a nice-to-have) — enforced by
--- the partial unique index in Section 1, defense-in-depth alongside claim_referral_reward's own
--- explicit check (Section 2) and the natural FIFO ordering of "always claim the OLDEST eligible
--- earned reward first" (which already makes a second reward unreachable while an earlier one is
--- still `earned`).
+-- partial unique indexes on BOTH private.referral_reward_offer_codes (Section 1) AND, since the
+-- second hardening pass, private.referral_rewards itself (Section 1d), defense-in-depth alongside
+-- claim_referral_reward's own explicit check (Section 2) and the natural FIFO ordering of "always
+-- claim the OLDEST eligible earned reward first" (which already makes a second reward unreachable
+-- while an earlier one is still `earned`/`issued`).
 
 -- ============================================================================================
 -- 1. private.referral_reward_offer_codes — the Apple one-time-use code pool.
@@ -324,50 +363,142 @@ create index if not exists referral_rewards_referrer_environment_status_idx
   on private.referral_rewards (referrer_participant_id, environment, status, milestone_number);
 
 -- ============================================================================================
--- 1c. private.referral_rewards — auto-void an issued code the moment its reward is revoked.
+-- 1c. private.referral_rewards — state-machine guard trigger (second hardening pass).
 -- ============================================================================================
--- REAL BUG this closes (found in review, not merely anticipated): private.referral_rewards'
--- pre-existing milestone SHRINK logic (in process_referral_subscription_event, unmodified by this
--- migration) can transition a reward from 'earned' to 'revoked' at any time — including AFTER an
--- Apple Offer Code has already been issued for it (a qualifying referral this reward depended on
--- was refunded after the user's claim_reward call but before they ever redeemed the code). Left
--- alone, that code would sit at status='issued', pointing at a reward that no longer legitimately
--- justifies it, until the user eventually redeemed it — at which point
--- fulfill_referral_reward_offer_code would have nothing telling it not to honor that redemption
--- (see Section 3's own hardening for the second half of this fix, which checks reward status
--- defensively regardless of this trigger).
+-- SCHEMA PREREQUISITE — REAL BUG this closes (found via actual local Postgres execution, not merely
+-- anticipated): the baseline migration's own `referral_rewards_status` CHECK constraint
+-- (20260910000000_referral_backend_baseline.sql) only ever allowed
+-- `status in ('earned', 'fulfilled', 'revoked')` — there was no `'issued'` value for a reward to
+-- hold, because before this hardening pass a reward never needed one (only the CODE row tracked
+-- 'issued'). The new state machine (rule 3) requires the REWARD row itself to hold `'issued'`, so
+-- the constraint must be widened first, or every UPDATE that sets a reward to `'issued'` below would
+-- fail outright. Dropping and re-adding by name (not a `do $$ ... exception when duplicate_object`
+-- guard, unlike the ADD CONSTRAINT calls elsewhere in this migration) is the correct idempotent
+-- pattern for WIDENING an existing constraint's own definition, not just adding a new one.
+alter table private.referral_rewards
+  drop constraint if exists referral_rewards_status;
+
+alter table private.referral_rewards
+  add constraint referral_rewards_status check (status in ('earned', 'issued', 'fulfilled', 'revoked'));
+
+-- SUPERSEDES the first hardening pass's `referral_rewards_void_issued_code_on_revoke` trigger
+-- entirely (removed by this revision) — that trigger existed to REACT to a reward being revoked
+-- while its code was still issued, by voiding the code afterward. It was premised on a state model
+-- where a reward could sit at `status = 'earned'` while its code was already `status = 'issued'`.
+-- The second hardening pass eliminates that premise structurally: the reward's own lifecycle is now
+-- `earned -> issued -> fulfilled` (rule 3) — the INSTANT claim_referral_reward hands out a real
+-- Apple code, the reward itself becomes `issued` too, in the SAME statement (Section 2). A reward
+-- can therefore never be `earned` while a code is `issued` for it, which means the old trigger's own
+-- `OLD.status = 'earned' and NEW.status = 'revoked'` firing condition can never observe a live
+-- issued code to void in the first place — it would always be a no-op under the new model. Removing
+-- dead code premised on an invalid state, per this hardening pass's own instruction, rather than
+-- leaving it as harmless-but-confusing.
 --
--- This trigger closes it proactively: the INSTANT a reward transitions earned -> revoked, any code
--- still `issued` for it is immediately voided. The reward stays `revoked` (this trigger never
--- touches referral_rewards itself). If the reward is later restored (revoked -> earned, e.g. a
--- REFUND_REVERSED requalification), the OLD code stays permanently void (Section 1's own
--- 'redeemed'/'void' terminal-state trigger already guarantees this) and the next claim_referral_reward
--- call allocates a genuinely fresh code — no special-case code needed for the restore direction,
--- it falls out of the existing invariants for free.
-create or replace function private.referral_rewards_void_issued_code_on_revoke()
+-- REPLACED WITH a BEFORE UPDATE guard trigger that enforces the state machine PROACTIVELY — refusing
+-- an invalid transition outright, the same style already established for
+-- private.referral_reward_offer_codes_guard_transition (Section 1, above) — rather than reacting
+-- to one after the fact:
+--   1. `fulfilled` is permanently terminal (mirrors the code pool's own terminal-state guarantee).
+--   2. `fulfilled` may only ever be reached FROM `issued` — never a direct earned/revoked -> fulfilled
+--      jump. private.fulfill_referral_reward_offer_code (Section 3) already only ever writes
+--      `fulfilled` from a reward it found via a live issued code, so this is belt-and-suspenders,
+--      not the primary mechanism.
+--   3. THE CORE INVARIANT THIS HARDENING PASS EXISTS TO ENFORCE: a reward may never become
+--      `revoked` while it still has a LIVE (`status = 'issued'`) Apple code outstanding. Every
+--      legitimate revocation path already guarantees this by construction — the pre-existing
+--      milestone shrink logic is scoped to `status = 'earned'` only (never touches an `issued`
+--      reward), and claim_referral_reward's own expiration-revalidation branch (Section 2)
+--      unconditionally voids the expired code BEFORE ever touching the reward's own status. This
+--      trigger is the structural backstop that makes it impossible for any current or future code
+--      path to violate that invariant silently, exactly the role
+--      referral_reward_offer_codes_guard_transition already plays for the code table.
+create or replace function private.referral_rewards_guard_transition()
 returns trigger
 language plpgsql
 set search_path to 'pg_catalog', 'private'
 as $$
 begin
-  if OLD.status = 'earned' and NEW.status = 'revoked' then
-    update private.referral_reward_offer_codes roc
-    set status = 'void'
-    where roc.reward_id = NEW.id
-      and roc.status = 'issued';
+  if OLD.status = 'fulfilled' and NEW.status <> 'fulfilled' then
+    raise exception 'referral_reward_fulfilled_is_terminal';
   end if;
+
+  if NEW.status = 'fulfilled' and OLD.status <> 'issued' then
+    raise exception 'referral_reward_must_be_issued_before_fulfilled';
+  end if;
+
+  if NEW.status = 'revoked' and exists (
+    select 1 from private.referral_reward_offer_codes roc
+    where roc.reward_id = NEW.id
+      and roc.status = 'issued'
+  ) then
+    raise exception 'referral_reward_cannot_revoke_with_live_issued_code';
+  end if;
+
   return NEW;
 end;
 $$;
 
--- AFTER UPDATE (not BEFORE): this trigger's side effect is a write to a DIFFERENT table
--- (referral_reward_offer_codes), which belongs after the triggering row's own update has taken
--- effect, not folded into it — matches the standard Postgres idiom for cross-table trigger
--- cascades, as distinct from private.referral_rewards_set_updated_at (BEFORE UPDATE, from the
--- baseline migration), which only ever modifies the row it fires on.
-create trigger referral_rewards_void_issued_code_on_revoke
-  after update on private.referral_rewards
-  for each row execute function private.referral_rewards_void_issued_code_on_revoke();
+create trigger referral_rewards_guard_transition
+  before update on private.referral_rewards
+  for each row execute function private.referral_rewards_guard_transition();
+
+-- ============================================================================================
+-- 1d. private.referral_rewards — "at most one issued reward per referrer per environment."
+-- ============================================================================================
+-- Mirrors private.referral_reward_offer_codes_one_outstanding_per_participant (Section 1) at the
+-- REWARD layer, which is the layer that now actually carries the `issued` state (rule 3) — defense
+-- in depth alongside claim_referral_reward's own explicit existence check (Section 2) and the
+-- natural FIFO ordering that already makes a second reward unreachable while an earlier one is
+-- still outstanding.
+create unique index referral_rewards_one_issued_per_referrer_environment
+  on private.referral_rewards (referrer_participant_id, environment)
+  where status = 'issued';
+
+-- ============================================================================================
+-- 1e. private.referral_client_installations — CURRENT RevenueCat identity/environment columns.
+-- ============================================================================================
+-- REAL BUG this closes (found in independent review of the first hardening pass): referral-api's
+-- own `resolveClaimEnvironment` used to derive a claim's environment by scanning EVERY row this
+-- participant has EVER accumulated in private.referral_participant_aliases and letting PRODUCTION
+-- win whenever both existed. That is backwards for exactly the scenario Sandbox/TestFlight
+-- verification (this feature's own deployment doc) depends on: an installation that has EVER
+-- bootstrapped as PRODUCTION even once historically (a dogfooding build later reinstalled from the
+-- real App Store, say) could never claim from SANDBOX again — even while genuinely, CURRENTLY
+-- authenticated as a SANDBOX installation. "Which environment is the CURRENT caller in" must be
+-- answered from the CURRENT installation's own most recent identity, never a lifetime-aggregated,
+-- most-privileged-wins scan.
+--
+-- private.referral_client_installations (20260919183430_referral_client_api_foundation.sql) is the
+-- one row-per-installation credential table this backend already trusts for "which installation is
+-- this" — the natural home for "what did THIS installation's most recent successful bootstrap
+-- report," never a new, parallel identity mechanism. Populated by referral-api/index.ts's
+-- handleBootstrap on EVERY successful bootstrap call (new installation or idempotent repeat) — see
+-- that function's own comment for exactly where. Nullable: a pre-existing row (if any) created
+-- before this column existed cannot be backfilled with a correct value from any other source, but
+-- self-heals on this installation's very next app launch — ReferralManager.swift bootstraps at
+-- least once per launch (see this feature's own iOS notes for why that is architecturally always
+-- enough: RevenueCat App User ID and StoreKit environment are both fixed for the life of an
+-- installed binary — 85Blends never calls Purchases.shared.logIn/logOut, and AppTransaction reflects
+-- the app's own original download environment, not live purchase state — so the ONLY event that can
+-- actually change either value is a reinstall, which is always itself a fresh launch).
+alter table private.referral_client_installations
+  add column if not exists current_environment text,
+  add column if not exists current_app_user_id text;
+
+do $$
+begin
+  alter table private.referral_client_installations
+    add constraint referral_client_installations_current_environment_check
+      check (current_environment is null or current_environment in ('SANDBOX', 'PRODUCTION'));
+exception
+  when duplicate_object then null;
+end $$;
+
+comment on column private.referral_client_installations.current_environment is
+  '85Blends 2.4.0 second correctness hardening pass. The RevenueCat/Apple environment (SANDBOX/PRODUCTION) this installation''s most recent successful bootstrap call reported — written on every successful bootstrap, never inferred/aggregated from private.referral_participant_aliases. NULL only for a row created before this column existed and never re-bootstrapped since; self-heals on next app launch.';
+
+comment on column private.referral_client_installations.current_app_user_id is
+  '85Blends 2.4.0 second correctness hardening pass. The RevenueCat App User ID this installation''s most recent successful bootstrap call reported — same "current, not historical/aggregated" contract as current_environment above. Diagnostics/environment-resolution only, exactly like app_version; never used for authentication (installation_secret_hash remains the only credential).';
 
 -- ============================================================================================
 -- 2. private.claim_referral_reward — the one atomic reward-claim operation.
@@ -387,16 +518,29 @@ create trigger referral_rewards_void_issued_code_on_revoke
 -- when p_active_pro_is_active is not true (this feature's task spec, Section 4: "FREE / EXPIRED
 -- USER — allow them to choose").
 --
--- p_environment is ALSO BACKEND-COMPUTED by the caller (see referral-api/index.ts's
--- resolveClaimEnvironment) — resolved from this participant's OWN private.referral_participant_aliases
--- rows, never a client-supplied string. Scopes BOTH which reward is eligible to claim AND which
--- code pool may be allocated from, so a SANDBOX test claim can never touch a PRODUCTION reward/code
--- and vice versa — see this migration's Section 1b design note for why the reward row itself (not
--- just the code pool) needed this tag.
+-- p_environment is ALSO BACKEND-COMPUTED by the caller — SECOND HARDENING PASS: now resolved from
+-- private.referral_client_installations' own `current_environment` column (Section 1e), i.e. THIS
+-- installation's own most-recently-bootstrapped identity, never a client-supplied string and never
+-- a lifetime scan of every alias this participant has ever accumulated. Scopes BOTH which reward is
+-- eligible to claim AND which code pool may be allocated from, so a SANDBOX test claim can never
+-- touch a PRODUCTION reward/code and vice versa — see this migration's Section 1b design note for
+-- why the reward row itself (not just the code pool) needed this tag.
 --
--- IDEMPOTENCY: repeated calls for the same outstanding reward return the SAME assigned code
--- (Section 4, step 5) — this function never allocates a second code for a reward that already has
--- one issued. An issued code that has since EXPIRED is the one exception: see Step 5b below.
+-- IDEMPOTENCY: repeated calls for the same outstanding reward return the SAME assigned code — this
+-- function never allocates a second code for a reward that already has one issued. An issued code
+-- that has since EXPIRED is the one exception: see the "expiration revalidation" branch below.
+--
+-- STATE MACHINE (SECOND HARDENING PASS, rule 3): a reward's lifecycle is `earned -> issued ->
+-- fulfilled`. The MOMENT this function hands out a real Apple code, the REWARD itself becomes
+-- `issued` too, in the SAME statement that issues the code (see the final step below) — not merely
+-- a fact recorded on the code row while the reward stays `earned`. This is what makes rule 10 true
+-- for free: the pre-existing milestone shrink logic (process_referral_subscription_event, scoped to
+-- `status = 'earned'`, unmodified) can never revoke an `issued` reward merely because the referrer's
+-- qualified count later drops while its code is still valid — it is structurally invisible to that
+-- logic once issued. An `issued` reward can still lose its milestone justification, but only via
+-- THIS function's own expiration-revalidation branch, and only once its code has already gone void
+-- (see the guard trigger, Section 1c, which makes "revoked while a live issued code exists"
+-- impossible regardless of which code path is running).
 create or replace function private.claim_referral_reward(
   p_referrer_participant_id uuid,
   p_environment text,
@@ -421,6 +565,8 @@ declare
   v_existing_code private.referral_reward_offer_codes%rowtype;
   v_allocated private.referral_reward_offer_codes%rowtype;
   v_target_product text;
+  v_qualified_count integer;
+  v_desired_milestones integer;
   v_supported_products constant text[] := array[
     'com.85blends.subscription.monthly',
     'com.85blends.subscription.threemonth',
@@ -433,9 +579,9 @@ begin
   end if;
 
   if p_environment is null or p_environment not in ('SANDBOX', 'PRODUCTION') then
-    -- Never reachable from referral-api's own call site (it only ever calls this function with an
-    -- environment it just resolved from this exact participant's own alias rows — see
-    -- resolveClaimEnvironment) but never assumed away on an environment-isolation-integrity path.
+    -- Never reachable from referral-api's own call site (it only ever calls this function with the
+    -- environment it just read from THIS installation's own current_environment column — see
+    -- authenticateInstallation) but never assumed away on an environment-isolation-integrity path.
     return query select 'invalid_environment'::text, null::uuid, null::integer, null::text, null::text, null::text, null::timestamptz;
     return;
   end if;
@@ -446,12 +592,6 @@ begin
   -- devices sharing one installation credential) can never interleave with this one.
   perform 1 from private.referral_participants where id = p_referrer_participant_id for update;
 
-  -- Step 4: the OLDEST eligible earned reward IN THIS ENVIRONMENT, locked. FIFO ordering here is
-  -- what structurally guarantees "at most one outstanding reward at a time" in the common case (a
-  -- second reward is never even reachable while an earlier one is still 'earned') — the partial
-  -- unique index on (referrer_participant_id, environment) (Section 1) is the authoritative
-  -- backstop, not the primary mechanism.
-  --
   -- Every column reference below is explicitly table-qualified (`rr.`/`roc.`), even where not
   -- strictly required — this function's own RETURNS TABLE names several OUT parameters
   -- (reward_id, milestone_number, product_id, offer_reference_name, apple_code, apple_expires_at)
@@ -460,55 +600,104 @@ begin
   -- UNQUALIFIED reference to any of those column names inside a query here would raise "column
   -- reference is ambiguous" — confirmed by an actual local Postgres replay of this exact function
   -- during this feature's own validation pass, not merely anticipated.
+  --
+  -- Step 1: does this participant already have an ISSUED reward in THIS environment? At most one
+  -- can ever exist per participant per environment (Section 1d's own partial unique index). This is
+  -- the idempotent-return path AND the expiration-revalidation path — checked BEFORE ever looking
+  -- for a fresh 'earned' reward, since an issued reward's fate must be resolved first.
   select rr.* into v_reward
   from private.referral_rewards rr
   where rr.referrer_participant_id = p_referrer_participant_id
     and rr.environment = p_environment
-    and rr.status = 'earned'
-    and rr.reward_type = 'one_month_pro'
-  order by rr.milestone_number asc
+    and rr.status = 'issued'
   for update
   limit 1;
 
-  if v_reward.id is null then
-    return query select 'no_eligible_reward'::text, null::uuid, null::integer, null::text, null::text, null::text, null::timestamptz;
-    return;
-  end if;
+  if v_reward.id is not null then
+    select roc.* into v_existing_code
+    from private.referral_reward_offer_codes roc
+    where roc.reward_id = v_reward.id
+      and roc.status = 'issued'
+    for update;
 
-  -- Step 5: idempotency — this reward already has a LIVE issued code in THIS environment; return
-  -- it unchanged rather than allocating another, UNLESS it has expired — see Step 5b.
-  select roc.* into v_existing_code
-  from private.referral_reward_offer_codes roc
-  where roc.reward_id = v_reward.id
-    and roc.environment = p_environment
-    and roc.status = 'issued'
-  for update;
-
-  if v_existing_code.id is not null then
-    if v_existing_code.apple_expires_at > now() then
+    if v_existing_code.id is not null and v_existing_code.apple_expires_at > now() then
+      -- Idempotency: unexpired issued code — return it unchanged, exactly as before this pass.
       return query select 'claimed'::text, v_reward.id, v_reward.milestone_number,
         v_existing_code.product_id, v_existing_code.offer_reference_name,
         v_existing_code.apple_code, v_existing_code.apple_expires_at;
       return;
     end if;
 
-    -- Step 5b (correctness hardening pass — REAL BUG this closes, found in review): the existing
-    -- issued code has EXPIRED before ever being redeemed. Left as 'issued' forever, it would trap
-    -- this reward permanently: idempotency above would keep returning an Apple code the App Store
-    -- will no longer accept, with no path back to a fresh one. Atomically void it and fall through
-    -- to allocate a replacement IN THIS SAME CALL — the reward stays 'earned' throughout (never
-    -- touched here) and no second reward is ever consumed, exactly like an operator-voided code
-    -- (this migration's own "expiration replacement" design, Section 3 of the task spec).
-    update private.referral_reward_offer_codes
-    set status = 'void'
-    where id = v_existing_code.id;
-    v_existing_code := null;
+    -- EXPIRATION REVALIDATION (second hardening pass): the code is expired (or, structurally
+    -- unreachable given the reward/code pairing invariant, simply missing — never assumed away).
+    -- Void it if present, then revalidate THIS reward's own milestone against the referrer's
+    -- CURRENT qualified-referral count, using the identical floor(count / 5) formula
+    -- process_referral_subscription_event's own shrink/grow logic uses (20260919150000's Section
+    -- 3) — an issued code expiring unused is the one event that can legitimately re-open "is this
+    -- milestone still justified?" without any refund/requalification webhook event having occurred
+    -- at all.
+    if v_existing_code.id is not null then
+      update private.referral_reward_offer_codes
+      set status = 'void'
+      where id = v_existing_code.id;
+    end if;
+
+    select count(*) into v_qualified_count
+    from private.referral_attributions ra
+    where ra.referrer_participant_id = v_reward.referrer_participant_id
+      and ra.status = 'qualified';
+    v_desired_milestones := floor(v_qualified_count / 5.0)::integer;
+
+    if v_reward.milestone_number <= v_desired_milestones then
+      -- STILL JUSTIFIED: the reward reverts to 'earned' (never left 'issued' pointing at a dead
+      -- code) and this SAME call falls through below to allocate a genuinely fresh one — no second
+      -- reward is ever consumed.
+      update private.referral_rewards
+      set status = 'earned'
+      where id = v_reward.id
+        and status = 'issued';
+    else
+      -- NO LONGER JUSTIFIED: the reward is revoked outright and NO replacement is ever issued. Safe
+      -- under the guard trigger (Section 1c) — the code above is already 'void' by the time this
+      -- UPDATE runs, so "cannot revoke with a live issued code" holds.
+      update private.referral_rewards
+      set status = 'revoked', revoked_at = now(), revoke_reason = 'expired_unclaimed_below_milestone'
+      where id = v_reward.id
+        and status = 'issued';
+
+      return query select 'expired_no_longer_qualified'::text, v_reward.id, v_reward.milestone_number, null::text, null::text, null::text, null::timestamptz;
+      return;
+    end if;
+  else
+    -- Step 2: no issued reward outstanding — the OLDEST eligible EARNED reward IN THIS ENVIRONMENT,
+    -- locked. FIFO ordering here is what structurally guarantees "at most one outstanding reward at
+    -- a time" in the common case (a second reward is never even reachable while an earlier one is
+    -- still 'earned'/'issued') — the partial unique indexes (Section 1, Section 1d) are the
+    -- authoritative backstop, not the primary mechanism.
+    select rr.* into v_reward
+    from private.referral_rewards rr
+    where rr.referrer_participant_id = p_referrer_participant_id
+      and rr.environment = p_environment
+      and rr.status = 'earned'
+      and rr.reward_type = 'one_month_pro'
+    order by rr.milestone_number asc
+    for update
+    limit 1;
+
+    if v_reward.id is null then
+      return query select 'no_eligible_reward'::text, null::uuid, null::integer, null::text, null::text, null::text, null::timestamptz;
+      return;
+    end if;
   end if;
 
-  -- Step 7: determine the allowed product. An ACTIVE Pro subscriber's code is always issued for
-  -- THEIR currently active product — the client cannot override this (p_requested_product_id is
-  -- never consulted in this branch). A legacy-quarterly (or any other unsupported) active product
-  -- fails safely without touching the reward.
+  -- From here, v_reward is always logically 'earned' — either found directly above, or just
+  -- reverted from an expired-but-still-justified 'issued' state — and about to become 'issued' for
+  -- real, below.
+
+  -- Determine the allowed product. An ACTIVE Pro subscriber's code is always issued for THEIR
+  -- currently active product — the client cannot override this (p_requested_product_id is never
+  -- consulted in this branch). A legacy-quarterly (or any other unsupported) active product fails
+  -- safely without touching the reward.
   if p_active_pro_is_active is true then
     if p_active_product_id is null or p_active_product_id <> all(v_supported_products) then
       return query select 'legacy_or_unsupported_product_active'::text, v_reward.id, v_reward.milestone_number, null::text, null::text, null::text, null::timestamptz;
@@ -523,27 +712,25 @@ begin
     v_target_product := p_requested_product_id;
   end if;
 
-  -- Step 6: enforce one outstanding issued reward per participant PER ENVIRONMENT — explicit,
-  -- typed check first (the partial unique index would otherwise surface as a raw
-  -- constraint-violation exception). Structurally near-unreachable per the FIFO ordering above
-  -- (and per Step 5b, which just voided any expired blocker), but never assumed away on an
-  -- identity/allocation-integrity path — same discipline as this codebase's other referral
-  -- functions' own "unreachable in practice" guards.
+  -- Defense in depth: at most one ISSUED reward per participant PER ENVIRONMENT (Section 1d's own
+  -- partial unique index is the authoritative backstop) — structurally unreachable here (Step 1
+  -- above already confirmed none exists, under the same participant-row lock held throughout), but
+  -- never assumed away on an identity/allocation-integrity path.
   if exists (
-    select 1 from private.referral_reward_offer_codes roc
-    where roc.referrer_participant_id = p_referrer_participant_id
-      and roc.environment = p_environment
-      and roc.status = 'issued'
+    select 1 from private.referral_rewards rr
+    where rr.referrer_participant_id = p_referrer_participant_id
+      and rr.environment = p_environment
+      and rr.status = 'issued'
   ) then
     return query select 'outstanding_reward_exists'::text, v_reward.id, v_reward.milestone_number, null::text, null::text, null::text, null::timestamptz;
     return;
   end if;
 
-  -- Step 8: allocate one available, unexpired code for the target product IN THIS ENVIRONMENT.
-  -- SKIP LOCKED so concurrent claims for DIFFERENT participants/products/environments never block
-  -- each other — same pattern as private.claim_price_alert_jobs. `apple_expires_at` is NOT NULL
-  -- (Section 1's own correctness hardening — no "unknown expiration" row can ever exist), so this
-  -- is a plain comparison, never an `is null or` escape hatch.
+  -- Allocate one available, unexpired code for the target product IN THIS ENVIRONMENT. SKIP LOCKED
+  -- so concurrent claims for DIFFERENT participants/products/environments never block each other —
+  -- same pattern as private.claim_price_alert_jobs. `apple_expires_at` is NOT NULL (Section 1's own
+  -- correctness hardening — no "unknown expiration" row can ever exist), so this is a plain
+  -- comparison, never an `is null or` escape hatch.
   select roc.* into v_allocated
   from private.referral_reward_offer_codes roc
   where roc.product_id = v_target_product
@@ -555,19 +742,25 @@ begin
   limit 1;
 
   if v_allocated.id is null then
-    -- "No available codes -> reward remains earned" (this feature's task spec, Section 11, test
-    -- 9) — never a failure, and the reward/its milestone are completely untouched.
+    -- No available codes -> reward remains 'earned' (never touched) — never a failure.
     return query select 'no_code_available'::text, v_reward.id, v_reward.milestone_number, v_target_product, null::text, null::text, null::timestamptz;
     return;
   end if;
 
-  -- Step 9: atomically attach the allocated code to this reward/participant.
+  -- Atomically attach the allocated code AND transition the reward earned -> issued together — the
+  -- pairing invariant this entire hardening pass depends on: a code is never 'issued' without its
+  -- reward also being 'issued', and vice versa.
   update private.referral_reward_offer_codes
   set status = 'issued',
       reward_id = v_reward.id,
       referrer_participant_id = p_referrer_participant_id,
       issued_at = now()
   where id = v_allocated.id;
+
+  update private.referral_rewards
+  set status = 'issued'
+  where id = v_reward.id
+    and status = 'earned';
 
   return query select 'claimed'::text, v_reward.id, v_reward.milestone_number,
     v_allocated.product_id, v_allocated.offer_reference_name,
@@ -622,16 +815,25 @@ grant execute on function private.claim_referral_reward(uuid, text, boolean, tex
 -- entire feature (claim -> redeem -> webhook fulfillment) structurally impossible to test before
 -- release. See this migration's Section 1b design note for the reasoning this mirrors.
 --
--- REVOCATION HARDENING (correctness hardening pass — REAL BUG this closes, found in review): an
--- issued code's reward can be revoked (a qualifying referral it depended on was refunded) AFTER the
--- code was issued but BEFORE it was ever redeemed — see the new
--- referral_rewards_void_issued_code_on_revoke trigger (Section 1c), which proactively voids the
--- code the instant that happens. This function no longer trusts that as the ONLY safeguard: it now
--- locks and re-checks the associated reward's own status, BEFORE ever marking the Apple code
--- redeemed, and refuses to fulfill anything but a genuinely 'earned' reward — belt and suspenders,
--- not a substitute for the trigger (a redelivered/out-of-order webhook, or any future bug in the
--- trigger itself, must never be the only thing standing between a revoked reward and a real
--- RevenueCat transaction incorrectly marking it fulfilled).
+-- STATE MACHINE (SECOND HARDENING PASS, rule 3): fulfillment now requires the REWARD itself to be
+-- `status = 'issued'` — not `'earned'` — mirroring the pairing invariant claim_referral_reward
+-- establishes (a code is 'issued' for exactly as long as its reward is). This function locks and
+-- re-reads the associated reward BEFORE ever marking the Apple code redeemed, and refuses to
+-- fulfill anything but a genuinely 'issued' reward — belt and suspenders alongside the guard trigger
+-- (Section 1c), which makes "revoked while a live issued code exists" structurally impossible
+-- regardless of which code path is running (a redelivered/out-of-order webhook, or any future bug
+-- elsewhere, must never be the only thing standing between a revoked reward and a real RevenueCat
+-- transaction incorrectly marking it fulfilled).
+--
+-- TRANSACTION-ROLLBACK HARDENING (SECOND HARDENING PASS): an impossible partial-update — either
+-- UPDATE below matching zero rows despite this function holding `for update` on the exact row the
+-- WHERE clause targets — is NEVER reported as a safe typed outcome (the first hardening pass's own
+-- `reward_update_failed` did exactly that, AFTER the Apple code had already been marked redeemed,
+-- which is itself the bug: a real one-time-use code silently consumed while reporting a "failure"
+-- outcome that looks recoverable but leaves the code gone). Both updates now RAISE EXCEPTION on a
+-- zero-row result instead, which aborts the ENTIRE surrounding transaction — this function's own
+-- caller runs it inside the SAME transaction as the entitlement-mirror write (see this function's
+-- own header above) — so the code UPDATE is rolled back too, never left half-applied.
 create or replace function private.fulfill_referral_reward_offer_code(
   p_app_user_id_set text[],
   p_environment text,
@@ -746,9 +948,8 @@ begin
     return;
   end if;
 
-  -- REVOCATION HARDENING: lock and re-check the associated reward's own status BEFORE ever
-  -- marking the Apple code redeemed — see this function's own header. Never trusts "the code was
-  -- still 'issued'" alone as proof the reward is still valid.
+  -- Lock and re-check the associated reward's own status BEFORE ever marking the Apple code
+  -- redeemed — never trusts "the code was still 'issued'" alone as proof the reward is still valid.
   select rr.* into v_reward
   from private.referral_rewards rr
   where rr.id = v_code.reward_id
@@ -771,15 +972,15 @@ begin
     return;
   end if;
 
-  if v_reward.status <> 'earned' then
-    -- Covers 'revoked' — a qualifying referral this reward depended on was refunded AFTER the code
-    -- was issued but BEFORE it was ever redeemed. The referral_rewards_void_issued_code_on_revoke
-    -- trigger (Section 1c) should already have voided this exact code the instant that happened,
-    -- making this branch unreachable via the 'issued' lookup above in practice — this is the
-    -- defensive backstop for a race or a future bug in that trigger, never the primary mechanism.
-    -- The Apple code is NEVER marked redeemed here — a genuinely revoked reward's code stays
-    -- 'issued' (or, via the trigger, already 'void') rather than being silently honored.
-    return query select 'reward_not_earned'::text, v_reward.id, v_participant_id;
+  if v_reward.status <> 'issued' then
+    -- Covers 'earned' (structurally impossible for a code that is ITSELF still 'issued' — the
+    -- pairing invariant guarantees a reward is 'issued' for exactly as long as its code is; never
+    -- assumed away regardless) and 'revoked' (the guard trigger, Section 1c, already makes it
+    -- impossible for a reward to be BOTH 'revoked' and paired with a live 'issued' code — so the
+    -- 'issued' lookup above should never have matched a revoked reward's code in the first place;
+    -- this is the defensive backstop for a future bug, never the primary mechanism). The Apple code
+    -- is NEVER marked redeemed here.
+    return query select 'reward_not_issued'::text, v_reward.id, v_participant_id;
     return;
   end if;
 
@@ -789,25 +990,33 @@ begin
       redemption_event_id = p_event_id,
       redemption_transaction_id = p_transaction_id,
       redemption_original_transaction_id = p_original_transaction_id
-  where id = v_code.id;
+  where id = v_code.id
+    and status = 'issued';
+
+  -- TRANSACTION-ROLLBACK HARDENING: this function holds `for update` on v_code from the lookup
+  -- above and just confirmed status = 'issued' moments ago, so a zero-row result here is a genuine
+  -- invariant violation, never a condition to report as a safe typed outcome — raise, aborting the
+  -- whole surrounding transaction (see this function's own header).
+  get diagnostics v_updated_rows = row_count;
+  if v_updated_rows = 0 then
+    raise exception 'referral_reward_offer_code_fulfillment_invariant_violation: code % expected status issued but the update matched zero rows', v_code.id;
+  end if;
 
   update private.referral_rewards
   set status = 'fulfilled',
       fulfilled_at = now(),
       fulfillment_reference = p_original_transaction_id
   where id = v_reward.id
-    and status = 'earned';
+    and status = 'issued';
 
-  -- Verify the reward update actually affected a row before ever reporting 'fulfilled' — we hold
-  -- `for update` on this exact reward row from the select above, so a zero-row result here should
-  -- be unreachable, but this function never assumes that silently: the Apple code has, at this
-  -- point, ALREADY been marked redeemed (a real one-time-use code was genuinely consumed), so a
-  -- failed reward update is surfaced as its own distinct outcome rather than misreported as a
-  -- successful 'fulfilled'.
+  -- Same invariant discipline as the code update above — by this point the Apple code has ALREADY
+  -- been marked redeemed (a real one-time-use code was genuinely consumed), so a failed reward
+  -- update here can never be silently reported as a recoverable "failure": raising rolls back the
+  -- code UPDATE above too, rather than leaving a redeemed code paired with a reward that never
+  -- actually transitioned.
   get diagnostics v_updated_rows = row_count;
   if v_updated_rows = 0 then
-    return query select 'reward_update_failed'::text, v_reward.id, v_participant_id;
-    return;
+    raise exception 'referral_reward_fulfillment_invariant_violation: reward % expected status issued but the update matched zero rows', v_reward.id;
   end if;
 
   return query select 'fulfilled'::text, v_reward.id, v_participant_id;

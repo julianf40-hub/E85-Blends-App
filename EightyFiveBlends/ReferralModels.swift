@@ -245,7 +245,9 @@ struct ReferralClaimRewardResponse: Decodable, Equatable, Sendable {
     let status: ReferralStatus
     /// Raw backend claim outcome — see private.claim_referral_reward's own RETURNS TABLE comment
     /// for the full set ("claimed", "no_eligible_reward", "no_code_available",
-    /// "legacy_or_unsupported_product_active", "invalid_product", "outstanding_reward_exists", …).
+    /// "legacy_or_unsupported_product_active", "invalid_product", "outstanding_reward_exists",
+    /// "expired_no_longer_qualified" [85Blends 2.4.0 second correctness hardening pass — a
+    /// previously-issued code expired and the milestone was no longer justified on recount], …).
     /// Kept as a plain String (not a closed enum), same rationale as
     /// `ReferralApplyCodeResponse.applyStatus` — a future backend addition can never fail decoding
     /// here. See ReferralManager.claimReward(requestedProductID:) for how this maps to a typed,
@@ -305,12 +307,15 @@ enum ReferralAPIError: Error, Equatable, Sendable {
     /// own resolveAuthoritativeActiveProduct header: this never falls back to guessing). Routine
     /// and retryable, never a hard failure.
     case revenueCatLookupFailed
-    /// 85Blends 2.4.0 Referral Reward Redemption correctness hardening pass — claim_reward could
-    /// not authoritatively resolve which RevenueCat/Apple environment (SANDBOX/PRODUCTION) this
-    /// installation's claim belongs to (see referral-api's own resolveClaimEnvironment header).
-    /// Expected to be unreachable in practice — a participant only ever reaches claim_reward after
-    /// a successful bootstrap, which always creates at least one alias row — but never guessed or
-    /// defaulted to either environment on an environment-isolation-integrity path.
+    /// 85Blends 2.4.0 Referral Reward Redemption correctness hardening pass — the backend could not
+    /// authoritatively resolve which RevenueCat/Apple environment (SANDBOX/PRODUCTION) this
+    /// installation's own most recent bootstrap reported (see referral-api's own
+    /// authenticateInstallation header). Can surface from ANY action (`bootstrap`/`status`/
+    /// `apply_code`/`claim_reward`) as of the second hardening pass, not just `claim_reward`.
+    /// Expected to be unreachable in practice — an installation row only ever exists after a
+    /// successful bootstrap, which always records its current environment in the SAME transaction —
+    /// but never guessed or defaulted to either environment on an environment-isolation-integrity
+    /// path.
     case environmentUnresolvable
     case unrecognized(code: String, statusCode: Int)
 

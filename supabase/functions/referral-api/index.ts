@@ -91,20 +91,34 @@ async function hashSecret(secret: string): Promise<string> {
  *  index.ts's callers check `instanceof` before falling through to that generic mapping. */
 class InstallationTakeoverConflictError extends Error {}
 
-type AuthResult = { ok: true; participantId: string } | { ok: false; response: Response };
+type AuthResult =
+  | { ok: true; participantId: string; environment: RevenueCatWebhookEnvironment }
+  | { ok: false; response: Response };
 
 /** Authenticates an already-bootstrapped installation: looks up its stored secret hash and
  *  compares (constant-time) against SHA-256 of the supplied secret. Used by `status`, `apply_code`,
  *  and bootstrap's own "does this installation already exist" check. Never distinguishes "unknown
  *  installation" from "wrong secret" in its response — both collapse to the same generic 401,
- *  matching this codebase's existing auth.ts philosophy. */
+ *  matching this codebase's existing auth.ts philosophy.
+ *
+ *  85Blends 2.4.0 Referral Reward Redemption, SECOND correctness hardening pass: also resolves and
+ *  returns THIS installation's own `current_environment` (private.referral_client_installations —
+ *  see the migration's Section 1e) — the environment its most recent successful bootstrap reported.
+ *  Every caller (`status`/`apply_code`/`claim_reward`) now derives environment from here, never by
+ *  scanning every alias this participant has ever accumulated (the first hardening pass's own
+ *  `resolveClaimEnvironment`, removed by this pass — see this file's git history). A row whose
+ *  `current_environment` is somehow unresolvable fails closed with the same `environment_unresolvable`
+ *  code `claim_reward` already used — expected to be unreachable in practice (every row that can pass
+ *  the credential check below was created by a successful bootstrap, which always records
+ *  `current_environment` in the SAME transaction — see handleBootstrap) but never guessed/defaulted
+ *  on an environment-isolation-integrity path. */
 async function authenticateInstallation(
   sql: Sql,
   clientInstallationId: string,
   installationSecret: string,
 ): Promise<AuthResult> {
-  const rows = await sql<{ installation_secret_hash: string; participant_id: string }[]>`
-    select c.installation_secret_hash, p.id as participant_id
+  const rows = await sql<{ installation_secret_hash: string; participant_id: string; current_environment: string | null }[]>`
+    select c.installation_secret_hash, p.id as participant_id, c.current_environment
     from private.referral_client_installations c
     join private.referral_participants p on p.installation_id = c.installation_id
     where c.installation_id = ${clientInstallationId}
@@ -119,14 +133,33 @@ async function authenticateInstallation(
     return { ok: false, response: errorResponse(401, "invalid_installation_credentials") };
   }
 
-  return { ok: true, participantId: rows[0].participant_id };
+  const currentEnvironment = rows[0].current_environment;
+  if (currentEnvironment !== "SANDBOX" && currentEnvironment !== "PRODUCTION") {
+    return { ok: false, response: errorResponse(409, "environment_unresolvable") };
+  }
+
+  return { ok: true, participantId: rows[0].participant_id, environment: currentEnvironment };
 }
 
 /** Loads and assembles this participant's client-safe status payload — the shared read path used
- *  by `status`, and by `bootstrap`/`apply_code`'s success responses so all three actions always
- *  report referral progress identically. See referral-api-response.ts for the field-by-field
- *  "never expose private identifiers" contract this builds. */
-async function loadStatusResponse(sql: Sql, participantId: string): Promise<ReferralStatusResponse> {
+ *  by `status`, and by `bootstrap`/`apply_code`/`claim_reward`'s success responses so every action
+ *  always reports referral progress identically. See referral-api-response.ts for the field-by-field
+ *  "never expose private identifiers" contract this builds.
+ *
+ *  `environment` — 85Blends 2.4.0 Referral Reward Redemption, SECOND correctness hardening pass:
+ *  THIS installation's own current environment (see authenticateInstallation/handleBootstrap), used
+ *  to scope both the reward-milestone rows and the issued-code lookup below. Reward/code rows now
+ *  carry `environment` (see the migration's Section 1b), so an installation that has, across its
+ *  lifetime, been bootstrapped in more than one environment can never have a stale/other-environment
+ *  reward or code leak into its CURRENT status response. `qualified_count`/`pending_count` stay
+ *  unscoped — private.referral_attributions rows can only ever exist via the PRODUCTION-only
+ *  qualification pipeline (process_referral_subscription_event's own v1 scope lock), so there is
+ *  nothing to cross-contaminate there. */
+async function loadStatusResponse(
+  sql: Sql,
+  participantId: string,
+  environment: RevenueCatWebhookEnvironment,
+): Promise<ReferralStatusResponse> {
   const [participantRow] = await sql<{ referral_code: string }[]>`
     select referral_code from private.referral_participants where id = ${participantId}
   `;
@@ -143,6 +176,7 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
     select milestone_number, status
     from private.referral_rewards
     where referrer_participant_id = ${participantId}
+      and environment = ${environment}
   `;
 
   const [ownAttributionRow] = await sql<{ referral_code_used: string; status: string }[]>`
@@ -159,10 +193,11 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
   // Correctness hardening pass — REAL BUG this closes (found in review): an issued code that has
   // EXPIRED before ever being redeemed must never be exposed here as if it were still redeemable.
   // `claim_referral_reward` already auto-voids an expired issued code the moment the SAME reward is
-  // claimed again (see that function's own Step 5b), but a participant who never re-opens the
-  // redemption sheet after their code expires would otherwise see a permanently stale, dead code in
-  // their own status response forever. `apple_expires_at > now()` is the authoritative filter
-  // (apple_expires_at is NOT NULL — every code this pool ever holds has a known expiration).
+  // claimed again, but a participant who never re-opens the redemption sheet after their code
+  // expires would otherwise see a permanently stale, dead code in their own status response
+  // forever. `apple_expires_at > now()` is the authoritative filter (apple_expires_at is NOT NULL —
+  // every code this pool ever holds has a known expiration). SECOND HARDENING PASS: also scoped by
+  // `environment` — see this function's own header.
   const [issuedCodeRow] = await sql<{
     product_id: string;
     offer_reference_name: string;
@@ -172,6 +207,7 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
     select product_id, offer_reference_name, apple_code, apple_expires_at
     from private.referral_reward_offer_codes
     where referrer_participant_id = ${participantId}
+      and environment = ${environment}
       and status = 'issued'
       and apple_expires_at > now()
     limit 1
@@ -179,7 +215,7 @@ async function loadStatusResponse(sql: Sql, participantId: string): Promise<Refe
 
   const rewards: RewardMilestoneRow[] = rewardRows.map((row) => ({
     milestoneNumber: row.milestone_number,
-    status: row.status as "earned" | "fulfilled" | "revoked",
+    status: row.status as "earned" | "issued" | "fulfilled" | "revoked",
   }));
 
   const issuedRewardCode: IssuedRewardCodeSummary | null = issuedCodeRow
@@ -287,10 +323,18 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
       // Updates app_version whenever the request supplied one, and otherwise preserves whatever
       // was already stored, so a same-secret concurrent request never "loses" its app_version
       // merely because a different request happened to win the INSERT race.
+      //
+      // 85Blends 2.4.0 Referral Reward Redemption, SECOND correctness hardening pass:
+      // current_environment/current_app_user_id are ALWAYS overwritten with THIS bootstrap
+      // request's own values (never coalesced with the prior stored value, unlike app_version) —
+      // this row must always reflect the MOST RECENT bootstrap's identity, which is the entire
+      // point (see the migration's Section 1e and authenticateInstallation's own header).
       await tx`
         update private.referral_client_installations
         set last_seen_at = now(),
-            app_version = coalesce(${request.appVersion}, app_version)
+            app_version = coalesce(${request.appVersion}, app_version),
+            current_environment = ${request.revenueCatEnvironment},
+            current_app_user_id = ${request.revenueCatAppUserId}
         where installation_id = ${request.clientInstallationId}
       `;
 
@@ -310,7 +354,10 @@ async function handleBootstrap(sql: Sql, request: BootstrapRequest): Promise<Res
     return errorResponse(mapping.httpStatus, mapping.code);
   }
 
-  const status = await loadStatusResponse(sql, participantId);
+  // `request.revenueCatEnvironment` directly — this bootstrap call just wrote it as THIS
+  // installation's own current_environment (above), so re-deriving it via authenticateInstallation
+  // would just read back the exact same value through an extra round trip.
+  const status = await loadStatusResponse(sql, participantId, request.revenueCatEnvironment);
   return jsonResponse(200, { ...status, created: credentialCreated });
 }
 
@@ -318,7 +365,7 @@ async function handleStatus(sql: Sql, request: StatusRequest): Promise<Response>
   const auth = await authenticateInstallation(sql, request.clientInstallationId, request.installationSecret);
   if (!auth.ok) return auth.response;
 
-  const status = await loadStatusResponse(sql, auth.participantId);
+  const status = await loadStatusResponse(sql, auth.participantId, auth.environment);
   return jsonResponse(200, status);
 }
 
@@ -340,7 +387,7 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
     // Immutability (Phase 10): never call apply_referral_code again once an attribution exists.
     // Same code re-submitted is an idempotent success; a different code is a hard conflict.
     if (existingAttribution.referral_code_used === request.referralCode) {
-      const status = await loadStatusResponse(sql, auth.participantId);
+      const status = await loadStatusResponse(sql, auth.participantId, auth.environment);
       return jsonResponse(200, { status: "already_applied", ...status });
     }
     return errorResponse(409, "referral_already_applied");
@@ -405,7 +452,7 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
         where referred_participant_id = ${auth.participantId}
       `;
       if (raceRow?.referral_code_used === request.referralCode) {
-        const status = await loadStatusResponse(sql, auth.participantId);
+        const status = await loadStatusResponse(sql, auth.participantId, auth.environment);
         return jsonResponse(200, { status: "already_applied", ...status });
       }
       return errorResponse(409, "referral_already_applied");
@@ -417,38 +464,8 @@ async function handleApplyCode(sql: Sql, request: ApplyCodeRequest): Promise<Res
     return errorResponse(mapping.httpStatus, mapping.code);
   }
 
-  const status = await loadStatusResponse(sql, auth.participantId);
+  const status = await loadStatusResponse(sql, auth.participantId, auth.environment);
   return jsonResponse(200, { status: "applied", ...status });
-}
-
-/** 85Blends 2.4.0 Referral Reward Redemption, correctness hardening pass — resolves which
- *  RevenueCat/Apple environment THIS installation's claim belongs to, BACKEND-AUTHORITATIVELY,
- *  from its own private.referral_participant_aliases rows — never a client-supplied string (the
- *  request has no such field at all — see ClaimRewardRequest). A participant with any PRODUCTION
- *  alias is ALWAYS treated as PRODUCTION, even if they also carry older SANDBOX aliases (e.g. from
- *  a development build, or dogfooding before a real install) — a real production identity always
- *  wins over a stale test one. Only a participant with SANDBOX aliases and NO PRODUCTION alias at
- *  all (an operator-designated test participant — see this feature's deployment documentation) is
- *  treated as SANDBOX. Returns `null` if this participant has no aliases at all yet — never
- *  guessed/defaulted; see handleClaimReward's own handling of that case.
- *
- *  This is the "how can claim_reward authoritatively know which environment the CURRENT caller is
- *  in" answer this feature's correctness hardening pass required: reusing the SAME alias rows
- *  every other identity-scoped decision in this backend already trusts (process_referral_subscription_event's
- *  own zero/one/many resolution, revenuecat-webhook's canonical customer mirror), never a new,
- *  parallel identity mechanism. */
-async function resolveClaimEnvironment(
-  sql: Sql,
-  participantId: string,
-): Promise<RevenueCatWebhookEnvironment | null> {
-  const rows = await sql<{ environment: string }[]>`
-    select distinct environment from private.referral_participant_aliases
-    where participant_id = ${participantId}
-  `;
-  const environments = new Set(rows.map((row) => row.environment));
-  if (environments.has("PRODUCTION")) return "PRODUCTION";
-  if (environments.has("SANDBOX")) return "SANDBOX";
-  return null;
 }
 
 /** 85Blends 2.4.0 Referral Reward Redemption — resolves this participant's currently active Pro
@@ -460,12 +477,15 @@ async function resolveClaimEnvironment(
  *  qualifying-subscription rule entitlement.ts's calculatePro uses, so this can never disagree with
  *  the canonical entitlement mirror about whether Pro is active.
  *
- *  `environment` is the value resolveClaimEnvironment already resolved for this exact participant —
- *  correctness hardening pass: this function used to be hardcoded to PRODUCTION only; it now
- *  queries/calls RevenueCat scoped to whichever environment this specific claim actually belongs
- *  to, so a SANDBOX test participant's own claim can exercise this SAME real code path (including
- *  the "active Pro subscriber gets their own product" branch) during Sandbox/TestFlight
- *  verification, not just the "choose a plan" branch.
+ *  `environment` is THIS installation's own `current_environment`, resolved by
+ *  authenticateInstallation from private.referral_client_installations (SECOND correctness
+ *  hardening pass — previously resolved by a now-removed `resolveClaimEnvironment` that scanned
+ *  every alias this participant had ever accumulated and let PRODUCTION win; see that function's
+ *  former header and authenticateInstallation's own comment). Scoping RevenueCat calls to whichever
+ *  environment the CURRENT installation actually belongs to is what lets a SANDBOX test
+ *  participant's own claim exercise this SAME real code path (including the "active Pro subscriber
+ *  gets their own product" branch) during Sandbox/TestFlight verification, not just the "choose a
+ *  plan" branch.
  *
  *  Returns `{ kind: "ok" }` with the resolved state, or `{ kind: "lookup_failed" }` if this
  *  participant has at least one identity in this environment but a RevenueCat API call for it
@@ -483,8 +503,9 @@ async function resolveAuthoritativeActiveProduct(
 ): Promise<{ kind: "ok"; proIsActive: boolean; activeProductId: string | null } | { kind: "lookup_failed" }> {
   const apiEnvironment = toApiEnvironment(environment);
   if (!apiEnvironment) {
-    // Unreachable — `environment` only ever comes from resolveClaimEnvironment, which only ever
-    // returns 'SANDBOX'/'PRODUCTION'/null — but never assumed away on an environment-isolation path.
+    // Unreachable — `environment` only ever comes from authenticateInstallation, which only ever
+    // returns 'SANDBOX'/'PRODUCTION' on its ok branch — but never assumed away on an
+    // environment-isolation path.
     return { kind: "lookup_failed" };
   }
 
@@ -522,13 +543,11 @@ async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: C
   const auth = await authenticateInstallation(sql, request.clientInstallationId, request.installationSecret);
   if (!auth.ok) return auth.response;
 
-  const environment = await resolveClaimEnvironment(sql, auth.participantId);
-  if (!environment) {
-    // Unreachable in practice — a participant only ever reaches here after a successful bootstrap,
-    // which always creates at least one alias row — but never guessed/defaulted on an
-    // environment-isolation-integrity path. Never PRODUCTION, never SANDBOX: an outright refusal.
-    return errorResponse(409, "environment_unresolvable");
-  }
+  // SECOND HARDENING PASS: environment comes straight from authenticateInstallation's own
+  // `auth.environment` (THIS installation's current_environment) — already fail-closed with
+  // `environment_unresolvable` inside authenticateInstallation itself if unresolvable, so there is
+  // nothing further to check here.
+  const environment = auth.environment;
 
   const activeProduct = await resolveAuthoritativeActiveProduct(sql, env, auth.participantId, environment);
   if (activeProduct.kind === "lookup_failed") {
@@ -577,7 +596,7 @@ async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: C
   // fields alongside `...status` below — `reward_milestone_number` is the one piece of information
   // this response needs that status alone doesn't carry (which specific milestone this claim
   // attempt concerned), so it is the only field added outside of `status`/`...status`.
-  const status = await loadStatusResponse(sql, auth.participantId);
+  const status = await loadStatusResponse(sql, auth.participantId, environment);
   // Every SQL outcome maps 1:1 to a response `status` string — see claim_referral_reward's own
   // RETURNS TABLE comment for the full set. Deliberately always HTTP 200 here (auth/request-shape
   // failures already returned above) — mirrors apply_code's existing "200 + status field" pattern

@@ -59,6 +59,41 @@ revision:
 for exactly what was run) — not merely reasoned about. Sections below are updated in place to
 reflect the current, hardened design; §11 records exactly what remains unverified.
 
+## 0b. Second correctness hardening pass
+
+A second, independent review of the first hardening pass's revision found three further real
+issues, all fixed in this revision (see §7c, §3, and §2 respectively for the full design of each):
+
+1. **Reward status didn't actually change on issuance** — the first hardening pass's design still
+   left `private.referral_rewards.status` at `'earned'` for as long as a code was merely `issued` on
+   the CODE row; only the code itself carried `'issued'`. Fixed: the reward's own lifecycle is now a
+   real three-state machine, `earned -> issued -> fulfilled`, with `revoked` applying only while
+   there is no live issued code — enforced structurally by a new guard trigger, not merely by
+   convention. This also required widening the baseline migration's own `referral_rewards_status`
+   CHECK constraint to permit `'issued'` — a real gap caught only by actually executing this
+   migration against local Postgres. See §7c.
+2. **Claim environment was resolved by scanning historical aliases, not the current installation** —
+   `resolveClaimEnvironment` used to scan EVERY alias a participant had ever accumulated in
+   `private.referral_participant_aliases` and let PRODUCTION win whenever both existed, which is
+   backwards for a participant/installation that is CURRENTLY, genuinely bootstrapped as SANDBOX but
+   happens to also carry an older PRODUCTION alias. Fixed: `private.referral_client_installations`
+   (the existing per-installation credential table) now stores `current_environment`/
+   `current_app_user_id`, written on every successful bootstrap; every action (`bootstrap`/`status`/
+   `apply_code`/`claim_reward`) derives environment from THIS installation's own current context,
+   never a lifetime-aggregated scan. See §3.
+3. **A failed fulfillment update after the code was already redeemed was reported as a safe
+   outcome, not an abort** — the first hardening pass's own `reward_update_failed` outcome returned
+   normally even though, by that point, a real one-time-use Apple code had already been marked
+   redeemed — an impossible-in-practice but silently-reported "failure" that left the code
+   permanently consumed. Fixed: both of `fulfill_referral_reward_offer_code`'s final UPDATEs now
+   `RAISE EXCEPTION` on an unexpected zero-row result instead, aborting the ENTIRE surrounding
+   transaction (the same one the entitlement-mirror write runs in), so the already-mutated code is
+   rolled back too. Proven with a forced-failure test, not merely reasoned about — see §2.
+
+**Every one of these was independently exercised against a real local Postgres 16 replay, from a
+clean database**, including a dedicated forced-invariant-failure test for issue 3 (see §2) — not
+merely reasoned about.
+
 ## 1. Architecture
 
 ```
@@ -95,55 +130,74 @@ place across both revisions of this PR — never deployed, so editing it directl
 stacking a second migration on top, is correct here; see CLAUDE.md's own migration hygiene, which
 only forbids editing an already-*applied* migration).
 
-**Verified via a real local Postgres 16 replay, TWICE** (this container has full `postgres`/`initdb`
-server binaries, not just the `psql` client) — once against the first revision of this PR, and
-again, fully from a clean database, against this hardened revision. Both replays applied the
-ENTIRE existing migration chain in order (skipping only the one pre-existing, unrelated migration
-that requires the `pg_cron` extension, which this sandbox doesn't have installed), then this
-migration. The first replay caught and fixed one real bug before it ever reached the original PR:
-several `where`/`order by` clauses referenced `reward_id`/`milestone_number`/`product_id`/
-`apple_expires_at`/`referrer_participant_id` unqualified, which PL/pgSQL treated as ambiguous
-against those same names appearing as this function's own `RETURNS TABLE` columns ("column
-reference ... is ambiguous") — fixed by table-qualifying every reference in both functions. (This
-exact bug class — an unqualified column colliding with a `RETURNS TABLE` name — was independently
-found by a prior, unrelated review of a DIFFERENT migration in this repo,
-`20260921000000_promo_campaign_foundation.sql`, whose own `.test.ts` file documents it could only
-be caught by a real Postgres instance, never a static text check; this feature's own local replay
-is exactly that missing verification step, now actually performed.)
+**Verified via a real local Postgres 16 replay, THREE times** (this container has full
+`postgres`/`initdb` server binaries, not just the `psql` client) — once against the first revision
+of this PR, again against the first hardening pass, and again, fully from a clean database, against
+this second hardening pass. Every replay applied the ENTIRE existing migration chain in order
+(skipping only the one pre-existing, unrelated migration that requires the `pg_cron` extension,
+which this sandbox doesn't have installed), then this migration. The first replay caught and fixed
+one real bug before it ever reached the original PR: several `where`/`order by` clauses referenced
+`reward_id`/`milestone_number`/`product_id`/`apple_expires_at`/`referrer_participant_id`
+unqualified, which PL/pgSQL treated as ambiguous against those same names appearing as this
+function's own `RETURNS TABLE` columns ("column reference ... is ambiguous") — fixed by
+table-qualifying every reference in both functions. (This exact bug class — an unqualified column
+colliding with a `RETURNS TABLE` name — was independently found by a prior, unrelated review of a
+DIFFERENT migration in this repo, `20260921000000_promo_campaign_foundation.sql`, whose own
+`.test.ts` file documents it could only be caught by a real Postgres instance, never a static text
+check; this feature's own local replay is exactly that missing verification step, now actually
+performed.) The THIRD replay, for this second hardening pass, caught a second real bug the same
+way: the baseline migration's own `referral_rewards_status` CHECK constraint only ever permitted
+`status in ('earned', 'fulfilled', 'revoked')` — with no `'issued'` value — so the very first
+`UPDATE ... SET status = 'issued'` under the new state machine failed outright with a constraint
+violation until this migration's own Section 1c widened it. Neither bug was found by static
+reading; both were found only by actually executing the SQL.
 
-This revision's hardening-pass replay exercised, with real data, every one of the five fixes in
-§0: 5 and 10 qualifying referrals producing the expected earned reward(s); `claim_referral_reward`
-issuing a code and returning the identical code on a repeat call; an ALREADY-EXPIRED available code
-correctly never allocated; an issued code backdated to expired correctly auto-voided on the next
-claim, with the SAME reward staying `earned` and receiving a fresh code on that same call, never
-consuming a second reward; a REAL refund (via the existing, unmodified `refund_reversal` action)
-correctly revoking a reward that already had an issued code, with the new trigger automatically
-voiding that code in the same transaction; a webhook against that now-void code correctly
-no-op'ing; REFUND_REVERSED correctly restoring the reward to `earned`, with the next claim
-allocating a genuinely fresh code; an artificially-forced inconsistent state (the trigger
-temporarily disabled, to isolate the DEFENSIVE reward-status check in
-`fulfill_referral_reward_offer_code` from the trigger that normally prevents this state from ever
-occurring) correctly refused fulfillment (`reward_not_earned`) without ever marking the code
-redeemed or the reward fulfilled; a dedicated SANDBOX test participant's claim only ever able to
-receive a SANDBOX-tagged code, never touching an available PRODUCTION code for the same product; a
-PRODUCTION-environment claim for that same participant finding no eligible reward at all (their
-only reward is SANDBOX-tagged); a malformed/unknown environment value failing closed on both the
-claim and fulfillment paths; and — isolated specifically from the alias-level identity check, using
-a participant with BOTH a SANDBOX and a PRODUCTION alias — a PRODUCTION webhook event correctly
-unable to fulfill that participant's SANDBOX-tagged issued code (proving the CODE-level environment
-check works on its own, not merely as a side effect of alias-level identity resolution already
-failing), while the matching SANDBOX webhook event correctly fulfilled it. Every scenario above
-passed on the first attempt after this revision's edits. This is real, executed verification, not
-a static read-through or a description of intended behavior — see §11 for what still could not be
-verified even with this replay (App Store Connect / Sandbox / RevenueCat specifics, and genuine
-multi-connection concurrency).
+The first hardening pass's replay exercised, with real data: 5 and 10 qualifying referrals producing
+the expected earned reward(s); idempotent repeat claims; expired-code auto-void-and-replace;
+revoke-while-issued (via the since-superseded auto-void trigger); requalification after revocation;
+environment-isolated claim/fulfillment in both directions; and terminal-state enforcement.
+
+**This second hardening pass's replay**, fully from a clean database, exercised the new state
+machine and environment model with real data end to end: (1) `claim_referral_reward` transitioning a
+reward `earned -> issued` the instant a code is allocated; (2) a REAL refund (the existing,
+unmodified `refund_reversal` action) dropping the qualified count while a reward was `issued`, and
+confirming the milestone-shrink logic — scoped to `status = 'earned'` — left the `issued` reward
+completely untouched, never revoking it; (3) webhook fulfillment succeeding normally on that
+still-issued reward after the refund, transitioning it `issued -> fulfilled`, and that fulfilled
+reward remaining immune to a SUBSEQUENT shrink attempt too; (4) an issued code forced to expire
+while its milestone was STILL justified by the current qualified count — correctly reverting the
+reward to `earned` and issuing a genuinely fresh code in the same call, with exactly one reward row
+for that milestone throughout; (5) an issued code forced to expire AFTER five refunds dropped the
+qualified count below the milestone's threshold — correctly revoking the reward outright
+(`expired_no_longer_qualified`) with NO replacement code ever issued; (6) a single participant
+holding BOTH a PRODUCTION alias/rewards and a SANDBOX alias/reward (simulating a historical
+environment switch) — confirming a SANDBOX-environment claim only ever touched the SANDBOX reward
+row, leaving the PRODUCTION rewards (one fulfilled, one revoked) completely untouched, and vice
+versa; (7) the exact query shape `loadStatusResponse` now uses (`referrer_participant_id` +
+`environment`) returning only the correct environment's reward rows; (8) an independent SANDBOX
+participant's full claim -> webhook-fulfillment cycle succeeding on its own. Every scenario passed
+on the first attempt after fixing the `referral_rewards_status` constraint gap above.
+
+**Transaction-rollback hardening (issue 3) was proven, not just written**, with a dedicated forced-
+invariant-failure test: two test-only copies of `fulfill_referral_reward_offer_code`, each with ONE
+of its two final `UPDATE` statements' `WHERE` clause deliberately changed to a status value that can
+never match (simulating the "impossible" zero-row-update condition by construction, since under
+real locking this branch cannot be reached by a genuine race), confirmed that (a) the call raises
+rather than returning a typed outcome, (b) a subsequent statement in the SAME transaction is
+rejected with "current transaction is aborted," proving the WHOLE transaction is poisoned, not just
+the failing statement, and (c) after an explicit `ROLLBACK`, the code is back to `issued` (never
+left `redeemed`) and the reward is back to `issued` (never left `fulfilled`) — including in the
+harder case where the CODE update had already genuinely succeeded before the REWARD update was the
+one forced to fail, proving the already-mutated code gets rolled back too, not just the failing
+statement's own effect.
 
 **Every pure `_shared/*.ts` Node test in this feature was also actually EXECUTED** (not merely
 written) — `node --test supabase/functions/_shared/*.test.ts` runs cleanly under this container's
-Node 22 (native TypeScript support, no transpile step needed): **347 tests, 347 passing, 0
-failing**, across every shared module this feature touches or added. An earlier revision of this
-document said Deno-file testing was entirely unavailable in this environment; that undersold what
-Node 22 can actually execute here — corrected in this revision.
+Node 22 (native TypeScript support, no transpile step needed): **348 tests, 348 passing, 0
+failing**, across every shared module this feature touches or added (347 after the first hardening
+pass, +1 new test for the `'issued'` milestone-progress case added by this second pass). An earlier
+revision of this document said Deno-file testing was entirely unavailable in this environment; that
+undersold what Node 22 can actually execute here — corrected in an earlier revision.
 
 **Zero changes to any existing FUNCTION'S body** — in particular,
 `private.process_referral_subscription_event` (the existing qualification/refund function) is
@@ -175,46 +229,64 @@ New/changed objects:
     — the non-negotiable business rule that keeps webhook fulfillment matching unambiguous.
   - A `BEFORE UPDATE` trigger makes `redeemed`/`void` terminal states and forbids any code
     returning to `available` once issued.
-- `private.referral_rewards` (existing table, additive change — hardening pass) — new `environment`
-  column, `NOT NULL`, defaulting to `'PRODUCTION'`. Every existing row (empty or not; this
-  migration does not assume the table is empty live) is safely backfilled to `'PRODUCTION'` before
-  the `NOT NULL` is applied, because every reward this schema has ever been able to create (via
-  `process_referral_subscription_event`'s own PRODUCTION-only v1 scope lock) is unambiguously
-  `'PRODUCTION'` — the existing, unmodified `INSERT` inside that function needs zero changes; it
-  picks up the new column's default automatically. See §7 for the full design rationale, including
-  why the REWARD row (not just the code pool) needed this tag.
-- `private.referral_rewards_void_issued_code_on_revoke` (new trigger, hardening pass) — the moment
-  a reward transitions `earned` → `revoked`, any code still `issued` for it is immediately voided.
-  See §0/§7.
-- `private.claim_referral_reward(...)` (new function, signature changed in the hardening pass to
-  add `p_environment`, hardening pass) — the one atomic claim operation (see §4/§7a).
-- `private.fulfill_referral_reward_offer_code(...)` (new function, hardened in place per §7a/§7b) —
-  the one atomic fulfillment operation (see §5/§7b).
+- `private.referral_rewards` (existing table, additive changes) — new `environment` column,
+  `NOT NULL`, defaulting to `'PRODUCTION'` (first hardening pass; safely backfilled — see §7a).
+  **Second hardening pass:** the baseline's own `referral_rewards_status` CHECK constraint is
+  widened from `('earned','fulfilled','revoked')` to `('earned','issued','fulfilled','revoked')` —
+  see §2's own replay notes above for the real bug this closes — and a new partial unique index,
+  `referral_rewards_one_issued_per_referrer_environment` on `(referrer_participant_id, environment)
+  where status = 'issued'`, mirrors the code pool's own outstanding-code index at the reward layer.
+- `private.referral_client_installations` (existing table, additive change — SECOND hardening
+  pass) — new nullable `current_environment`/`current_app_user_id` columns, written on every
+  successful bootstrap, holding ONLY this installation's most recent identity (never a historical/
+  aggregated set). See §3/§0b issue 2.
+- `private.referral_rewards_guard_transition` (new trigger, SECOND hardening pass) — **replaces**
+  the first hardening pass's `referral_rewards_void_issued_code_on_revoke` entirely (removed — its
+  own firing condition, `earned -> revoked` with a live issued code, can no longer occur under the
+  new state machine, since a reward is never `earned` while its code is `issued`). The new `BEFORE
+  UPDATE` guard proactively enforces: `fulfilled` is terminal; `fulfilled` is only ever reached from
+  `issued`; and a reward may never become `revoked` while it still has a live `issued` code. See
+  §7c.
+- `private.claim_referral_reward(...)` (new function; signature unchanged from the first hardening
+  pass — still `p_environment` as the 2nd param, now backed by `current_environment` rather than an
+  alias scan) — the one atomic claim operation, rewritten for the new state machine and expiration-
+  revalidation logic (see §4/§7a/§7c).
+- `private.fulfill_referral_reward_offer_code(...)` (new function, hardened again in place — same
+  7-param signature) — the one atomic fulfillment operation, now requiring `status = 'issued'` and
+  raising on an impossible partial update instead of returning a typed failure (see §5/§7b/§7c).
 
 ## 3. Edge Function / webhook changes
 
-**`supabase/functions/referral-api`** — new `claim_reward` action:
+**`supabase/functions/referral-api`** — new `claim_reward` action, and environment resolution
+changed for EVERY action (SECOND hardening pass):
 - Authenticates with the exact same installation-secret model as `bootstrap`/`status`/`apply_code`.
-- Resolves which environment (SANDBOX/PRODUCTION) this exact claim belongs to, backend-
-  authoritatively, from this participant's own `private.referral_participant_aliases` rows (new
-  `resolveClaimEnvironment` — hardening pass; see §7a). Refuses the request
-  (`environment_unresolvable`) rather than guessing if no alias exists at all yet (unreachable in
-  practice — a successful bootstrap always creates one).
-- Resolves the participant's RevenueCat identity/identities IN THAT ENVIRONMENT from
-  `private.referral_participant_aliases` and calls the existing `fetchCustomerSubscriptions` REST
-  client (same one `revenuecat-webhook` already uses, now called with the resolved environment
-  rather than a hardcoded `'production'`) to determine, backend-authoritatively, whether the
-  participant is an active Pro subscriber and which product they're on
-  (`_shared/referral-active-product.ts`, new — deliberately a separate file from `entitlement.ts`,
-  which stays untouched).
+  `authenticateInstallation` now ALSO resolves and returns this installation's own
+  `current_environment` (from `private.referral_client_installations` — see §7a/§0b issue 2),
+  failing closed with `environment_unresolvable` (409) if it's somehow unresolvable — this
+  replaces the first hardening pass's `resolveClaimEnvironment`, which used to scan EVERY alias a
+  participant had ever accumulated and let PRODUCTION win; that function is removed entirely.
+  `handleBootstrap` writes `current_environment`/`current_app_user_id` from the request's own
+  `revenuecat_environment`/`revenuecat_app_user_id` fields on EVERY successful bootstrap (new
+  installation or idempotent repeat) as part of the same transaction that resolves the participant.
+- Every action's `loadStatusResponse` call is now scoped by this same resolved environment — the
+  reward-milestone rows and the issued-code lookup both filter `AND environment = $environment`, so
+  an installation that has, across its lifetime, been bootstrapped in more than one environment can
+  never see a stale/other-environment reward or code in its CURRENT status response (`qualified_count`/
+  `pending_count` stay unscoped — see §7a for why).
+- For `claim_reward` specifically: resolves the participant's RevenueCat identity/identities IN THAT
+  ENVIRONMENT from `private.referral_participant_aliases` and calls the existing
+  `fetchCustomerSubscriptions` REST client (same one `revenuecat-webhook` already uses, now called
+  with the resolved environment rather than a hardcoded `'production'`) to determine,
+  backend-authoritatively, whether the participant is an active Pro subscriber and which product
+  they're on (`_shared/referral-active-product.ts`, new — deliberately a separate file from
+  `entitlement.ts`, which stays untouched).
 - If the RevenueCat lookup itself fails, the claim is refused (`revenuecat_lookup_failed`) rather
   than guessing — never lets an active subscriber be misrouted through the "choose any plan" path
   because of a transient failure.
-- Calls `private.claim_referral_reward(...)` (now also passing the resolved environment) and
-  returns a safe payload: claim outcome, which milestone it concerned, and the full (already-
-  updated) referral status — which now also carries the issued code's product/offer
-  reference/raw code/expiration when one exists (see §6), excluding any code that has since
-  expired.
+- Calls `private.claim_referral_reward(...)` (passing the resolved environment) and returns a safe
+  payload: claim outcome, which milestone it concerned, and the full (already-updated) referral
+  status — which now also carries the issued code's product/offer reference/raw code/expiration
+  when one exists (see §6), excluding any code that has since expired.
 - New required env vars: `REVENUECAT_PROJECT_ID`, `REVENUECAT_V2_SECRET_API_KEY` (same values
   `revenuecat-webhook` already uses).
 
@@ -346,13 +418,20 @@ partial unique index that enforces "one outstanding issued code per participant"
 test claim can never collide with an unrelated PRODUCTION row (or vice versa) even in the
 already-unlikely case of one participant somehow holding both.
 
-**Backend-authoritative environment resolution for `claim_reward`:** `referral-api/index.ts`'s new
-`resolveClaimEnvironment` derives the caller's environment from their OWN
-`private.referral_participant_aliases` rows — never a client-supplied value (the request carries no
-such field). A participant with any PRODUCTION alias is always treated as PRODUCTION, even if they
-also carry older SANDBOX aliases; only a participant with SANDBOX aliases and no PRODUCTION alias
-at all is treated as SANDBOX. A participant with no aliases at all (unreachable in practice — a
-successful bootstrap always creates one) fails the request closed rather than guessing.
+**Backend-authoritative environment resolution (SECOND hardening pass — see §0b issue 2):**
+`referral-api/index.ts`'s `authenticateInstallation` derives the caller's environment from THIS
+installation's own `current_environment` column on `private.referral_client_installations` — never
+a client-supplied value (the request carries no such field), and never a scan of every alias the
+underlying participant has ever accumulated. This replaces the first hardening pass's own
+`resolveClaimEnvironment`, which scanned `private.referral_participant_aliases` and let PRODUCTION
+win whenever both existed — backwards for a participant/installation that is CURRENTLY, genuinely
+bootstrapped as SANDBOX but happens to also carry an older PRODUCTION alias (e.g. from a prior
+build/reinstall). `current_environment` is written on EVERY successful bootstrap call (new
+installation or idempotent repeat) with that exact request's own `revenuecat_environment` value, so
+it always reflects the MOST RECENT bootstrap, never a historical aggregate. An installation whose
+`current_environment` is somehow unresolvable (unreachable in practice — every installation row that
+can pass the credential check was created by a successful bootstrap, which always records this in
+the SAME transaction) fails the request closed with `environment_unresolvable` rather than guessing.
 
 **How a SANDBOX test reward is created at all:** never through the real qualification pipeline
 (`process_referral_subscription_event` is PRODUCTION-only by construction, unchanged). An operator
@@ -373,57 +452,124 @@ of thing a schema constraint should make impossible rather than merely discourag
 reward row costs one nullable-then-backfilled column addition and zero function-signature changes
 to any pre-existing function (see §2) — cheap enough that the stronger guarantee was worth it.
 
-**Why `loadStatusResponse` (the client-facing status payload) was deliberately NOT scoped by
-environment:** a real PRODUCTION participant structurally never has a SANDBOX reward row (see
-above), so filtering there would be a no-op for every real user — and for the ONE case it would
-actually change anything (a dedicated SANDBOX test participant), filtering it OUT would be actively
-unhelpful: the whole point of Sandbox/TestFlight verification is to see the seeded test reward
-show up in status exactly like a real one would. The two write paths that actually move state
-(`claim_referral_reward`, `fulfill_referral_reward_offer_code`) are where cross-contamination is
-structurally possible, and those are where the environment gate lives.
+**`loadStatusResponse` scoping (revised in the second hardening pass):** an earlier revision of this
+document argued `loadStatusResponse` should be deliberately UNSCOPED by environment, reasoning that
+a real PRODUCTION participant structurally never has a SANDBOX reward row. That reasoning missed the
+exact scenario §0b issue 2 fixes: an installation CAN legitimately carry reward/code rows in more
+than one environment over its lifetime (a dogfooding build later reinstalled from the real App
+Store, or vice versa), and an unscoped query would then leak a stale, other-environment reward or
+code into the CURRENT status response. `loadStatusResponse` now takes the caller's resolved
+`current_environment` and filters both the reward-milestone rows and the issued-code lookup by it
+(§3) — the Sandbox/TestFlight verification concern the earlier reasoning was protecting (seeing a
+seeded SANDBOX test reward show up in status) is unaffected, since a dedicated SANDBOX test
+participant's installation is itself bootstrapped as SANDBOX, so its own status calls resolve
+`current_environment = 'SANDBOX'` and see exactly their own SANDBOX rows.
 
-## 7b. Revoked-reward / issued-code consistency (hardening pass)
+## 7b. Revoked-reward / issued-code consistency (first hardening pass — superseded by §7c)
 
-**The bug:** a reward can transition `earned` → `revoked` (the existing, unmodified milestone
-shrink logic in `process_referral_subscription_event`, triggered by a refund) at ANY time —
-including after an Apple Offer Code has already been issued for it. Left alone, that code would
-stay `status='issued'`, pointing at a reward that no longer justifies it, until the user eventually
-redeemed it — at which point nothing would have told `fulfill_referral_reward_offer_code` not to
-honor that redemption.
+**The original bug (first hardening pass):** a reward could transition `earned` → `revoked` (the
+existing, unmodified milestone shrink logic in `process_referral_subscription_event`, triggered by a
+refund) at ANY time — including after an Apple Offer Code had already been issued for it, because at
+that time the REWARD row itself stayed `'earned'` for as long as the CODE was merely `'issued'`.
+Left alone, that code would stay `status='issued'`, pointing at a reward that no longer justifies
+it, until the user eventually redeemed it — at which point nothing would have told
+`fulfill_referral_reward_offer_code` not to honor that redemption.
 
-**The fix, at two independent layers:**
-1. A new trigger, `private.referral_rewards_void_issued_code_on_revoke`, fires the instant a reward
-   transitions `earned` → `revoked` and immediately voids any code still `issued` for it, in the
-   SAME transaction as the revocation. If the reward is later restored (`revoked` → `earned`, a
-   `REFUND_REVERSED` requalification), the old code stays permanently void — Section 1's own
-   `redeemed`/`void` terminal-state trigger already guarantees this — and the next
-   `claim_referral_reward` call allocates a genuinely fresh code; no special-case code was needed
-   for the restore direction.
-2. `fulfill_referral_reward_offer_code` no longer trusts "the code is still `status='issued'`" as
-   proof the reward is still valid. It now locks and re-reads the associated reward BEFORE ever
-   marking the code redeemed, refuses to proceed unless the reward is genuinely `earned` (a
-   `revoked` reward returns `reward_not_earned` and the code is never touched), and — after writing
-   `status='fulfilled'` — verifies via `GET DIAGNOSTICS` that its own UPDATE actually affected a
-   row before ever reporting success, rather than assuming it did.
+**The first hardening pass's fix, at two independent layers:** (1) a trigger,
+`private.referral_rewards_void_issued_code_on_revoke`, that fired the instant a reward transitioned
+`earned` → `revoked` and voided any code still `issued` for it; (2) `fulfill_referral_reward_offer_code`
+locking and re-reading the associated reward before ever marking the code redeemed, refusing unless
+the reward was genuinely `earned`.
 
-Layer 2 is deliberately NOT redundant with layer 1: it was verified independently, by temporarily
-disabling the trigger and forcing the exact inconsistent state layer 1 exists to prevent, then
-confirming `fulfill_referral_reward_offer_code`'s own check still refused to fulfill it (see §2).
-A future bug in the trigger, or an event ordering this migration didn't anticipate, can never be
-the ONLY thing standing between a revoked reward and an incorrect fulfillment.
+**SUPERSEDED by the second hardening pass (§7c):** once the reward's own status became `'issued'`
+the moment its code is issued (rather than staying `'earned'`), layer 1's own firing condition
+(`earned` → `revoked` with a live issued code) can no longer occur by construction — a reward is
+never `'earned'` while its code is `'issued'`. The trigger was removed entirely rather than left as
+harmless-but-confusing dead code; layer 2's spirit survives as `fulfill_referral_reward_offer_code`
+now requiring `status = 'issued'` (not `'earned'`) before ever marking a code redeemed. See §7c for
+the current design and how its own defensive layer was independently verified.
+
+## 7c. Reward state machine redesign (second hardening pass)
+
+**The requirement:** `private.referral_rewards` gets a REAL three-state lifecycle —
+`earned -> issued -> fulfilled` — with `revoked` applying only while there is no live (unexpired,
+`status = 'issued'`) Apple code outstanding for that reward. An issued reward must not be revoked
+merely because the referrer's qualified-referral count later drops while its code is still valid.
+When an issued code expires unused, the reward must be revalidated against the CURRENT
+qualified-referral count: still justified → back to `earned`, then a fresh code allocated in the
+same call; no longer justified → `revoked` outright, no replacement.
+
+**The design actually implemented:**
+- `claim_referral_reward`'s final allocation step now updates BOTH rows together: the code
+  `available -> issued` and the reward `earned -> issued`, in the same statement block — a code is
+  never `issued` without its reward being `issued` too, and vice versa. This pairing invariant is
+  what makes the milestone shrink logic's `status = 'earned'` scoping (unmodified,
+  `process_referral_subscription_event`) automatically exclude every issued reward — there is
+  nothing extra to teach that pre-existing, already-reviewed function.
+- The function's FIRST step now looks for an existing `'issued'` reward (not `'earned'`) in the
+  caller's environment. An unexpired match returns the same code as before (idempotency, unchanged
+  behavior). An expired match is the new branch: the code is voided, then the reward's OWN milestone
+  is revalidated against `count(*) from referral_attributions where status = 'qualified'` for that
+  referrer — the identical `floor(count / 5)` formula the shrink/grow logic already uses. Still
+  justified → `issued -> earned`, and the function falls through to allocate a fresh code in the
+  SAME call (no second reward ever consumed). No longer justified → `issued -> revoked`
+  (`revoke_reason = 'expired_unclaimed_below_milestone'`), returned as a new outcome,
+  `expired_no_longer_qualified` — no replacement code is ever issued.
+- `fulfill_referral_reward_offer_code` now requires the associated reward to be `status = 'issued'`
+  (not `'earned'`) before ever marking a code redeemed — `reward_not_issued` replaces the first
+  hardening pass's `reward_not_earned` as the refusal outcome for anything else.
+- A new `BEFORE UPDATE` guard trigger, `private.referral_rewards_guard_transition`, makes the state
+  machine a structural guarantee rather than a convention: `fulfilled` is permanently terminal;
+  `fulfilled` may only ever be reached FROM `issued`; and — the core invariant this pass exists to
+  enforce — a reward may never become `revoked` while it still has a live `issued` code. Every
+  legitimate revocation path already guarantees this by construction (the shrink logic never touches
+  `issued` rows; the expiration-revalidation branch above always voids the code BEFORE touching the
+  reward), so this trigger is the belt-and-suspenders backstop, not the primary mechanism — replaces
+  the first hardening pass's reactive `referral_rewards_void_issued_code_on_revoke` (§7b), whose own
+  premise (an `earned` reward with a live issued code) can no longer occur.
+- The baseline migration's `referral_rewards_status` CHECK constraint is widened to admit `'issued'`
+  — a real gap only found by actually executing an `UPDATE ... SET status = 'issued'` against local
+  Postgres (see §2).
+- A new partial unique index, `referral_rewards_one_issued_per_referrer_environment`, mirrors the
+  code pool's own outstanding-code index at the reward layer.
+
+**Transaction-rollback hardening, the same pass:** `fulfill_referral_reward_offer_code`'s two final
+`UPDATE` statements each check `GET DIAGNOSTICS ... row_count` and, on an unexpected zero-row
+result, `RAISE EXCEPTION` instead of returning a typed outcome (the first hardening pass's own
+`reward_update_failed` returned normally even though the Apple code had, by that point, already been
+marked redeemed — a real one-time-use code silently consumed while reporting something that looked
+like a safe, recoverable failure). Raising aborts the ENTIRE surrounding transaction — this
+function's caller runs it inside the same transaction as the entitlement-mirror write (§3) — so an
+already-succeeded code UPDATE is rolled back too if the reward UPDATE that follows it turns out to
+be the one that fails. Verified with a forced-invariant-failure test, not just written: see §2 for
+the exact methodology (two test-only copies of the function, each with one UPDATE's `WHERE` clause
+deliberately mismatched) and its results.
+
+**Why `earned_months_available`/`fulfilled_months`/next-milestone progress didn't need new backend
+logic:** `earned_months_available` already counted only `status = 'earned'` rows, so an `'issued'`
+reward is automatically excluded (it's surfaced separately via `issued_reward_*` fields, §6) with no
+code change. `computeNextMilestoneProgress` (`_shared/referral-milestones.ts`) DID need one fix: its
+"highest milestone ever reached" calculation now treats `'issued'` the same as `'earned'`/
+`'fulfilled'` — otherwise an issued-but-not-yet-fulfilled milestone would incorrectly stop counting
+as "reached," regressing the next-milestone target. Covered by a new Node test.
 
 ## 8. Files changed
 
 **Migrations:** `supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql` (new).
 
 **Edge Functions / shared:**
-`supabase/functions/referral-api/index.ts`,
+`supabase/functions/referral-api/index.ts` (second hardening pass —
+`authenticateInstallation`/`handleBootstrap`/`loadStatusResponse`/`handleClaimReward` rewired for
+current-installation environment resolution; `resolveClaimEnvironment` removed),
 `supabase/functions/revenuecat-webhook/index.ts`,
 `supabase/functions/_shared/database.ts`,
 `supabase/functions/_shared/referral-classification.ts`,
 `supabase/functions/_shared/referral-api-env.ts`,
 `supabase/functions/_shared/referral-api-validation.ts`,
-`supabase/functions/_shared/referral-api-response.ts`,
+`supabase/functions/_shared/referral-api-response.ts` (second hardening pass — comment only:
+`'issued'` exclusion from `earned_months_available`),
+`supabase/functions/_shared/referral-milestones.ts` (second hardening pass — `'issued'` added to
+`RewardMilestoneRow.status`; `computeNextMilestoneProgress` treats it like `earned`/`fulfilled`),
 `supabase/functions/_shared/revenuecat-types.ts`,
 `supabase/functions/_shared/referral-reward-offer-codes.ts` (new),
 `supabase/functions/_shared/referral-active-product.ts` (new).
@@ -431,18 +577,25 @@ the ONLY thing standing between a revoked reward and an incorrect fulfillment.
 **Tests (Node, `_shared/*.test.ts`):**
 `referral-reward-offer-codes.test.ts` (new), `referral-active-product.test.ts` (new),
 `referral-classification.test.ts`, `referral-api-validation.test.ts`,
-`referral-api-response.test.ts`, `referral-api-env.test.ts`.
+`referral-api-response.test.ts` (second hardening pass — new `'issued'`-exclusion case),
+`referral-api-env.test.ts`,
+`referral-milestones.test.ts` (second hardening pass — new `'issued'`-counts-as-reached case).
 
 **iOS:**
-`EightyFiveBlends/ReferralModels.swift`, `ReferralAPIService.swift`, `ReferralManager.swift`,
-`ReferralPresentation.swift`, `ReferEarnView.swift`, `ReviewRequestManager.swift` (new
-`AppStoreDestination.redeemOfferCode(_:)`), `ReferralRewardRedemptionSheet.swift` (new — the real
-redemption UI), `RevenueCatSubscriptionService.swift` (hardening pass — new
+`EightyFiveBlends/ReferralModels.swift` (second hardening pass — doc comments: new
+`expired_no_longer_qualified` claim outcome, broadened `environmentUnresolvable` scope),
+`ReferralAPIService.swift`, `ReferralManager.swift` (second hardening pass — doc-comment-only
+re-bootstrap verification note; no behavior change), `ReferralPresentation.swift` (second hardening
+pass — new `claimStatusMessage` case for `expired_no_longer_qualified`), `ReferEarnView.swift`,
+`ReviewRequestManager.swift` (new `AppStoreDestination.redeemOfferCode(_:)`),
+`ReferralRewardRedemptionSheet.swift` (new — the real redemption UI),
+`RevenueCatSubscriptionService.swift` (first hardening pass — new
 `RevenueCatClient.syncPurchases()` + `syncAfterExternalRedemption()`), `SubscriptionManager.swift`
-(hardening pass — thin `syncAfterExternalRedemption()` wrapper).
+(first hardening pass — thin `syncAfterExternalRedemption()` wrapper).
 
-**iOS tests:** `ReferralModelsTests.swift`, `ReferralPresentationTests.swift`,
-`ReferralManagerTests.swift`, `ReviewRequestManagerTests.swift`.
+**iOS tests:** `ReferralModelsTests.swift`, `ReferralPresentationTests.swift` (second hardening
+pass — new `expired_no_longer_qualified` cases), `ReferralManagerTests.swift`,
+`ReviewRequestManagerTests.swift`.
 
 **Untouched, as scoped:** the Nearby E85 widget, station/ethanol reporting, Trip Planner, ads, the
 general promo-campaign system (`20260921000000_promo_campaign_foundation.sql` remains unapplied and
@@ -460,8 +613,8 @@ untouched — this feature deliberately does not build on it, per its own header
 4. Apply this migration (`20260928000000_referral_reward_redemption_foundation.sql`) to production.
 5. Verify grants/RLS on the new table and both new functions (service_role-only, zero
    anon/authenticated policies) — same verification style as
-   `docs/PRE_RELEASE_SUPABASE_CHECKLIST.md`. Also verify the new
-   `referral_rewards_void_issued_code_on_revoke` trigger exists and is enabled.
+   `docs/PRE_RELEASE_SUPABASE_CHECKLIST.md`. Also verify the
+   `referral_rewards_guard_transition` trigger exists and is enabled (§7c).
 6. Deploy the updated `referral-api` function (with the two new `REVENUECAT_*` env vars set).
 7. Deploy the updated `revenuecat-webhook` function.
 8. Import production Apple one-time code pools into `private.referral_reward_offer_codes` securely
@@ -517,24 +670,37 @@ manually in App Store Connect).
 - **Webhook spoof/cross-account match:** fulfillment identity resolution reuses the exact
   zero/one/many alias-set pattern already reviewed for `process_referral_subscription_event` — a
   multi-match is a fail-closed `identity_conflict`, never a guess.
-- **Environment mismatch (hardening pass):** both `private.referral_rewards` and
-  `private.referral_reward_offer_codes` carry `NOT NULL environment`; `claim_referral_reward`
-  and `fulfill_referral_reward_offer_code` both require an exact environment match at every
-  lookup (reward selection, existing-code check, outstanding-issued-code lookup, allocation). The
-  caller's environment for `claim_reward` is resolved server-side from the caller's own
-  `referral_participant_aliases`, never client-supplied. See §7a for the full design and the
-  alternative considered and rejected.
+- **Environment mismatch:** both `private.referral_rewards` and `private.referral_reward_offer_codes`
+  carry `NOT NULL environment`; `claim_referral_reward` and `fulfill_referral_reward_offer_code` both
+  require an exact environment match at every lookup (reward selection, existing-code check,
+  outstanding-issued-code lookup, allocation). **Second hardening pass:** the caller's environment
+  for every action is resolved server-side from THIS installation's own `current_environment`
+  (`private.referral_client_installations`, written on every successful bootstrap) — never a
+  client-supplied value, and never a scan of every alias the underlying participant has ever
+  accumulated (the first hardening pass's own design, which could misclassify a currently-SANDBOX
+  installation as PRODUCTION). See §7a for the full design and the alternative considered and
+  rejected.
+- **Reward state-machine integrity (second hardening pass):** `private.referral_rewards` now has a
+  real `earned -> issued -> fulfilled` lifecycle, structurally guarded by
+  `referral_rewards_guard_transition` (fulfilled is terminal, reachable only from issued; revoked is
+  impossible while a live issued code exists) — not merely enforced by application-code discipline.
+  See §7c.
+- **Fulfillment partial-update integrity (second hardening pass):** an impossible zero-row result on
+  either of `fulfill_referral_reward_offer_code`'s final UPDATEs now aborts the entire surrounding
+  transaction (`RAISE EXCEPTION`, not a typed outcome) — a real one-time-use Apple code can never be
+  left marked redeemed while the matching reward silently fails to transition. Proven with a forced-
+  invariant-failure test (two test-only copies of the function with one UPDATE's WHERE clause
+  deliberately mismatched), not merely written. See §2/§7c.
 - **Expired-code allocation:** `apple_expires_at` is `NOT NULL` on every pooled code, so
   `claim_referral_reward`'s allocation query filters `apple_expires_at > now()` unconditionally —
   no "unknown expiration" row can ever exist to slip past the filter. An existing `issued` code
   that has since expired is atomically voided and replaced within the same claim call (§2 Step 5b)
   rather than left to block the reward.
-- **Revoked-reward / issued-code consistency (hardening pass):** a reward revoked after its code
-  was already issued can no longer result in a fulfillable code — enforced at two independent
-  layers (a proactive trigger that voids the code the instant the reward is revoked, and a
-  defensive re-check inside `fulfill_referral_reward_offer_code` that locks and re-reads the
-  reward and refuses unless it is genuinely `earned`, verified via `GET DIAGNOSTICS` after its own
-  UPDATE). See §7b.
+- **Revoked-reward / issued-code consistency:** structurally impossible for a reward to be both
+  `revoked` and paired with a live `issued` code — enforced by the `referral_rewards_guard_transition`
+  trigger (second hardening pass), with `fulfill_referral_reward_offer_code` independently requiring
+  `status = 'issued'` (not `'earned'`) before ever marking a code redeemed, verified via
+  `GET DIAGNOSTICS` after its own UPDATE. See §7b/§7c.
 - **External-redemption entitlement reconciliation (hardening pass):** the redemption sheet calls
   `Purchases.shared.syncPurchases()` (not `restorePurchases()`, no restore UI) through the same
   authoritative `SubscriptionManager`/`RevenueCatSubscriptionService` entitlement bridge already
@@ -560,27 +726,33 @@ to the authenticated installation they were assigned to.
 
 - **The migration's SQL was actually executed and verified**, against a real, temporary local
   Postgres 16 server (this container has the full server binaries, not just `psql`) replaying the
-  entire existing migration chain — twice, once before and once after the hardening pass — see §2
-  for exactly what was exercised, including the column-ambiguity bug this found and fixed, and the
-  full hardening-pass scenario list (expiration replacement, revocation while issued, requalification
-  after revocation, webhook against a revoked reward, sandbox/production isolation, all exercised
-  with real data via `psql`). What that local replay does **not** cover: genuine multi-connection
-  concurrency (SKIP LOCKED behavior under two truly simultaneous claims, lock-ordering under load),
-  RLS enforcement from an actual `anon`/`authenticated` role connection (grants were verified by
-  reading them, not by attempting a live denied connection), and anything specific to Supabase's own
-  connection pooler/transaction mode.
+  entire existing migration chain — THREE times (once before, once after the first hardening pass,
+  and once more, fully from a clean database, after this second hardening pass) — see §2 for exactly
+  what was exercised, including both real bugs this process found and fixed (a column-ambiguity bug
+  in the first pass; the `referral_rewards_status` CHECK constraint gap in the second), and the full
+  scenario lists for both passes (expiration replacement in both directions, revocation immunity
+  while issued, requalification, a same-participant PRODUCTION/SANDBOX switch, status-response
+  environment scoping, and a dedicated forced-invariant-failure test proving the fulfillment
+  transaction-rollback mechanism, all exercised with real data via `psql`). What that local replay
+  does **not** cover: genuine multi-connection concurrency (SKIP LOCKED behavior under two truly
+  simultaneous claims, lock-ordering under load), RLS enforcement from an actual
+  `anon`/`authenticated` role connection (grants were verified by reading them, not by attempting a
+  live denied connection), and anything specific to Supabase's own connection pooler/transaction
+  mode.
 - **Correction to an earlier revision of this document:** an earlier revision said Deno-file testing
   was "entirely unavailable" in this environment, implying the `_shared/*.test.ts` suite was only
   written/reviewed, not actually run. That undersold what this environment can do: Node.js 22 is
   installed (`/opt/node22/bin/node`) with native TypeScript stripping, and `node --test
   supabase/functions/_shared/*.test.ts` directly executes the entire pure-TS, Deno-free `_shared`
   test suite for real — no transpile step, no Deno runtime needed for these files specifically.
-  That run currently passes **347/347** (0 failing), re-confirmed after the hardening-pass edits.
-  What genuinely remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
+  That run currently passes **348/348** (0 failing; 347 after the first hardening pass, +1 new test
+  for the `'issued'`-counts-as-reached milestone-progress case added by this second pass). What
+  genuinely remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
   `revenuecat-webhook/index.ts` themselves (the HTTP handler entry points) and `database.ts` (which
   only runs under Deno's `npm:postgres` specifier) still require an actual Deno runtime, which is
-  not available here — those three files remain static-review-only. Every `_shared/*.ts` module
-  they call into, including the new/changed `resolveClaimEnvironment`,
+  not available here — those three files remain static-review-only, including the second hardening
+  pass's own `authenticateInstallation`/`handleBootstrap` rewrite. Every `_shared/*.ts` module they
+  call into, including `referral-milestones.ts`'s `'issued'`-state handling,
   `referral-reward-offer-codes.ts`, and `referral-active-product.ts` logic, was Node-executed.
 - **No Xcode/xcodebuild/swift toolchain was available** — every Swift file in this PR, including
   `RevenueCatSubscriptionService.swift`'s new `syncPurchases()`/`syncAfterExternalRedemption()` and
@@ -602,17 +774,22 @@ to the authenticated installation they were assigned to.
   behavior and timing after a real external Offer Code redemption (§0 issue 4) is based on
   RevenueCat's own SDK source/changelog documentation, not an observed live call in this
   environment.
-- **33 backend test scenarios, 12 iOS test scenarios** were specified across the original PR and
-  this hardening pass (the original 28 backend scenarios plus 5 new ones from §0 issues 2, 3, and
-  5's "required tests" lists). All are backed by new or updated Node/Swift Testing unit tests in
-  this PR (pure classification, validation, response-shape, and manager-level logic — 347/347 Node
-  tests passing, see above), and the SQL-level scenarios among them were additionally exercised
-  directly against the local Postgres replay (qualification counts, claim issuance and idempotency,
-  legacy-product/invalid-product safe failure, fulfillment matching/rejection/idempotency, code
-  void-and-replacement, terminal-state enforcement, expired-issued-code replacement, revoke-while-
-  issued auto-void, requalification after revocation, a revoked reward's code failing fulfillment,
-  and sandbox/production isolation at both the claim and fulfillment layers). What remains
-  genuinely unverified even after both replays: TRUE multi-connection concurrent claims (one code
-  total under a real race, not just sequential calls), and anything requiring an actual
-  `anon`/`authenticated` Postgres role connection to prove RLS denial rather than reading the
-  grants.
+- **41 backend test scenarios, 14 iOS test scenarios** were specified across the original PR and
+  both hardening passes (28 original + 5 from the first pass + 8 from this second pass's own
+  required-tests list: earned->issued, refund-after-issuance immunity, redemption-after-refund,
+  expiration-while-still-qualified, expiration-after-count-drop, a same-participant
+  PRODUCTION/SANDBOX switch, status-response environment scoping, and the fulfillment
+  transaction-rollback invariant). All are backed by new or updated Node/Swift Testing unit tests in
+  this PR (pure classification, validation, response-shape, and manager-level logic — 348/348 Node
+  tests passing, see above), and every SQL-level scenario among them — across BOTH hardening
+  passes — was additionally exercised directly against a local Postgres replay: qualification
+  counts, claim issuance and idempotency, legacy-product/invalid-product safe failure, fulfillment
+  matching/rejection/idempotency, code void-and-replacement, terminal-state enforcement,
+  expired-issued-code replacement in both directions (still-qualified and no-longer-qualified),
+  revoke-immunity while issued, requalification after revocation, sandbox/production isolation at
+  both the claim and fulfillment layers including a same-participant multi-environment case, status-
+  response environment scoping, and the fulfillment invariant-violation-forces-full-rollback
+  behavior (via the dedicated forced-failure test, §2). What remains genuinely unverified even after
+  all three replays: TRUE multi-connection concurrent claims (one code total under a real race, not
+  just sequential calls), and anything requiring an actual `anon`/`authenticated` Postgres role
+  connection to prove RLS denial rather than reading the grants.

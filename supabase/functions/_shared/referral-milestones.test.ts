@@ -61,6 +61,12 @@ test("computeNextMilestoneProgress: fulfilled milestone 1 + qualified count 4 ->
   assert.deepEqual(result, { nextMilestoneNumber: 2, nextRewardAt: 10, referralsNeeded: 6 });
 });
 
+test("computeNextMilestoneProgress: milestone 1 issued (not yet fulfilled) counts the same as earned/fulfilled -> next milestone 2, next_reward_at 10", () => {
+  const rewards: RewardMilestoneRow[] = [{ milestoneNumber: 1, status: "issued" }];
+  const result = computeNextMilestoneProgress(rewards, 5);
+  assert.deepEqual(result, { nextMilestoneNumber: 2, nextRewardAt: 10, referralsNeeded: 5 });
+});
+
 test("computeNextMilestoneProgress: milestone 2 revoked + milestone 1 fulfilled -> next target still 10, not a fallback to 5", () => {
   const rewards: RewardMilestoneRow[] = [
     { milestoneNumber: 1, status: "fulfilled" },

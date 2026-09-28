@@ -347,6 +347,14 @@ enum ReferralPresentation {
             "We couldn't match your current plan to a supported reward. Please contact support."
         case "outstanding_reward_exists":
             "You already have a redemption in progress. Finish that one first."
+        // 85Blends 2.4.0 Referral Reward Redemption, second correctness hardening pass: the
+        // previously-issued code for this reward expired unused, and a fresh recount found the
+        // milestone itself no longer justified (the referrer's qualified-referral count has since
+        // dropped) — no replacement code exists to issue. Distinct from "temporarily unavailable":
+        // this outcome is not retryable, so it gets its own explanatory copy rather than the
+        // generic fallback below.
+        case "expired_no_longer_qualified":
+            "Your previous redemption code expired, and this reward is no longer available since your qualified referral count has since changed."
         case "invalid_participant":
             temporarilyUnavailableMessage
         default:

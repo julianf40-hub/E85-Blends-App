@@ -31,10 +31,13 @@ export function desiredEarnedMilestones(qualifiedReferralCount: number): number 
 }
 
 /** One reward row's milestone-relevant shape — deliberately just the two fields the progress
- *  calculation below needs, not the full private.referral_rewards row (no UUIDs, no timestamps). */
+ *  calculation below needs, not the full private.referral_rewards row (no UUIDs, no timestamps).
+ *  `"issued"` (85Blends 2.4.0 Referral Reward Redemption, second correctness hardening pass) is a
+ *  reward that already has a real Apple Offer Code handed out for it but not yet webhook-confirmed
+ *  redeemed — see the migration's own rule 3 for the full `earned -> issued -> fulfilled` lifecycle. */
 export interface RewardMilestoneRow {
   milestoneNumber: number;
-  status: "earned" | "fulfilled" | "revoked";
+  status: "earned" | "issued" | "fulfilled" | "revoked";
 }
 
 export interface NextMilestoneProgress {
@@ -52,9 +55,14 @@ export interface NextMilestoneProgress {
  * simple `qualified_count % REFERRALS_PER_MILESTONE` arithmetic would get this wrong. The next
  * target is always the first milestone number strictly after the highest one this referrer has
  * ever earned or had fulfilled; a 'revoked' milestone is deliberately excluded from that "highest"
- * calculation. Worked examples (see the referral-api task's own "Phase 8" spec):
+ * calculation. `'issued'` (second hardening pass) counts exactly like `'earned'`/`'fulfilled'` here
+ * — a reward that already has a real Apple code out for it is just as "reached" as one that's
+ * merely earned or already fulfilled; excluding it would incorrectly let the next-milestone target
+ * regress back to an already-issued milestone. Worked examples (see the referral-api task's own
+ * "Phase 8" spec):
  *   - no rewards: next = 1, next_reward_at = 5
  *   - milestone 1 fulfilled: next = 2, next_reward_at = 10
+ *   - milestone 1 issued (not yet fulfilled): next = 2, next_reward_at = 10 (same as fulfilled)
  *   - milestone 2 revoked, milestone 1 still fulfilled: next = 2, next_reward_at = 10 (does NOT
  *     fall back to re-targeting milestone 1)
  *   - milestones 1 fulfilled + 2 earned: next = 3, next_reward_at = 15
@@ -65,7 +73,7 @@ export function computeNextMilestoneProgress(
 ): NextMilestoneProgress {
   let highestEarnedOrFulfilled = 0;
   for (const reward of rewards) {
-    if (reward.status === "earned" || reward.status === "fulfilled") {
+    if (reward.status === "earned" || reward.status === "issued" || reward.status === "fulfilled") {
       highestEarnedOrFulfilled = Math.max(highestEarnedOrFulfilled, reward.milestoneNumber);
     }
   }
