@@ -122,6 +122,17 @@ final class ReferralManager {
     /// (idempotently — the backend's own `bootstrap` action is safe to call repeatedly) so a
     /// RevenueCat identity change between launches is still picked up.
     private(set) var hasBootstrappedThisLaunch = false
+    /// 85Blends 2.4.0 Sandbox redemption fix — the VERIFIED `AppTransaction`-derived environment
+    /// (`environmentProvider.currentEnvironment()`) that this process's successful `bootstrap` call
+    /// actually sent the backend. Set in the same place, and under the same "only after a confirmed
+    /// backend bootstrap" rule, as `credential`/`hasBootstrappedThisLaunch` — never from a failed or
+    /// unattempted bootstrap, so it is `nil` exactly when `hasBootstrappedThisLaunch` is `false`.
+    /// This is the one client-side value that is guaranteed to match the environment the backend
+    /// tagged any subsequently issued reward code with (see referral-api's `authenticateInstallation`
+    /// / `current_environment`), which is what makes it safe for
+    /// `ReferralPresentation.redemptionRoute(environment:)` to route a SANDBOX installation to the
+    /// native in-app redemption sheet. Diagnostics-only otherwise: never an entitlement signal.
+    private(set) var bootstrappedEnvironment: ReferralRevenueEnvironment?
 
     private var credential: ReferralInstallationCredential?
     private let credentialStore: ReferralCredentialStoring
@@ -395,6 +406,7 @@ final class ReferralManager {
             // do `credential`/`hasBootstrappedThisLaunch` change. A failure at any point above or
             // below never reaches these two lines (see this type's own header).
             credential = resolvedCredential
+            bootstrappedEnvironment = environment
             loadState = .loaded(response.status)
             hasBootstrappedThisLaunch = true
         } catch let error as ReferralServiceError {

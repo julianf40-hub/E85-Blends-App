@@ -246,6 +246,15 @@ struct AppStoreDestinationTests {
         #expect(queryItems["code"] == "ABCD1234EFGH")
     }
 
+    /// 85Blends 2.4.0 Sandbox redemption fix — the PRODUCTION route's URL is byte-for-byte what
+    /// shipped in Build 216; the Sandbox fix added a separate native-sheet route and must never
+    /// alter this one.
+    @Test("redeemOfferCode's production URL string is unchanged by the Sandbox redemption fix")
+    func redeemOfferCode_exactStringUnchanged() throws {
+        let url = try #require(AppStoreDestination.redeemOfferCode("ABCD1234EFGH"))
+        #expect(url.absoluteString == "https://apps.apple.com/redeem?ctx=offercodes&id=6762037468&code=ABCD1234EFGH")
+    }
+
     @Test("redeemOfferCode percent-encodes a code containing characters that are not URL-safe")
     func redeemOfferCode_percentEncodesUnsafeCharacters() throws {
         let url = try #require(AppStoreDestination.redeemOfferCode("AB CD&EF"))

@@ -16,6 +16,18 @@
 //  "Redeem in App Store" only opens Apple's own redemption sheet and refreshes state on return; it
 //  never assumes that tap succeeded.
 //
+//  SANDBOX/TESTFLIGHT REDEMPTION PATH (85Blends 2.4.0 Sandbox redemption fix): live TestFlight
+//  testing showed Apple's external `apps.apple.com/redeem?ctx=offercodes` URL rejects a Sandbox
+//  one-time-use Offer Code, while the same code redeems fine through Apple's Sandbox path. When —
+//  and only when — this installation's own verified bootstrap environment is SANDBOX (see
+//  `ReferralPresentation.redemptionRoute(environment:)` and `ReferralManager.bootstrappedEnvironment`),
+//  the primary action instead copies the issued code to the pasteboard and presents StoreKit's
+//  native in-app redemption sheet (`View.offerCodeRedemption(isPresented:onCompletion:)`, iOS 16+;
+//  StoreKit never accepts a code programmatically, so the tester pastes it). PRODUCTION behavior is
+//  unchanged. Both paths run the SAME return reconciliation (`syncAfterExternalRedemption()` then
+//  `ReferralManager.shared.refresh()`, via `ReferralPresentation.reconcileAfterRedemption`) and
+//  neither ever locally marks anything redeemed/fulfilled — the webhook remains the only authority.
+//
 //  Mirrors ReferralCodeEntrySheet.swift's established conventions: reads ReferralManager.shared /
 //  SubscriptionManager.shared directly (never injected via a default parameter — both are
 //  @MainActor-isolated singletons; see ReferEarnView.swift's own header for why), confirms before
@@ -23,6 +35,7 @@
 //  explicit "Close" — the code (once issued) must stay visible until the user is done with it.
 //
 
+import StoreKit
 import SwiftUI
 #if os(iOS)
 import UIKit
@@ -48,8 +61,15 @@ struct ReferralRewardRedemptionSheet: View {
     /// redemption (see this feature's own task spec, Phase 6: "Until webhook confirmation arrives,
     /// show a neutral state... Do not show failure just because RevenueCat has not processed the
     /// transaction yet.").
-    @State private var hasOpenedRedemptionURL = false
+    @State private var hasStartedRedemption = false
     @State private var didCopyCode = false
+    /// Sandbox/TestFlight only — drives StoreKit's own `offerCodeRedemption(isPresented:)` sheet.
+    /// Never becomes `true` on the production route (see `redemptionRoute`).
+    @State private var isPresentingSandboxRedemptionSheet = false
+    /// Small, non-sensitive outcome of the most recent return reconciliation — see
+    /// `ReferralPresentation.RedemptionSyncState`. Reset whenever the issued code changes. Never a
+    /// redemption/fulfillment state (a failed sync leaves the code issued and visible).
+    @State private var syncState: ReferralPresentation.RedemptionSyncState = .idle
 
     private var status: ReferralStatus? {
         if case .loaded(let loadedStatus) = ReferralManager.shared.loadState {
@@ -86,7 +106,8 @@ struct ReferralRewardRedemptionSheet: View {
         }
         .interactiveDismissDisabled(isClaiming)
         .onChange(of: status?.issuedRewardCode) { _, _ in
-            hasOpenedRedemptionURL = false
+            hasStartedRedemption = false
+            syncState = .idle
         }
         // Return-from-App-Store refresh (this feature's task spec, Phase 6) — only fires when THIS
         // sheet actually sent the user to the App Store this session; an unrelated background/
@@ -106,12 +127,23 @@ struct ReferralRewardRedemptionSheet: View {
         // ReferralManager refresh below, and this sheet's own UI stays in its existing neutral
         // "pending confirmation" state regardless (see issuedCodeSection) until the backend/webhook
         // actually confirms fulfillment — never a locally-fabricated fulfilled state either way.
+        //
+        // Sandbox redemption fix: the Bool this discards was the one signal that could tell "sync ran
+        // but RevenueCat emitted no webhook" apart from "sync itself failed" during live testing — it
+        // now feeds `syncState` (neutral copy only; see ReferralPresentation.redemptionSyncMessage).
+        // Skipped while a reconciliation is already in flight so the native Sandbox sheet's own
+        // completion callback (below) and a scene re-activation for the same dismissal can't run it
+        // twice back to back.
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active, hasOpenedRedemptionURL else { return }
-            Task {
-                await SubscriptionManager.shared.syncAfterExternalRedemption()
-                await ReferralManager.shared.refresh()
-            }
+            guard newPhase == .active, hasStartedRedemption, isPresentingSandboxRedemptionSheet == false else { return }
+            Task { await reconcileAfterRedemption() }
+        }
+        // Sandbox/TestFlight only (see this file's header). StoreKit itself flips `isPresented`
+        // back to false on dismissal, then calls `onCompletion`; the result is deliberately NOT
+        // inspected — a thrown presentation error, a cancelled sheet, and a successful redemption
+        // all lead to the exact same neutral reconciliation, never a locally-decided outcome.
+        .offerCodeRedemption(isPresented: $isPresentingSandboxRedemptionSheet) { _ in
+            Task { await reconcileAfterRedemption() }
         }
         .confirmationDialog(
             currentClaimMode == .refresh ? "Refresh your reward?" : "Redeem your free month?",
@@ -331,23 +363,34 @@ struct ReferralRewardRedemptionSheet: View {
         guard let selectedPlan else {
             return "You'll receive 1 month of 85Blends Pro free."
         }
-        let renewalLine = ReferralPresentation.renewalPriceLine(
+        return ReferralPresentation.redemptionConfirmationCopy(
             displayPrice: SubscriptionManager.shared.displayPrice(for: selectedPlan),
             billingPeriodLabel: selectedPlan.fallbackBillingPeriodLabel
         )
-        return ReferralPresentation.redemptionConfirmationCopy(renewalPriceLine: renewalLine)
     }
 
     // MARK: - Issued code
 
+    /// SANDBOX → native in-app sheet; PRODUCTION (or, defensively, unknown) → the unchanged
+    /// external App Store URL. See ReferralPresentation.redemptionRoute(environment:).
+    private var redemptionRoute: ReferralPresentation.RedemptionRoute {
+        ReferralPresentation.redemptionRoute(environment: ReferralManager.shared.bootstrappedEnvironment)
+    }
+
     private func issuedCodeSection(status: ReferralStatus) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            if hasOpenedRedemptionURL {
+            if hasStartedRedemption {
                 InfoCard(
                     title: "Redemption pending confirmation",
                     message: "We'll update your referral progress automatically once the App Store confirms your redemption.",
                     systemImage: "clock.fill"
                 )
+                if let syncMessage = ReferralPresentation.redemptionSyncMessage(for: syncState) {
+                    Text(syncMessage)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                        .accessibilityLabel(syncMessage)
+                }
             }
 
             AppCard {
@@ -391,21 +434,36 @@ struct ReferralRewardRedemptionSheet: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel("Copy redemption code")
 
-                        Button(action: openRedemptionURL) {
-                            Text("Redeem in App Store")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(AppTheme.Colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(AppTheme.Colors.primaryGreen)
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        switch redemptionRoute {
+                        case .appStoreURL:
+                            redemptionActionButton(title: "Redeem in App Store", action: openRedemptionURL)
+                        case .sandboxNativeSheet:
+                            redemptionActionButton(title: "Redeem Sandbox Offer", action: presentSandboxRedemptionSheet)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Redeem in App Store")
+                    }
+
+                    if redemptionRoute == .sandboxNativeSheet {
+                        Text(ReferralPresentation.sandboxRedemptionHelpText)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textMuted)
                     }
                 }
             }
         }
+    }
+
+    private func redemptionActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(AppTheme.Colors.primaryGreen)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 
     private var fulfilledOrNothingToRedeemSection: some View {
@@ -453,15 +511,39 @@ struct ReferralRewardRedemptionSheet: View {
         }
     }
 
+    /// PRODUCTION route — unchanged: the pre-filled external App Store redemption URL.
     private func openRedemptionURL() {
         guard let code = status?.issuedRewardCode, let url = AppStoreDestination.redeemOfferCode(code) else { return }
         AppHaptics.selection()
-        hasOpenedRedemptionURL = true
+        hasStartedRedemption = true
         openURL(url) { accepted in
             if accepted == false {
                 claimMessage = "Unable to open the App Store right now. You can still copy your code and redeem it manually."
             }
         }
+    }
+
+    /// SANDBOX route (see this file's header). Copies the already-issued code to the pasteboard
+    /// FIRST — StoreKit's sheet cannot be handed a code — then presents it. Nothing about the
+    /// reward changes locally here; only `ReferralManager.shared.refresh()` (via
+    /// `reconcileAfterRedemption()` on dismissal) can ever change what this sheet shows next.
+    private func presentSandboxRedemptionSheet() {
+        guard status?.issuedRewardCode != nil else { return }
+        copyCode()
+        hasStartedRedemption = true
+        isPresentingSandboxRedemptionSheet = true
+    }
+
+    /// Shared by both routes — `sync` then ALWAYS `refresh`, via the pure, tested
+    /// `ReferralPresentation.reconcileAfterRedemption`. `syncState` is the only thing this stores,
+    /// and it is diagnostics copy only: a `.failed` sync leaves the issued code exactly as it was.
+    private func reconcileAfterRedemption() async {
+        guard syncState != .syncing else { return }
+        syncState = .syncing
+        syncState = await ReferralPresentation.reconcileAfterRedemption(
+            sync: { await SubscriptionManager.shared.syncAfterExternalRedemption() },
+            refresh: { await ReferralManager.shared.refresh() }
+        )
     }
 
     private func copyCode() {
