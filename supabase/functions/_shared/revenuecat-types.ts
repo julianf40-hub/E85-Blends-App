@@ -3,12 +3,13 @@
 // Plain type-only module — no runtime dependencies, no Deno-specific APIs.
 //
 // Field shapes below (`gives_access`, `environment`, `ends_at`, `current_period_ends_at`,
-// `entitlements.items[].lookup_key`, `next_page`) are now verified against RevenueCat's current
-// API v2 documentation (see the Phase B1 review-repair report). Timestamps are documented as
-// integer milliseconds; defensive ISO-8601-string parsing is still kept in entitlement.ts as a
-// harmless fallback, not because the shape is in doubt. Fields stay typed as `unknown` rather
-// than their documented type and objects keep an index signature so unrecognized/future fields
-// are tolerated rather than rejected (Phase 8).
+// `entitlements.items[].lookup_key`, `entitlements.items[].products.items[]`, `next_page`) are now
+// verified against RevenueCat's current API v2 documentation (see the Phase B1 review-repair
+// report, plus the 2.4.0 referral-reward active-product fix). Timestamps are documented as integer
+// milliseconds; defensive ISO-8601-string parsing is still kept in entitlement.ts as a harmless
+// fallback, not because the shape is in doubt. Fields stay typed as `unknown` rather than their
+// documented type and objects keep an index signature so unrecognized/future fields are tolerated
+// rather than rejected (Phase 8).
 
 /** The two RevenueCat environments this app cares about, exactly as RevenueCat's webhook sends them. */
 export type RevenueCatWebhookEnvironment = "SANDBOX" | "PRODUCTION";
@@ -72,11 +73,9 @@ export interface RevenueCatSubscriptionsPage {
 export interface RevenueCatSubscription {
   /** Whether RevenueCat says the customer should currently receive access via this subscription. */
   gives_access?: unknown;
-  /** 85Blends 2.4.0 Referral Reward Redemption — the RevenueCat product id this subscription is
-   *  for (RevenueCat's Subscription Data Model documents this as `product_id`, 1-255 characters,
-   *  nullable). Used only by _shared/referral-active-product.ts to determine which of the three
-   *  supported Pro products an ACTIVE subscriber's referral-reward Offer Code must be issued for —
-   *  never used by entitlement.ts's calculatePro, which remains unchanged and plan-agnostic. */
+  /** RevenueCat's INTERNAL product id for this subscription (`prod...` style in API v2), not the
+   *  App Store product identifier. The referral reward flow must resolve this through the embedded
+   *  entitlement product objects and use their `store_identifier`; see referral-active-product.ts. */
   product_id?: unknown;
   /** sandbox/production, as reported by RevenueCat on the subscription itself — see
    *  normalizeApiEnvironment(). Every returned subscription is validated against the
@@ -95,6 +94,21 @@ export interface RevenueCatSubscription {
 
 export interface RevenueCatEntitlementRef {
   lookup_key?: unknown;
+  /** RevenueCat API v2 embeds the entitlement's product list here. For referral reward plan
+   *  matching we resolve subscription.product_id (RevenueCat internal id) to the corresponding
+   *  product.store_identifier (Apple product id). */
+  products?: {
+    items?: RevenueCatProductRef[];
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface RevenueCatProductRef {
+  /** RevenueCat internal product id. */
+  id?: unknown;
+  /** Store-facing product identifier; for Apple this is e.g. com.85blends.subscription.monthly. */
+  store_identifier?: unknown;
   [key: string]: unknown;
 }
 
