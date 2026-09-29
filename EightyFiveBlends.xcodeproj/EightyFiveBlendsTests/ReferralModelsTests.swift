@@ -43,8 +43,8 @@ struct ReferralModelsTests {
         #expect(json["app_version"] as? String == "2.4.0")
     }
 
-    @Test("Bootstrap request with nil app_version still encodes the key as null, never omits it")
-    func bootstrapRequest_nilAppVersion() throws {
+    @Test("Bootstrap request with nil app_version omits the key entirely; the backend treats an absent key the same as null")
+    func bootstrapRequest_nilAppVersionIsOmitted() throws {
         let request = ReferralBootstrapRequest(
             clientInstallationID: UUID(),
             installationSecret: String(repeating: "s", count: 32),
@@ -52,10 +52,15 @@ struct ReferralModelsTests {
             revenueCatEnvironment: .sandbox,
             appVersion: nil
         )
-        let data = try Self.encoder.encode(request)
-        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(json.keys.contains("app_version"))
-        #expect(json["app_version"] is NSNull)
+        let json = try Self.encodedJSON(request)
+
+        #expect(!json.keys.contains("app_version"))
+        #expect(Set(json.keys) == [
+            "action", "client_installation_id", "installation_secret",
+            "revenuecat_app_user_id", "revenuecat_environment",
+        ])
+        #expect(json["action"] as? String == "bootstrap")
+        #expect(json["revenuecat_app_user_id"] as? String == "rc_user_123")
         #expect(json["revenuecat_environment"] as? String == "SANDBOX")
     }
 
@@ -121,17 +126,22 @@ struct ReferralModelsTests {
         #expect(json["requested_product_id"] as? String == "com.85blends.subscription.monthly")
     }
 
-    @Test("Claim-reward request (active Pro subscriber) still encodes requested_product_id as null, never omits it")
-    func claimRewardRequest_activeSubscriber_nilProductStillEncodesKey() throws {
+    @Test("Claim-reward request (active Pro subscriber) omits requested_product_id entirely when nil; the backend treats an absent key the same as null")
+    func claimRewardRequest_activeSubscriber_nilProductIsOmitted() throws {
+        let installationID = UUID()
+        let secret = String(repeating: "s", count: 32)
         let request = ReferralClaimRewardRequest(
-            clientInstallationID: UUID(),
-            installationSecret: String(repeating: "s", count: 32),
+            clientInstallationID: installationID,
+            installationSecret: secret,
             requestedProductID: nil
         )
-        let data = try Self.encoder.encode(request)
-        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(json.keys.contains("requested_product_id"))
-        #expect(json["requested_product_id"] is NSNull)
+        let json = try Self.encodedJSON(request)
+
+        #expect(!json.keys.contains("requested_product_id"))
+        #expect(Set(json.keys) == ["action", "client_installation_id", "installation_secret"])
+        #expect(json["action"] as? String == "claim_reward")
+        #expect(json["client_installation_id"] as? String == installationID.uuidString)
+        #expect(json["installation_secret"] as? String == secret)
     }
 
     // MARK: 85Blends 2.4.0 Referral Reward Redemption — ReferralStatus issued-code fields
@@ -209,7 +219,7 @@ struct ReferralModelsTests {
         let json = """
         {"status":"claimed","reward_milestone_number":1,
          "referral_code":"ABCD2345","qualified_referrals":5,"pending_referrals":0,
-         "earned_months_available":1,"fulfilled_months":0,"next_milestone_number":2,
+         "earned_months_available":0,"fulfilled_months":0,"next_milestone_number":2,
          "next_reward_at":10,"referrals_needed":5,"can_apply_referral_code":false,
          "referred_by_code":null,"referred_status":null,
          "issued_reward_product_id":"com.85blends.subscription.monthly",
@@ -221,6 +231,9 @@ struct ReferralModelsTests {
         let response = try Self.decoder.decode(ReferralClaimRewardResponse.self, from: json)
         #expect(response.claimStatus == "claimed")
         #expect(response.rewardMilestoneNumber == 1)
+        // The only earned reward was just claimed, so it is now `issued` and no longer counts as
+        // earned — matching the real backend state (earned -> issued -> fulfilled).
+        #expect(response.status.earnedMonthsAvailable == 0)
         #expect(response.status.issuedRewardCode == "ABCD1234EFGH")
     }
 
