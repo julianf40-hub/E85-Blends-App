@@ -11,11 +11,11 @@
 // while keeping the "which product" logic isolated to the one feature that actually needs it.
 //
 // IMPORTANT RevenueCat API v2 detail: subscription.product_id is RevenueCat's INTERNAL product id,
-// not the App Store product identifier. The canonical store-facing identifier is fetched by
-// revenuecat-api.ts from RevenueCat's Product endpoint and attached to the subscription object as
-// `store_product_id`. The older embedded-entitlement product shape is retained only as a defensive
-// compatibility fallback for already-covered fixtures; production must never treat the internal
-// product id itself as an Apple product id.
+// not the App Store product identifier. revenuecat-api.ts resolves that id through the active
+// subscription's entitlement list and annotates the subscription with `store_product_id`. The older
+// embedded-entitlement product shape is retained only as a defensive compatibility fallback for
+// already-covered fixtures; production must never treat the internal product id itself as an Apple
+// product id.
 //
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-active-product.test.ts).
@@ -63,12 +63,12 @@ function normalizedNonEmptyString(value: unknown): string | null {
 
 /**
  * RevenueCat API v2's subscription.product_id is an internal RevenueCat id. revenuecat-api.ts
- * resolves that id through GET /v2/projects/{project_id}/products/{product_id} and annotates the
+ * resolves that id through the SAME subscription's entitlements endpoint and annotates the
  * subscription with `store_product_id`. Prefer that authoritative mapping.
  *
  * The embedded entitlement-product walk is retained as a compatibility fallback for historical
- * fixtures/possible expanded responses, but the customer-subscriptions endpoint does not promise
- * that expansion and production correctness no longer depends on it.
+ * fixtures/possible expanded responses, but production correctness no longer depends on the
+ * customer-subscriptions response carrying that nested expansion.
  */
 function subscriptionStoreProductId(
   subscription: RevenueCatSubscription,
