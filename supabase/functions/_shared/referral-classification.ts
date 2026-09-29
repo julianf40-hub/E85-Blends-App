@@ -54,10 +54,13 @@ export interface ReferralWebhookFields {
   purchasedAtMs: number | null;
   /** 85Blends 2.4.0 Referral Reward Redemption — RevenueCat's own `offer_code` field: "Offer or
    *  promotion code used for the transaction," present (when applicable at all) on
-   *  INITIAL_PURCHASE/RENEWAL/NON_RENEWING_PURCHASE events. This is the App Store Connect OFFER
-   *  IDENTIFIER, never the literal one-time Apple code the customer typed (RevenueCat does not
-   *  expose that) — see _shared/referral-reward-offer-codes.ts's own header. `null` for an
-   *  ordinary, non-promotional purchase. */
+   *  INITIAL_PURCHASE/RENEWAL/NON_RENEWING_PURCHASE events. For an Apple subscription Offer Code
+   *  this is the App Store Connect Offer Code REFERENCE NAME (the single name field entered when
+   *  the offer code is created) — never the literal one-time-use Apple code the customer typed
+   *  (RevenueCat does not expose that), and not a separate "Offer Identifier" (Offer Codes have no
+   *  such field; that belongs to Apple's different Promotional Offers mechanism) — see
+   *  _shared/referral-reward-offer-codes.ts's own header. `null` for an ordinary, non-promotional
+   *  purchase. */
   offerCode: string | null;
   /** 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — RevenueCat's
    *  own `price` field: the transaction's price converted to USD. RevenueCat documents this as
