@@ -26,13 +26,17 @@
 //
 // 85Blends 2.4.0 referral reward active-product resolution: RevenueCat API v2's subscription
 // `product_id` is RevenueCat's INTERNAL product id, not Apple's store product identifier. The
-// customer-subscriptions endpoint does not expand Product objects. For an active `pro` subscription
-// only, this client therefore resolves that internal id through RevenueCat's canonical Product
-// endpoint and annotates the returned subscription with `store_product_id`. The lookup is
-// opportunistic/fail-closed for referral issuance: a failure never changes canonical entitlement
-// refresh behavior, and the referral resolver will simply refuse to issue a plan-specific code
-// until the mapping can be established. A small module cache avoids repeatedly fetching immutable
-// product metadata on a warm Edge Function instance.
+// customer-subscriptions response is sufficient to decide whether Pro is active, but live testing
+// showed its embedded entitlement product expansion is not reliable enough to identify the store
+// product on every response. For an active `pro` subscription only, this client therefore resolves
+// the same subscription's entitlements through the customer-information endpoint
+// `/subscriptions/{subscription_id}/entitlements`, then maps the internal product id to that
+// entitlement product's `store_identifier`. This endpoint uses the same
+// `customer_information:subscriptions:read` permission already required by the subscription list,
+// avoiding a separate Project Configuration permission. Mapping failure is non-fatal to canonical
+// entitlement refresh: the referral resolver simply fails closed and refuses to issue a plan-
+// specific reward until the mapping is available. A small module cache avoids repeated lookups of
+// immutable product metadata on a warm Edge Function instance.
 
 import {
   normalizeApiEnvironment,
@@ -114,55 +118,104 @@ function isActiveProSubscription(subscription: RevenueCatSubscription): boolean 
 }
 
 /**
- * Resolves one RevenueCat-internal Product id to its store-facing identifier through the canonical
- * Product endpoint. Never throws and never exposes response bodies/errors to callers. A failure is
- * simply `null`; canonical entitlement refresh must not be made dependent on Product metadata.
+ * Resolves one RevenueCat-internal Product id to its store-facing identifier by asking for the
+ * entitlements attached to the SAME active subscription. This stays inside RevenueCat's Customer
+ * Information permission domain (`customer_information:subscriptions:read`), which the existing
+ * customer-subscriptions lookup already requires.
+ *
+ * Never throws and never exposes response bodies/errors to callers. A failure is simply `null`;
+ * canonical entitlement refresh must not be made dependent on this secondary product-metadata
+ * lookup.
  */
-async function fetchStoreProductIdentifier(
+async function fetchStoreProductIdentifierForSubscription(
   config: RevenueCatApiClientConfig,
-  revenueCatProductId: string,
+  subscription: RevenueCatSubscription,
 ): Promise<string | null> {
+  const revenueCatProductId = normalizedNonEmptyString(subscription.product_id);
+  const subscriptionId = normalizedNonEmptyString(subscription.id);
+  if (!revenueCatProductId || !subscriptionId) return null;
+
   const cached = productStoreIdentifierCache.get(revenueCatProductId);
   if (cached) return cached;
 
   const fetchFn = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = new URL(
-    `${API_BASE_PATH}/projects/${encodeURIComponent(config.projectId)}/products/${encodeURIComponent(revenueCatProductId)}`,
+  const initialUrl = new URL(
+    `${API_BASE_PATH}/projects/${encodeURIComponent(config.projectId)}/subscriptions/${encodeURIComponent(subscriptionId)}/entitlements`,
     API_ORIGIN,
   );
-  const controller = new AbortController();
-  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+  initialUrl.searchParams.set("limit", String(PAGE_LIMIT));
+  const expectedPathname = initialUrl.pathname;
+  let currentUrl = initialUrl;
+  const matchedStoreIdentifiers = new Set<string>();
 
-  let response: Response;
-  try {
-    response = await fetchFn(url.toString(), {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${config.secretApiKey}`,
-        Accept: "application/json",
-      },
-      signal: controller.signal,
-    });
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutHandle);
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetchFn(currentUrl.toString(), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${config.secretApiKey}`,
+          Accept: "application/json",
+        },
+        signal: controller.signal,
+      });
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (!response.ok) return null;
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      return null;
+    }
+    if (typeof body !== "object" || body === null) return null;
+    const record = body as Record<string, unknown>;
+    if (!Array.isArray(record.items)) return null;
+
+    for (const rawEntitlement of record.items) {
+      if (typeof rawEntitlement !== "object" || rawEntitlement === null) continue;
+      const entitlement = rawEntitlement as Record<string, unknown>;
+      if (normalizedNonEmptyString(entitlement.lookup_key) !== "pro") continue;
+
+      const products = entitlement.products;
+      if (typeof products !== "object" || products === null) continue;
+      const productItems = (products as Record<string, unknown>).items;
+      if (!Array.isArray(productItems)) continue;
+
+      for (const rawProduct of productItems) {
+        if (typeof rawProduct !== "object" || rawProduct === null) continue;
+        const product = rawProduct as Record<string, unknown>;
+        if (normalizedNonEmptyString(product.id) !== revenueCatProductId) continue;
+        const storeIdentifier = normalizedNonEmptyString(product.store_identifier);
+        if (storeIdentifier) matchedStoreIdentifiers.add(storeIdentifier);
+      }
+    }
+
+    const nextPage = normalizedNonEmptyString(record.next_page);
+    if (!nextPage) break;
+
+    let resolved: URL;
+    try {
+      resolved = new URL(nextPage, currentUrl);
+    } catch {
+      return null;
+    }
+    if (resolved.origin !== API_ORIGIN || resolved.pathname !== expectedPathname) return null;
+    resolved.searchParams.set("limit", String(PAGE_LIMIT));
+    currentUrl = resolved;
   }
 
-  if (!response.ok) return null;
-
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return null;
-  }
-  if (typeof body !== "object" || body === null) return null;
-
-  const storeIdentifier = normalizedNonEmptyString((body as Record<string, unknown>).store_identifier);
-  if (!storeIdentifier) return null;
-
+  if (matchedStoreIdentifiers.size !== 1) return null;
+  const storeIdentifier = [...matchedStoreIdentifiers][0];
   productStoreIdentifierCache.set(revenueCatProductId, storeIdentifier);
   return storeIdentifier;
 }
@@ -170,8 +223,8 @@ async function fetchStoreProductIdentifier(
 /**
  * Adds `store_product_id` only where referral reward product resolution can actually need it:
  * active subscriptions that grant the `pro` entitlement and carry a RevenueCat-internal product id.
- * Product metadata failure is deliberately non-fatal; callers still receive the untouched
- * subscription and canonical Pro entitlement refresh semantics remain exactly as before.
+ * Metadata failure is deliberately non-fatal; callers still receive the untouched subscription and
+ * canonical Pro entitlement refresh semantics remain exactly as before.
  */
 async function enrichActiveProStoreProductIds(
   config: RevenueCatApiClientConfig,
@@ -181,10 +234,7 @@ async function enrichActiveProStoreProductIds(
     if (!isActiveProSubscription(subscription)) continue;
     if (normalizedNonEmptyString(subscription.store_product_id)) continue;
 
-    const revenueCatProductId = normalizedNonEmptyString(subscription.product_id);
-    if (!revenueCatProductId) continue;
-
-    const storeIdentifier = await fetchStoreProductIdentifier(config, revenueCatProductId);
+    const storeIdentifier = await fetchStoreProductIdentifierForSubscription(config, subscription);
     if (storeIdentifier) {
       subscription.store_product_id = storeIdentifier;
     }
