@@ -376,19 +376,37 @@ enum ReferralPresentation {
     }
 
     /// The pre-claim confirmation disclosure this feature's task spec requires ("Before requesting
-    /// claim_reward, show a clear confirmation") — `renewalPriceLine` is always a REAL, currently
-    /// loaded price/period string from SubscriptionManager.displayPrice(for:)/ProPlan, never a
+    /// claim_reward, show a clear confirmation") — `displayPrice`/`billingPeriodLabel` are always
+    /// REAL, currently loaded values from SubscriptionManager.displayPrice(for:)/ProPlan, never a
     /// hardcoded duplicate (see this feature's task spec: "Do not claim these prices from duplicated
     /// hardcoded data").
-    static func redemptionConfirmationCopy(renewalPriceLine: String) -> String {
-        "You'll receive 1 month of 85Blends Pro free. After the free month, this subscription renews at \(renewalPriceLine) unless cancelled."
+    ///
+    /// 85Blends 2.4.0 Sandbox redemption fix — composes from `renewalPrice(...)` (the bare
+    /// "$3.99/month" fragment), NOT `renewalPriceLine(...)`: live TestFlight testing showed the
+    /// previous version wrapped the full renewal LINE (which already ends in "after the free
+    /// month") in a sentence that itself begins "After the free month, ..." — producing
+    /// "...renews at $3.99/month after the free month unless cancelled." with the phrase twice.
+    /// The exact target wording is asserted by ReferralPresentationTests.
+    static func redemptionConfirmationCopy(displayPrice: String, billingPeriodLabel: String) -> String {
+        let price = renewalPrice(displayPrice: displayPrice, billingPeriodLabel: billingPeriodLabel)
+        return "You'll receive 1 month of 85Blends Pro free. After the free month, this subscription renews at \(price) unless cancelled."
     }
 
-    /// "$3.99/month after the free month" style renewal line — built from REAL, currently loaded
-    /// SubscriptionManager values, never a second hardcoded price table. `billingPeriodLabel` mirrors
-    /// ProPlan.fallbackBillingPeriodLabel's own wording ("month" / "3 months" / "year").
+    /// "$3.99/month" — the bare price-per-period fragment both `renewalPriceLine` (plan picker rows)
+    /// and `redemptionConfirmationCopy` (confirmation dialog) build on, so the two can never drift
+    /// apart on how a price and period are joined. Built from REAL, currently loaded
+    /// SubscriptionManager values, never a second hardcoded price table. `billingPeriodLabel`
+    /// mirrors ProPlan.fallbackBillingPeriodLabel's own wording ("month" / "3 months" / "year").
+    static func renewalPrice(displayPrice: String, billingPeriodLabel: String) -> String {
+        "\(displayPrice)/\(billingPeriodLabel)"
+    }
+
+    /// "$3.99/month after the free month" style renewal line for the plan picker rows — the one
+    /// place this suffix belongs (the row has no surrounding sentence to say it). Unchanged output
+    /// from before the Sandbox redemption fix; see `redemptionConfirmationCopy` for why the
+    /// confirmation dialog deliberately does NOT reuse this.
     static func renewalPriceLine(displayPrice: String, billingPeriodLabel: String) -> String {
-        "\(displayPrice)/\(billingPeriodLabel) after the free month"
+        "\(renewalPrice(displayPrice: displayPrice, billingPeriodLabel: billingPeriodLabel)) after the free month"
     }
 
     /// Safe, user-facing copy for every `ReferralClaimRewardResponse.claimStatus` value — never the
@@ -420,6 +438,91 @@ enum ReferralPresentation {
         default:
             temporarilyUnavailableMessage
         }
+    }
+
+    // MARK: - Redemption route + return reconciliation (85Blends 2.4.0 Sandbox redemption fix)
+
+    /// Which redemption path ReferralRewardRedemptionSheet offers for an issued code. Live
+    /// TestFlight testing (Build 216) established that Apple's EXTERNAL redemption URL
+    /// (`AppStoreDestination.redeemOfferCode(_:)` → apps.apple.com/redeem?ctx=offercodes...) rejects
+    /// a Sandbox one-time-use Offer Code ("Cannot Redeem Code — The code entered is not valid"),
+    /// while the very same code redeems correctly through Apple's Sandbox path. Sandbox/TestFlight
+    /// installations therefore get StoreKit's in-app system redemption sheet
+    /// (`View.offerCodeRedemption(isPresented:onCompletion:)`, iOS 16+) instead; PRODUCTION keeps the
+    /// exact pre-existing external URL behavior, byte-for-byte.
+    enum RedemptionRoute: Equatable, Sendable {
+        /// The unchanged production path — open Apple's pre-filled external App Store redemption URL.
+        case appStoreURL
+        /// Sandbox/TestFlight only — present StoreKit's native in-app Offer Code redemption sheet
+        /// (the user pastes the code; StoreKit never accepts it programmatically).
+        case sandboxNativeSheet
+    }
+
+    /// `environment` is `ReferralManager.bootstrappedEnvironment` — the exact, VERIFIED
+    /// `AppTransaction`-derived SANDBOX/PRODUCTION value this installation's most recent successful
+    /// `bootstrap` call sent the backend, i.e. the same value the backend then tagged this very
+    /// issued code with (`private.referral_client_installations.current_environment` →
+    /// `claim_referral_reward(p_environment)`). Never DEBUG, the bundle receipt filename, a build
+    /// number, or a TestFlight guess — see ReferralRevenueEnvironmentProviding.swift's header.
+    ///
+    /// `nil` ("unknown") deliberately routes to the PRODUCTION path — the pre-existing behavior —
+    /// never to the Sandbox sheet: Sandbox UI must never be shown to a real production user on the
+    /// strength of a missing signal. In practice `nil` is unreachable at the point this is consulted
+    /// (an issued code only ever appears in a `.loaded` status, which requires the bootstrap that
+    /// records the environment to have already succeeded this process), but it is handled
+    /// explicitly rather than assumed away.
+    static func redemptionRoute(environment: ReferralRevenueEnvironment?) -> RedemptionRoute {
+        environment == .sandbox ? .sandboxNativeSheet : .appStoreURL
+    }
+
+    /// Sandbox-only helper copy shown under the native-sheet button. Never contains the code itself.
+    static let sandboxRedemptionHelpText =
+        "Testing with an Apple Sandbox account. Your code has been copied so you can paste it into Apple's redemption sheet."
+
+    /// The small, NON-SENSITIVE outcome of the post-redemption RevenueCat reconciliation
+    /// (`SubscriptionManager.syncAfterExternalRedemption()`'s own Bool) — enough for the sheet to
+    /// distinguish "sync ran fine but no webhook has confirmed anything yet" from "sync itself
+    /// couldn't run," which Build 216 (which discarded that Bool) could not. Carries no error
+    /// payload by construction: a failed sync is represented by a bare case, never by
+    /// `error.localizedDescription`, an App User ID, a transaction id, or any RevenueCat detail.
+    /// NEVER a redemption/fulfillment state — `.completed` means the sync call succeeded, nothing
+    /// more; fulfillment remains exclusively the backend/webhook's to report via ReferralStatus.
+    enum RedemptionSyncState: Equatable, Sendable {
+        case idle
+        case syncing
+        case completed
+        case failed
+    }
+
+    /// Neutral copy for each sync state. `.completed` still reads as "awaiting confirmation" on
+    /// purpose: this line is only ever shown while the backend still reports the code as issued, so
+    /// a successful sync has not (yet) changed anything the user can see. `.failed` explicitly
+    /// reassures that the code is intact — a failed sync must never read as a failed redemption.
+    static func redemptionSyncMessage(for state: RedemptionSyncState) -> String? {
+        switch state {
+        case .idle: nil
+        case .syncing: "Checking redemption…"
+        case .completed: "Redemption is still awaiting confirmation."
+        case .failed: "We couldn't refresh the purchase yet. Your reward code is still safe. Try again shortly."
+        }
+    }
+
+    /// The return-from-redemption reconciliation sequence, with its two side effects injected so
+    /// the ORDER and UNCONDITIONALITY are directly testable: `sync` first, then `refresh` ALWAYS —
+    /// a failed sync never skips the referral refresh (the backend/webhook may have confirmed the
+    /// redemption regardless of whether this device's own RevenueCat sync succeeded). Returns only
+    /// `.completed`/`.failed` from `sync`'s Bool; never inspects, invents, or caches any reward
+    /// state — the caller re-reads `ReferralManager.shared.loadState` after `refresh` for that.
+    /// `@MainActor` because both real closures call `@MainActor`-isolated singletons
+    /// (SubscriptionManager/ReferralManager) and the only caller is a SwiftUI view.
+    @MainActor
+    static func reconcileAfterRedemption(
+        sync: () async -> Bool,
+        refresh: () async -> Void
+    ) async -> RedemptionSyncState {
+        let synced = await sync()
+        await refresh()
+        return synced ? .completed : .failed
     }
 
     // MARK: - Share text (Phase 9)

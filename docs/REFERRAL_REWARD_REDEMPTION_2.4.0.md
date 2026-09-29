@@ -1162,7 +1162,20 @@ to the authenticated installation they were assigned to.
   New/Existing/Expired subscribers, and the `apps.apple.com/redeem?ctx=offercodes&id=…&code=…`
   redemption URL format could not be opened/verified end-to-end against a live app. The URL format
   itself is Apple's well-established, documented Offer Code redemption link pattern, but Sandbox
-  verification (deployment step 11) is the first point this can be confirmed for certain. Likewise,
+  verification (deployment step 11) is the first point this can be confirmed for certain.
+  **Sandbox result (TestFlight Build 216, post-merge):** the external URL opens with the code
+  pre-filled but the App Store rejects a Sandbox one-time code ("Cannot Redeem Code — The code
+  entered is not valid"); the same code redeems correctly via Apple's Sandbox path
+  (Settings → Developer → Sandbox Apple Account → Manage → Initiate Transaction → Offer Codes), after
+  which RevenueCat's `pro` entitlement went active. The follow-up Sandbox-redemption fix therefore
+  routes a SANDBOX-bootstrapped installation (`ReferralManager.bootstrappedEnvironment`, the same
+  verified `AppTransaction` value the backend tagged the code with) to StoreKit's native in-app
+  sheet (`View.offerCodeRedemption(isPresented:onCompletion:)`, iOS 16+), copying the code to the
+  pasteboard first since StoreKit never accepts a code programmatically; PRODUCTION keeps the exact
+  external URL. In that test no RevenueCat webhook carrying the referral Offer Code reference was
+  received, so the reward stayed `issued` — the native path emits the redemption via
+  `Transaction.updates` in-process, which RevenueCat's StoreKit 2 listener observes directly, and
+  the return reconciliation now surfaces whether `syncPurchases()` itself succeeded. Likewise,
   the corrected Reference-Name-only terminology (§0 issue 1, §4) is based on Apple's own documented
   Offer Code setup flow, not on having actually created an offer in a live App Store Connect account
   in this session.

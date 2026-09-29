@@ -222,6 +222,52 @@ struct ReferralManagerTests {
         )
     }
 
+    // MARK: 85Blends 2.4.0 Sandbox redemption fix — bootstrappedEnvironment
+
+    @Test("bootstrappedEnvironment is nil before any bootstrap has succeeded")
+    func bootstrappedEnvironment_nilBeforeBootstrap() {
+        let manager = makeManager()
+        #expect(manager.bootstrappedEnvironment == nil)
+    }
+
+    @Test("A successful SANDBOX bootstrap records .sandbox — the exact value sent to the backend")
+    func bootstrappedEnvironment_recordsSandboxAfterSuccess() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service, environmentProvider: FakeReferralEnvironmentProvider(environment: .sandbox))
+
+        await manager.bootstrapIfNeeded()
+
+        #expect(manager.hasBootstrappedThisLaunch)
+        #expect(manager.bootstrappedEnvironment == .sandbox)
+        #expect(ReferralPresentation.redemptionRoute(environment: manager.bootstrappedEnvironment) == .sandboxNativeSheet)
+    }
+
+    @Test("A successful PRODUCTION bootstrap records .production and routes to the external App Store URL")
+    func bootstrappedEnvironment_recordsProductionAfterSuccess() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
+        let manager = makeManager(service: service, environmentProvider: FakeReferralEnvironmentProvider(environment: .production))
+
+        await manager.bootstrapIfNeeded()
+
+        #expect(manager.bootstrappedEnvironment == .production)
+        #expect(ReferralPresentation.redemptionRoute(environment: manager.bootstrappedEnvironment) == .appStoreURL)
+    }
+
+    @Test("A failed backend bootstrap never records an environment, even though the StoreKit signal was SANDBOX")
+    func bootstrappedEnvironment_staysNilOnBackendFailure() async {
+        let service = FakeReferralAPIService()
+        service.bootstrapResult = .failure(ReferralServiceError.network("offline"))
+        let manager = makeManager(service: service, environmentProvider: FakeReferralEnvironmentProvider(environment: .sandbox))
+
+        await manager.bootstrapIfNeeded()
+
+        #expect(manager.hasBootstrappedThisLaunch == false)
+        #expect(manager.bootstrappedEnvironment == nil)
+        #expect(ReferralPresentation.redemptionRoute(environment: manager.bootstrappedEnvironment) == .appStoreURL)
+    }
+
     // MARK: 29. Bootstrap stores loaded state
 
     @Test("A successful bootstrap stores the returned status as .loaded")

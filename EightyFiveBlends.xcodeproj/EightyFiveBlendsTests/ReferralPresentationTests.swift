@@ -138,11 +138,12 @@ struct ReferralPresentationTests {
         #expect(line == "$3.99/month after the free month")
     }
 
-    @Test("redemptionConfirmationCopy embeds the exact renewal price line it is given")
-    func redemptionConfirmationCopy_embedsRenewalLine() {
-        let copy = ReferralPresentation.redemptionConfirmationCopy(renewalPriceLine: "$3.99/month after the free month")
-        #expect(copy.contains("$3.99/month after the free month"))
+    @Test("redemptionConfirmationCopy embeds the exact price/period it is given, exactly once (see ReferralRedemptionRoutingTests for the duplication regression)")
+    func redemptionConfirmationCopy_embedsRenewalPrice() {
+        let copy = ReferralPresentation.redemptionConfirmationCopy(displayPrice: "$3.99", billingPeriodLabel: "month")
+        #expect(copy.contains("renews at $3.99/month unless cancelled"))
         #expect(copy.contains("1 month of 85Blends Pro free"))
+        #expect(copy.contains("$3.99/month after the free month") == false)
     }
 
     @Test("claimStatusMessage returns nil only for the success outcome, never for any other")
