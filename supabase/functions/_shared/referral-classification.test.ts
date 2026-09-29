@@ -4,8 +4,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  deferredPaidOriginReason,
   determineReferralAction,
   extractReferralWebhookFields,
+  isReferralDeferrablePaidOriginEvent,
   isReferralQualifyingEvent,
   isReferralRefundReversalEvent,
   isReferralRelevantEventType,
@@ -28,6 +30,8 @@ test("extractReferralWebhookFields: full normal INITIAL_PURCHASE envelope extrac
       transaction_id: "txn_1",
       original_transaction_id: "orig_txn_1",
       purchased_at_ms: 1_700_000_000_000,
+      price: 79.99,
+      price_in_purchased_currency: 79.99,
     },
   };
   assert.deepEqual(extractReferralWebhookFields(envelope), {
@@ -40,6 +44,8 @@ test("extractReferralWebhookFields: full normal INITIAL_PURCHASE envelope extrac
     originalTransactionId: "orig_txn_1",
     purchasedAtMs: 1_700_000_000_000,
     offerCode: null,
+    price: 79.99,
+    priceInPurchasedCurrency: 79.99,
   });
 });
 
@@ -71,7 +77,32 @@ test("extractReferralWebhookFields: missing optional fields become null, never t
     originalTransactionId: null,
     purchasedAtMs: null,
     offerCode: null,
+    price: null,
+    priceInPurchasedCurrency: null,
   });
+});
+
+// 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass.
+test("extractReferralWebhookFields: price and price_in_purchased_currency are extracted, including an explicit zero", () => {
+  const envelope = {
+    event: {
+      type: "INITIAL_PURCHASE",
+      price: 0,
+      price_in_purchased_currency: 0,
+    },
+  };
+  const fields = extractReferralWebhookFields(envelope);
+  assert.equal(fields?.price, 0);
+  assert.equal(fields?.priceInPurchasedCurrency, 0);
+});
+
+test("extractReferralWebhookFields: non-numeric price fields become null, never coerced", () => {
+  const envelope = {
+    event: { type: "INITIAL_PURCHASE", price: "9.99", price_in_purchased_currency: null },
+  };
+  const fields = extractReferralWebhookFields(envelope);
+  assert.equal(fields?.price, null);
+  assert.equal(fields?.priceInPurchasedCurrency, null);
 });
 
 test("extractReferralWebhookFields: malformed envelope (no event object) returns null", () => {
@@ -88,6 +119,10 @@ test("extractReferralWebhookFields: event.type present but blank/non-string yiel
 
 // MARK: isReferralQualifyingEvent — Phase 16
 
+// 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — defaults to a
+// clearly positive price on both fields, since most of these fixtures exist to test OTHER
+// dimensions (event type, environment, period type, product id, offer code, transaction ids), not
+// the price rule itself — see the dedicated "MARK: isDemonstrablyPaid" section below for that.
 function baseQualifyingFields(overrides: Partial<ReferralWebhookFields> = {}): ReferralWebhookFields {
   return {
     eventType: "INITIAL_PURCHASE",
@@ -99,6 +134,8 @@ function baseQualifyingFields(overrides: Partial<ReferralWebhookFields> = {}): R
     originalTransactionId: "orig_txn_1",
     purchasedAtMs: 1_700_000_000_000,
     offerCode: null,
+    price: 9.99,
+    priceInPurchasedCurrency: 9.99,
     ...overrides,
   };
 }
@@ -192,11 +229,45 @@ test("isReferralQualifyingEvent: missing period_type -> false (never assume NORM
   assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ periodType: null })), false);
 });
 
-test("isReferralQualifyingEvent: price fields are never required — a fully qualifying event with no price/currency info still qualifies", () => {
-  // RevenueCat documents price/currency fields as optional; this classifier never reads them at
-  // all (ReferralWebhookFields doesn't even carry them) — this test exists to make that omission
-  // an explicit, verified contract rather than an accident.
-  assert.equal(isReferralQualifyingEvent(baseQualifyingFields()), true);
+// 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — MARK: isDemonstrablyPaid
+//
+// This is the fix for the paid-referral qualification bug: a positive price is required to
+// qualify; a zero price never qualifies; a null/unknown price never qualifies either (fails
+// conservative rather than assuming paid). See referral-classification.ts's isDemonstrablyPaid for
+// the full rationale, including why the public 85BLENDS launch promo's offer_code alone can never
+// distinguish a free redemption from a paid one.
+
+test("isReferralQualifyingEvent: a clearly positive price qualifies (already the default fixture)", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: 9.99, priceInPurchasedCurrency: 9.99 })), true);
+});
+
+test("isReferralQualifyingEvent: price_in_purchased_currency alone being positive is sufficient, even if price (USD) is null", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: null, priceInPurchasedCurrency: 9.99 })), true);
+});
+
+test("isReferralQualifyingEvent: price (USD) alone being positive is sufficient, even if price_in_purchased_currency is null", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: 9.99, priceInPurchasedCurrency: null })), true);
+});
+
+test("isReferralQualifyingEvent: explicit zero price on both fields -> false (not paid)", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: 0, priceInPurchasedCurrency: 0 })), false);
+});
+
+test("isReferralQualifyingEvent: null/unknown price on both fields -> false (fails conservative, never assumed paid)", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: null, priceInPurchasedCurrency: null })), false);
+});
+
+test("isReferralQualifyingEvent: zero price with a non-null but zero USD price -> false", () => {
+  assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ price: 0, priceInPurchasedCurrency: null })), false);
+});
+
+test("isReferralQualifyingEvent: THE BUG — the public 85BLENDS launch promo's own offer code, with period_type NORMAL and price 0, must NOT qualify", () => {
+  assert.equal(
+    isReferralQualifyingEvent(
+      baseQualifyingFields({ offerCode: "85BLENDS_LAUNCH_PROMO", price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
 });
 
 test("isReferralQualifyingEvent: missing transaction_id -> false (integrity hardening: unreversible without it)", () => {
@@ -219,7 +290,10 @@ test("isReferralQualifyingEvent: a referral-reward offer code on an otherwise-qu
   }
 });
 
-test("isReferralQualifyingEvent: an unrelated/public offer code never excludes an otherwise-qualifying purchase", () => {
+test("isReferralQualifyingEvent: an unrelated/public offer code never excludes an otherwise-qualifying, actually-PAID purchase", () => {
+  // Distinct from the "THE BUG" test above: a positive price is set here, proving the offer-code
+  // check itself is not what excludes the public promo — only the price rule is (see that test for
+  // the actual free-redemption scenario, which must NOT qualify).
   assert.equal(isReferralQualifyingEvent(baseQualifyingFields({ offerCode: "85BLENDS_LAUNCH_PROMO" })), true);
 });
 
@@ -271,6 +345,135 @@ test("isReferralRenewalQualificationCandidate: missing transaction/original_tran
       baseQualifyingFields({ eventType: "RENEWAL", originalTransactionId: null }),
     ),
     false,
+  );
+});
+
+// 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — the same price
+// rule applies identically to a RENEWAL candidate (test matrix item F needs a positive-price
+// RENEWAL to qualify; a zero/null-price RENEWAL must not).
+
+test("isReferralRenewalQualificationCandidate: positive price -> true", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(baseQualifyingFields({ eventType: "RENEWAL", price: 9.99 })),
+    true,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: zero price -> false, even though every other field is otherwise qualifying", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
+});
+
+test("isReferralRenewalQualificationCandidate: null/unknown price -> false — RevenueCat can sometimes omit price on a genuinely paid renewal, and this must still fail conservative rather than qualify", () => {
+  assert.equal(
+    isReferralRenewalQualificationCandidate(
+      baseQualifyingFields({ eventType: "RENEWAL", price: null, priceInPurchasedCurrency: null }),
+    ),
+    false,
+  );
+});
+
+// MARK: isReferralDeferrablePaidOriginEvent — 85Blends 2.4.0 Referral Reward Redemption, fourth
+// correctness hardening pass
+
+test("isReferralDeferrablePaidOriginEvent: an otherwise-qualifying INITIAL_PURCHASE with zero price -> true", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(baseQualifyingFields({ price: 0, priceInPurchasedCurrency: 0 })),
+    true,
+  );
+});
+
+test("isReferralDeferrablePaidOriginEvent: an otherwise-qualifying INITIAL_PURCHASE with null/unknown price -> true", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(baseQualifyingFields({ price: null, priceInPurchasedCurrency: null })),
+    true,
+  );
+});
+
+test("isReferralDeferrablePaidOriginEvent: the public 85BLENDS launch promo's own offer code with zero price -> true (this is THE fix)", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(
+      baseQualifyingFields({ offerCode: "85BLENDS_LAUNCH_PROMO", price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    true,
+  );
+});
+
+test("isReferralDeferrablePaidOriginEvent: a demonstrably-paid purchase -> false (never both paid AND deferrable for the same event)", () => {
+  assert.equal(isReferralDeferrablePaidOriginEvent(baseQualifyingFields()), false);
+});
+
+test("isReferralDeferrablePaidOriginEvent: a free REFERRAL_REWARD_* redemption -> false — that already has its own dedicated proof mechanism, never duplicated here", () => {
+  for (const offerCode of [
+    "REFERRAL_REWARD_MONTHLY_1M_FREE",
+    "REFERRAL_REWARD_3MONTH_1M_FREE",
+    "REFERRAL_REWARD_ANNUAL_1M_FREE",
+  ]) {
+    assert.equal(
+      isReferralDeferrablePaidOriginEvent(baseQualifyingFields({ offerCode, price: 0, priceInPurchasedCurrency: 0 })),
+      false,
+      `expected ${offerCode} to be excluded from the generic deferred-origin path`,
+    );
+  }
+});
+
+test("isReferralDeferrablePaidOriginEvent: a RENEWAL (not INITIAL_PURCHASE) is never deferrable, even if free — only an original purchase can start a deferred origin", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(
+      baseQualifyingFields({ eventType: "RENEWAL", price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
+});
+
+test("isReferralDeferrablePaidOriginEvent: SANDBOX free purchase -> false (v1 scope lock, same as every other referral action)", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(
+      baseQualifyingFields({ environment: "SANDBOX", price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
+});
+
+test("isReferralDeferrablePaidOriginEvent: missing transaction/original_transaction id -> false (same integrity hardening as the paid path)", () => {
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(
+      baseQualifyingFields({ transactionId: null, price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
+  assert.equal(
+    isReferralDeferrablePaidOriginEvent(
+      baseQualifyingFields({ originalTransactionId: null, price: 0, priceInPurchasedCurrency: 0 }),
+    ),
+    false,
+  );
+});
+
+// MARK: deferredPaidOriginReason — audit-only categorization
+
+test("deferredPaidOriginReason: any non-reward offer code present -> 'free_offer_code'", () => {
+  assert.equal(
+    deferredPaidOriginReason(baseQualifyingFields({ offerCode: "85BLENDS_LAUNCH_PROMO", price: 0 })),
+    "free_offer_code",
+  );
+});
+
+test("deferredPaidOriginReason: no offer code, explicit zero price -> 'zero_price'", () => {
+  assert.equal(
+    deferredPaidOriginReason(baseQualifyingFields({ offerCode: null, price: 0, priceInPurchasedCurrency: 0 })),
+    "zero_price",
+  );
+});
+
+test("deferredPaidOriginReason: no offer code, null/unknown price -> 'unknown_price'", () => {
+  assert.equal(
+    deferredPaidOriginReason(baseQualifyingFields({ offerCode: null, price: null, priceInPurchasedCurrency: null })),
+    "unknown_price",
   );
 });
 
@@ -434,6 +637,8 @@ test("determineReferralAction: qualifying INITIAL_PURCHASE -> a 'qualify' action
       transaction_id: "txn_1",
       original_transaction_id: "orig_txn_1",
       purchased_at_ms: 1_700_000_000_000,
+      price: 79.99,
+      price_in_purchased_currency: 79.99,
     },
   };
   const result = determineReferralAction(context(), envelope, true);
@@ -465,12 +670,83 @@ test("determineReferralAction: qualifying RENEWAL -> a 'qualify' action with req
       transaction_id: "txn_2",
       original_transaction_id: "orig_txn_1",
       purchased_at_ms: 1_700_100_000_000,
+      price: 9.99,
+      price_in_purchased_currency: 9.99,
     },
   };
   const result = determineReferralAction(context({ eventType: "RENEWAL" }), envelope, true);
   assert.equal(result?.action, "qualify");
   assert.equal(result?.requiresRewardRedemptionProof, true);
   assert.equal(result?.purchasedAtMs, 1_700_100_000_000);
+});
+
+// 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass.
+test("determineReferralAction: a free (zero-price) INITIAL_PURCHASE -> a 'defer_paid_origin' action, never 'qualify'", () => {
+  const envelope = {
+    event: {
+      type: "INITIAL_PURCHASE",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_1",
+      original_transaction_id: "orig_txn_1",
+      purchased_at_ms: 1_700_000_000_000,
+      offer_code: "85BLENDS_LAUNCH_PROMO",
+      price: 0,
+      price_in_purchased_currency: 0,
+    },
+  };
+  const result = determineReferralAction(context(), envelope, true);
+  assert.deepEqual(result, {
+    action: "defer_paid_origin",
+    appUserIdSet: ["user_1", "anon_1"],
+    environment: "PRODUCTION",
+    eventId: "event_1",
+    purchasedAtMs: 1_700_000_000_000,
+    productId: "com.85blends.subscription.monthly",
+    transactionId: "txn_1",
+    originalTransactionId: "orig_txn_1",
+    canonicalProIsActive: true,
+    requiresRewardRedemptionProof: false,
+    deferredReason: "free_offer_code",
+    offerReferenceForAudit: "85BLENDS_LAUNCH_PROMO",
+  });
+});
+
+test("determineReferralAction: a null-price INITIAL_PURCHASE with no offer code -> 'defer_paid_origin' with reason 'unknown_price'", () => {
+  const envelope = {
+    event: {
+      type: "INITIAL_PURCHASE",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_1",
+      original_transaction_id: "orig_txn_1",
+      purchased_at_ms: 1_700_000_000_000,
+    },
+  };
+  const result = determineReferralAction(context(), envelope, true);
+  assert.equal(result?.action, "defer_paid_origin");
+  assert.equal(result?.deferredReason, "unknown_price");
+  assert.equal(result?.offerReferenceForAudit, null);
+});
+
+test("determineReferralAction: a free REFERRAL_REWARD_* redemption -> undefined, never 'defer_paid_origin' (that has its own dedicated fulfillment path)", () => {
+  const envelope = {
+    event: {
+      type: "INITIAL_PURCHASE",
+      environment: "PRODUCTION",
+      period_type: "NORMAL",
+      product_id: "com.85blends.subscription.monthly",
+      transaction_id: "txn_1",
+      original_transaction_id: "orig_txn_1",
+      offer_code: "REFERRAL_REWARD_MONTHLY_1M_FREE",
+      price: 0,
+      price_in_purchased_currency: 0,
+    },
+  };
+  const result = determineReferralAction(context(), envelope, true);
+  assert.equal(result, undefined);
 });
 
 test("determineReferralAction: a RENEWAL carrying a referral-reward offer code never qualifies (excluded like any other offer-code purchase)", () => {

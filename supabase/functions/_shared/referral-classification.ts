@@ -59,6 +59,20 @@ export interface ReferralWebhookFields {
    *  expose that) — see _shared/referral-reward-offer-codes.ts's own header. `null` for an
    *  ordinary, non-promotional purchase. */
   offerCode: string | null;
+  /** 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — RevenueCat's
+   *  own `price` field: the transaction's price converted to USD. RevenueCat documents this as
+   *  optional/nullable (not every event type carries it, and it can be legitimately absent even on
+   *  a genuine paid purchase). `null` never means "free" — it means "no price evidence available,"
+   *  which this module's price rule (see `isDemonstrablyPaid`) treats as NOT sufficient proof of
+   *  payment, deliberately failing conservative rather than assuming paid. */
+  price: number | null;
+  /** 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — RevenueCat's
+   *  own `price_in_purchased_currency` field: the transaction's price in whatever currency the
+   *  customer was actually charged in. Preferred over `price` as the primary paid/free signal (see
+   *  `isDemonstrablyPaid`) since it reflects the actual charge without a USD-conversion step, but
+   *  both are checked — either field reporting a clearly positive amount is treated as sufficient
+   *  evidence of payment. Same nullability caveat as `price`. */
+  priceInPurchasedCurrency: number | null;
 }
 
 /**
@@ -89,6 +103,8 @@ export function extractReferralWebhookFields(envelope: unknown): ReferralWebhook
     originalTransactionId: asNonEmptyTrimmedString(eventRecord.original_transaction_id),
     purchasedAtMs: asFiniteNumber(eventRecord.purchased_at_ms),
     offerCode: asNonEmptyTrimmedString(eventRecord.offer_code),
+    price: asFiniteNumber(eventRecord.price),
+    priceInPurchasedCurrency: asFiniteNumber(eventRecord.price_in_purchased_currency),
   };
 }
 
@@ -103,25 +119,66 @@ export const REFERRAL_QUALIFYING_PRODUCT_IDS: readonly string[] = [
 ];
 
 /**
- * Shared core of a "genuine, production, normal-priced paid purchase of one of the three qualifying
- * products" check, parameterized by which single event TYPE is being tested — see
- * `isReferralQualifyingEvent` (INITIAL_PURCHASE) and `isReferralRenewalQualificationCandidate`
- * (RENEWAL) below. Deliberately checked on the webhook event's own shape alone (never requires price
- * fields, which RevenueCat documents as optional): PRODUCT_CHANGE, CANCELLATION, EXPIRATION,
- * BILLING_ISSUE, TEMPORARY_ENTITLEMENT_GRANT, NON_RENEWING_PURCHASE, trial/intro/promotional periods
- * (anything whose period_type isn't exactly `"NORMAL"`), and SANDBOX/TEST events are all excluded by
- * construction. Neither function alone is sufficient to qualify a referral — the caller must ALSO
- * have a successful canonical RevenueCat subscriber refresh confirming active `pro` before ever
- * calling the database qualification function (Phase 9 of the referral task — no "best effort"
- * qualification from the webhook payload alone).
+ * Shared "shape" of a genuine, production purchase of one of the three qualifying products,
+ * parameterized by which single event TYPE is being tested — used by both the paid-qualifying
+ * check below and the deferred-paid-origin check (fourth correctness hardening pass). Deliberately
+ * checked on the webhook event's own type/environment/period/product/transaction-identity shape
+ * alone, never on price: PRODUCT_CHANGE, CANCELLATION, EXPIRATION, BILLING_ISSUE,
+ * TEMPORARY_ENTITLEMENT_GRANT, NON_RENEWING_PURCHASE, trial/intro/promotional periods (anything
+ * whose period_type isn't exactly `"NORMAL"`), and SANDBOX/TEST events are all excluded by
+ * construction.
  *
  * Also requires `transactionId`/`originalTransactionId` to both be present (integrity hardening):
  * `originalTransactionId` is the sole match key a later refund/REFUND_REVERSED event uses to find
  * this exact attribution again (see the migration's `process_referral_subscription_event`) — an
- * event missing either id can never be reversed or re-confirmed later, so it must never qualify in
- * the first place, regardless of how otherwise-eligible it looks. RevenueCat documents both ids as
- * always present on a genuine INITIAL_PURCHASE/RENEWAL; a qualifying-shaped event missing one is
- * treated as malformed, not as eligible.
+ * event missing either id can never be reversed or re-confirmed later, so it must never qualify (or
+ * be deferred) in the first place, regardless of how otherwise-eligible it looks. RevenueCat
+ * documents both ids as always present on a genuine INITIAL_PURCHASE/RENEWAL; a qualifying-shaped
+ * event missing one is treated as malformed, not as eligible.
+ */
+function isReferralCandidateShapeEvent(fields: ReferralWebhookFields, eventType: string): boolean {
+  return (
+    fields.eventType === eventType &&
+    fields.environment === "PRODUCTION" &&
+    fields.periodType === "NORMAL" &&
+    fields.productId !== null &&
+    REFERRAL_QUALIFYING_PRODUCT_IDS.includes(fields.productId) &&
+    fields.transactionId !== null &&
+    fields.originalTransactionId !== null
+  );
+}
+
+/**
+ * 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — TRUE only when
+ * this event carries positive, trustworthy evidence that real money changed hands. Fails
+ * conservative by design (per this feature's task spec): a clearly positive price is evidence of
+ * payment; an explicit zero is evidence of NO payment; a missing/null price is NOT evidence of
+ * payment either way and must never be treated as "probably paid." This is what closes the bug this
+ * hardening pass exists for — RevenueCat can report `period_type: "NORMAL"` and a non-null
+ * `offer_code` for the public 85BLENDS launch promo's free month exactly as it would for an
+ * ordinary paid purchase; only the transaction's own economics (price), never the offer_code field
+ * alone, can distinguish the two.
+ *
+ * Checks `price_in_purchased_currency` (the actual amount charged, in the customer's own currency)
+ * and `price` (the same transaction converted to USD) independently — either one reporting a
+ * clearly positive number is sufficient, since a genuinely free transaction is $0 in every
+ * currency. Never requires both to agree; only one needs to be positive.
+ */
+function isDemonstrablyPaid(fields: ReferralWebhookFields): boolean {
+  return (
+    (fields.priceInPurchasedCurrency !== null && fields.priceInPurchasedCurrency > 0) ||
+    (fields.price !== null && fields.price > 0)
+  );
+}
+
+/**
+ * Shared core of a "genuine, production, normal-priced paid purchase of one of the three qualifying
+ * products" check, parameterized by which single event TYPE is being tested — see
+ * `isReferralQualifyingEvent` (INITIAL_PURCHASE) and `isReferralRenewalQualificationCandidate`
+ * (RENEWAL) below. Neither function alone is sufficient to qualify a referral — the caller must ALSO
+ * have a successful canonical RevenueCat subscriber refresh confirming active `pro` before ever
+ * calling the database qualification function (Phase 9 of the referral task — no "best effort"
+ * qualification from the webhook payload alone).
  *
  * 85Blends 2.4.0 Referral Reward Redemption hardening: also excludes ANY event whose own
  * `offerCode` is one of the three dedicated referral-reward offer references
@@ -133,17 +190,17 @@ export const REFERRAL_QUALIFYING_PRODUCT_IDS: readonly string[] = [
  * `isReferralRenewalQualificationCandidate` plus a database-backed proof check in
  * _shared/database.ts's applyReferralAction (see that file's own comment for the full loophole
  * analysis of why a bare timing check alone would be unsafe).
+ *
+ * Fourth correctness hardening pass: also requires `isDemonstrablyPaid` — see that function's own
+ * header. An otherwise-qualifying-shaped event that is free/zero-price/unknown-price is never
+ * excluded silently: see `isReferralDeferrablePaidOriginEvent` below for the narrow, safe path that
+ * preserves a still-pending referral through a free/promotional start.
  */
 function isCandidatePaidQualifyingEvent(fields: ReferralWebhookFields, eventType: string): boolean {
   return (
-    fields.eventType === eventType &&
-    fields.environment === "PRODUCTION" &&
-    fields.periodType === "NORMAL" &&
-    fields.productId !== null &&
-    REFERRAL_QUALIFYING_PRODUCT_IDS.includes(fields.productId) &&
-    fields.transactionId !== null &&
-    fields.originalTransactionId !== null &&
-    !isReferralRewardOfferReference(fields.offerCode)
+    isReferralCandidateShapeEvent(fields, eventType) &&
+    !isReferralRewardOfferReference(fields.offerCode) &&
+    isDemonstrablyPaid(fields)
   );
 }
 
@@ -182,6 +239,57 @@ export function isReferralQualifyingEvent(fields: ReferralWebhookFields): boolea
  */
 export function isReferralRenewalQualificationCandidate(fields: ReferralWebhookFields): boolean {
   return isCandidatePaidQualifyingEvent(fields, "RENEWAL");
+}
+
+/**
+ * 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — TRUE only for an
+ * INITIAL_PURCHASE that has every qualifying SHAPE characteristic (production, NORMAL period, one
+ * of the three Pro products, both transaction ids present) but is NOT demonstrably paid (see
+ * `isDemonstrablyPaid`) and does not carry one of our own dedicated referral-reward offer codes
+ * (which already has its own established fulfillment/proof mechanism via
+ * private.referral_reward_offer_codes — see referral-reward-offer-codes.ts and
+ * _shared/database.ts's applyReferralAction — never duplicated here).
+ *
+ * This is the exact gap this hardening pass exists to close: the public 85BLENDS launch promo (and
+ * any other free/zero-price/unknown-price start of one of the three Pro products) must never count
+ * as a paid referral, but a referral already pending for this same participant must not be silently
+ * and permanently lost either. `determineReferralAction` turns a TRUE result here into a
+ * `defer_paid_origin` action — a narrow, database-backed proof recorded ONLY if this participant
+ * already had a pending attribution whose `attributed_at` predates this exact purchase (see
+ * _shared/database.ts's applyReferralAction and the migration's own
+ * `record_referral_deferred_paid_origin` for the full mechanism, including why a referral code
+ * applied AFTER this free start can never retroactively benefit from it). Recording (or failing to
+ * record) this proof never itself qualifies anything — no attribution status or reward milestone
+ * changes as a result.
+ */
+export function isReferralDeferrablePaidOriginEvent(fields: ReferralWebhookFields): boolean {
+  return (
+    isReferralCandidateShapeEvent(fields, "INITIAL_PURCHASE") &&
+    !isReferralRewardOfferReference(fields.offerCode) &&
+    !isDemonstrablyPaid(fields)
+  );
+}
+
+/** The three reasons `determineReferralAction` can compute for a `defer_paid_origin` action's own
+ *  audit trail (never used for any decision, only for a human/operator reading the ledger later).
+ *  Mirrors the migration's `referral_deferred_paid_origins_reason` CHECK constraint exactly. */
+export type ReferralDeferredPaidOriginReason = "free_offer_code" | "zero_price" | "unknown_price";
+
+/**
+ * Pure, audit-only categorization of WHY an event was deferred rather than immediately qualified —
+ * never read by any later decision (the later RENEWAL-qualify proof check only checks for the
+ * deferred-origin row's existence, never its reason). `offerCode` present at all (any non-reward
+ * offer code — a reward offer code is already excluded before this is ever called, see
+ * `isReferralDeferrablePaidOriginEvent`) is checked first since it's the most specific, most useful
+ * fact for an operator investigating a promo campaign later; otherwise falls back to whether either
+ * price field was an explicit zero (a confirmed free transaction) versus simply absent (a data gap
+ * this pipeline can't further characterize).
+ */
+export function deferredPaidOriginReason(fields: ReferralWebhookFields): ReferralDeferredPaidOriginReason {
+  if (fields.offerCode !== null) return "free_offer_code";
+  const explicitZero =
+    fields.price === 0 || fields.priceInPurchasedCurrency === 0;
+  return explicitZero ? "zero_price" : "unknown_price";
 }
 
 /**
@@ -262,7 +370,7 @@ export function isReferralRelevantEventType(eventType: string): boolean {
  *  migration. Plain data, no Deno/Postgres dependency, so it can be constructed and asserted on
  *  entirely under Node (see determineReferralAction's own tests). */
 export interface ReferralActionInput {
-  action: "qualify" | "refund_reversal" | "refund_reversed";
+  action: "qualify" | "refund_reversal" | "refund_reversed" | "defer_paid_origin";
   appUserIdSet: string[];
   environment: RevenueCatWebhookEnvironment;
   eventId: string;
@@ -282,6 +390,16 @@ export interface ReferralActionInput {
    *  'qualify' action produced from an INITIAL_PURCHASE (which needs no such proof) or for
    *  'refund_reversal'/'refund_reversed' (irrelevant to either). */
   requiresRewardRedemptionProof: boolean;
+  /** 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — set only for a
+   *  `defer_paid_origin` action (see `isReferralDeferrablePaidOriginEvent`/
+   *  `deferredPaidOriginReason`). Audit-only; never read by any qualification decision. */
+  deferredReason?: ReferralDeferredPaidOriginReason;
+  /** 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — set only for a
+   *  `defer_paid_origin` action: the event's own `offer_code` (an App Store Connect offer
+   *  REFERENCE NAME, never the raw one-time Apple code — see referral-reward-offer-codes.ts's own
+   *  header), kept purely for later audit of which promo/offer a deferred origin came from. `null`
+   *  when the free/unknown-price purchase carried no offer code at all. */
+  offerReferenceForAudit?: string | null;
 }
 
 /** Mirrors private.process_referral_subscription_event's exact RETURNS TABLE shape. */
@@ -347,6 +465,17 @@ export function determineReferralAction(
       purchasedAtMs: fields.purchasedAtMs,
       canonicalProIsActive,
       requiresRewardRedemptionProof: true,
+    };
+  }
+  if (isReferralDeferrablePaidOriginEvent(fields)) {
+    return {
+      ...shared,
+      action: "defer_paid_origin",
+      purchasedAtMs: fields.purchasedAtMs,
+      canonicalProIsActive,
+      requiresRewardRedemptionProof: false,
+      deferredReason: deferredPaidOriginReason(fields),
+      offerReferenceForAudit: fields.offerCode,
     };
   }
   if (isReferralRefundReversalEvent(fields)) {
