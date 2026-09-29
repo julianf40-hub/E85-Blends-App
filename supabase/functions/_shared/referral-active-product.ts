@@ -11,10 +11,11 @@
 // while keeping the "which product" logic isolated to the one feature that actually needs it.
 //
 // IMPORTANT RevenueCat API v2 detail: subscription.product_id is RevenueCat's INTERNAL product id,
-// not the App Store product identifier. The store-facing identifier lives on the entitlement's
-// embedded product object as product.store_identifier. Referral reward issuance must therefore map
-// the active subscription's internal product id to that store_identifier before comparing against
-// 85Blends' Apple product ids. Failing closed on missing/ambiguous mapping is intentional.
+// not the App Store product identifier. The canonical store-facing identifier is fetched by
+// revenuecat-api.ts from RevenueCat's Product endpoint and attached to the subscription object as
+// `store_product_id`. The older embedded-entitlement product shape is retained only as a defensive
+// compatibility fallback for already-covered fixtures; production must never treat the internal
+// product id itself as an Apple product id.
 //
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-active-product.test.ts).
@@ -34,7 +35,7 @@ export interface ActiveProProductResult {
    *  subscription with the latest expiration, when `proIsActive` is true — mirrors
    *  entitlement.ts's calculatePro tie-break rule exactly. `null` when Pro is inactive OR when the
    *  active subscription's RevenueCat-internal product id cannot be mapped unambiguously to a
-   *  `store_identifier`. Never guesses/falls back to RevenueCat's internal id. */
+   *  store identifier. Never guesses/falls back to RevenueCat's internal id. */
   activeProductId: string | null;
 }
 
@@ -61,17 +62,21 @@ function normalizedNonEmptyString(value: unknown): string | null {
 }
 
 /**
- * RevenueCat API v2's subscription.product_id is an internal RevenueCat id. Resolve it to the
- * store-facing identifier from the embedded products on the SAME qualifying entitlement.
+ * RevenueCat API v2's subscription.product_id is an internal RevenueCat id. revenuecat-api.ts
+ * resolves that id through GET /v2/projects/{project_id}/products/{product_id} and annotates the
+ * subscription with `store_product_id`. Prefer that authoritative mapping.
  *
- * There should be exactly one matching product object. If there are zero matches, a malformed
- * store_identifier, or conflicting duplicate matches, fail closed with null rather than guessing
- * which Apple subscription should receive a referral Offer Code.
+ * The embedded entitlement-product walk is retained as a compatibility fallback for historical
+ * fixtures/possible expanded responses, but the customer-subscriptions endpoint does not promise
+ * that expansion and production correctness no longer depends on it.
  */
 function subscriptionStoreProductId(
   subscription: RevenueCatSubscription,
   entitlementLookupKey: string,
 ): string | null {
+  const directlyResolved = normalizedNonEmptyString(subscription.store_product_id);
+  if (directlyResolved) return directlyResolved;
+
   const revenueCatProductId = normalizedNonEmptyString(subscription.product_id);
   if (!revenueCatProductId) return null;
 
