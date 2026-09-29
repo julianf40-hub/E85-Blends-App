@@ -134,6 +134,97 @@ fix was additionally verified via 4 new Node tests covering the exact live-code/
 no-reward/environment-already-scoped cases, and new Swift Testing cases pinning the card-state
 decision logic (no Xcode toolchain in this environment — see §11 for what that leaves unverified).
 
+## 0d. Fourth correctness hardening pass — paid-referral qualification
+
+Unlike §0/§0b/§0c, which all hardened the REWARD REDEMPTION pipeline
+(`private.referral_rewards`/`claim_referral_reward`/`fulfill_referral_reward_offer_code`), this pass
+is entirely about the PAID-REFERRAL QUALIFICATION pipeline (`private.referral_attributions`/
+`process_referral_subscription_event`/the webhook's own event classification) — the redemption
+pipeline is untouched by this pass, confirmed by the full Node suite and a fresh local Postgres
+replay (§2/§11).
+
+**The bug:** "5 QUALIFIED PAID REFERRALS = 1 FREE MONTH" only ever excluded our own three
+`REFERRAL_REWARD_*` offer references from qualifying — it never checked whether the transaction
+actually cost the customer anything. 85Blends also runs a separate, PUBLIC one-month-free Apple
+Offer Code promotion (the codebase's own tests already referenced its reference name,
+`"85BLENDS_LAUNCH_PROMO"`, as an example of an offer code that must never be treated as one of our
+own reward codes). RevenueCat's webhook can report `period_type: "NORMAL"` and that non-null
+`offer_code` for a free promo redemption exactly as it would for an ordinary paid purchase — nothing
+in the pre-existing classifier distinguished the two, so a public-promo (or any other $0) start of
+one of the three Pro products could incorrectly count as a paid referral.
+
+**The fix, in two parts:**
+
+1. **Price rule** (`supabase/functions/_shared/referral-classification.ts`'s new
+   `isDemonstrablyPaid`): paid qualification now additionally requires positive evidence of payment
+   from the webhook event's own `price`/`price_in_purchased_currency` fields (added to
+   `ReferralWebhookFields`/`extractReferralWebhookFields` — confirmed absent from this pipeline
+   entirely before this pass, including from `revenuecat-types.ts` and the webhook parser). A
+   clearly positive amount on EITHER field qualifies; an explicit zero does not; a null/missing
+   price does NOT count as paid either — RevenueCat documents price as sometimes legitimately
+   unavailable even on a genuine paid transaction, so this fails conservative rather than assuming
+   paid. This is a GENERIC economic rule, not a hardcoded exclusion of the promo's reference
+   name — it would equally exclude any other free/zero-price Offer Code campaign added in the
+   future, without further changes here.
+2. **Deferred paid qualification origin** (new migration
+   `20260928010000_referral_deferred_paid_qualification_origin.sql`, new table
+   `private.referral_deferred_paid_origins`, new function
+   `private.record_referral_deferred_paid_origin`): the price rule alone would silently and
+   permanently strand a referral for someone who applies a code before subscribing, then starts Pro
+   through a legitimate free Offer Code — their INITIAL_PURCHASE would now simply be ignored. This
+   generalizes the pattern the redemption pipeline already established for `REFERRAL_REWARD_*` free
+   months (a database-backed proof, checked before ever allowing a RENEWAL to qualify) to cover
+   OTHER free/zero/unknown-price starts too, via a new, narrow, insert-only ledger — reusing the
+   existing `private.referral_reward_offer_codes`-based proof as one alternative source, never
+   duplicating or replacing it (see §7 for the full mechanism, including why a referral code applied
+   AFTER a free/promo start can never benefit from it).
+
+**Why PR #110 is the right place for this:** the redemption pipeline's `REFERRAL_REWARD_*` proof
+check (in `_shared/database.ts`'s `applyReferralAction`) already lives in this same, still-unmerged
+PR — generalizing it to a second proof source is a natural continuation of the exact same code path,
+not a new feature bolted onto an unrelated one.
+
+**Migration placement:** `20260919150000_referral_paid_qualification_foundation.sql` (which created
+`process_referral_subscription_event`) is a DIFFERENT, EARLIER migration than this PR's own
+`20260928000000_referral_reward_redemption_foundation.sql`, and per
+`supabase/functions/revenuecat-webhook/index.ts`'s own deployment header is confirmed already live
+in production (applied 2026-09-19, webhook deployed against it as ACTIVE version 7) — an applied
+migration must never be edited in place (this repo's migration hygiene rule). This pass therefore
+adds a NEW migration, `20260928010000_...`, rather than editing either existing file; like
+`20260928000000_...`, it remains genuinely unapplied pending this PR's own separate authorization.
+
+**Verified by real execution, not just reasoning about it** (same discipline as §0/§0b/§0c): a
+fresh, from-scratch local Postgres 16 replay of the full 32-migration chain (adding this pass's new
+migration to the 31 already verified in the third pass), followed by a dedicated SQL scenario script
+exercising the full test matrix end-to-end —
+(A) an ordinary paid INITIAL_PURCHASE still qualifies immediately, unchanged;
+(E) a free-promo start with a referral already pending safely records a deferred origin without
+granting any progress;
+(K) confirmed directly — zero reward rows and a still-`pending` attribution immediately after that
+recording;
+an idempotent redelivery of the same free-purchase event produces `already_recorded`, never a
+second row;
+(F) the first later positive-price RENEWAL for that same `original_transaction_id` qualifies via the
+generalized proof check;
+a `not_pending` guard confirmed once that attribution is qualified, a later free product change on
+the same participant can never re-open a new deferred origin;
+(I) a duplicate paid renewal for the same original transaction returns `already_processed`, never
+qualifying twice;
+(J) the existing refund-reversal/re-reversal pathway, completely untouched by this pass, still
+correctly reverses and re-qualifies that same attribution;
+(G) a referral code applied AFTER a free/promo start never gets a deferred-origin row in the first
+place (the free purchase itself returns `no_attribution`, since no pending referral existed yet at
+that moment), so the later paid renewal's own proof check fails closed — this is the exact loophole
+("apply a code after becoming Pro") generalized to the free-start case;
+(H) an entirely unrelated long-standing subscriber has nothing to defer and no proof row, so a paid
+renewal can never qualify anything for them either. Items B/C/D/K's own webhook-classification half
+(a zero-price, null-price, or `REFERRAL_REWARD_*` INITIAL_PURCHASE never immediately qualifies) is
+covered by 25 new Node tests in `referral-classification.test.ts`, run alongside the full existing
+suite (see §11 for the exact totals). Two pre-existing tests that had encoded the bug itself as
+correct behavior (`isReferralQualifyingEvent`'s "price fields are never required" case, and an
+`isReferralQualifyingEvent` case exercising `"85BLENDS_LAUNCH_PROMO"` with no price set) were
+replaced with tests asserting the corrected contract.
+
 ## 1. Architecture
 
 ```
@@ -254,12 +345,13 @@ its own new coverage is 4 Node tests plus new Swift Testing cases (§11).
 
 **Every pure `_shared/*.ts` Node test in this feature was also actually EXECUTED** (not merely
 written) — `node --test supabase/functions/_shared/*.test.ts` runs cleanly under this container's
-Node 22 (native TypeScript support, no transpile step needed): **352 tests, 352 passing, 0
+Node 22 (native TypeScript support, no transpile step needed): **377 tests, 377 passing, 0
 failing**, across every shared module this feature touches or added (347 after the first hardening
-pass, 348 after the second, +4 new tests for `issued_reward_needs_refresh` added by this third
-pass). An earlier revision of this document said Deno-file testing was entirely unavailable in this
-environment; that undersold what Node 22 can actually execute here — corrected in an earlier
-revision.
+pass, 348 after the second, 352 after the third (+4 new tests for `issued_reward_needs_refresh`),
+377 after this fourth pass (+25 new tests for the price rule and deferred-paid-origin
+classification, §0d)). An earlier revision of this document said Deno-file testing was entirely
+unavailable in this environment; that undersold what Node 22 can actually execute here — corrected
+in an earlier revision.
 
 **Zero changes to any existing FUNCTION'S body** — in particular,
 `private.process_referral_subscription_event` (the existing qualification/refund function) is
@@ -453,6 +545,28 @@ loophole is closed because an unrelated, ordinarily-purchased subscription never
 row. A refund of that later-qualifying paid transaction still reverses correctly through the
 existing, untouched refund machinery (it operates on `original_transaction_id`, independent of
 which event type originally qualified it).
+
+**Fourth hardening pass — generalized beyond our own reward codes (§0d):** the SAME loophole exists
+for ANY free/zero/unknown-price start of one of the three Pro products, not just a
+`REFERRAL_REWARD_*` redemption — most concretely, the public 85BLENDS launch promo. `_shared/database.ts`'s
+`applyReferralAction` now proves a RENEWAL-triggered qualify attempt from EITHER of two independent
+sources — the pre-existing `private.referral_reward_offer_codes` redeemed-row check above, unchanged,
+OR a new `private.referral_deferred_paid_origins` row (added by
+`20260928010000_referral_deferred_paid_qualification_origin.sql`) for that same
+`original_transaction_id` + `environment`. A deferred-origin row is written by the new
+`private.record_referral_deferred_paid_origin` function, called for a `defer_paid_origin` action
+(see `referral-classification.ts`'s `isReferralDeferrablePaidOriginEvent`) whenever an
+INITIAL_PURCHASE has every qualifying SHAPE characteristic but fails the price rule (§0d) — and,
+critically, that function ONLY records a row when THIS participant already has a `pending`
+attribution whose `attributed_at` predates THIS free purchase's own `purchased_at` (the Attribution
+Timing Rule, applied to the free purchase's own timestamp rather than a later renewal's). A referral
+code applied AFTER a free/promo start therefore never gets a deferred-origin row at all (the defer
+attempt itself returns `no_attribution` or `too_late`), which is exactly what keeps that later paid
+renewal's proof check failing closed — the SAME loophole this section already closed for reward
+codes, now closed for every other free-start case too. Recording (or failing to record) a deferred
+origin never itself changes attribution status or reward milestones; only a later, demonstrably-paid
+RENEWAL routed through the unmodified `process_referral_subscription_event` can actually qualify
+anything.
 
 ## 7a. Environment isolation design (hardening pass)
 
@@ -676,15 +790,24 @@ issued" preview is corrected to `earnedMonthsAvailable: 0` (the real post-claim 
 
 ## 8. Files changed
 
-**Migrations:** `supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql` (new).
+**Migrations:** `supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql` (new),
+`supabase/migrations/20260928010000_referral_deferred_paid_qualification_origin.sql` (new, fourth
+hardening pass — `private.referral_deferred_paid_origins` + `private.record_referral_deferred_paid_origin`,
+see §0d/§7).
 
 **Edge Functions / shared:**
 `supabase/functions/referral-api/index.ts` (second hardening pass —
 `authenticateInstallation`/`handleBootstrap`/`loadStatusResponse`/`handleClaimReward` rewired for
 current-installation environment resolution; `resolveClaimEnvironment` removed),
 `supabase/functions/revenuecat-webhook/index.ts`,
-`supabase/functions/_shared/database.ts`,
-`supabase/functions/_shared/referral-classification.ts`,
+`supabase/functions/_shared/database.ts` (fourth hardening pass — `applyReferralAction` handles the
+new `defer_paid_origin` action and generalizes the RENEWAL-qualify proof check to OR in
+`private.referral_deferred_paid_origins`, see §0d/§7),
+`supabase/functions/_shared/referral-classification.ts` (fourth hardening pass — new `price`/
+`priceInPurchasedCurrency` fields on `ReferralWebhookFields`; new `isDemonstrablyPaid`,
+`isReferralDeferrablePaidOriginEvent`, `deferredPaidOriginReason`; `isCandidatePaidQualifyingEvent`
+now requires `isDemonstrablyPaid`; `determineReferralAction` dispatches the new `defer_paid_origin`
+action),
 `supabase/functions/_shared/referral-api-env.ts`,
 `supabase/functions/_shared/referral-api-validation.ts`,
 `supabase/functions/_shared/referral-api-response.ts` (second hardening pass — comment only:
@@ -698,7 +821,10 @@ current-installation environment resolution; `resolveClaimEnvironment` removed),
 
 **Tests (Node, `_shared/*.test.ts`):**
 `referral-reward-offer-codes.test.ts` (new), `referral-active-product.test.ts` (new),
-`referral-classification.test.ts`, `referral-api-validation.test.ts`,
+`referral-classification.test.ts` (fourth hardening pass — 25 new cases covering the price rule,
+`isReferralDeferrablePaidOriginEvent`, `deferredPaidOriginReason`, and the new `defer_paid_origin`
+dispatch from `determineReferralAction`; 2 pre-existing cases that had encoded the bug as correct
+behavior were replaced — see §0d), `referral-api-validation.test.ts`,
 `referral-api-response.test.ts` (second hardening pass — new `'issued'`-exclusion case; THIRD
 hardening pass — 4 new `issued_reward_needs_refresh` cases),
 `referral-api-env.test.ts`,
@@ -865,6 +991,16 @@ manually in App Store Connect).
   `fulfill_referral_reward_offer_code` — an impossible zero-row result aborts the whole call rather
   than ever returning `'claimed'` on top of a partial mutation. Proven with a second dedicated
   forced-invariant-failure test. See §2/§7c.
+- **Paid-qualification price spoofing (fourth hardening pass):** `price`/`price_in_purchased_currency`
+  come directly from RevenueCat's own signed/authenticated webhook payload (the SAME envelope whose
+  HMAC signature `verifyWebhookAuth` already checks before any of this code runs) — never
+  client-supplied, never trusted from any other source. `private.referral_deferred_paid_origins`
+  follows the exact same `private`-schema/RLS-enabled/zero-policy/`service_role`-only pattern as
+  every other table in this feature (see the bullet above), with a NARROWER grant than most:
+  `SELECT, INSERT` only, no `UPDATE`/`DELETE` at all — the ledger cannot be altered after the fact,
+  even by a compromised service-role caller limited to this function's own SQL. It stores only the
+  offer REFERENCE NAME for audit (never the raw one-time Apple code, which RevenueCat doesn't expose
+  in the first place — same distinction as `referral_reward_offer_codes` throughout this document).
 
 Raw Apple codes are treated as sensitive credentials throughout — never stored in app source, never
 logged, never in analytics, never reachable through anon/authenticated PostgREST, and returned only
@@ -874,28 +1010,35 @@ to the authenticated installation they were assigned to.
 
 - **The migration's SQL was actually executed and verified**, against a real, temporary local
   Postgres 16 server (this container has the full server binaries, not just `psql`) replaying the
-  entire existing migration chain — FOUR times (once before, once after the first hardening pass,
-  once after the second, and once more, fully from a clean database, after this third hardening
-  pass) — see §2 for exactly what was exercised, including all real bugs this process found and
+  entire existing migration chain — FIVE times now (once before, once after the first hardening
+  pass, once after the second, once more fully from a clean database after the third, and once more
+  fully from a clean database after this fourth pass, now 32 migrations including this pass's own
+  new one) — see §2 for exactly what was exercised, including all real bugs this process found and
   fixed (a column-ambiguity bug in the first pass; the `referral_rewards_status` CHECK constraint gap
-  in the second), and the full scenario lists across all three passes (expiration replacement in both
+  in the second), and the full scenario lists across all four passes (expiration replacement in both
   directions, revocation immunity while issued, requalification, a same-participant
-  PRODUCTION/SANDBOX switch, status-response environment scoping, and TWO dedicated
+  PRODUCTION/SANDBOX switch, status-response environment scoping, TWO dedicated
   forced-invariant-failure tests proving the transaction-rollback mechanism in both
-  `fulfill_referral_reward_offer_code` and `claim_referral_reward`, all exercised with real data via
-  `psql`). What that local replay does **not** cover: genuine multi-connection concurrency (SKIP
-  LOCKED behavior under two truly simultaneous claims, lock-ordering under load), RLS enforcement
-  from an actual `anon`/`authenticated` role connection (grants were verified by reading them, not by
-  attempting a live denied connection), and anything specific to Supabase's own connection
-  pooler/transaction mode.
+  `fulfill_referral_reward_offer_code` and `claim_referral_reward`, and — this fourth pass, §0d — a
+  dedicated SQL scenario script covering test-matrix items A/E/F/G/H/I/J/K plus an idempotency check
+  and a `not_pending` guard check, all exercised with real data via `psql`). What that local replay
+  does **not** cover: genuine multi-connection concurrency (SKIP LOCKED behavior under two truly
+  simultaneous claims, lock-ordering under load), RLS enforcement from an actual
+  `anon`/`authenticated` role connection (grants were verified by reading them, not by attempting a
+  live denied connection), and anything specific to Supabase's own connection pooler/transaction
+  mode.
 - **Correction to an earlier revision of this document:** an earlier revision said Deno-file testing
   was "entirely unavailable" in this environment, implying the `_shared/*.test.ts` suite was only
   written/reviewed, not actually run. That undersold what this environment can do: Node.js 22 is
   installed (`/opt/node22/bin/node`) with native TypeScript stripping, and `node --test
   supabase/functions/_shared/*.test.ts` directly executes the entire pure-TS, Deno-free `_shared`
   test suite for real — no transpile step, no Deno runtime needed for these files specifically.
-  That run currently passes **352/352** (0 failing; 347 after the first hardening pass, 348 after the
-  second, +4 new tests for `issued_reward_needs_refresh` added by this third pass). What genuinely
+  That run currently passes **377/377** (0 failing; 347 after the first hardening pass, 348 after the
+  second, 352 after the third (+4 new tests for `issued_reward_needs_refresh`), +25 new tests in
+  this fourth pass covering the price rule, `isReferralDeferrablePaidOriginEvent`,
+  `deferredPaidOriginReason`, and the `defer_paid_origin` dispatch — with 2 pre-existing
+  `referral-classification.test.ts` cases that had encoded the bug itself as correct behavior
+  replaced by corrected-contract tests, see §0d). What genuinely
   remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
   `revenuecat-webhook/index.ts` themselves (the HTTP handler entry points) and `database.ts` (which
   only runs under Deno's `npm:postgres` specifier) still require an actual Deno runtime, which is
@@ -928,14 +1071,16 @@ to the authenticated installation they were assigned to.
   behavior and timing after a real external Offer Code redemption (§0 issue 4) is based on
   RevenueCat's own SDK source/changelog documentation, not an observed live call in this
   environment.
-- **47 backend test scenarios, 18 iOS test scenarios** were specified across the original PR and all
-  three hardening passes (28 original + 5 from the first pass + 8 from the second + 6 from this
+- **47 backend test scenarios, 18 iOS test scenarios** were specified across the original PR and the
+  first three hardening passes (28 original + 5 from the first pass + 8 from the second + 6 from the
   third pass's own required-tests list: issued-reward-with-live-code, expired-issued-code,
   wrong-environment-never-triggers-refresh, claim-from-needs-refresh-still-qualified,
   claim-from-needs-refresh-no-longer-qualified, and the claim-issuance transaction-rollback
-  invariant). All are backed by new or updated Node/Swift Testing unit tests in this PR (pure
+  invariant). The fourth pass's own 11-item test matrix (§0d) added a further 25 Node cases plus a
+  dedicated Postgres scenario script (A/E/F/G/H/I/J/K, an idempotency check, and a `not_pending`
+  guard). All are backed by new or updated Node/Swift Testing unit tests in this PR (pure
   classification, validation, response-shape, card-state-decision, and manager-level logic —
-  352/352 Node tests passing, see above), and every SQL-level scenario among them — across all three
+  377/377 Node tests passing, see above), and every SQL-level scenario among them — across all four
   hardening passes — was additionally exercised directly against a local Postgres replay:
   qualification counts, claim issuance and idempotency, legacy-product/invalid-product safe failure,
   fulfillment matching/rejection/idempotency, code void-and-replacement, terminal-state enforcement,

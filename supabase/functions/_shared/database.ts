@@ -304,27 +304,88 @@ async function applyIdentityRefresh(tx: Sql, plan: RefreshPlan): Promise<void> {
  * referral task). Only a genuine thrown error from this call (a real infrastructure/SQL failure,
  * not a structured "nothing to do" result) propagates and rolls back the transaction, exactly like
  * any other genuine error already does elsewhere in this same transaction.
+ *
+ * 85Blends 2.4.0 Referral Reward Redemption, fourth correctness hardening pass — a `defer_paid_origin`
+ * action (see referral-classification.ts's isReferralDeferrablePaidOriginEvent) is handled entirely
+ * separately, below: it never calls process_referral_subscription_event at all (recording a
+ * deferred origin must never itself qualify anything or touch attribution/reward state), and it
+ * needs no reward-redemption proof (it's the mechanism that later PRODUCES that proof for a
+ * RENEWAL-triggered qualify attempt — see the generalized proof check further down).
  */
 async function applyReferralAction(tx: Sql, input: ReferralActionInput): Promise<ReferralActionResult> {
   type Row = { outcome: string; attribution_id: string | null; referrer_participant_id: string | null; qualified_count: number | null };
 
+  if (input.action === "defer_paid_origin") {
+    type DeferRow = { outcome: string; attribution_id: string | null; referrer_participant_id: string | null };
+    let deferRows: DeferRow[];
+    try {
+      deferRows = await tx<DeferRow[]>`
+        select * from private.record_referral_deferred_paid_origin(
+          ${tx.array(input.appUserIdSet)},
+          ${input.environment},
+          ${input.eventId},
+          ${input.purchasedAtMs},
+          ${input.productId},
+          ${input.transactionId},
+          ${input.originalTransactionId},
+          ${input.deferredReason ?? null},
+          ${input.offerReferenceForAudit ?? null}
+        )
+      `;
+    } catch (error) {
+      // Same deployment-ordering guard as every other referral schema call in this file — degrades
+      // to a clean skip, never a rollback of the entitlement mirror this same transaction is also
+      // writing.
+      const code = (error as { code?: string } | null)?.code;
+      if (code === "42883" || code === "42P01") {
+        return { outcome: "referral_deferred_origin_schema_unavailable", attributionId: null, referrerParticipantId: null, qualifiedCount: null };
+      }
+      throw error;
+    }
+    const deferRow = deferRows[0];
+    return {
+      outcome: deferRow.outcome,
+      attributionId: deferRow.attribution_id,
+      referrerParticipantId: deferRow.referrer_participant_id,
+      qualifiedCount: null,
+    };
+  }
+
   // 85Blends 2.4.0 Referral Reward Redemption — the additional database-backed proof check
   // referral-classification.ts's isReferralRenewalQualificationCandidate's own header describes:
   // a RENEWAL-triggered 'qualify' attempt may proceed ONLY if THIS original_transaction_id traces
-  // back to one of our own redeemed referral-reward offer codes — i.e. this subscription's
-  // original purchase was legitimately excluded from qualifying (it was free), and this renewal is
-  // its first genuinely paid transaction. Never applied to an INITIAL_PURCHASE-triggered qualify
-  // (which needs no such proof — see that same header for why). A missing proof row is a clean,
-  // safe no-op — never an error, and never falls through to calling
+  // back to a purchase that was legitimately excluded from qualifying when it originally happened
+  // (it was free), making this renewal its first genuinely paid transaction. Never applied to an
+  // INITIAL_PURCHASE-triggered qualify (which needs no such proof — see that same header for why).
+  // A missing proof row is a clean, safe no-op — never an error, and never falls through to calling
   // process_referral_subscription_event at all, so no attribution/reward state is touched.
+  //
+  // Fourth correctness hardening pass: this proof now has TWO independent sources, either one
+  // sufficient on its own — never re-checked against each other, since both already independently
+  // guarantee "this exact original_transaction_id's original purchase was free/excluded AND (for
+  // the deferred-origin source) had a pending attribution predating it":
+  //   1. private.referral_reward_offer_codes — our own dedicated referral-reward Offer Codes
+  //      (REFERRAL_REWARD_*), unchanged from the original mechanism.
+  //   2. private.referral_deferred_paid_origins — every OTHER free/zero-price/unknown-price start
+  //      (including the public 85BLENDS launch promo), populated only by a 'defer_paid_origin'
+  //      action above, itself only ever recorded when a pending attribution already existed before
+  //      that free purchase (see record_referral_deferred_paid_origin's own header — this is what
+  //      keeps a referral code applied AFTER an unrelated free/promo start from ever qualifying).
   if (input.action === "qualify" && input.requiresRewardRedemptionProof) {
     let proven: boolean;
     try {
       const proofRows = await tx<{ proven: boolean }[]>`
-        select exists(
-          select 1 from private.referral_reward_offer_codes
-          where redemption_original_transaction_id = ${input.originalTransactionId}
-            and status = 'redeemed'
+        select (
+          exists(
+            select 1 from private.referral_reward_offer_codes
+            where redemption_original_transaction_id = ${input.originalTransactionId}
+              and status = 'redeemed'
+          )
+          or exists(
+            select 1 from private.referral_deferred_paid_origins
+            where original_transaction_id = ${input.originalTransactionId}
+              and environment = ${input.environment}
+          )
         ) as proven
       `;
       proven = proofRows[0].proven;
