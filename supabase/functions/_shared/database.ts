@@ -371,20 +371,48 @@ async function applyReferralAction(tx: Sql, input: ReferralActionInput): Promise
   //      action above, itself only ever recorded when a pending attribution already existed before
   //      that free purchase (see record_referral_deferred_paid_origin's own header — this is what
   //      keeps a referral code applied AFTER an unrelated free/promo start from ever qualifying).
+  //
+  // FIFTH correctness hardening pass — identity/environment binding: `original_transaction_id` is
+  // globally unique in PRACTICE (it's Apple's own stable subscription identifier, and both proof
+  // tables additionally enforce it with a UNIQUE constraint), but this query must never rely on
+  // that alone as the full authorization boundary — a malformed/backfilled ledger row, an import
+  // mistake, or (for the reward-code source, which previously checked no environment at all) a
+  // stray SANDBOX row must never be able to authorize a PRODUCTION qualification, and a proof row
+  // belonging to some OTHER participant must never authorize qualifying THIS webhook event's own
+  // participant. Both EXISTS subqueries therefore additionally JOIN
+  // private.referral_participant_aliases and require it to resolve to THIS event's own
+  // `input.appUserIdSet`, in THIS event's own `input.environment` — the same authoritative alias
+  // set `process_referral_subscription_event` itself uses to resolve identity, never trusted from
+  // the proof row's own stored participant id alone. Both proof sources now follow the identical
+  // contract: transaction id + environment + participant. `roc.environment`/`rdpo.environment` are
+  // still checked directly too (not merely transitively through the alias join) — belt and
+  // suspenders, since a future schema change to either table's environment semantics must not
+  // silently widen this proof.
   if (input.action === "qualify" && input.requiresRewardRedemptionProof) {
     let proven: boolean;
     try {
       const proofRows = await tx<{ proven: boolean }[]>`
         select (
           exists(
-            select 1 from private.referral_reward_offer_codes
-            where redemption_original_transaction_id = ${input.originalTransactionId}
-              and status = 'redeemed'
+            select 1
+            from private.referral_reward_offer_codes roc
+            join private.referral_participant_aliases rpa
+              on rpa.participant_id = roc.referrer_participant_id
+            where roc.redemption_original_transaction_id = ${input.originalTransactionId}
+              and roc.status = 'redeemed'
+              and roc.environment = ${input.environment}
+              and rpa.environment = ${input.environment}
+              and rpa.app_user_id = any(${tx.array(input.appUserIdSet)})
           )
           or exists(
-            select 1 from private.referral_deferred_paid_origins
-            where original_transaction_id = ${input.originalTransactionId}
-              and environment = ${input.environment}
+            select 1
+            from private.referral_deferred_paid_origins rdpo
+            join private.referral_participant_aliases rpa
+              on rpa.participant_id = rdpo.referred_participant_id
+            where rdpo.original_transaction_id = ${input.originalTransactionId}
+              and rdpo.environment = ${input.environment}
+              and rpa.environment = ${input.environment}
+              and rpa.app_user_id = any(${tx.array(input.appUserIdSet)})
           )
         ) as proven
       `;

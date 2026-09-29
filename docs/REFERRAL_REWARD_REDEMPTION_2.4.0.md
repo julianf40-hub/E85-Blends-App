@@ -225,6 +225,80 @@ correct behavior (`isReferralQualifyingEvent`'s "price fields are never required
 `isReferralQualifyingEvent` case exercising `"85BLENDS_LAUNCH_PROMO"` with no price set) were
 replaced with tests asserting the corrected contract.
 
+## 0e. Fifth correctness hardening pass — identity/environment-bound qualification proof
+
+A further review of the fourth pass's own generalized RENEWAL-qualify proof check (§0d/§7) found
+that neither of its two proof sources fully bound the proof to the CURRENT webhook event's own
+resolved participant identity, and the reward-code source didn't check environment at all.
+
+**The gap:** the proof (`_shared/database.ts`'s `applyReferralAction`) matched a
+`private.referral_reward_offer_codes` redeemed row on `redemption_original_transaction_id` alone —
+no `environment` check at all — and matched a `private.referral_deferred_paid_origins` row on
+`original_transaction_id` + `environment`, but neither source verified that the proof row actually
+belongs to the SAME participant the current RENEWAL event's own RevenueCat alias set
+(`input.appUserIdSet`) resolves to. `original_transaction_id` is unique in practice (Apple's own
+stable subscription identifier, additionally enforced by a UNIQUE constraint on both tables), so
+this was never demonstrated to be exploitable — but relying on that alone as the sole authorization
+boundary, with no defense in depth against a malformed/backfilled ledger row, an import mistake, a
+future migration, or a stray SANDBOX row leaking into a PRODUCTION check, was exactly the kind of gap
+this feature's own "never trust a single implicit key" posture (see `process_referral_subscription_event`'s
+own participant-binding hardening on its refund_reversal/refund_reversed branches, which already did
+this correctly) says not to leave open.
+
+**The fix:** both `EXISTS` subqueries in `applyReferralAction`'s proof check now additionally JOIN
+`private.referral_participant_aliases` and require `rpa.environment = input.environment AND
+rpa.app_user_id = any(input.appUserIdSet)` — the SAME authoritative alias-set resolution
+`process_referral_subscription_event` itself uses to resolve identity, never trusted from a proof
+row's own stored participant id in isolation. The join targets `referral_reward_offer_codes
+.referrer_participant_id` (the participant who earned AND redeemed that reward code — the same
+person, per the redemption pipeline's own semantics: a reward is claimed and its Apple code
+subscribed-with by the person who earned it) for source 1, and
+`referral_deferred_paid_origins.referred_participant_id` (the participant whose free/promo purchase
+was deferred) for source 2. Both tables' own `environment` columns are still checked directly too,
+not only transitively through the alias join — belt and suspenders, matching this feature's
+established style. No schema change was needed: both tables already carried the columns this join
+needs (`referral_reward_offer_codes.environment`/`.referrer_participant_id` from the redemption
+migration; `referral_deferred_paid_origins.environment`/`.referred_participant_id` from the fourth
+pass's own migration) — this is a TypeScript-layer query change only.
+
+**Verified by real execution:** a dedicated Postgres scenario script covering the exact 7-item
+matrix this pass required — (A) correct participant + correct environment + a matching reward-code
+proof still succeeds; (B) the same `original_transaction_id` with the WRONG participant's alias set
+now correctly fails; (C) the same `original_transaction_id` with the WRONG environment now correctly
+fails; (D) a correctly-owned deferred-origin proof still succeeds; (E) a deferred-origin row queried
+under another participant's alias set now correctly fails; (F) a SANDBOX-environment redeemed code
+can never authorize a PRODUCTION qualification, confirmed against the SAME `original_transaction_id`
+value in both environments (with a sanity check that it still proves within its own SANDBOX
+environment); (G) the fourth pass's own public-promo free-start → first-paid-renewal scenario still
+qualifies correctly under the hardened query. The fourth pass's own full scenario script (A, E, F, G,
+H, I, J, K, an idempotency check, and the `not_pending` guard) was re-run against the hardened query
+shape too, confirming zero regression.
+
+**Independent adversarial review, and the one real gap it found:** an independent review of this
+fix (fresh eyes, no access to the implementation reasoning above) confirmed the join column choices
+are correct — `referral_reward_offer_codes.referrer_participant_id` genuinely is the redeemer's own
+participant id, traced through `fulfill_referral_reward_offer_code`'s own identical resolution
+pattern — found no alias-spoofing bypass (`create_or_get_referral_participant` already raises
+`referral_alias_conflict` rather than silently reassigning an alias someone else's participant
+already claimed, so an attacker cannot make their own alias resolve to another participant's proof
+row), confirmed the empty-alias-set and unknown-environment cases fail closed, and confirmed no
+other unbound-identity query exists elsewhere in this codebase needing the same fix (the
+refund_reversal/refund_reversed branches in `process_referral_subscription_event` already bound
+participant identity correctly, prior to this PR). It DID flag one real, legitimate gap: no
+committed regression test exercised this exact SQL join, since `database.ts` is Deno-only and
+therefore untestable under Node's own test runner. Closed by adding
+`_shared/database-referral-proof-binding.test.ts` — a static-assertion test over `database.ts`'s own
+SQL text (mirroring the exact same honestly-limited pattern already established by
+`20260921000000_promo_campaign_foundation.test.ts`: it can lock in that the hardened join text is
+present, it can never itself prove the query runs correctly — that's what the live Postgres
+scenarios above are for). Verified this guard is not a rubber stamp: deliberately reverted the
+`roc.environment`/`rpa` binding in a scratch copy of `database.ts` and confirmed 3 of its 6
+assertions immediately fail, before restoring the real fix.
+
+Full Node suite: **383/383 passing** (377 before this pass, +6 new in the static regression-guard
+file). This pass touches only `_shared/database.ts` (Deno-only/static-review-only at the SQL-runtime
+level — see §11) plus the new Node-testable guard file.
+
 ## 1. Architecture
 
 ```
@@ -345,13 +419,14 @@ its own new coverage is 4 Node tests plus new Swift Testing cases (§11).
 
 **Every pure `_shared/*.ts` Node test in this feature was also actually EXECUTED** (not merely
 written) — `node --test supabase/functions/_shared/*.test.ts` runs cleanly under this container's
-Node 22 (native TypeScript support, no transpile step needed): **377 tests, 377 passing, 0
+Node 22 (native TypeScript support, no transpile step needed): **383 tests, 383 passing, 0
 failing**, across every shared module this feature touches or added (347 after the first hardening
 pass, 348 after the second, 352 after the third (+4 new tests for `issued_reward_needs_refresh`),
-377 after this fourth pass (+25 new tests for the price rule and deferred-paid-origin
-classification, §0d)). An earlier revision of this document said Deno-file testing was entirely
-unavailable in this environment; that undersold what Node 22 can actually execute here — corrected
-in an earlier revision.
+377 after the fourth (+25 new tests for the price rule and deferred-paid-origin classification,
+§0d), 383 after this fifth pass (+6 new static-assertion tests guarding the identity/environment
+binding, §0e)). An earlier revision of this document said Deno-file testing was entirely unavailable
+in this environment; that undersold what Node 22 can actually execute here — corrected in an earlier
+revision.
 
 **Zero changes to any existing FUNCTION'S body** — in particular,
 `private.process_referral_subscription_event` (the existing qualification/refund function) is
@@ -802,7 +877,10 @@ current-installation environment resolution; `resolveClaimEnvironment` removed),
 `supabase/functions/revenuecat-webhook/index.ts`,
 `supabase/functions/_shared/database.ts` (fourth hardening pass — `applyReferralAction` handles the
 new `defer_paid_origin` action and generalizes the RENEWAL-qualify proof check to OR in
-`private.referral_deferred_paid_origins`, see §0d/§7),
+`private.referral_deferred_paid_origins`, see §0d/§7; FIFTH hardening pass — both proof sources now
+JOIN `private.referral_participant_aliases` and bind to the current event's own
+`environment`/`appUserIdSet`, and the reward-code source now also checks its own `environment`
+column, see §0e),
 `supabase/functions/_shared/referral-classification.ts` (fourth hardening pass — new `price`/
 `priceInPurchasedCurrency` fields on `ReferralWebhookFields`; new `isDemonstrablyPaid`,
 `isReferralDeferrablePaidOriginEvent`, `deferredPaidOriginReason`; `isCandidatePaidQualifyingEvent`
@@ -820,7 +898,9 @@ action),
 `supabase/functions/_shared/referral-active-product.ts` (new).
 
 **Tests (Node, `_shared/*.test.ts`):**
-`referral-reward-offer-codes.test.ts` (new), `referral-active-product.test.ts` (new),
+`database-referral-proof-binding.test.ts` (new, fifth hardening pass — 6 static-assertion tests over
+`database.ts`'s own SQL text guarding the identity/environment binding against textual regression,
+see §0e), `referral-reward-offer-codes.test.ts` (new), `referral-active-product.test.ts` (new),
 `referral-classification.test.ts` (fourth hardening pass — 25 new cases covering the price rule,
 `isReferralDeferrablePaidOriginEvent`, `deferredPaidOriginReason`, and the new `defer_paid_origin`
 dispatch from `determineReferralAction`; 2 pre-existing cases that had encoded the bug as correct
@@ -1001,6 +1081,19 @@ manually in App Store Connect).
   even by a compromised service-role caller limited to this function's own SQL. It stores only the
   offer REFERENCE NAME for audit (never the raw one-time Apple code, which RevenueCat doesn't expose
   in the first place — same distinction as `referral_reward_offer_codes` throughout this document).
+- **RENEWAL-qualify proof cross-participant/cross-environment leakage (fifth hardening pass):**
+  `applyReferralAction`'s two proof sources previously matched on `original_transaction_id` alone
+  (plus, for the deferred-origin source only, `environment` — the reward-code source checked no
+  environment at all). Neither confirmed the proof row actually belongs to the participant the
+  CURRENT webhook event's own alias set resolves to. Both `EXISTS` subqueries now additionally JOIN
+  `private.referral_participant_aliases` and require it to resolve to `input.appUserIdSet` in
+  `input.environment` — the identical authoritative identity resolution
+  `process_referral_subscription_event` itself already uses, never trusted from a proof row's own
+  stored participant id in isolation. Verified this closes the gap for real with 7 dedicated Postgres
+  scenarios (§0e) including a SANDBOX-redeemed-code-can-never-authorize-PRODUCTION case and a
+  wrong-participant case, and confirmed no other unbound-identity query exists elsewhere in this
+  codebase via an independent adversarial review. No schema change; both tables already carried the
+  columns this join needs.
 
 Raw Apple codes are treated as sensitive credentials throughout — never stored in app source, never
 logged, never in analytics, never reachable through anon/authenticated PostgREST, and returned only
@@ -1010,18 +1103,24 @@ to the authenticated installation they were assigned to.
 
 - **The migration's SQL was actually executed and verified**, against a real, temporary local
   Postgres 16 server (this container has the full server binaries, not just `psql`) replaying the
-  entire existing migration chain — FIVE times now (once before, once after the first hardening
-  pass, once after the second, once more fully from a clean database after the third, and once more
-  fully from a clean database after this fourth pass, now 32 migrations including this pass's own
-  new one) — see §2 for exactly what was exercised, including all real bugs this process found and
-  fixed (a column-ambiguity bug in the first pass; the `referral_rewards_status` CHECK constraint gap
-  in the second), and the full scenario lists across all four passes (expiration replacement in both
-  directions, revocation immunity while issued, requalification, a same-participant
-  PRODUCTION/SANDBOX switch, status-response environment scoping, TWO dedicated
-  forced-invariant-failure tests proving the transaction-rollback mechanism in both
-  `fulfill_referral_reward_offer_code` and `claim_referral_reward`, and — this fourth pass, §0d — a
+  entire existing migration chain — FIVE times fully from a clean database (once before, once after
+  the first hardening pass, once after the second, once after the third, and once after the fourth —
+  now 32 migrations including the fourth pass's own new one) — see §2 for exactly what was exercised,
+  including all real bugs this process found and fixed (a column-ambiguity bug in the first pass;
+  the `referral_rewards_status` CHECK constraint gap in the second), and the full scenario lists
+  across all five passes (expiration replacement in both directions, revocation immunity while
+  issued, requalification, a same-participant PRODUCTION/SANDBOX switch, status-response environment
+  scoping, TWO dedicated forced-invariant-failure tests proving the transaction-rollback mechanism in
+  both `fulfill_referral_reward_offer_code` and `claim_referral_reward`, the fourth pass's own
   dedicated SQL scenario script covering test-matrix items A/E/F/G/H/I/J/K plus an idempotency check
-  and a `not_pending` guard check, all exercised with real data via `psql`). What that local replay
+  and a `not_pending` guard check, and — this FIFTH pass, §0e, which needed no schema change so no
+  fresh full replay — a further dedicated SQL scenario script (against that SAME already-replayed
+  32-migration database) covering its own 7-item matrix (A-G: correct participant/environment
+  proves; wrong participant fails; wrong environment fails; a correctly-owned deferred-origin proves;
+  a deferred-origin row under another participant fails; a SANDBOX proof can never authorize
+  PRODUCTION; the public-promo regression still qualifies), plus a full re-run of the fourth pass's
+  own scenario script against the newly-hardened query to confirm zero regression, all exercised with
+  real data via `psql`). What that local replay
   does **not** cover: genuine multi-connection concurrency (SKIP LOCKED behavior under two truly
   simultaneous claims, lock-ordering under load), RLS enforcement from an actual
   `anon`/`authenticated` role connection (grants were verified by reading them, not by attempting a
@@ -1033,15 +1132,19 @@ to the authenticated installation they were assigned to.
   installed (`/opt/node22/bin/node`) with native TypeScript stripping, and `node --test
   supabase/functions/_shared/*.test.ts` directly executes the entire pure-TS, Deno-free `_shared`
   test suite for real — no transpile step, no Deno runtime needed for these files specifically.
-  That run currently passes **377/377** (0 failing; 347 after the first hardening pass, 348 after the
-  second, 352 after the third (+4 new tests for `issued_reward_needs_refresh`), +25 new tests in
-  this fourth pass covering the price rule, `isReferralDeferrablePaidOriginEvent`,
+  That run currently passes **383/383** (0 failing; 347 after the first hardening pass, 348 after the
+  second, 352 after the third (+4 new tests for `issued_reward_needs_refresh`), 377 after the fourth
+  (+25 new tests covering the price rule, `isReferralDeferrablePaidOriginEvent`,
   `deferredPaidOriginReason`, and the `defer_paid_origin` dispatch — with 2 pre-existing
   `referral-classification.test.ts` cases that had encoded the bug itself as correct behavior
-  replaced by corrected-contract tests, see §0d). What genuinely
+  replaced by corrected-contract tests, see §0d), 383 after this fifth pass (+6 new static-assertion
+  tests in `database-referral-proof-binding.test.ts` guarding the identity/environment binding
+  against textual regression — deliberately verified to actually fail by reverting the binding in a
+  scratch copy and confirming 3 of 6 failed, see §0e)). What genuinely
   remains unrun is narrower than the earlier claim: `referral-api/index.ts` and
-  `revenuecat-webhook/index.ts` themselves (the HTTP handler entry points) and `database.ts` (which
-  only runs under Deno's `npm:postgres` specifier) still require an actual Deno runtime, which is
+  `revenuecat-webhook/index.ts` themselves (the HTTP handler entry points) and `database.ts`'s own
+  SQL (which only executes under Deno's `npm:postgres` specifier at runtime, though its SQL TEXT is
+  now guarded by the static-assertion file above) still require an actual Deno runtime, which is
   not available here — those three files remain static-review-only, including the second hardening
   pass's own `authenticateInstallation`/`handleBootstrap` rewrite. Every `_shared/*.ts` module they
   call into, including `referral-milestones.ts`'s `'issued'`-state handling,
@@ -1078,17 +1181,21 @@ to the authenticated installation they were assigned to.
   claim-from-needs-refresh-no-longer-qualified, and the claim-issuance transaction-rollback
   invariant). The fourth pass's own 11-item test matrix (§0d) added a further 25 Node cases plus a
   dedicated Postgres scenario script (A/E/F/G/H/I/J/K, an idempotency check, and a `not_pending`
-  guard). All are backed by new or updated Node/Swift Testing unit tests in this PR (pure
-  classification, validation, response-shape, card-state-decision, and manager-level logic —
-  377/377 Node tests passing, see above), and every SQL-level scenario among them — across all four
-  hardening passes — was additionally exercised directly against a local Postgres replay:
+  guard). The fifth pass's own 7-item identity/environment-binding matrix (§0e) added 6 more Node
+  cases (a static regression guard, since `database.ts`'s SQL itself can't run under Node) plus its
+  own dedicated Postgres scenario script (A-G). All are backed by new or updated Node/Swift Testing
+  unit tests in this PR (pure classification, validation, response-shape, card-state-decision,
+  manager-level logic, and — as of the fifth pass — a static guard over database.ts's own proof-query
+  text — 383/383 Node tests passing, see above), and every SQL-level scenario among them — across all
+  five hardening passes — was additionally exercised directly against a local Postgres replay:
   qualification counts, claim issuance and idempotency, legacy-product/invalid-product safe failure,
   fulfillment matching/rejection/idempotency, code void-and-replacement, terminal-state enforcement,
   expired-issued-code replacement in both directions (still-qualified and no-longer-qualified),
   revoke-immunity while issued, requalification after revocation, sandbox/production isolation at
   both the claim and fulfillment layers including a same-participant multi-environment case,
-  status-response environment scoping, and TWO forced-invariant-violation-forces-full-rollback
-  behaviors (fulfillment and claim issuance, via two dedicated forced-failure tests, §2). What
-  remains genuinely unverified even after all four replays: TRUE multi-connection concurrent claims
-  (one code total under a real race, not just sequential calls), and anything requiring an actual
+  status-response environment scoping, TWO forced-invariant-violation-forces-full-rollback behaviors
+  (fulfillment and claim issuance, via two dedicated forced-failure tests, §2), and the fifth pass's
+  own identity/environment-binding proof of the fix (§0e). What remains genuinely unverified even
+  after all five replays: TRUE multi-connection concurrent claims (one code total under a real race,
+  not just sequential calls), and anything requiring an actual
   `anon`/`authenticated` Postgres role connection to prove RLS denial rather than reading the grants.
