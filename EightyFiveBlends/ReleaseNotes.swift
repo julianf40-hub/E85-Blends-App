@@ -19,14 +19,16 @@ enum ReleaseNotes {
     /// and free of internal engineering/branch/build/QA language — this is shown directly to
     /// users in both AboutView and the What's New popup.
     static let currentHighlights: [String] = [
-        "Stations now opens faster by restoring your recent nearby results on relaunch while fresh station data updates in the background.",
-        "85Blends Pro now includes an interactive Stations map for quickly browsing nearby E85, favorites, directions, and Trip Planner access.",
-        "Pro users can choose between the new Map layout and the Classic Stations layout from Preferences.",
-        "Share any E85 station's name and address directly from Stations — available to Free and Pro users.",
-        "85Blends now opens directly to Stations, putting nearby E85 front and center when you launch the app.",
-        "Improved station map framing and launch behavior make browsing nearby E85 feel smoother and more consistent.",
-        "Fixed Trip Planner directions not reliably opening in your chosen navigation app.",
-        "Fixed sharing a station showing an oversized preview image.",
+        "New Nearby E85 Widget — see nearby E85 stations right from your Home Screen with Small, Medium, and Large layouts.",
+        "Community Ethanol Reports — share the ethanol percentage you find at the pump and see recent community readings at supported stations.",
+        "Smarter Community Price Reporting — reporting an E85 price is now faster and clearer, with improved post-trip prompts and station validation.",
+        "Referral Rewards — invite other drivers to 85Blends Pro with the new Refer & Earn program, working toward a free month of Pro with every 5 successful referrals.",
+        "More Pro Plan Options — 85Blends Pro now offers Monthly, 3 Months, and Annual billing, giving you new ways to save on Pro.",
+        "Improved Pro Experience — a refreshed upgrade and subscriber experience makes managing Pro, restoring purchases, and accessing benefits easier.",
+        "Refreshed More & Settings — important Pro, referral, preference, help, and support options are easier to find.",
+        "Review & Share 85Blends — easier ways to leave feedback on the App Store and share 85Blends with other E85 drivers.",
+        "Widget & UI Polish — improved widget layouts, map presentation, ethanol displays, and how quickly your Pro status updates.",
+        "Bug Fixes & Reliability — improvements across station reporting, referrals, subscriptions, navigation, and general app stability.",
     ]
 
     /// "What's New in X.Y.Z" — the version is read live from the bundle, never hardcoded, so
