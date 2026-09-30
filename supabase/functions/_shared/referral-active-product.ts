@@ -11,11 +11,19 @@
 // while keeping the "which product" logic isolated to the one feature that actually needs it.
 //
 // IMPORTANT RevenueCat API v2 detail: subscription.product_id is RevenueCat's INTERNAL product id,
-// not the App Store product identifier. revenuecat-api.ts resolves that id through the active
-// subscription's entitlement list and annotates the subscription with `store_product_id`. The older
-// embedded-entitlement product shape is retained only as a defensive compatibility fallback for
-// already-covered fixtures; production must never treat the internal product id itself as an Apple
-// product id.
+// not the App Store product identifier. The store-facing identifier lives on the entitlement's
+// embedded product object as product.store_identifier. Referral reward issuance must therefore map
+// the active subscription's internal product id to that store_identifier before comparing against
+// 85Blends' Apple product ids. Failing closed on missing/ambiguous mapping is intentional.
+//
+// FINAL ARCHITECTURE (85Blends 2.4.0, live-validated in Apple Sandbox): this module is referral-api's
+// ONLY client-side attempt at the canonical Apple product id. When it reports `proIsActive: true`
+// with `activeProductId: null`, referral-api passes NULL through unchanged and
+// `private.claim_referral_reward` (migration 20260929230218) resolves the product server-side from
+// this SAME participant's already-processed, same-environment RevenueCat webhook history — restricted
+// to the three shipping products, unexpired evidence only, greatest expiration wins, ties across
+// distinct products fail closed. Nothing here ever reads webhook history, guesses, or promotes the
+// internal id; the database wrapper owns that fallback exclusively.
 //
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-active-product.test.ts).
@@ -35,7 +43,7 @@ export interface ActiveProProductResult {
    *  subscription with the latest expiration, when `proIsActive` is true — mirrors
    *  entitlement.ts's calculatePro tie-break rule exactly. `null` when Pro is inactive OR when the
    *  active subscription's RevenueCat-internal product id cannot be mapped unambiguously to a
-   *  store identifier. Never guesses/falls back to RevenueCat's internal id. */
+   *  `store_identifier`. Never guesses/falls back to RevenueCat's internal id. */
   activeProductId: string | null;
 }
 
@@ -62,21 +70,17 @@ function normalizedNonEmptyString(value: unknown): string | null {
 }
 
 /**
- * RevenueCat API v2's subscription.product_id is an internal RevenueCat id. revenuecat-api.ts
- * resolves that id through the SAME subscription's entitlements endpoint and annotates the
- * subscription with `store_product_id`. Prefer that authoritative mapping.
+ * RevenueCat API v2's subscription.product_id is an internal RevenueCat id. Resolve it to the
+ * store-facing identifier from the embedded products on the SAME qualifying entitlement.
  *
- * The embedded entitlement-product walk is retained as a compatibility fallback for historical
- * fixtures/possible expanded responses, but production correctness no longer depends on the
- * customer-subscriptions response carrying that nested expansion.
+ * There should be exactly one matching product object. If there are zero matches, a malformed
+ * store_identifier, or conflicting duplicate matches, fail closed with null rather than guessing
+ * which Apple subscription should receive a referral Offer Code.
  */
 function subscriptionStoreProductId(
   subscription: RevenueCatSubscription,
   entitlementLookupKey: string,
 ): string | null {
-  const directlyResolved = normalizedNonEmptyString(subscription.store_product_id);
-  if (directlyResolved) return directlyResolved;
-
   const revenueCatProductId = normalizedNonEmptyString(subscription.product_id);
   if (!revenueCatProductId) return null;
 
