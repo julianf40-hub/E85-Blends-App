@@ -24,7 +24,8 @@
 --           subscription wins over a longer expiration on its earlier row; PRODUCT_CHANGE is neutral;
 --           evidence without original_transaction_id never counts; a newer NON-processed
 --           purchase/renewal shadows the older processed one; an exact timestamp tie is won by the
---           invalidating event; a JSON-number expiration works; an owned lifecycle row with an
+--           invalidating event whichever row was received first; a JSON-number expiration works; an
+--           owned lifecycle row with an
 --           unreadable subscription identity shadows anything not strictly newer; an absurdly large
 --           expiration fails closed without raising.
 --   R1-R2   (20260930090000, issues 2+3 combined) the reduction runs over EVERY row of a touched
@@ -32,6 +33,10 @@
 --           participant's identity, still invalidates (it is never skipped in favour of the older
 --           purchase); a subscription whose latest row belongs to another participant yields
 --           nothing for the claimant and nothing for the other participant.
+--   T1-T3   (20260930090000, UNKNOWN state) a TRANSFER whose transferred_from[] names the participant
+--           shadows every subscription not strictly newer than it (the recipient gets nothing from
+--           the stale rows either); a transfer only received, in the other environment, naming an
+--           unrelated user, or older than the subscription's latest row, is neutral.
 --   A1-A9   (20260930090000, issue 3) identity: ledger primary id, original_app_user_id and payload
 --           aliases[] all resolve when bound to the SAME participant in the SAME environment;
 --           multiple own aliases resolve; an alias bound only in the other environment never
@@ -82,6 +87,7 @@ insert into private.referral_rewards (id, referrer_participant_id, milestone_num
   ('bbbbbbbb-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000001', 1, 'PRODUCTION'),
   ('bbbbbbbb-0000-0000-0000-000000000011', 'aaaaaaaa-0000-0000-0000-000000000001', 2, 'SANDBOX'),
   ('bbbbbbbb-0000-0000-0000-000000000002', 'aaaaaaaa-0000-0000-0000-000000000002', 1, 'PRODUCTION'),
+  ('bbbbbbbb-0000-0000-0000-000000000003', 'aaaaaaaa-0000-0000-0000-000000000003', 1, 'PRODUCTION'),  -- P3 claimable too, so "never granted to the other side" assertions are real
   ('bbbbbbbb-0000-0000-0000-000000000004', 'aaaaaaaa-0000-0000-0000-000000000004', 1, 'PRODUCTION');
 
 insert into private.referral_reward_offer_codes (product_id, offer_reference_name, apple_code, apple_expires_at, environment) values
@@ -125,6 +131,15 @@ declare r record; begin
   select * into r from private.claim_referral_reward(p_participant, p_env, p_active, p_product, p_requested);
   return r.outcome || ':' || coalesce(r.product_id, '-');
 end $$;
+-- helper: a RevenueCat TRANSFER as the webhook ledger records it (no app_user_id, no
+-- original_transaction_id; transferred_from[]/transferred_to[] in the payload)
+create or replace function pg_temp.transfer(p_id text, p_env text, p_from text[], p_to text[], p_ts timestamptz)
+returns void language sql as $$
+  insert into private.revenuecat_webhook_events (event_id, event_type, app_user_id, original_app_user_id, environment, event_timestamp, received_at, payload_hash, raw_payload, processing_status, processed_at)
+  values (p_id, 'TRANSFER', null, null, p_env, p_ts, p_ts, md5(p_id),
+          jsonb_build_object('event', jsonb_build_object('type', 'TRANSFER', 'transferred_from', to_jsonb(p_from), 'transferred_to', to_jsonb(p_to))),
+          'processed', p_ts);
+$$;
 
 -- ============================================================================================
 -- F1. Fallback runs ONLY when active Pro = true AND active product = NULL (see U1-U3 for the
@@ -453,6 +468,16 @@ do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
   if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H11: %', o; end if;
 end $$;
 rollback to savepoint f1;
+-- H11b. mirror of H5b: at an identical event_timestamp the refund RECEIVED FIRST still wins over the
+--       renewal received afterwards (delivery order never resurrects a refunded subscription)
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h11c', 'CANCELLATION', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h11b', t0, 'CUSTOMER_SUPPORT', null, null, 'processed', t0 + interval '1 second');
+  perform pg_temp.evt_sub('e_h11d', 'RENEWAL',      'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h11b', t0, null, null, null, 'processed', t0 + interval '2 seconds');
+  perform pg_temp.evt_sub('e_h11e', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(25), 'otx_h11m', t0 + interval '2 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H11b refund received first lost to the renewal: %', o; end if;
+end $$;
+rollback to savepoint f1;
 -- H12. expiration_at_ms stored as a JSON NUMBER (what RevenueCat actually sends) resolves
 do $$ declare o text; begin
   insert into private.revenuecat_webhook_events (event_id, event_type, app_user_id, environment, event_timestamp, payload_hash, raw_payload, processing_status, processed_at)
@@ -532,9 +557,46 @@ do $$ declare o text; o3 text; t0 timestamptz := now() - interval '10 days'; beg
   perform pg_temp.evt_sub('e_r2d', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(25), 'otx_r2m', t0 + interval '3 days');
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'R2b: %', o; end if;
-  select r.outcome || ':' || coalesce(r.product_id, '-') into o3
-  from private.claim_referral_reward('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null) r;
-  if o3 like 'claimed:%' then raise exception 'R2c P3 was granted: %', o3; end if;
+  o3 := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null);
+  if o3 <> 'legacy_or_unsupported_product_active:-' then raise exception 'R2c P3 was granted: %', o3; end if;
+end $$;
+rollback to savepoint f1;
+
+-- ============================================================================================
+-- T. (issue 2, UNKNOWN state) a TRANSFER away from the participant shadows every subscription not
+--    strictly newer than it; a transfer the participant is not the source of is neutral
+-- ============================================================================================
+-- T1. annual purchased, then transferred away, then a monthly bought: the transferred annual must
+--     not resolve; without the monthly the claim fails closed; the other participant gets nothing
+do $$ declare o text; o3 text; t0 timestamptz := now() - interval '30 days'; begin
+  perform pg_temp.evt_sub('e_t1a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_t1', t0);
+  perform pg_temp.transfer('e_t1b', 'PRODUCTION', array['rc_p1'], array['rc_p3'], t0 + interval '10 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'T1a transferred-away annual resolved: %', o; end if;
+  perform pg_temp.evt_sub('e_t1c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_t1m', t0 + interval '20 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'T1b: %', o; end if;
+  o3 := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null);
+  if o3 <> 'legacy_or_unsupported_product_active:-' then raise exception 'T1c transfer recipient granted from stale rows: %', o3; end if;
+end $$;
+rollback to savepoint f1;
+-- T2. a transfer the participant only RECEIVES, or one in the other environment, or one naming an
+--     unrelated user, does not shadow the participant's own evidence
+do $$ declare o text; t0 timestamptz := now() - interval '30 days'; begin
+  perform pg_temp.evt_sub('e_t2a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_t2', t0);
+  perform pg_temp.transfer('e_t2b', 'PRODUCTION', array['rc_p3'],    array['rc_p1'],      t0 + interval '10 days');
+  perform pg_temp.transfer('e_t2c', 'SANDBOX',    array['rc_p1_sb'], array['rc_other'],   t0 + interval '11 days');
+  perform pg_temp.transfer('e_t2d', 'PRODUCTION', array['rc_other'], array['rc_other_2'], t0 + interval '12 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.annual' then raise exception 'T2: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- T3. a transfer away that is OLDER than the subscription's latest row shadows nothing
+do $$ declare o text; t0 timestamptz := now() - interval '30 days'; begin
+  perform pg_temp.transfer('e_t3a', 'PRODUCTION', array['rc_p1'], array['rc_p3'], t0);
+  perform pg_temp.evt_sub('e_t3b', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.threemonth', pg_temp.future_ms(80), 'otx_t3', t0 + interval '5 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.threemonth' then raise exception 'T3: %', o; end if;
 end $$;
 rollback to savepoint f1;
 
@@ -588,9 +650,8 @@ do $$ declare o text; o3 text; begin
   perform pg_temp.evt_sub('e_a6a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a6a', now() - interval '1 day', null, array['rc_p1', 'rc_p3']);
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'A6a ambiguous event resolved for P1: %', o; end if;
-  select r.outcome || ':' || coalesce(r.product_id, '-') into o3
-  from private.claim_referral_reward('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null) r;
-  if o3 like 'claimed:%' then raise exception 'A6a ambiguous event resolved for P3: %', o3; end if;
+  o3 := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null);
+  if o3 <> 'legacy_or_unsupported_product_active:-' then raise exception 'A6a ambiguous event resolved for P3: %', o3; end if;
 end $$;
 rollback to savepoint a1;
 do $$ declare o text; begin
@@ -791,5 +852,5 @@ do $$ declare c1 text; rs text; cs text; o text; begin
 end $$;
 rollback to savepoint f1;
 
-\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, U1-U3, H1-H14, R1-R2, A1-A9, S1-S8, W1-W6)'
+\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, U1-U3, H1-H14, R1-R2, T1-T3, A1-A9, S1-S8, W1-W6)'
 rollback;

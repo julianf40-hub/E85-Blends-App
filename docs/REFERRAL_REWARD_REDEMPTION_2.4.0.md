@@ -321,8 +321,9 @@ level — see §11) plus the new Node-testable guard file.
                       INITIAL_PURCHASE/RENEWAL/UNCANCELLATION/non-refund CANCELLATION with an
                       unexpired expiration_at_ms and a shipping product is evidence; a latest
                       EXPIRATION or CUSTOMER_SUPPORT CANCELLATION (refund) invalidates that
-                      subscription; events with ambiguous ownership (an identity bound to
-                      another participant) are excluded; greatest expiration wins across
+                      subscription; a TRANSFER away or an unreadable row shadows anything not
+                      strictly newer; a winning row with ambiguous ownership (an identity bound
+                      to another participant) yields nothing; greatest expiration wins across
                       subscriptions; a cross-product tie fails closed (NULL)
                     - a resolved-but-unsupported product (legacy quarterly) never enters the
                       fallback: it is passed through untouched and fails closed in the core
@@ -372,14 +373,17 @@ identifier. Ownership is split in exactly two places and nowhere else:
    fail-closed rule as `process_referral_subscription_event`). Lifecycle rows (`INITIAL_PURCHASE`/
    `RENEWAL`/`CANCELLATION`/`UNCANCELLATION`/`EXPIRATION`) of every subscription the participant has
    touched are reduced — over all of that subscription's rows, whoever each row belongs to — to the
-   latest one (`original_transaction_id`, ordered by `event_timestamp`, `received_at`, invalidating
-   event first on an exact tie, `event_id`); a subscription is evidence only when that latest row is
+   latest one (`original_transaction_id`, ordered by `event_timestamp`, invalidating event first on
+   an identical timestamp, `received_at`, `event_id`); a subscription is evidence only when that latest row is
    the participant's own and unambiguous, is `processed`, is an
    `INITIAL_PURCHASE`/`RENEWAL`/`UNCANCELLATION`/non-`CUSTOMER_SUPPORT` `CANCELLATION`, names a
    supported shipping product and has `expiration_at_ms` in the future — a latest `EXPIRATION` or
    `CUSTOMER_SUPPORT` `CANCELLATION` (refund) invalidates it whatever its earlier rows advertised,
-   and an owned lifecycle row whose subscription identity cannot be read shadows every subscription
-   not strictly newer than it.
+   and an owned row in UNKNOWN state — a lifecycle row whose subscription identity cannot be read,
+   or a `TRANSFER` whose `transferred_from[]` names the participant — shadows every subscription not
+   strictly newer than it. The fallback reads its fields from `raw_payload`; any future
+   `raw_payload` retention job must first persist `original_transaction_id`, `product_id`,
+   `expiration_at_ms`, `cancel_reason` and `aliases[]` in normalized columns.
    Across subscriptions the greatest expiration wins; if it is shared by more than one distinct
    product the fallback yields NULL and the core function fails closed
    (`legacy_or_unsupported_product_active`). The fresh RevenueCat lookup must already have said Pro is

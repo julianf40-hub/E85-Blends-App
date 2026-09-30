@@ -20,10 +20,10 @@
 --      any expiration is compared. The subscription identity is event.original_transaction_id: the
 --      same key private.process_referral_subscription_event already uses to match a refund back to
 --      the purchase it reverses. Lifecycle events considered for ordering are INITIAL_PURCHASE,
---      RENEWAL, CANCELLATION, UNCANCELLATION and EXPIRATION, ordered by event_timestamp, then
---      received_at, then (on an exact tie) an invalidating event before an evidence event, then
---      event_id (deterministic; RevenueCat event ids are not chronological, so they are only the
---      final tie-break). The reduction runs over EVERY same-environment lifecycle row of a
+--      RENEWAL, CANCELLATION, UNCANCELLATION and EXPIRATION, ordered by event_timestamp, then (on an
+--      identical event timestamp) an invalidating event before an evidence event, then received_at,
+--      then event_id (deterministic; RevenueCat event ids are not chronological, so they are only
+--      the final tie-break). The reduction runs over EVERY same-environment lifecycle row of a
 --      subscription the participant has touched — whoever the individual rows belong to — so an
 --      invalidating row can never be skipped because of its own identity shape. A subscription
 --      contributes evidence only when its latest lifecycle row (a) belongs to this participant and
@@ -34,22 +34,34 @@
 --      support-issued refund — exactly the signal isReferralRefundReversalEvent treats as a refund),
 --      invalidates that subscription entirely, whatever expiration its earlier rows advertised. A
 --      latest row that is not `processed`, or that belongs to someone else, or that is ambiguous,
---      contributes nothing (fail closed until the next processed event). A lifecycle row owned by
---      the participant whose subscription identity cannot be read (no original_transaction_id, or
---      a nulled raw_payload) is UNKNOWN state: any subscription whose latest row is not strictly
---      newer than it contributes nothing. Every other event type (PRODUCT_CHANGE, BILLING_ISSUE,
---      TRANSFER, TEST, REFUND_REVERSED, ...) is neither evidence nor invalidation — unchanged from
+--      contributes nothing (fail closed until the next processed event).
+--      UNKNOWN STATE: two kinds of row owned by the participant carry no subscription identity and
+--      are treated as "something changed that this history cannot attribute": a lifecycle row
+--      whose original_transaction_id cannot be read (absent, or a nulled raw_payload), and a
+--      TRANSFER row whose payload transferred_from[] names one of the participant's identities
+--      (RevenueCat moved that user's subscriptions to another App User ID). Any subscription whose
+--      latest row is not strictly newer than the newest such row contributes nothing. Every other
+--      event type (PRODUCT_CHANGE, BILLING_ISSUE, TEST, REFUND_REVERSED, a TRANSFER the participant
+--      is not the source of, ...) is neither evidence nor invalidation — unchanged from
 --      20260929230218, which ignored them as well; a product change therefore keeps resolving the
 --      product RevenueCat last recorded a purchase/renewal for.
+--      Retention precondition: this fallback reads original_transaction_id, product_id,
+--      expiration_at_ms, cancel_reason and aliases[] from raw_payload. If a raw_payload retention
+--      job is ever introduced (the ledger's own column comment anticipates one), those fields must
+--      first be persisted in normalized columns, otherwise a nulled invalidating row that was
+--      attributable only through aliases[] becomes invisible to this reduction.
 --
 --   3. IDENTITY — an event belongs to the claiming participant when ANY of its identities (the
---      ledger's app_user_id, its original_app_user_id, or the payload's event.aliases[], each
---      trimmed exactly as the webhook parser trims them) is one of that participant's own
---      private.referral_participant_aliases rows in the SAME environment as the claim. A row whose
---      identities ALSO map to a different participant in that environment has ambiguous ownership
---      and never yields evidence — the same zero/one/many fail-closed rule
+--      ledger's app_user_id, its original_app_user_id, or the payload's event.aliases[], compared
+--      after ASCII-space trimming with btrim, the same normalization the alias table stores) is one
+--      of that participant's own private.referral_participant_aliases rows in the SAME environment
+--      as the claim. A row whose identities ALSO map to a different participant in that environment
+--      has ambiguous ownership and never yields evidence — the same zero/one/many fail-closed rule
 --      process_referral_subscription_event applies to its alias set. Cross-environment aliases never
---      match (alias rows and events are both bound to p_environment).
+--      match (alias rows and events are both bound to p_environment). Note: the webhook parser's
+--      JavaScript trim() also strips non-ASCII whitespace; an identity padded that way is simply not
+--      recognised here (never a grant to someone else — the row would still be judged only against
+--      the identities that do normalize).
 --
 -- UNCHANGED: the three-product allowlist, unexpired evidence only, greatest expiration wins ACROSS
 -- subscriptions, a tie at the greatest expiration across distinct products fails closed (NULL is
@@ -57,6 +69,11 @@
 -- Also hardened in passing: expiration_at_ms must be 1-15 digits and is compared numerically (never
 -- through to_timestamp), so a malformed or absurdly large value fails closed instead of raising or
 -- reading as far-future evidence.
+--
+-- COST: two passes over this environment's lifecycle rows (one cheap identity pre-filter, one
+-- subscription-id filter); the per-row identity-set aggregation runs only for the winning rows.
+-- Linear in ledger size; adequate for the current ledger, and a follow-up may add expression
+-- indexes on original_app_user_id / the payload aliases without changing this function.
 --
 -- REPLAY SAFETY: a single `create or replace function` on the existing signature, guarded by an
 -- existence check on the core function; re-running is a no-op. No table data is read or written
@@ -111,49 +128,53 @@ begin
       and a.environment = p_environment;
 
     if v_participant_aliases is not null then
-      with lifecycle as (
-        -- Every lifecycle row in this environment, with its subscription identity, its full
-        -- (trimmed) identity set and whether it is an invalidating state.
+      with owned_rows as (
+        -- Pass 1 (cheap): rows carrying one of the participant's identities — lifecycle rows via
+        -- app_user_id / original_app_user_id / payload aliases[], TRANSFER rows via payload
+        -- transferred_from[]. Only the subscription identity (or its absence) is kept here.
         select
-          e.event_id,
-          e.event_type,
           e.event_timestamp,
           e.received_at,
-          e.processing_status,
-          nullif(btrim(e.raw_payload #>> '{event,original_transaction_id}'), '') as original_transaction_id,
-          e.raw_payload #>> '{event,product_id}' as evidence_product_id,
-          btrim(e.raw_payload #>> '{event,expiration_at_ms}') as evidence_expiration_at_ms,
           case
-            when e.event_type = 'EXPIRATION' then true
-            when e.event_type = 'CANCELLATION'
-             and btrim(e.raw_payload #>> '{event,cancel_reason}') = 'CUSTOMER_SUPPORT' then true
-            else false
-          end as invalidating,
-          ids.identity_set
+            when e.event_type = 'TRANSFER' then null
+            else nullif(btrim(e.raw_payload #>> '{event,original_transaction_id}'), '')
+          end as original_transaction_id
         from private.revenuecat_webhook_events e
-        cross join lateral (
-          select array_agg(distinct btrim(i.identity)) as identity_set
-          from (
-            select e.app_user_id as identity
-            union all
-            select e.original_app_user_id
-            union all
-            select x.value #>> '{}'
-            from jsonb_array_elements(
-              case when jsonb_typeof(e.raw_payload #> '{event,aliases}') = 'array'
-                   then e.raw_payload #> '{event,aliases}'
-                   else '[]'::jsonb
-              end
-            ) as x
-            where jsonb_typeof(x.value) = 'string'
-          ) as i
-          where nullif(btrim(i.identity), '') is not null
-        ) as ids
         where e.environment = p_environment
-          and e.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION', 'EXPIRATION')
-      ),
-      owned_rows as (
-        select l.* from lifecycle l where l.identity_set && v_participant_aliases
+          and (
+            (
+              e.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION', 'EXPIRATION')
+              and (
+                btrim(e.app_user_id) = any(v_participant_aliases)
+                or btrim(e.original_app_user_id) = any(v_participant_aliases)
+                or exists (
+                  select 1
+                  from jsonb_array_elements(
+                    case when jsonb_typeof(e.raw_payload #> '{event,aliases}') = 'array'
+                         then e.raw_payload #> '{event,aliases}'
+                         else '[]'::jsonb
+                    end
+                  ) as x
+                  where jsonb_typeof(x.value) = 'string'
+                    and btrim(x.value #>> '{}') = any(v_participant_aliases)
+                )
+              )
+            )
+            or (
+              e.event_type = 'TRANSFER'
+              and exists (
+                select 1
+                from jsonb_array_elements(
+                  case when jsonb_typeof(e.raw_payload #> '{event,transferred_from}') = 'array'
+                       then e.raw_payload #> '{event,transferred_from}'
+                       else '[]'::jsonb
+                  end
+                ) as x
+                where jsonb_typeof(x.value) = 'string'
+                  and btrim(x.value #>> '{}') = any(v_participant_aliases)
+              )
+            )
+          )
       ),
       -- Subscriptions this participant has touched at least once.
       touched as (
@@ -161,7 +182,7 @@ begin
         from owned_rows o
         where o.original_transaction_id is not null
       ),
-      -- The newest owned lifecycle row whose subscription identity is unreadable (UNKNOWN state).
+      -- The newest owned row in UNKNOWN state (unreadable subscription identity, or a transfer away).
       unknown_newest as (
         select o.event_timestamp, o.received_at
         from owned_rows o
@@ -169,27 +190,78 @@ begin
         order by o.event_timestamp desc, o.received_at desc
         limit 1
       ),
-      -- (2) The most recent lifecycle row per touched subscription, over ALL of its rows.
+      -- Pass 2: EVERY lifecycle row of a touched subscription, whoever it belongs to.
+      lifecycle as (
+        select
+          e.event_id,
+          e.event_type,
+          e.event_timestamp,
+          e.received_at,
+          e.processing_status,
+          e.app_user_id,
+          e.original_app_user_id,
+          e.raw_payload,
+          k.original_transaction_id,
+          case
+            when e.event_type = 'EXPIRATION' then true
+            when e.event_type = 'CANCELLATION'
+             and btrim(e.raw_payload #>> '{event,cancel_reason}') = 'CUSTOMER_SUPPORT' then true
+            else false
+          end as invalidating
+        from private.revenuecat_webhook_events e
+        cross join lateral (
+          select nullif(btrim(e.raw_payload #>> '{event,original_transaction_id}'), '') as original_transaction_id
+        ) as k
+        where e.environment = p_environment
+          and e.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION', 'EXPIRATION')
+          and k.original_transaction_id in (select t.original_transaction_id from touched t)
+      ),
+      -- (2) The most recent lifecycle row per touched subscription is its current state.
       latest as (
         select distinct on (l.original_transaction_id) l.*
         from lifecycle l
-        where l.original_transaction_id in (select t.original_transaction_id from touched t)
         order by
           l.original_transaction_id,
           l.event_timestamp desc,
-          l.received_at desc,
           case when l.invalidating then 0 else 1 end,
+          l.received_at desc,
           l.event_id desc
+      ),
+      -- Ownership and ambiguity are judged on the winning row only (identity set built here, for
+      -- these few rows, exactly as pass 1 matched them).
+      latest_identified as (
+        select
+          l.*,
+          ids.identity_set
+        from latest l
+        cross join lateral (
+          select array_agg(distinct btrim(i.identity)) as identity_set
+          from (
+            select l.app_user_id as identity
+            union all
+            select l.original_app_user_id
+            union all
+            select x.value #>> '{}'
+            from jsonb_array_elements(
+              case when jsonb_typeof(l.raw_payload #> '{event,aliases}') = 'array'
+                   then l.raw_payload #> '{event,aliases}'
+                   else '[]'::jsonb
+              end
+            ) as x
+            where jsonb_typeof(x.value) = 'string'
+          ) as i
+          where nullif(btrim(i.identity), '') is not null
+        ) as ids
       ),
       evidence as (
         select
-          l.evidence_product_id,
+          l.raw_payload #>> '{event,product_id}' as evidence_product_id,
           -- Epoch milliseconds are 13 digits today (14 from the year 2286); anything wider is
           -- malformed and must fail closed rather than read as "far future" evidence.
-          case when l.evidence_expiration_at_ms ~ '^[0-9]{1,15}$'
-               then (l.evidence_expiration_at_ms)::numeric
+          case when btrim(l.raw_payload #>> '{event,expiration_at_ms}') ~ '^[0-9]{1,15}$'
+               then (btrim(l.raw_payload #>> '{event,expiration_at_ms}'))::numeric
           end as evidence_expiration_at_ms
-        from latest l
+        from latest_identified l
         where l.identity_set && v_participant_aliases
           and not exists (
             select 1
@@ -206,7 +278,7 @@ begin
           and l.processing_status = 'processed'
           and not l.invalidating
           and l.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION')
-          and l.evidence_product_id = any(v_supported_products)
+          and (l.raw_payload #>> '{event,product_id}') = any(v_supported_products)
       ),
       live_evidence as (
         select ev.evidence_product_id, ev.evidence_expiration_at_ms
@@ -248,8 +320,8 @@ comment on function private.claim_referral_reward(uuid, text, boolean, text, tex
   'when Pro is active and the caller could not resolve the Apple product (NULL), resolves it from this '
   'participant''s own same-environment RevenueCat webhook history reduced to the latest lifecycle state per '
   'subscription (original_transaction_id), matching any identity bound to the participant, failing closed on '
-  'refund/expiration, unreadable identity, ambiguous ownership, unsupported products or cross-product ties. '
-  'See 20260930090000_referral_reward_active_product_fallback_hardening.sql.';
+  'refund/expiration, transfer-away, unreadable identity, ambiguous ownership, unsupported products or '
+  'cross-product ties. See 20260930090000_referral_reward_active_product_fallback_hardening.sql.';
 
 revoke all on function private.claim_referral_reward(uuid, text, boolean, text, text) from public, anon, authenticated;
 grant execute on function private.claim_referral_reward(uuid, text, boolean, text, text) to postgres, service_role;
