@@ -19,11 +19,14 @@
 // FINAL ARCHITECTURE (85Blends 2.4.0, live-validated in Apple Sandbox): this module is referral-api's
 // ONLY client-side attempt at the canonical Apple product id. When it reports `proIsActive: true`
 // with `activeProductId: null`, referral-api passes NULL through unchanged and
-// `private.claim_referral_reward` (migration 20260929230218) resolves the product server-side from
-// this SAME participant's already-processed, same-environment RevenueCat webhook history — restricted
-// to the three shipping products, unexpired evidence only, greatest expiration wins, ties across
-// distinct products fail closed. Nothing here ever reads webhook history, guesses, or promotes the
-// internal id; the database wrapper owns that fallback exclusively.
+// `private.claim_referral_reward` (migrations 20260929230218 + 20260930090000) resolves the product
+// server-side — only for that NULL — from this SAME participant's same-environment RevenueCat webhook
+// history reduced to the latest lifecycle state per subscription (original_transaction_id; a
+// CUSTOMER_SUPPORT cancellation or EXPIRATION invalidates), matched through every alias bound to the
+// participant (ambiguous ownership excluded), restricted to the three shipping products, unexpired
+// evidence only, greatest expiration wins, ties across distinct products fail closed. A resolved but
+// unsupported product never enters that fallback. Nothing here ever reads webhook history, guesses,
+// or promotes the internal id; the database wrapper owns that fallback exclusively.
 //
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-active-product.test.ts).

@@ -312,12 +312,21 @@ level — see §11) plus the new Node-testable guard file.
                                    │  RevenueCat's internal product_id is never promoted.
                                    │  Unresolved/ambiguous -> activeProductId = NULL.
                                    ▼
-                    private.claim_referral_reward(...)   [wrapper, 20260929230218]
-                    - ONLY if active Pro = true AND product NULL/unsupported: resolve the
-                      product from this SAME participant's aliases, SAME environment,
-                      processed RevenueCat webhook events with an unexpired
-                      expiration_at_ms, restricted to the three shipping products;
-                      greatest expiration wins; a cross-product tie fails closed (NULL)
+                    private.claim_referral_reward(...)   [wrapper, 20260929230218 + 20260930090000]
+                    - ONLY if active Pro = true AND product NULL (unresolved): resolve the
+                      product from this SAME participant's own aliases (matched against the
+                      ledger app_user_id, original_app_user_id or payload aliases[]), SAME
+                      environment, RevenueCat webhook history reduced to the LATEST lifecycle
+                      event per subscription (original_transaction_id): a latest processed
+                      INITIAL_PURCHASE/RENEWAL/UNCANCELLATION/non-refund CANCELLATION with an
+                      unexpired expiration_at_ms and a shipping product is evidence; a latest
+                      EXPIRATION or CUSTOMER_SUPPORT CANCELLATION (refund) invalidates that
+                      subscription; a TRANSFER away or an unreadable row shadows anything not
+                      strictly newer; a winning row with ambiguous ownership (an identity bound
+                      to another participant) yields nothing; greatest expiration wins across
+                      subscriptions; a cross-product tie fails closed (NULL)
+                    - a resolved-but-unsupported product (legacy quarterly) never enters the
+                      fallback: it is passed through untouched and fails closed in the core
                     - never invents Pro status; then calls
                     private.claim_referral_reward_core(...) [the reviewed claim, unchanged]
                     - locks the oldest 'earned' reward
@@ -352,13 +361,32 @@ identifier. Ownership is split in exactly two places and nowhere else:
    missing, malformed or ambiguous mapping, never substitutes the internal id, and never reads
    webhook history itself. The `null` is passed to the database unchanged.
 2. `private.claim_referral_reward` (the wrapper installed by
-   `20260929230218_referral_reward_active_product_webhook_fallback.sql`) is the SOLE fallback: only
-   when `p_active_pro_is_active = true` and the product is NULL/unsupported does it look at this same
-   participant's own `private.referral_participant_aliases` rows in the same `p_environment`, joined
-   to `private.revenuecat_webhook_events` rows with `processing_status = 'processed'`, event types
-   `INITIAL_PURCHASE`/`RENEWAL`/`CANCELLATION`/`UNCANCELLATION`, a supported shipping product id, and
-   `expiration_at_ms` in the future. The greatest expiration wins; if the greatest expiration is shared
-   by more than one distinct product the fallback yields NULL and the core function fails closed
+   `20260929230218_referral_reward_active_product_webhook_fallback.sql`, body replaced by
+   `20260930090000_referral_reward_active_product_fallback_hardening.sql`) is the SOLE fallback: only
+   when `p_active_pro_is_active = true` and the product is **NULL** (unresolved) does it look at
+   webhook history. A resolved-but-unsupported product (e.g. the legacy quarterly plan) is passed to
+   the core untouched and fails closed there. The fallback takes this same participant's own
+   `private.referral_participant_aliases` rows in the same `p_environment` and selects the
+   `private.revenuecat_webhook_events` rows in that environment whose ledger `app_user_id`,
+   `original_app_user_id` or payload `event.aliases[]` carries one of those aliases — excluding any
+   event whose identities also belong to a different participant (ambiguous ownership, the same
+   fail-closed rule as `process_referral_subscription_event`). Lifecycle rows (`INITIAL_PURCHASE`/
+   `RENEWAL`/`CANCELLATION`/`UNCANCELLATION`/`EXPIRATION`) of every subscription the participant has
+   touched are reduced — over all of that subscription's rows, whoever each row belongs to — to the
+   latest one (`original_transaction_id`, ordered by `event_timestamp`, invalidating event first on
+   an identical timestamp, `received_at`, `event_id`); a subscription is evidence only when that latest row is
+   the participant's own and unambiguous, is `processed`, is an
+   `INITIAL_PURCHASE`/`RENEWAL`/`UNCANCELLATION`/non-`CUSTOMER_SUPPORT` `CANCELLATION`, names a
+   supported shipping product and has `expiration_at_ms` in the future — a latest `EXPIRATION` or
+   `CUSTOMER_SUPPORT` `CANCELLATION` (refund) invalidates it whatever its earlier rows advertised,
+   and an owned row in UNKNOWN state — a lifecycle row whose subscription identity cannot be read,
+   or a `TRANSFER` whose `transferred_from[]` names the participant (in this environment, or with no
+   environment recorded, which the webhook applies to both) — shadows every subscription not
+   strictly newer than it. The fallback reads its fields from `raw_payload`; any future
+   `raw_payload` retention job must first persist `original_transaction_id`, `product_id`,
+   `expiration_at_ms`, `cancel_reason` and `aliases[]` in normalized columns.
+   Across subscriptions the greatest expiration wins; if it is shared by more than one distinct
+   product the fallback yields NULL and the core function fails closed
    (`legacy_or_unsupported_product_active`). The fresh RevenueCat lookup must already have said Pro is
    active — the fallback supplies only the missing Apple product identity, never Pro status.
 
@@ -527,6 +555,18 @@ New/changed objects:
   (`pg_catalog, private`), not `SECURITY DEFINER`, execute revoked from `public`/`anon`/
   `authenticated` and granted to `postgres`/`service_role` for both functions. No table changes.
   Covered by `supabase/tests/referral_reward_active_product_fallback.test.sql`.
+- **`20260930090000_referral_reward_active_product_fallback_hardening.sql` (NOT yet applied to
+  production):** `create or replace` of the wrapper body only (same signature, guarded by a
+  `to_regprocedure` check on the core; replaying it is a no-op). Closes the three gaps found in the
+  final PR #113 review: the fallback now runs only for a NULL (unresolved) product, never for a
+  resolved-but-unsupported one; evidence is reduced to the latest lifecycle event per subscription
+  (`original_transaction_id`) so a refunded (`CUSTOMER_SUPPORT` cancellation) or expired
+  subscription can no longer outrank a live one; identities are matched through every alias bound
+  to the participant (ledger `app_user_id`, `original_app_user_id`, payload `aliases[]`) with
+  ambiguous ownership excluded. Core function, allowlist, grants, `search_path` and the
+  non-`SECURITY DEFINER` posture are unchanged. Covered by the U/H/R/A/S8 scenario groups of the
+  same test file. Also updates the two fallback comments in `_shared/referral-active-product.ts`
+  and `referral-api/index.ts` (comment-only, no runtime change).
 - `private.fulfill_referral_reward_offer_code(...)` (new function, hardened again in place — same
   7-param signature) — the one atomic fulfillment operation, now requiring `status = 'issued'` and
   raising on an impossible partial update instead of returning a typed failure (see §5/§7b/§7c).
@@ -920,11 +960,16 @@ issued" preview is corrected to `earnedMonthsAvailable: 0` (the real post-claim 
 `supabase/migrations/20260928010000_referral_deferred_paid_qualification_origin.sql` (new, fourth
 hardening pass — `private.referral_deferred_paid_origins` + `private.record_referral_deferred_paid_origin`,
 see §0d/§7), `supabase/migrations/20260929230218_referral_reward_active_product_webhook_fallback.sql`
-(new — `claim_referral_reward` wrapper + `claim_referral_reward_core`, see §1/§2).
+(new — `claim_referral_reward` wrapper + `claim_referral_reward_core`, see §1/§2),
+`supabase/migrations/20260930090000_referral_reward_active_product_fallback_hardening.sql` (new —
+wrapper body hardening: NULL-only gating, per-subscription state reduction, full alias matching; see
+§1/§2; not yet applied to production).
 
 **SQL regression tests (local replay only):** `supabase/tests/referral_reward_active_product_fallback.test.sql`
-(+ `supabase/tests/README.md`) — fallback gating/environment/alias/product/expiration/tie scenarios,
-the claim state machine, and webhook fulfillment; see the file header for the scenario list.
+(+ `supabase/tests/README.md`) — fallback gating/environment/alias/product/expiration/tie scenarios
+(F), resolved-unsupported-product pass-through (U), subscription-state reduction incl. refund/
+expiration/ordering (H), alias ownership and isolation (A), the claim state machine (S), and webhook
+fulfillment (W); see the file header for the scenario list.
 
 **Edge Functions / shared:**
 `supabase/functions/referral-api/index.ts` (second hardening pass —
@@ -1006,6 +1051,11 @@ untouched — this feature deliberately does not build on it, per its own header
   production migration ledger; the live `claim_referral_reward`, `claim_referral_reward_core`,
   `fulfill_referral_reward_offer_code`, `process_referral_subscription_event` and
   `record_referral_deferred_paid_origin` bodies match this repository's migrations byte-for-byte.
+- `20260930090000_referral_reward_active_product_fallback_hardening.sql` is **not yet applied**: it
+  must be applied as a single-file migration (never `supabase db push`, which would also attempt
+  the deliberately unapplied `20260921000000_promo_campaign_foundation.sql` noted above)
+  before PRODUCTION referral codes are imported. It is independent of
+  the `referral-api` deploy (the function signature is unchanged), so either order works.
 - Steps 1–3 and 11–13 (Apple offers, Sandbox codes, Sandbox end-to-end verification) are done: both
   the Free → `INITIAL_PURCHASE` → Pro → `fulfilled` path and the existing-active-Pro path were
   validated live in Sandbox.
