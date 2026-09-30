@@ -39,10 +39,13 @@
 --      are treated as "something changed that this history cannot attribute": a lifecycle row
 --      whose original_transaction_id cannot be read (absent, or a nulled raw_payload), and a
 --      TRANSFER row whose payload transferred_from[] names one of the participant's identities
---      (RevenueCat moved that user's subscriptions to another App User ID). Any subscription whose
---      latest row is not strictly newer than the newest such row contributes nothing. Every other
---      event type (PRODUCT_CHANGE, BILLING_ISSUE, TEST, REFUND_REVERSED, a TRANSFER the participant
---      is not the source of, ...) is neither evidence nor invalidation — unchanged from
+--      (RevenueCat moved that user's subscriptions to another App User ID) — in this environment,
+--      or with no environment recorded at all (RevenueCat may omit it on a TRANSFER; the webhook
+--      applies such a transfer to both environments, and so does this shadow). Any subscription
+--      whose latest row is not strictly newer than the newest such row contributes nothing. Every
+--      other event type (PRODUCT_CHANGE, BILLING_ISSUE, TEST, REFUND_REVERSED, a TRANSFER the
+--      participant is not the source of or that is tagged with the other environment, ...) is
+--      neither evidence nor invalidation — unchanged from
 --      20260929230218, which ignored them as well; a product change therefore keeps resolving the
 --      product RevenueCat last recorded a purchase/renewal for.
 --      Retention precondition: this fallback reads original_transaction_id, product_id,
@@ -140,10 +143,10 @@ begin
             else nullif(btrim(e.raw_payload #>> '{event,original_transaction_id}'), '')
           end as original_transaction_id
         from private.revenuecat_webhook_events e
-        where e.environment = p_environment
-          and (
+        where (
             (
-              e.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION', 'EXPIRATION')
+              e.environment = p_environment
+              and e.event_type in ('INITIAL_PURCHASE', 'RENEWAL', 'CANCELLATION', 'UNCANCELLATION', 'EXPIRATION')
               and (
                 btrim(e.app_user_id) = any(v_participant_aliases)
                 or btrim(e.original_app_user_id) = any(v_participant_aliases)
@@ -161,7 +164,10 @@ begin
               )
             )
             or (
+              -- A TRANSFER is only ever a shadow, never evidence. RevenueCat may omit environment
+              -- on it; the webhook applies such a transfer to BOTH environments, and so does this.
               e.event_type = 'TRANSFER'
+              and (e.environment = p_environment or e.environment is null)
               and exists (
                 select 1
                 from jsonb_array_elements(

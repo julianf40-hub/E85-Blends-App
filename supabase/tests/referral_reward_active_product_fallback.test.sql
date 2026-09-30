@@ -33,10 +33,11 @@
 --           participant's identity, still invalidates (it is never skipped in favour of the older
 --           purchase); a subscription whose latest row belongs to another participant yields
 --           nothing for the claimant and nothing for the other participant.
---   T1-T3   (20260930090000, UNKNOWN state) a TRANSFER whose transferred_from[] names the participant
+--   T1-T4   (20260930090000, UNKNOWN state) a TRANSFER whose transferred_from[] names the participant
 --           shadows every subscription not strictly newer than it (the recipient gets nothing from
---           the stale rows either); a transfer only received, in the other environment, naming an
---           unrelated user, or older than the subscription's latest row, is neutral.
+--           the stale rows either); a transfer only received, tagged with the other environment,
+--           naming an unrelated user, or older than the subscription's latest row, is neutral; a
+--           transfer recorded without an environment shadows in both environments.
 --   A1-A9   (20260930090000, issue 3) identity: ledger primary id, original_app_user_id and payload
 --           aliases[] all resolve when bound to the SAME participant in the SAME environment;
 --           multiple own aliases resolve; an alias bound only in the other environment never
@@ -429,7 +430,13 @@ do $$ declare o text; t0 timestamptz := now() - interval '40 days'; begin
   perform pg_temp.evt_sub('e_h8b', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8', t0 + interval '30 days');
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H8a earlier longer-expiration row won: %', o; end if;
-  perform pg_temp.evt_sub('e_h8c', 'PRODUCT_CHANGE',   'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8', t0 + interval '31 days');
+end $$;
+rollback to savepoint f1;
+do $$ declare o text; t0 timestamptz := now() - interval '40 days'; begin
+  -- PRODUCT_CHANGE as the newest row is neutral (fresh claim: nothing issued yet in this block)
+  perform pg_temp.evt_sub('e_h8f', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual',  pg_temp.future_ms(300), 'otx_h8p', t0);
+  perform pg_temp.evt_sub('e_h8g', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8p', t0 + interval '30 days');
+  perform pg_temp.evt_sub('e_h8h', 'PRODUCT_CHANGE',   'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8p', t0 + interval '31 days');
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H8b PRODUCT_CHANGE was not neutral: %', o; end if;
 end $$;
@@ -599,6 +606,19 @@ do $$ declare o text; t0 timestamptz := now() - interval '30 days'; begin
   if o <> 'claimed:com.85blends.subscription.threemonth' then raise exception 'T3: %', o; end if;
 end $$;
 rollback to savepoint f1;
+-- T4. a transfer away recorded WITHOUT an environment (RevenueCat may omit it; the webhook applies
+--     it to both environments) shadows in both environments
+do $$ declare o text; t0 timestamptz := now() - interval '30 days'; begin
+  perform pg_temp.evt_sub('e_t4a', 'INITIAL_PURCHASE', 'rc_p1',    'PRODUCTION', 'com.85blends.subscription.annual',  pg_temp.future_ms(300), 'otx_t4',  t0);
+  perform pg_temp.evt_sub('e_t4b', 'INITIAL_PURCHASE', 'rc_p1_sb', 'SANDBOX',    'com.85blends.subscription.monthly', pg_temp.future_ms(30),  'otx_t4s', t0);
+  perform pg_temp.transfer('e_t4c', null, array['rc_p1'],    array['rc_p3'],   t0 + interval '10 days');
+  perform pg_temp.transfer('e_t4d', null, array['rc_p1_sb'], array['rc_other'], t0 + interval '10 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'T4a environment-less transfer ignored (PRODUCTION): %', o; end if;
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'SANDBOX', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'T4b environment-less transfer ignored (SANDBOX): %', o; end if;
+end $$;
+rollback to savepoint f1;
 
 -- ============================================================================================
 -- A. (issue 3) Identity: every alias bound to the SAME participant in the SAME environment
@@ -682,6 +702,12 @@ do $$ declare o text; begin
   perform pg_temp.evt_sub('e_a9a', 'INITIAL_PURCHASE', 'rc_new_device', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a9a', now() - interval '1 day', null, array['  rc_p1  ']);
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'A9a padded own alias: %', o; end if;
+end $$;
+rollback to savepoint a1;
+do $$ declare o text; begin
+  -- fresh claim (nothing issued yet): the padded foreign alias makes the annual row ambiguous, so
+  -- only the clean monthly evidence resolves
+  perform pg_temp.evt('e_a9c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
   perform pg_temp.evt_sub('e_a9b', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_a9b', now() - interval '1 day', null, array[' rc_p3 ']);
   o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
   if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'A9b padded foreign alias not detected: %', o; end if;
@@ -750,8 +776,12 @@ do $$ declare c1 text; c2 text; n int; begin
   select count(*) into n from private.referral_reward_offer_codes where status = 'issued' and referrer_participant_id = 'aaaaaaaa-0000-0000-0000-000000000002';
   if n <> 1 then raise exception 'S3 issued count %', n; end if;
   begin
+    -- a second, still-available monthly code (whichever one the claim above did not allocate)
     update private.referral_reward_offer_codes set status = 'issued', referrer_participant_id = 'aaaaaaaa-0000-0000-0000-000000000002', reward_id = 'bbbbbbbb-0000-0000-0000-000000000002', issued_at = now()
-    where apple_code = 'PRODMON2';
+    where apple_code = (select oc.apple_code from private.referral_reward_offer_codes oc
+                        where oc.product_id = 'com.85blends.subscription.monthly' and oc.environment = 'PRODUCTION'
+                          and oc.status = 'available' and oc.apple_code <> c1
+                        order by oc.apple_code limit 1);
     raise exception 'S4: second issued code for the same referrer/environment was allowed';
   exception when unique_violation then null;
   end;
@@ -852,5 +882,5 @@ do $$ declare c1 text; rs text; cs text; o text; begin
 end $$;
 rollback to savepoint f1;
 
-\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, U1-U3, H1-H14, R1-R2, T1-T3, A1-A9, S1-S8, W1-W6)'
+\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, U1-U3, H1-H14, R1-R2, T1-T4, A1-A9, S1-S8, W1-W6)'
 rollback;

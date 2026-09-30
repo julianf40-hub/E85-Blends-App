@@ -380,7 +380,8 @@ identifier. Ownership is split in exactly two places and nowhere else:
    supported shipping product and has `expiration_at_ms` in the future — a latest `EXPIRATION` or
    `CUSTOMER_SUPPORT` `CANCELLATION` (refund) invalidates it whatever its earlier rows advertised,
    and an owned row in UNKNOWN state — a lifecycle row whose subscription identity cannot be read,
-   or a `TRANSFER` whose `transferred_from[]` names the participant — shadows every subscription not
+   or a `TRANSFER` whose `transferred_from[]` names the participant (in this environment, or with no
+   environment recorded, which the webhook applies to both) — shadows every subscription not
    strictly newer than it. The fallback reads its fields from `raw_payload`; any future
    `raw_payload` retention job must first persist `original_transaction_id`, `product_id`,
    `expiration_at_ms`, `cancel_reason` and `aliases[]` in normalized columns.
