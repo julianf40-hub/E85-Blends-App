@@ -370,12 +370,16 @@ identifier. Ownership is split in exactly two places and nowhere else:
    `original_app_user_id` or payload `event.aliases[]` carries one of those aliases — excluding any
    event whose identities also belong to a different participant (ambiguous ownership, the same
    fail-closed rule as `process_referral_subscription_event`). Lifecycle rows (`INITIAL_PURCHASE`/
-   `RENEWAL`/`CANCELLATION`/`UNCANCELLATION`/`EXPIRATION`) are reduced to the latest one per
-   subscription (`original_transaction_id`, ordered by `event_timestamp`, `received_at`, `event_id`);
-   a subscription is evidence only when that latest row is `processed`, is an
+   `RENEWAL`/`CANCELLATION`/`UNCANCELLATION`/`EXPIRATION`) of every subscription the participant has
+   touched are reduced — over all of that subscription's rows, whoever each row belongs to — to the
+   latest one (`original_transaction_id`, ordered by `event_timestamp`, `received_at`, invalidating
+   event first on an exact tie, `event_id`); a subscription is evidence only when that latest row is
+   the participant's own and unambiguous, is `processed`, is an
    `INITIAL_PURCHASE`/`RENEWAL`/`UNCANCELLATION`/non-`CUSTOMER_SUPPORT` `CANCELLATION`, names a
    supported shipping product and has `expiration_at_ms` in the future — a latest `EXPIRATION` or
-   `CUSTOMER_SUPPORT` `CANCELLATION` (refund) invalidates it whatever its earlier rows advertised.
+   `CUSTOMER_SUPPORT` `CANCELLATION` (refund) invalidates it whatever its earlier rows advertised,
+   and an owned lifecycle row whose subscription identity cannot be read shadows every subscription
+   not strictly newer than it.
    Across subscriptions the greatest expiration wins; if it is shared by more than one distinct
    product the fallback yields NULL and the core function fails closed
    (`legacy_or_unsupported_product_active`). The fresh RevenueCat lookup must already have said Pro is
@@ -555,8 +559,9 @@ New/changed objects:
   subscription can no longer outrank a live one; identities are matched through every alias bound
   to the participant (ledger `app_user_id`, `original_app_user_id`, payload `aliases[]`) with
   ambiguous ownership excluded. Core function, allowlist, grants, `search_path` and the
-  non-`SECURITY DEFINER` posture are unchanged. Covered by the U/H/A scenario groups of the same
-  test file.
+  non-`SECURITY DEFINER` posture are unchanged. Covered by the U/H/R/A/S8 scenario groups of the
+  same test file. Also updates the two fallback comments in `_shared/referral-active-product.ts`
+  and `referral-api/index.ts` (comment-only, no runtime change).
 - `private.fulfill_referral_reward_offer_code(...)` (new function, hardened again in place — same
   7-param signature) — the one atomic fulfillment operation, now requiring `status = 'issued'` and
   raising on an impossible partial update instead of returning a typed failure (see §5/§7b/§7c).
