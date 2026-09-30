@@ -20,5 +20,6 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
 ## Files
 
 - `referral_reward_active_product_fallback.test.sql` — `claim_referral_reward` webhook-history
-  fallback (migration `20260929230218`), the reward/code state machine, and
-  `fulfill_referral_reward_offer_code` (see the file header for the full scenario list).
+  fallback (migrations `20260929230218` + `20260930090000`: gating, subscription-state reduction,
+  alias ownership), the reward/code state machine, and `fulfill_referral_reward_offer_code` (see
+  the file header for the full scenario list).

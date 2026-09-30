@@ -3,13 +3,31 @@
 --
 -- WHAT THIS COVERS (every scenario RAISEs on any unexpected outcome; a clean run that reaches the
 -- final \echo line is a full pass):
---   F1-F10  private.claim_referral_reward's webhook-history fallback (migration 20260929230218):
---           gating (active Pro AND NULL/unsupported product only), no-evidence fails closed,
+--   F1-F10  private.claim_referral_reward's webhook-history fallback (migrations 20260929230218 +
+--           20260930090000): gating (active Pro AND NULL product only), no-evidence fails closed,
 --           same-environment only in both directions + alias/event environment binding, processed
 --           events only, event-type restriction, supported-product allowlist (legacy quarterly and
 --           RevenueCat-internal ids never resolve), expired/malformed expiration evidence,
 --           greatest expiration wins, cross-product tie at the greatest expiration fails closed
 --           (same-product tie resolves), unrelated aliases never influence resolution.
+--   U1-U3   (20260930090000, issue 1) a confidently RESOLVED unsupported product (legacy quarterly,
+--           a RevenueCat-internal id, or a blank string) never enters the fallback: supported
+--           webhook evidence cannot override it, the claim fails closed, reward untouched.
+--   H1-H9   (20260930090000, issue 2) subscription-state reduction by original_transaction_id:
+--           purchase->refund and renewal->refund invalidate a subscription whatever expiration its
+--           earlier rows advertise; a later EXPIRATION invalidates; a valid newer subscription after
+--           an invalidated older one resolves (even when the stale one has the later expiration);
+--           insertion order is irrelevant (event_timestamp ordering) and identical timestamps
+--           tie-break on received_at; a non-processed invalidating row still invalidates; a voluntary
+--           cancellation / uncancellation keeps evidence; a REFUND_REVERSED after a refund stays
+--           closed until the next processed purchase/renewal; the latest state within ONE
+--           subscription wins over a longer expiration on its earlier row; PRODUCT_CHANGE is neutral;
+--           evidence without original_transaction_id never counts.
+--   A1-A7   (20260930090000, issue 3) identity: ledger primary id, original_app_user_id and payload
+--           aliases[] all resolve when bound to the SAME participant in the SAME environment;
+--           multiple own aliases resolve; an alias bound only in the other environment never
+--           resolves; identities bound to ANOTHER participant make the event ambiguous and it is
+--           excluded (never a cross-participant grant), without poisoning unambiguous evidence.
 --   S1-S7   claim state machine: Free-user plan selection x3 (+ legacy/internal ids rejected),
 --           active-Pro mapping (requested product ignored; legacy active fails closed), idempotent
 --           re-claim returns the same live code, one issued code per referrer per environment,
@@ -62,13 +80,30 @@ insert into private.referral_reward_offer_codes (product_id, offer_reference_nam
   ('com.85blends.subscription.annual',     'REFERRAL_REWARD_ANNUAL_1M_FREE',  'PRODANN1', now() + interval '60 days', 'PRODUCTION'),
   ('com.85blends.subscription.monthly',    'REFERRAL_REWARD_MONTHLY_1M_FREE', 'SBOXMON1', now() + interval '60 days', 'SANDBOX');
 
--- helper: insert a processed webhook event carrying product/expiration evidence
-create or replace function pg_temp.evt(p_id text, p_type text, p_user text, p_env text, p_product text, p_exp_ms text, p_status text default 'processed')
+-- helper: insert a processed webhook event carrying product/expiration evidence. Each event is its
+-- own subscription (original_transaction_id derived from the event id) unless p_otx is given.
+create or replace function pg_temp.evt(p_id text, p_type text, p_user text, p_env text, p_product text, p_exp_ms text, p_status text default 'processed', p_otx text default null)
 returns void language sql as $$
   insert into private.revenuecat_webhook_events (event_id, event_type, app_user_id, environment, event_timestamp, payload_hash, raw_payload, processing_status, processed_at)
   values (p_id, p_type, p_user, p_env, now(), md5(p_id),
-          jsonb_build_object('event', jsonb_build_object('product_id', p_product, 'expiration_at_ms', p_exp_ms)),
+          jsonb_build_object('event', jsonb_build_object('product_id', p_product, 'expiration_at_ms', p_exp_ms,
+                                                         'original_transaction_id', coalesce(p_otx, 'otx_' || p_id))),
           p_status, case when p_status = 'processed' then now() else null end);
+$$;
+-- helper: full lifecycle event — explicit subscription identity, event time (and optional distinct
+-- received_at), cancel_reason, payload aliases[] and original_app_user_id. NULL fields are omitted
+-- from the payload exactly as RevenueCat omits absent keys.
+create or replace function pg_temp.evt_sub(
+  p_id text, p_type text, p_user text, p_env text, p_product text, p_exp_ms text, p_otx text, p_ts timestamptz,
+  p_cancel_reason text default null, p_aliases text[] default null, p_orig_user text default null,
+  p_status text default 'processed', p_received timestamptz default null)
+returns void language sql as $$
+  insert into private.revenuecat_webhook_events (event_id, event_type, app_user_id, original_app_user_id, environment, event_timestamp, received_at, payload_hash, raw_payload, processing_status, processed_at)
+  values (p_id, p_type, p_user, p_orig_user, p_env, p_ts, coalesce(p_received, p_ts), md5(p_id),
+          jsonb_build_object('event', jsonb_strip_nulls(jsonb_build_object(
+            'product_id', p_product, 'expiration_at_ms', p_exp_ms, 'original_transaction_id', p_otx,
+            'cancel_reason', p_cancel_reason, 'aliases', to_jsonb(p_aliases)))),
+          p_status, case when p_status = 'processed' then coalesce(p_received, p_ts) else null end);
 $$;
 create or replace function pg_temp.future_ms(days int) returns text language sql as $$
   select ((extract(epoch from now() + make_interval(days => days)) * 1000)::bigint)::text
@@ -81,7 +116,8 @@ declare r record; begin
 end $$;
 
 -- ============================================================================================
--- F1. Fallback runs ONLY when active Pro = true AND active product = NULL/unsupported
+-- F1. Fallback runs ONLY when active Pro = true AND active product = NULL (see U1-U3 for the
+--     resolved-but-unsupported case, which never enters the fallback since 20260930090000)
 -- ============================================================================================
 savepoint f1;
 do $$ declare o text; begin
@@ -223,6 +259,242 @@ do $$ declare o text; begin
   if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'F10: %', o; end if;
 end $$;
 rollback to savepoint f1;
+
+-- ============================================================================================
+-- U. (issue 1) A confidently RESOLVED unsupported product never enters the fallback
+-- ============================================================================================
+-- U1. legacy quarterly resolved by RevenueCat + unexpired supported evidence -> fails closed
+do $$ declare o text; st text; n int; begin
+  perform pg_temp.evt('e_u1a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
+  perform pg_temp.evt('e_u1b', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual',  pg_temp.future_ms(300));
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, 'com.85blends.subscription.quarterly', 'com.85blends.subscription.monthly');
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'U1: resolved quarterly was overridden by evidence: %', o; end if;
+  select status into st from private.referral_rewards where id = 'bbbbbbbb-0000-0000-0000-000000000001';
+  select count(*) into n from private.referral_reward_offer_codes where status = 'issued';
+  if st <> 'earned' or n <> 0 then raise exception 'U1 state: % %', st, n; end if;
+end $$;
+rollback to savepoint f1;
+-- U2. a resolved RevenueCat-internal / unknown id + supported evidence -> fails closed
+do $$ declare o text; begin
+  perform pg_temp.evt('e_u2', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, 'prod_internal_id_abc', null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'U2: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- U3. only a literal NULL is "unresolved": a blank string is a resolved (unsupported) product
+do $$ declare o text; begin
+  perform pg_temp.evt('e_u3', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, '', null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'U3 blank: %', o; end if;
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'U3 NULL still falls back: %', o; end if;
+end $$;
+rollback to savepoint f1;
+
+-- ============================================================================================
+-- H. (issue 2) Subscription-state reduction: latest lifecycle event per original_transaction_id
+-- ============================================================================================
+-- H1. purchase -> support refund; the refunded annual (later expiration) must not outrank a valid
+--     newer monthly; with no newer subscription the claim fails closed
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h1a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h1', t0);
+  perform pg_temp.evt_sub('e_h1b', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h1', t0 + interval '1 hour', 'CUSTOMER_SUPPORT');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H1a refunded purchase still resolved: %', o; end if;
+  perform pg_temp.evt_sub('e_h1c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(25), 'otx_h1m', t0 + interval '2 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H1b stale annual outranked the live monthly: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H2. purchase -> renewal -> support refund (same subscription) fails closed; a valid newer
+--     three-month subscription then resolves
+do $$ declare o text; t0 timestamptz := now() - interval '40 days'; begin
+  perform pg_temp.evt_sub('e_h2a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h2', t0);
+  perform pg_temp.evt_sub('e_h2b', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(330), 'otx_h2', t0 + interval '30 days');
+  perform pg_temp.evt_sub('e_h2c', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(330), 'otx_h2', t0 + interval '31 days', 'CUSTOMER_SUPPORT');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H2a refunded renewal still resolved: %', o; end if;
+  perform pg_temp.evt_sub('e_h2d', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.threemonth', pg_temp.future_ms(80), 'otx_h2q', t0 + interval '35 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.threemonth' then raise exception 'H2b: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H3. older long-expiration product followed by EXPIRATION (payload expiration deliberately still in
+--     the future: invalidation is by STATE, not by the timestamp check) -> only the newer sub counts
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h3a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h3', t0);
+  perform pg_temp.evt_sub('e_h3b', 'EXPIRATION',       'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h3', t0 + interval '1 day');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H3a expired subscription still resolved: %', o; end if;
+  perform pg_temp.evt_sub('e_h3c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h3m', t0 + interval '2 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H3b: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H4. invalidation is per SUBSCRIPTION, not per product: a refunded annual does not block a newer,
+--     distinct, valid annual subscription
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h4a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h4_old', t0);
+  perform pg_temp.evt_sub('e_h4b', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h4_old', t0 + interval '1 hour', 'CUSTOMER_SUPPORT');
+  perform pg_temp.evt_sub('e_h4c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(355), 'otx_h4_new', t0 + interval '3 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.annual' then raise exception 'H4: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H5. ordering: insertion order is irrelevant (event_timestamp decides); identical event_timestamp
+--     tie-breaks on received_at; a NON-processed invalidating row still invalidates
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  -- refund inserted BEFORE the purchase it refunds
+  perform pg_temp.evt_sub('e_h5b', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5', t0 + interval '1 hour', 'CUSTOMER_SUPPORT');
+  perform pg_temp.evt_sub('e_h5a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5', t0);
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H5a insertion order leaked: %', o; end if;
+end $$;
+rollback to savepoint f1;
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  -- same event_timestamp: the later-received row (the refund) is the current state
+  perform pg_temp.evt_sub('e_h5c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5t', t0, null, null, null, 'processed', t0);
+  perform pg_temp.evt_sub('e_h5d', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5t', t0, 'CUSTOMER_SUPPORT', null, null, 'processed', t0 + interval '1 minute');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H5b received_at tie-break: %', o; end if;
+end $$;
+rollback to savepoint f1;
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  -- the refund row failed processing ('error'): it still counts as the latest state (fail closed)
+  perform pg_temp.evt_sub('e_h5e', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5e', t0);
+  perform pg_temp.evt_sub('e_h5f', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h5e', t0 + interval '1 hour', 'CUSTOMER_SUPPORT', null, null, 'error');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H5c error-status refund ignored: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H6. a voluntary cancellation (auto-renew off) keeps evidence; an uncancellation after it too
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h6a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h6', t0);
+  perform pg_temp.evt_sub('e_h6b', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h6', t0 + interval '1 hour', 'UNSUBSCRIBE');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H6a voluntary cancellation dropped evidence: %', o; end if;
+end $$;
+rollback to savepoint f1;
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h6c', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h6u', t0);
+  perform pg_temp.evt_sub('e_h6d', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h6u', t0 + interval '1 hour', 'UNSUBSCRIBE');
+  perform pg_temp.evt_sub('e_h6e', 'UNCANCELLATION',   'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20), 'otx_h6u', t0 + interval '2 hours');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H6b uncancellation: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H7. REFUND_REVERSED after a refund does NOT reopen evidence by itself (conservative: closed until
+--     the next processed purchase/renewal on that subscription)
+do $$ declare o text; t0 timestamptz := now() - interval '10 days'; begin
+  perform pg_temp.evt_sub('e_h7a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h7', t0);
+  perform pg_temp.evt_sub('e_h7b', 'CANCELLATION',     'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h7', t0 + interval '1 hour', 'CUSTOMER_SUPPORT');
+  perform pg_temp.evt_sub('e_h7c', 'REFUND_REVERSED',  'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_h7', t0 + interval '2 hours');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H7 refund reversal reopened evidence: %', o; end if;
+  perform pg_temp.evt_sub('e_h7d', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(360), 'otx_h7', t0 + interval '3 hours');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.annual' then raise exception 'H7b next renewal: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H8. within ONE subscription the latest state wins even when an earlier row advertises a later
+--     expiration (annual -> monthly on the same original_transaction_id); PRODUCT_CHANGE is neutral
+do $$ declare o text; t0 timestamptz := now() - interval '40 days'; begin
+  perform pg_temp.evt_sub('e_h8a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual',  pg_temp.future_ms(300), 'otx_h8', t0);
+  perform pg_temp.evt_sub('e_h8b', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8', t0 + interval '30 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H8a earlier longer-expiration row won: %', o; end if;
+  perform pg_temp.evt_sub('e_h8c', 'PRODUCT_CHANGE',   'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8', t0 + interval '31 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'H8b PRODUCT_CHANGE was not neutral: %', o; end if;
+end $$;
+rollback to savepoint f1;
+do $$ declare o text; t0 timestamptz := now() - interval '40 days'; begin
+  -- and the reverse direction: monthly -> annual on one subscription resolves annual
+  perform pg_temp.evt_sub('e_h8d', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(20),  'otx_h8r', t0);
+  perform pg_temp.evt_sub('e_h8e', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual',  pg_temp.future_ms(330), 'otx_h8r', t0 + interval '30 days');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.annual' then raise exception 'H8c: %', o; end if;
+end $$;
+rollback to savepoint f1;
+-- H9. evidence without original_transaction_id (no subscription identity) never counts
+do $$ declare o text; begin
+  perform pg_temp.evt_sub('e_h9a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), null, now() - interval '1 day');
+  perform pg_temp.evt_sub('e_h9b', 'RENEWAL',          'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), '   ', now() - interval '1 day');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'H9: %', o; end if;
+end $$;
+rollback to savepoint f1;
+
+-- ============================================================================================
+-- A. (issue 3) Identity: every alias bound to the SAME participant in the SAME environment
+-- ============================================================================================
+savepoint a_setup;
+insert into private.referral_participant_aliases (app_user_id, environment, participant_id) values
+  ('rc_p1_alt', 'PRODUCTION', 'aaaaaaaa-0000-0000-0000-000000000001');
+savepoint a1;
+-- A1. secondary alias as the ledger primary id resolves
+do $$ declare o text; begin
+  perform pg_temp.evt('e_a1', 'INITIAL_PURCHASE', 'rc_p1_alt', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'A1: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A2. unregistered primary id, own alias as original_app_user_id resolves
+do $$ declare o text; begin
+  perform pg_temp.evt_sub('e_a2', 'INITIAL_PURCHASE', 'rc_new_device', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_a2', now() - interval '1 day', null, null, 'rc_p1');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.annual' then raise exception 'A2: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A3. unregistered primary id, own alias only inside payload aliases[] resolves
+do $$ declare o text; begin
+  perform pg_temp.evt_sub('e_a3', 'INITIAL_PURCHASE', 'rc_new_device', 'PRODUCTION', 'com.85blends.subscription.threemonth', pg_temp.future_ms(80), 'otx_a3', now() - interval '1 day', null, array['rc_new_device', 'rc_p1'], 'rc_other_original');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.threemonth' then raise exception 'A3: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A4. several identities all bound to the same participant are not a conflict
+do $$ declare o text; begin
+  perform pg_temp.evt_sub('e_a4', 'INITIAL_PURCHASE', 'rc_p1_alt', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a4', now() - interval '1 day', null, array['rc_p1', 'rc_p1_alt'], 'rc_p1');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'A4: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A5. an alias bound to this participant ONLY in the other environment never resolves (both directions)
+do $$ declare o text; begin
+  perform pg_temp.evt_sub('e_a5a', 'INITIAL_PURCHASE', 'rc_new_device', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a5a', now() - interval '1 day', null, array['rc_p1_sb'], 'rc_p1_sb');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'A5a SANDBOX alias resolved a PRODUCTION claim: %', o; end if;
+  perform pg_temp.evt_sub('e_a5b', 'INITIAL_PURCHASE', 'rc_new_device', 'SANDBOX', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a5b', now() - interval '1 day', null, array['rc_p1', 'rc_p1_alt'], 'rc_p1');
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'SANDBOX', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'A5b PRODUCTION aliases resolved a SANDBOX claim: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A6. an identity bound to ANOTHER participant makes the event ambiguous -> excluded, never granted
+do $$ declare o text; o3 text; begin
+  perform pg_temp.evt_sub('e_a6a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30), 'otx_a6a', now() - interval '1 day', null, array['rc_p1', 'rc_p3']);
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'A6a ambiguous event resolved for P1: %', o; end if;
+  select r.outcome || ':' || coalesce(r.product_id, '-') into o3
+  from private.claim_referral_reward('aaaaaaaa-0000-0000-0000-000000000003', 'PRODUCTION', true, null, null) r;
+  if o3 like 'claimed:%' then raise exception 'A6a ambiguous event resolved for P3: %', o3; end if;
+end $$;
+rollback to savepoint a1;
+do $$ declare o text; begin
+  -- another participant's primary id with this participant's alias in the payload: still ambiguous
+  perform pg_temp.evt_sub('e_a6b', 'INITIAL_PURCHASE', 'rc_p3', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_a6b', now() - interval '1 day', null, array['rc_p1']);
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'legacy_or_unsupported_product_active:-' then raise exception 'A6b: %', o; end if;
+end $$;
+rollback to savepoint a1;
+-- A7. an ambiguous event is excluded without poisoning the participant's unambiguous evidence
+do $$ declare o text; begin
+  perform pg_temp.evt('e_a7a', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.monthly', pg_temp.future_ms(30));
+  perform pg_temp.evt_sub('e_a7b', 'INITIAL_PURCHASE', 'rc_p1', 'PRODUCTION', 'com.85blends.subscription.annual', pg_temp.future_ms(300), 'otx_a7b', now() - interval '1 day', null, array['rc_p1', 'rc_p3']);
+  o := pg_temp.claim('aaaaaaaa-0000-0000-0000-000000000001', 'PRODUCTION', true, null, null);
+  if o <> 'claimed:com.85blends.subscription.monthly' then raise exception 'A7: %', o; end if;
+end $$;
+rollback to savepoint a_setup;
 
 -- ============================================================================================
 -- S. Reward claim / state machine
@@ -375,5 +647,5 @@ do $$ declare c1 text; rs text; cs text; o text; begin
 end $$;
 rollback to savepoint f1;
 
-\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, S1-S7, W1-W6)'
+\echo 'ALL FALLBACK / STATE-MACHINE / FULFILLMENT SCENARIOS PASSED (F1-F10, U1-U3, H1-H9, A1-A7, S1-S7, W1-W6)'
 rollback;
