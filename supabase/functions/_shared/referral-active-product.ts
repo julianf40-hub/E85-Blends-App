@@ -16,6 +16,15 @@
 // the active subscription's internal product id to that store_identifier before comparing against
 // 85Blends' Apple product ids. Failing closed on missing/ambiguous mapping is intentional.
 //
+// FINAL ARCHITECTURE (85Blends 2.4.0, live-validated in Apple Sandbox): this module is referral-api's
+// ONLY client-side attempt at the canonical Apple product id. When it reports `proIsActive: true`
+// with `activeProductId: null`, referral-api passes NULL through unchanged and
+// `private.claim_referral_reward` (migration 20260929230218) resolves the product server-side from
+// this SAME participant's already-processed, same-environment RevenueCat webhook history — restricted
+// to the three shipping products, unexpired evidence only, greatest expiration wins, ties across
+// distinct products fail closed. Nothing here ever reads webhook history, guesses, or promotes the
+// internal id; the database wrapper owns that fallback exclusively.
+//
 // Pure — no I/O, no Deno-specific APIs. Fully unit-testable under Node (see
 // referral-active-product.test.ts).
 

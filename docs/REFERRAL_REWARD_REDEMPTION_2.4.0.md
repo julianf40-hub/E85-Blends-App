@@ -304,14 +304,27 @@ level — see §11) plus the new Node-testable guard file.
 ```
                     ┌────────────────────────────┐
   iOS app  ───────► │ referral-api (claim_reward) │ ───► RevenueCat REST API v2
-                    │                              │      (resolve active Pro + product,
-                    └──────────────┬───────────────┘       backend-authoritative)
-                                   │
+                    │                              │      (fresh customer subscriptions:
+                    └──────────────┬───────────────┘       is Pro active? which product?)
+                                   │  _shared/referral-active-product.ts resolves the
+                                   │  Apple store product id ONLY from the response's own
+                                   │  embedded entitlement products (store_identifier);
+                                   │  RevenueCat's internal product_id is never promoted.
+                                   │  Unresolved/ambiguous -> activeProductId = NULL.
                                    ▼
-                    private.claim_referral_reward(...)
+                    private.claim_referral_reward(...)   [wrapper, 20260929230218]
+                    - ONLY if active Pro = true AND product NULL/unsupported: resolve the
+                      product from this SAME participant's aliases, SAME environment,
+                      processed RevenueCat webhook events with an unexpired
+                      expiration_at_ms, restricted to the three shipping products;
+                      greatest expiration wins; a cross-product tie fails closed (NULL)
+                    - never invents Pro status; then calls
+                    private.claim_referral_reward_core(...) [the reviewed claim, unchanged]
                     - locks the oldest 'earned' reward
                     - allocates one available Apple code
                     - returns the SAME code on a repeat claim
+                    - active Pro + still-unresolved product ->
+                      'legacy_or_unsupported_product_active' (fails closed, reward untouched)
 
   Apple/RevenueCat ─────────────────────────────────────┐
   (a real redemption transaction)                        ▼
@@ -327,6 +340,32 @@ level — see §11) plus the new Node-testable guard file.
 
 Backend is authoritative throughout: the iOS app never decides whether it owns a reward, which
 product an active subscriber's code is for, or whether a redemption has been confirmed.
+
+**Final active-product resolution model (live-validated in Apple Sandbox, 2026-09-29/30):**
+RevenueCat API v2's `subscription.product_id` is RevenueCat's INTERNAL product id, not Apple's store
+identifier. Ownership is split in exactly two places and nowhere else:
+
+1. `referral-api` asks RevenueCat whether Pro is currently active (`gives_access === true` on a
+   `pro`-entitled subscription — the same rule as `entitlement.ts`) and attempts the canonical Apple
+   product id only from that same response's embedded entitlement/product objects
+   (`_shared/referral-active-product.ts`). It fails closed to `activeProductId = null` on a
+   missing, malformed or ambiguous mapping, never substitutes the internal id, and never reads
+   webhook history itself. The `null` is passed to the database unchanged.
+2. `private.claim_referral_reward` (the wrapper installed by
+   `20260929230218_referral_reward_active_product_webhook_fallback.sql`) is the SOLE fallback: only
+   when `p_active_pro_is_active = true` and the product is NULL/unsupported does it look at this same
+   participant's own `private.referral_participant_aliases` rows in the same `p_environment`, joined
+   to `private.revenuecat_webhook_events` rows with `processing_status = 'processed'`, event types
+   `INITIAL_PURCHASE`/`RENEWAL`/`CANCELLATION`/`UNCANCELLATION`, a supported shipping product id, and
+   `expiration_at_ms` in the future. The greatest expiration wins; if the greatest expiration is shared
+   by more than one distinct product the fallback yields NULL and the core function fails closed
+   (`legacy_or_unsupported_product_active`). The fresh RevenueCat lookup must already have said Pro is
+   active — the fallback supplies only the missing Apple product identity, never Pro status.
+
+`revenuecat-webhook` is unchanged by this model and remains the only fulfillment authority (§3/§5).
+An earlier intermediate approach (a per-subscription call to RevenueCat's
+`/subscriptions/{id}/entitlements` endpoint annotating `store_product_id`) was removed after live
+production validation showed the database fallback, not that call, resolved the claim.
 
 ## 2. Migration changes
 
@@ -480,6 +519,14 @@ New/changed objects:
   pass — still `p_environment` as the 2nd param, now backed by `current_environment` rather than an
   alias scan) — the one atomic claim operation, rewritten for the new state machine and expiration-
   revalidation logic (see §4/§7a/§7c).
+- **`20260929230218_referral_reward_active_product_webhook_fallback.sql` (applied to production
+  2026-09-29):** renames the reviewed `claim_referral_reward` above to
+  `private.claim_referral_reward_core` (guarded by `to_regprocedure`, so a replay is a no-op) and
+  installs a same-signature wrapper `private.claim_referral_reward` that performs the narrow
+  webhook-history fallback described in §1 before delegating to the core. Same `search_path`
+  (`pg_catalog, private`), not `SECURITY DEFINER`, execute revoked from `public`/`anon`/
+  `authenticated` and granted to `postgres`/`service_role` for both functions. No table changes.
+  Covered by `supabase/tests/referral_reward_active_product_fallback.test.sql`.
 - `private.fulfill_referral_reward_offer_code(...)` (new function, hardened again in place — same
   7-param signature) — the one atomic fulfillment operation, now requiring `status = 'issued'` and
   raising on an impossible partial update instead of returning a typed failure (see §5/§7b/§7c).
@@ -508,7 +555,11 @@ changed for EVERY action (SECOND hardening pass):
   with the resolved environment rather than a hardcoded `'production'`) to determine,
   backend-authoritatively, whether the participant is an active Pro subscriber and which product
   they're on (`_shared/referral-active-product.ts`, new — deliberately a separate file from
-  `entitlement.ts`, which stays untouched).
+  `entitlement.ts`, which stays untouched). The product is the Apple STORE identifier resolved from
+  the response's embedded entitlement products; when that cannot be resolved for an active Pro
+  subscriber, `activeProductId` is `null` and is passed to `private.claim_referral_reward` as-is —
+  the database wrapper's webhook-history fallback (§1, migration `20260929230218`) is the only
+  place that may fill it in, and it fails closed when it can't.
 - If the RevenueCat lookup itself fails, the claim is refused (`revenuecat_lookup_failed`) rather
   than guessing — never lets an active subscriber be misrouted through the "choose any plan" path
   because of a transient failure.
@@ -868,7 +919,12 @@ issued" preview is corrected to `earnedMonthsAvailable: 0` (the real post-claim 
 **Migrations:** `supabase/migrations/20260928000000_referral_reward_redemption_foundation.sql` (new),
 `supabase/migrations/20260928010000_referral_deferred_paid_qualification_origin.sql` (new, fourth
 hardening pass — `private.referral_deferred_paid_origins` + `private.record_referral_deferred_paid_origin`,
-see §0d/§7).
+see §0d/§7), `supabase/migrations/20260929230218_referral_reward_active_product_webhook_fallback.sql`
+(new — `claim_referral_reward` wrapper + `claim_referral_reward_core`, see §1/§2).
+
+**SQL regression tests (local replay only):** `supabase/tests/referral_reward_active_product_fallback.test.sql`
+(+ `supabase/tests/README.md`) — fallback gating/environment/alias/product/expiration/tie scenarios,
+the claim state machine, and webhook fulfillment; see the file header for the scenario list.
 
 **Edge Functions / shared:**
 `supabase/functions/referral-api/index.ts` (second hardening pass —
@@ -943,7 +999,25 @@ general promo-campaign system (`20260921000000_promo_campaign_foundation.sql` re
 untouched — this feature deliberately does not build on it, per its own header comment), the public
 85BLENDS promo configuration, unrelated subscription/paywall UI, and the 2.4.0 What's New PR (#109).
 
-## 9. Deployment order (NOT executed — documented for a future, separate deployment pass)
+## 9. Deployment order (documented for the deployment pass; see the status block for what is done)
+
+**Status as of 2026-09-30 (read-only verification against production `zefkbtscieokkdenvnkg`):**
+- Migrations `20260928000000`, `20260928010000` and `20260929230218` are applied and present in the
+  production migration ledger; the live `claim_referral_reward`, `claim_referral_reward_core`,
+  `fulfill_referral_reward_offer_code`, `process_referral_subscription_event` and
+  `record_referral_deferred_paid_origin` bodies match this repository's migrations byte-for-byte.
+- Steps 1–3 and 11–13 (Apple offers, Sandbox codes, Sandbox end-to-end verification) are done: both
+  the Free → `INITIAL_PURCHASE` → Pro → `fulfilled` path and the existing-active-Pro path were
+  validated live in Sandbox.
+- `revenuecat-webhook` v8 is deployed from `main` sources (only type-only interface additions in
+  `revenuecat-types.ts` have landed on `main` since).
+- `referral-api` v5 is currently a one-line remote-import wrapper pinned to an intermediate PR #113
+  commit; a normal file-based deploy of the current source (step 6) is still required so that the
+  deployed function matches this repository (that deploy removes the superseded entitlements
+  enrichment described in §1).
+- Step 8 (PRODUCTION-tagged Apple code pools) is NOT done: the pool currently holds only
+  SANDBOX-tagged codes, so a production claim would return `no_code_available` until real codes are
+  imported.
 
 1. Create the three Apple referral Offer Code offers in App Store Connect (Monthly/3-Month/Annual),
    each entered under the offer's own **Reference Name** field using the values in §4.

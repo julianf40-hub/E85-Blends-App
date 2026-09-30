@@ -565,6 +565,13 @@ async function handleClaimReward(sql: Sql, env: ReferralApiEnvConfig, request: C
   };
   let claimRow: ClaimRow;
   try {
+    // `activeProduct.activeProductId` may legitimately be NULL for an ACTIVE Pro subscriber when the
+    // RevenueCat API response carried no resolvable Apple store identifier (see
+    // _shared/referral-active-product.ts). That NULL is passed through unchanged, on purpose:
+    // private.claim_referral_reward (migration 20260929230218) is the single owner of the narrow
+    // fallback that resolves it from this participant's own processed, same-environment webhook
+    // history — and still fails closed (`legacy_or_unsupported_product_active`) when it can't. This
+    // function never substitutes a product of its own.
     const rows = await sql<ClaimRow[]>`
       select * from private.claim_referral_reward(
         ${auth.participantId}::uuid,
