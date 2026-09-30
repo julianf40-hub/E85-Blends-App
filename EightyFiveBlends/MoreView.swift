@@ -159,7 +159,7 @@ struct MoreView: View {
 
                                 MoreNavigationRow(
                                     title: "Recommended Gear",
-                                    subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
+                                    subtitle: "Hand-picked E85 tools, accessories, and featured gear.",
                                     systemImage: "wrench.and.screwdriver",
                                     tint: AppTheme.Colors.accentGreen
                                 ) {
