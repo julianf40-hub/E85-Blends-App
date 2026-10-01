@@ -45,19 +45,103 @@ extension FeaturedBrand {
 }
 
 extension FeaturedBrand {
-    /// RVP Supply's OEM+ beadlock wheels, shown as a labeled sponsor. The destination is the Wheels
-    /// collection (not a single product) so the card showcases the category without locking in one
-    /// fitment, and the copy is RVP's own product wording, conservative on purpose: no price, no
-    /// performance claim, and no claim of universal fitment.
+    /// RVP Supply's OEM+ beadlock wheels, shown as a labeled sponsor. The call to action opens the
+    /// Wheels collection, and the card's gallery (`RVPWheelProduct.catalog`) opens individual
+    /// products. The copy is deliberately conservative: no price, no performance or race claim,
+    /// and no claim of universal fitment.
     static let rvpSupplyWheels = FeaturedBrand(
         id: "rvp-supply-oem-beadlocks",
         name: "RVP Supply",
         tagline: "OEM+ Beadlock Wheels",
-        description: "Rotary-forged beadlock wheels with OEM+ styling, lightweight construction, and fitment options for supported vehicles.",
-        ctaTitle: "View OEM+ Beadlocks",
+        description: "Nine OEM-style beadlock designs for supported fitments.",
+        ctaTitle: "View All RVP Wheels",
         destinationURL: URL(string: "https://rvpsupply.com/collections/wheels-1"),
         accessibilityDescription: "OEM plus beadlock wheels."
     )
+}
+
+/// One wheel in RVP Supply's gallery: its photo (an image set in the asset catalog, named by
+/// `assetName`) and the RVP product page it opens. Presentation data only, like `FeaturedBrand`.
+struct RVPWheelProduct: Identifiable {
+    let id: String
+    let displayName: String
+    let assetName: String
+    let productURL: URL?
+    let accessibilityName: String
+}
+
+extension RVPWheelProduct {
+    /// RVP Supply's nine current OEM-style beadlock designs, in gallery order (row by row).
+    static let catalog: [RVPWheelProduct] = [
+        RVPWheelProduct(
+            id: "oem-hellcat",
+            displayName: "OEM Hellcat",
+            assetName: "RVPWheelOEMHellcat",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-8"),
+            accessibilityName: "OEM Hellcat beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "oem-hellcat-v2",
+            displayName: "OEM Hellcat V2",
+            assetName: "RVPWheelOEMHellcatV2",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-4"),
+            accessibilityName: "OEM Hellcat V2 beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "oem-hellcat-redeye",
+            displayName: "OEM Hellcat Redeye",
+            assetName: "RVPWheelOEMHellcatRedeye",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-9"),
+            accessibilityName: "OEM Hellcat Redeye beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "5-spoke-hellcat",
+            displayName: "5 Spoke Hellcat",
+            assetName: "RVPWheel5SpokeHellcat",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-3"),
+            accessibilityName: "5 Spoke Hellcat beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "5-spoke-hellcat-v2",
+            displayName: "5 Spoke Hellcat V2",
+            assetName: "RVPWheel5SpokeHellcatV2",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-1"),
+            accessibilityName: "5 Spoke Hellcat V2 beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "oem-demon",
+            displayName: "OEM Demon",
+            assetName: "RVPWheelOEMDemon",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-7"),
+            accessibilityName: "OEM Demon beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "hollow-5-spoke",
+            displayName: "Hollow 5 Spoke",
+            assetName: "RVPWheelHollow5Spoke",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-5"),
+            accessibilityName: "Hollow 5 Spoke beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "chrome-oem-hellcat",
+            displayName: "Chrome OEM Hellcat",
+            assetName: "RVPWheelChromeOEMHellcat",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-2"),
+            accessibilityName: "Chrome OEM Hellcat beadlock wheel"
+        ),
+        RVPWheelProduct(
+            id: "oem-widebody",
+            displayName: "OEM Widebody",
+            assetName: "RVPWheelOEMWidebody",
+            productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-6"),
+            accessibilityName: "OEM Widebody beadlock wheel"
+        )
+    ]
+
+    /// The fact line under the gallery. Only one of the nine product pages has been checked for
+    /// the "rotary-forged 6061-T6 aluminum" wording, so this does not claim a shared specification;
+    /// it points to each product page instead.
+    static let footnote = "OEM+ beadlock designs · See product pages for fitment and specifications"
 }
 
 /// One page of the Featured Brands carousel. Both cases share the `FeaturedBrand` data shape; the
@@ -103,9 +187,11 @@ nonisolated enum FeaturedBrandLink {
 struct RecommendedGearView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selectedPageID: String?
     @State private var linkMessages: [String: String] = [:]
+    @State private var pageHeights: [String: CGFloat] = [:]
 
     private let pages = FeaturedGearPage.catalog
 
@@ -125,6 +211,14 @@ struct RecommendedGearView: View {
         pages.firstIndex(where: { $0.id == selectedPageID }) ?? 0
     }
 
+    // The carousel is as tall as the page being shown. The RVP gallery card is much taller than the
+    // eFlexFuel card, and stretching the shorter page to match (or leaving a gap under it) would look
+    // broken, so each page keeps its natural height and the carousel follows the current one. It is
+    // nil until the first measurement, when the carousel just sizes to its tallest page.
+    private var carouselHeight: CGFloat? {
+        pageHeights[pages[currentPageIndex].id]
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -137,6 +231,10 @@ struct RecommendedGearView: View {
                     .padding(.horizontal, Self.pageMargin)
             }
             .padding(.vertical, 16)
+            // Eases the carousel's height change (and the page dots and About card moving with it)
+            // when the page changes. Keyed on the page, not the height, so the first measurement and
+            // Dynamic Type relayouts do not animate; there is no animation with Reduce Motion.
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: currentPageIndex)
         }
         .background(AppTheme.Colors.charcoal)
         .navigationTitle("Recommended Gear")
@@ -194,6 +292,17 @@ struct RecommendedGearView: View {
                             .containerRelativeFrame(.horizontal) { length, _ in
                                 length * widthFraction
                             }
+                            // Natural height (never stretched to a taller neighbor), measured so the
+                            // carousel can follow the page being shown.
+                            .fixedSize(horizontal: false, vertical: true)
+                            .background(
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: FeaturedPageHeightKey.self,
+                                        value: [page.id: proxy.size.height]
+                                    )
+                                }
+                            )
                     }
                 }
                 .scrollTargetLayout()
@@ -209,7 +318,11 @@ struct RecommendedGearView: View {
                     }
                     .accessibilityHidden(true)
             }
+            // The scroll view clips to this height, so a taller page shows in full once it becomes
+            // the current page. (The change is eased by the animation on the page's stack in `body`.)
+            .frame(height: carouselHeight, alignment: .top)
         }
+        .onPreferenceChange(FeaturedPageHeightKey.self) { pageHeights = $0 }
         .scrollIndicators(.hidden)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $selectedPageID)
@@ -231,12 +344,13 @@ struct RecommendedGearView: View {
         case .sponsor(let brand):
             FeaturedSponsorCard(
                 brand: brand,
+                products: RVPWheelProduct.catalog,
                 position: position,
                 total: pages.count,
-                statusMessage: linkMessages[brand.id]
-            ) {
-                openFeaturedBrand(brand)
-            }
+                statusMessage: linkMessages[brand.id],
+                openProduct: { product in openRVPProduct(product, sponsor: brand) },
+                openCollection: { openFeaturedBrand(brand) }
+            )
         }
     }
 
@@ -286,6 +400,23 @@ struct RecommendedGearView: View {
         openURL(url) { accepted in
             if accepted == false {
                 showLinkMessage("Unable to open the \(brand.name) website right now.", for: brand)
+            }
+        }
+    }
+
+    // One opener for all nine wheel tiles: the same https-only validation, openURL, and inline
+    // failure message as the brand links, reported on the sponsor card.
+    private func openRVPProduct(_ product: RVPWheelProduct, sponsor brand: FeaturedBrand) {
+        linkMessages[brand.id] = nil
+
+        guard let url = FeaturedBrandLink.validatedURL(product.productURL) else {
+            showLinkMessage("The \(product.displayName) link is unavailable right now.", for: brand)
+            return
+        }
+
+        openURL(url) { accepted in
+            if accepted == false {
+                showLinkMessage("Unable to open the \(product.displayName) page right now.", for: brand)
             }
         }
     }
@@ -405,60 +536,38 @@ private struct FeaturedBrandCard: View {
     }
 }
 
-/// Page-2 sponsor card. Same structure as `FeaturedBrandCard` (one whole-card button, with the
-/// inline failure message outside it, stretched to the carousel's height) but labeled "Sponsor":
-/// RVP Supply is an actual sponsor, so it is the one card here that may say so. It shares the
-/// brand card's link flow, and is a separate view only so the approved eFlexFuel card stays
-/// untouched.
+/// Page-2 sponsor card: RVP Supply's OEM-style beadlock lineup as a 3x3 gallery. Labeled "Sponsor"
+/// (RVP Supply is an actual sponsor, so it is the one card here that may say so). Unlike the brand
+/// card it is not one big button: each wheel tile opens that wheel's own RVP product page, and
+/// "View All RVP Wheels" opens the Wheels collection, all through the same https-only link flow.
+/// It is a separate view only so the approved eFlexFuel card stays untouched.
 private struct FeaturedSponsorCard: View {
     let brand: FeaturedBrand
+    let products: [RVPWheelProduct]
     let position: Int
     let total: Int
     let statusMessage: String?
-    let action: () -> Void
-
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let openProduct: (RVPWheelProduct) -> Void
+    let openCollection: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: action) {
-                VStack(alignment: .leading, spacing: 14) {
-                    FeaturedBadge(title: "Sponsor")
+            VStack(alignment: .leading, spacing: 12) {
+                header
 
-                    // Decorative only, and dropped at accessibility text sizes like the brand card's.
-                    if dynamicTypeSize.isAccessibilitySize == false {
-                        FeaturedSponsorArtwork()
-                    }
+                FeaturedWheelGallery(products: products, action: openProduct)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        FeaturedBrandWordmark(name: brand.name)
+                FeaturedClaimPill(text: RVPWheelProduct.footnote)
 
-                        Text(brand.tagline)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text(brand.description)
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer(minLength: 0)
-
+                Button(action: openCollection) {
                     FeaturedCallToAction(title: brand.ctaTitle)
                 }
-                .padding(18)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the \(brand.name) wheels website in your browser.")
             }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(brand.name). Sponsor. \(brand.accessibilityDescription) Featured card \(position) of \(total). \(brand.description) \(brand.ctaTitle).")
-            .accessibilityHint("Opens the \(brand.name) wheels website in your browser.")
-            .accessibilityAddTraits(.isButton)
+            .padding(18)
 
-            // Outside the Button so it is its own VoiceOver element and never part of the tap target.
+            // Outside the buttons so it is its own VoiceOver element and never part of a tap target.
             if let statusMessage {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -475,8 +584,165 @@ private struct FeaturedSponsorCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .gearCardChrome()
+    }
+
+    // One VoiceOver element that identifies the sponsor and the page, read before the tiles. The
+    // brand mark and the accent rule are decorative.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                FeaturedBadge(title: "Sponsor")
+
+                Spacer(minLength: 8)
+
+                FeaturedSponsorLogoPlate(width: 44, height: 28, scale: 0.044)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(brand.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Text(brand.tagline)
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(brand.description)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Capsule()
+                .fill(AppTheme.Colors.accentGreen)
+                .frame(width: 44, height: 3)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(brand.name). Sponsor. \(brand.accessibilityDescription) Featured card \(position) of \(total). \(brand.description)")
+    }
+}
+
+/// The wheel tiles, three to a row (two at accessibility text sizes, so product names keep room).
+/// Plain stacks rather than a lazy grid: there are only nine, every tile stays in the VoiceOver
+/// tree, and the reading order is simply row by row, left to right.
+private struct FeaturedWheelGallery: View {
+    let products: [RVPWheelProduct]
+    let action: (RVPWheelProduct) -> Void
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var columnCount: Int {
+        dynamicTypeSize.isAccessibilitySize ? 2 : 3
+    }
+
+    private var rows: [[RVPWheelProduct]] {
+        let count = columnCount
+        return stride(from: 0, to: products.count, by: count).map { start in
+            Array(products[start..<min(start + count, products.count)])
+        }
+    }
+
+    var body: some View {
+        let columns = columnCount
+
+        return VStack(spacing: 10) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(row) { product in
+                        FeaturedWheelTile(product: product, action: { action(product) })
+                    }
+
+                    // Pads a short last row so every tile keeps the same width.
+                    ForEach(0..<(columns - row.count), id: \.self) { _ in
+                        Color.clear
+                            .frame(maxWidth: .infinity)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One wheel: the unmodified product photo (square, aspect preserved) and its short name on a
+/// small card. The whole tile is the tap target and announces just the product name; the photo
+/// is decorative to VoiceOver and never intercepts the tap. Sized like the approved Figma tile:
+/// 6pt padding, 12pt photo corners, 16pt tile corners, and a caption two lines tall.
+private struct FeaturedWheelTile: View {
+    let product: RVPWheelProduct
+    let action: () -> Void
+
+    // Two lines of the 11pt caption, scaled with Dynamic Type so a longer name never gets clipped.
+    @ScaledMetric(relativeTo: .caption2) private var captionMinHeight: CGFloat = 26
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(product.assetName)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
+                Text(product.displayName)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, minHeight: captionMinHeight)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(
+                AppTheme.Colors.charcoal,
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(product.accessibilityName)
+        .accessibilityHint("Opens RVP Supply product page.")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+// The fact line under the gallery, as a small pill with an accent dot (the approved Figma's
+// "Supported Claim"). The text is always conservative copy from the model.
+private struct FeaturedClaimPill: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(AppTheme.Colors.accentGreen)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            AppTheme.Colors.charcoal,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+        )
     }
 }
 
@@ -519,180 +785,6 @@ private struct FeaturedCallToAction: View {
     }
 }
 
-// Sponsor artwork: a quick glance at several OEM-style beadlock wheel designs (one lead wheel and
-// three companions), with a restrained RVP mark and a one-line caption underneath. Same 120pt
-// panel as the brand card's artwork, so the two pages stay the same height. Decorative: the
-// card's own label already says what it is, so the whole panel is hidden from VoiceOver.
-private struct FeaturedSponsorArtwork: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppTheme.Colors.charcoal)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
-                )
-
-            // 72pt lineup + 6pt gap + 28pt footer = 106pt, centered in the 120pt panel.
-            VStack(spacing: 6) {
-                FeaturedWheelLineup()
-
-                HStack(spacing: 8) {
-                    FeaturedSponsorLogoPlate(width: 44, height: 28, scale: 0.044)
-
-                    Text("Multiple OEM-style beadlock designs")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-                .frame(height: 28)
-            }
-            .padding(.horizontal, 12)
-        }
-        .frame(height: 120)
-        .frame(maxWidth: .infinity)
-        .accessibilityHidden(true)
-    }
-}
-
-// Four different spoke patterns so the row reads as a lineup of styles, not one wheel repeated.
-private enum FeaturedWheelStyle {
-    case fiveSpoke
-    case splitSixSpoke
-    case mesh
-    case hollowFiveSpoke
-}
-
-// A lead wheel with three smaller companions, 246pt wide in total (72 + 3 x 52 + 3 x 6), which
-// fits any card down to a 375pt-wide phone (283pt of card inner width) with room to spare. On a
-// 320pt-wide screen (a Zoomed display) the panel has only about 208pt, so there it falls back to a
-// lead plus two companions (188pt) instead of overflowing the card.
-private struct FeaturedWheelLineup: View {
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
-                FeaturedWheelThumbnail(style: .fiveSpoke, diameter: 72)
-                FeaturedWheelThumbnail(style: .splitSixSpoke, diameter: 52)
-                FeaturedWheelThumbnail(style: .mesh, diameter: 52)
-                FeaturedWheelThumbnail(style: .hollowFiveSpoke, diameter: 52)
-            }
-
-            HStack(spacing: 6) {
-                FeaturedWheelThumbnail(style: .fiveSpoke, diameter: 72)
-                FeaturedWheelThumbnail(style: .splitSixSpoke, diameter: 52)
-                FeaturedWheelThumbnail(style: .mesh, diameter: 52)
-            }
-        }
-        .frame(height: 72)
-    }
-}
-
-// Wheel finishes. A wheel is a physical object, so these stay the same in every appearance:
-// graphite with a light edge highlight, which reads on the light panel and on the dark ones
-// instead of following the theme.
-private enum WheelFinish {
-    static let tire = Color(white: 0.08)
-    static let face = Color(white: 0.14)
-    static let spoke = Color(white: 0.34)
-    static let highlight = Color(white: 0.58)
-}
-
-// One beadlock-style wheel from shapes only. Every proportion is a fraction of the diameter, so the
-// same view draws the lead wheel and the companions: tire, a rim ring, a ring of 24 bolts, a dark
-// face with the style's spokes, and a hub with a small yellow cap (the yellow the app already uses
-// for the sponsor card in More).
-private struct FeaturedWheelThumbnail: View {
-    let style: FeaturedWheelStyle
-    let diameter: CGFloat
-
-    var body: some View {
-        let d = diameter
-        // The bolts sit on a circle 0.70d across. A dashed stroke with round caps draws a dot at
-        // each dash, so a pitch of circumference / 24 gives exactly 24 evenly spaced bolts.
-        let boltPitch = CGFloat.pi * 0.70 * d / 24
-
-        return ZStack {
-            Circle()
-                .fill(WheelFinish.tire)
-
-            Circle()
-                .strokeBorder(WheelFinish.highlight.opacity(0.45), lineWidth: 1)
-
-            Circle()
-                .stroke(WheelFinish.highlight, lineWidth: d * 0.03)
-                .frame(width: d * 0.80, height: d * 0.80)
-
-            Circle()
-                .stroke(
-                    WheelFinish.highlight,
-                    style: StrokeStyle(lineWidth: d * 0.04, lineCap: .round, dash: [0.1, boltPitch - 0.1])
-                )
-                .frame(width: d * 0.70, height: d * 0.70)
-
-            Circle()
-                .fill(WheelFinish.face)
-                .frame(width: d * 0.62, height: d * 0.62)
-
-            spokes(d)
-
-            Circle()
-                .fill(WheelFinish.spoke)
-                .frame(width: d * 0.17, height: d * 0.17)
-
-            Circle()
-                .fill(AppTheme.Colors.stationYellow)
-                .frame(width: d * 0.06, height: d * 0.06)
-        }
-        .frame(width: d, height: d)
-    }
-
-    // Spokes run from just outside the hub to the bolt ring (0.05d to 0.325d from the center). Each
-    // is offset up from the center and then rotated about it.
-    @ViewBuilder
-    private func spokes(_ d: CGFloat) -> some View {
-        let length = d * 0.275
-        let center = d * 0.1875
-
-        switch style {
-        case .fiveSpoke:
-            ForEach(0..<5, id: \.self) { index in
-                RoundedRectangle(cornerRadius: d * 0.04, style: .continuous)
-                    .fill(WheelFinish.spoke)
-                    .frame(width: d * 0.15, height: length)
-                    .offset(y: -center)
-                    .rotationEffect(.degrees(Double(index) * 72))
-            }
-        case .splitSixSpoke:
-            // Six spokes, each split into a pair of thin bars.
-            ForEach(0..<12, id: \.self) { index in
-                let side: CGFloat = index % 2 == 0 ? -1 : 1
-                RoundedRectangle(cornerRadius: d * 0.02, style: .continuous)
-                    .fill(WheelFinish.spoke)
-                    .frame(width: d * 0.05, height: length)
-                    .offset(x: side * d * 0.04, y: -center)
-                    .rotationEffect(.degrees(Double(index / 2) * 60))
-            }
-        case .mesh:
-            ForEach(0..<15, id: \.self) { index in
-                RoundedRectangle(cornerRadius: d * 0.015, style: .continuous)
-                    .fill(WheelFinish.spoke)
-                    .frame(width: d * 0.03, height: length)
-                    .offset(y: -center)
-                    .rotationEffect(.degrees(Double(index) * 24))
-            }
-        case .hollowFiveSpoke:
-            ForEach(0..<5, id: \.self) { index in
-                RoundedRectangle(cornerRadius: d * 0.04, style: .continuous)
-                    .strokeBorder(WheelFinish.spoke, lineWidth: max(1, d * 0.025))
-                    .frame(width: d * 0.15, height: length)
-                    .offset(y: -center)
-                    .rotationEffect(.degrees(Double(index) * 72))
-            }
-        }
-    }
-}
-
 // The existing RVPSupplyLogo asset (unmodified) is a 1500x1145px image with its black background
 // baked in and a lot of empty padding around the mark. Rather than edit it, it sits on an
 // intentional dark plate, cropped to the mark: the mark spans roughly x 359-1204 and y 308-845 px,
@@ -718,6 +810,15 @@ private struct FeaturedSponsorLogoPlate: View {
                 RoundedRectangle(cornerRadius: height * 0.22, style: .continuous)
                     .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
+    }
+}
+
+// Natural height of each carousel page's card, keyed by page id (the same measuring pattern as
+// ContentHeightKey in VehicleLimitUpsellView).
+private struct FeaturedPageHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
