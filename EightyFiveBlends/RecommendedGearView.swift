@@ -519,8 +519,10 @@ private struct FeaturedCallToAction: View {
     }
 }
 
-// Sponsor artwork: a native wheel illustration beside the RVP mark on a dark plate. Same 120pt
-// panel as the brand card's artwork so the two pages stay the same height. Decorative.
+// Sponsor artwork: a quick glance at several OEM-style beadlock wheel designs (one lead wheel and
+// three companions), with a restrained RVP mark and a one-line caption underneath. Same 120pt
+// panel as the brand card's artwork, so the two pages stay the same height. Decorative: the
+// card's own label already says what it is, so the whole panel is hidden from VoiceOver.
 private struct FeaturedSponsorArtwork: View {
     var body: some View {
         ZStack {
@@ -531,10 +533,22 @@ private struct FeaturedSponsorArtwork: View {
                         .strokeBorder(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
                 )
 
-            HStack(spacing: 20) {
-                FeaturedWheelArtwork()
-                FeaturedSponsorLogoPlate()
+            // 72pt lineup + 6pt gap + 28pt footer = 106pt, centered in the 120pt panel.
+            VStack(spacing: 6) {
+                FeaturedWheelLineup()
+
+                HStack(spacing: 8) {
+                    FeaturedSponsorLogoPlate(width: 44, height: 28, scale: 0.044)
+
+                    Text("Multiple OEM-style beadlock designs")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(height: 28)
             }
+            .padding(.horizontal, 12)
         }
         .frame(height: 120)
         .frame(maxWidth: .infinity)
@@ -542,75 +556,166 @@ private struct FeaturedSponsorArtwork: View {
     }
 }
 
-// Line-art beadlock wheel from shapes only: tire, rim edge, a ring of 24 bolts (a dashed stroke
-// with round caps and a pitch that divides the circumference exactly), five spokes, and a hub
-// with a small yellow center cap (the same yellow the app uses for the sponsor card in More).
-private struct FeaturedWheelArtwork: View {
+// Four different spoke patterns so the row reads as a lineup of styles, not one wheel repeated.
+private enum FeaturedWheelStyle {
+    case fiveSpoke
+    case splitSixSpoke
+    case mesh
+    case hollowFiveSpoke
+}
+
+// A lead wheel with three smaller companions, 246pt wide in total (72 + 3 x 52 + 3 x 6), which
+// fits any card down to a 375pt-wide phone (283pt of card inner width) with room to spare. On a
+// 320pt-wide screen (a Zoomed display) the panel has only about 208pt, so there it falls back to a
+// lead plus two companions (188pt) instead of overflowing the card.
+private struct FeaturedWheelLineup: View {
     var body: some View {
-        ZStack {
-            Circle()
-                .stroke(AppTheme.Colors.textMuted.opacity(0.4), lineWidth: 10)
-                .frame(width: 94, height: 94)
-
-            Circle()
-                .stroke(AppTheme.Colors.textPrimary, lineWidth: 2.5)
-                .frame(width: 82, height: 82)
-
-            // Circumference at this 72pt diameter is about 226.2pt; 24 bolts means a pitch of
-            // about 9.425pt (0.1 dash + 9.325 gap).
-            Circle()
-                .stroke(
-                    AppTheme.Colors.textPrimary,
-                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round, dash: [0.1, 9.325])
-                )
-                .frame(width: 72, height: 72)
-
-            Circle()
-                .fill(AppTheme.Colors.surfaceElevated)
-                .frame(width: 60, height: 60)
-
-            ForEach(0..<5, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(AppTheme.Colors.textPrimary.opacity(0.85))
-                    .frame(width: 9, height: 24)
-                    .offset(y: -17)
-                    .rotationEffect(.degrees(Double(index) * 72))
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                FeaturedWheelThumbnail(style: .fiveSpoke, diameter: 72)
+                FeaturedWheelThumbnail(style: .splitSixSpoke, diameter: 52)
+                FeaturedWheelThumbnail(style: .mesh, diameter: 52)
+                FeaturedWheelThumbnail(style: .hollowFiveSpoke, diameter: 52)
             }
 
-            Circle()
-                .fill(AppTheme.Colors.surfaceElevated)
-                .frame(width: 22, height: 22)
-
-            Circle()
-                .strokeBorder(AppTheme.Colors.textPrimary, lineWidth: 2)
-                .frame(width: 22, height: 22)
-
-            Circle()
-                .fill(AppTheme.Colors.stationYellow)
-                .frame(width: 6, height: 6)
+            HStack(spacing: 6) {
+                FeaturedWheelThumbnail(style: .fiveSpoke, diameter: 72)
+                FeaturedWheelThumbnail(style: .splitSixSpoke, diameter: 52)
+                FeaturedWheelThumbnail(style: .mesh, diameter: 52)
+            }
         }
-        .frame(width: 104, height: 104)
+        .frame(height: 72)
     }
 }
 
-// The existing RVPSupplyLogo asset (unmodified) has its black background baked in and a lot of
-// empty padding around the mark. Rather than edit it, it sits on an intentional dark plate,
-// cropped to the mark: at 150pt wide the 1500px image is 0.1pt per pixel, so the 104x64 window
-// shows roughly x 262-1302 and y 252-892, which contains the mark (about x 359-1204, y 308-845)
-// with margin. The small x offset centers the mark, which sits slightly right of the image center.
-// The frame needs its full height (150 x 1145/1500 = 114.5): with only a width, the plate's 64pt
-// height would be proposed to the image and scaledToFit would shrink it to fit that instead.
+// Wheel finishes. A wheel is a physical object, so these stay the same in every appearance:
+// graphite with a light edge highlight, which reads on the light panel and on the dark ones
+// instead of following the theme.
+private enum WheelFinish {
+    static let tire = Color(white: 0.08)
+    static let face = Color(white: 0.14)
+    static let spoke = Color(white: 0.34)
+    static let highlight = Color(white: 0.58)
+}
+
+// One beadlock-style wheel from shapes only. Every proportion is a fraction of the diameter, so the
+// same view draws the lead wheel and the companions: tire, a rim ring, a ring of 24 bolts, a dark
+// face with the style's spokes, and a hub with a small yellow cap (the yellow the app already uses
+// for the sponsor card in More).
+private struct FeaturedWheelThumbnail: View {
+    let style: FeaturedWheelStyle
+    let diameter: CGFloat
+
+    var body: some View {
+        let d = diameter
+        // The bolts sit on a circle 0.70d across. A dashed stroke with round caps draws a dot at
+        // each dash, so a pitch of circumference / 24 gives exactly 24 evenly spaced bolts.
+        let boltPitch = CGFloat.pi * 0.70 * d / 24
+
+        return ZStack {
+            Circle()
+                .fill(WheelFinish.tire)
+
+            Circle()
+                .strokeBorder(WheelFinish.highlight.opacity(0.45), lineWidth: 1)
+
+            Circle()
+                .stroke(WheelFinish.highlight, lineWidth: d * 0.03)
+                .frame(width: d * 0.80, height: d * 0.80)
+
+            Circle()
+                .stroke(
+                    WheelFinish.highlight,
+                    style: StrokeStyle(lineWidth: d * 0.04, lineCap: .round, dash: [0.1, boltPitch - 0.1])
+                )
+                .frame(width: d * 0.70, height: d * 0.70)
+
+            Circle()
+                .fill(WheelFinish.face)
+                .frame(width: d * 0.62, height: d * 0.62)
+
+            spokes(d)
+
+            Circle()
+                .fill(WheelFinish.spoke)
+                .frame(width: d * 0.17, height: d * 0.17)
+
+            Circle()
+                .fill(AppTheme.Colors.stationYellow)
+                .frame(width: d * 0.06, height: d * 0.06)
+        }
+        .frame(width: d, height: d)
+    }
+
+    // Spokes run from just outside the hub to the bolt ring (0.05d to 0.325d from the center). Each
+    // is offset up from the center and then rotated about it.
+    @ViewBuilder
+    private func spokes(_ d: CGFloat) -> some View {
+        let length = d * 0.275
+        let center = d * 0.1875
+
+        switch style {
+        case .fiveSpoke:
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: d * 0.04, style: .continuous)
+                    .fill(WheelFinish.spoke)
+                    .frame(width: d * 0.15, height: length)
+                    .offset(y: -center)
+                    .rotationEffect(.degrees(Double(index) * 72))
+            }
+        case .splitSixSpoke:
+            // Six spokes, each split into a pair of thin bars.
+            ForEach(0..<12, id: \.self) { index in
+                let side: CGFloat = index % 2 == 0 ? -1 : 1
+                RoundedRectangle(cornerRadius: d * 0.02, style: .continuous)
+                    .fill(WheelFinish.spoke)
+                    .frame(width: d * 0.05, height: length)
+                    .offset(x: side * d * 0.04, y: -center)
+                    .rotationEffect(.degrees(Double(index / 2) * 60))
+            }
+        case .mesh:
+            ForEach(0..<15, id: \.self) { index in
+                RoundedRectangle(cornerRadius: d * 0.015, style: .continuous)
+                    .fill(WheelFinish.spoke)
+                    .frame(width: d * 0.03, height: length)
+                    .offset(y: -center)
+                    .rotationEffect(.degrees(Double(index) * 24))
+            }
+        case .hollowFiveSpoke:
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: d * 0.04, style: .continuous)
+                    .strokeBorder(WheelFinish.spoke, lineWidth: max(1, d * 0.025))
+                    .frame(width: d * 0.15, height: length)
+                    .offset(y: -center)
+                    .rotationEffect(.degrees(Double(index) * 72))
+            }
+        }
+    }
+}
+
+// The existing RVPSupplyLogo asset (unmodified) is a 1500x1145px image with its black background
+// baked in and a lot of empty padding around the mark. Rather than edit it, it sits on an
+// intentional dark plate, cropped to the mark: the mark spans roughly x 359-1204 and y 308-845 px,
+// so the window is centered on (781, 572) px, a little right of the image center, which the small
+// x offset (31.5px) corrects. `scale` is points per image pixel; at 0.044 a 44x28pt plate shows
+// about x 281-1281 and y 254-890 px, which holds the whole mark with margin.
+// The image frame needs both dimensions at the same scale (1500 x 1145): with only a width, the
+// plate's own height would be proposed to the image and scaledToFit would shrink it to fit that.
 private struct FeaturedSponsorLogoPlate: View {
+    let width: CGFloat
+    let height: CGFloat
+    let scale: CGFloat
+
     var body: some View {
         Image("RVPSupplyLogo")
             .resizable()
             .scaledToFit()
-            .frame(width: 150, height: 114.5)
-            .offset(x: -3.2)
-            .frame(width: 104, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(width: 1500 * scale, height: 1145 * scale)
+            .offset(x: -31.5 * scale)
+            .frame(width: width, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: height * 0.22, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: height * 0.22, style: .continuous)
                     .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
     }
