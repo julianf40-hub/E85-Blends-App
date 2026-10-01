@@ -11,10 +11,11 @@ import SwiftUI
 // MARK: - Featured content model
 //
 // Recommended Gear leads with a "Featured Brands" carousel. "Featured" is a neutral placement
-// label only: nothing here states or implies a sponsorship, partnership, affiliate relationship,
-// endorsement, discount, or offer. Keep it that way until a relationship is confirmed and approved
-// wording exists. The More screen's own sponsor placement stays in More and deliberately never
-// appears in this carousel.
+// label only: a `.brand` page states or implies no sponsorship, partnership, affiliate
+// relationship, endorsement, discount, or offer, and must keep it that way until a relationship
+// is confirmed and approved wording exists. The one exception is a `.sponsor` page, reserved for
+// an actual sponsor (RVP Supply) and labeled as such; it still carries no price, discount, or
+// performance or compatibility claim.
 //
 // These are presentation data only: no `Color`s (AppTheme tokens are dynamic and must be resolved
 // inside `body`, never cached), no remote configuration. They are not `private` solely so
@@ -43,38 +44,41 @@ extension FeaturedBrand {
     )
 }
 
-/// A non-brand, non-linking carousel page. Not a partner and never implies one.
-struct FeaturedPlaceholder: Identifiable {
-    let id: String
-    let title: String
-    let message: String
+extension FeaturedBrand {
+    /// RVP Supply's OEM+ beadlock wheels, shown as a labeled sponsor. The destination is the Wheels
+    /// collection (not a single product) so the card showcases the category without locking in one
+    /// fitment, and the copy is RVP's own product wording, conservative on purpose: no price, no
+    /// performance claim, and no claim of universal fitment.
+    static let rvpSupplyWheels = FeaturedBrand(
+        id: "rvp-supply-oem-beadlocks",
+        name: "RVP Supply",
+        tagline: "OEM+ Beadlock Wheels",
+        description: "Rotary-forged beadlock wheels with OEM+ styling, lightweight construction, and fitment options for supported vehicles.",
+        ctaTitle: "View OEM+ Beadlocks",
+        destinationURL: URL(string: "https://rvpsupply.com/collections/wheels-1"),
+        accessibilityDescription: "OEM plus beadlock wheels."
+    )
 }
 
-/// One page of the Featured Brands carousel.
+/// One page of the Featured Brands carousel. Both cases share the `FeaturedBrand` data shape; the
+/// case picks the presentation and the label: `.brand` is the neutral "Featured Brand" card, and
+/// `.sponsor` is reserved for an actual sponsor and is labeled "Sponsor".
 enum FeaturedGearPage: Identifiable {
     case brand(FeaturedBrand)
-    case comingSoon(FeaturedPlaceholder)
+    case sponsor(FeaturedBrand)
 
     var id: String {
         switch self {
-        case .brand(let brand):
+        case .brand(let brand), .sponsor(let brand):
             return brand.id
-        case .comingSoon(let placeholder):
-            return placeholder.id
         }
     }
 
-    /// Live-demo catalog: eFlexFuel, then a neutral placeholder that shows the carousel swiping
-    /// without inventing another brand.
+    /// Live-demo catalog: exactly two pages, eFlexFuel (neutral Featured Brand) then RVP Supply
+    /// (sponsor).
     static let catalog: [FeaturedGearPage] = [
         .brand(.eFlexFuel),
-        .comingSoon(
-            FeaturedPlaceholder(
-                id: "more-featured-gear",
-                title: "More Featured Gear",
-                message: "We're building a curated collection of E85 tools, monitoring gear, and accessories."
-            )
-        )
+        .sponsor(.rvpSupplyWheels)
     ]
 }
 
@@ -224,12 +228,15 @@ struct RecommendedGearView: View {
             ) {
                 openFeaturedBrand(brand)
             }
-        case .comingSoon(let placeholder):
-            FeaturedPlaceholderCard(
-                placeholder: placeholder,
+        case .sponsor(let brand):
+            FeaturedSponsorCard(
+                brand: brand,
                 position: position,
-                total: pages.count
-            )
+                total: pages.count,
+                statusMessage: linkMessages[brand.id]
+            ) {
+                openFeaturedBrand(brand)
+            }
         }
     }
 
@@ -398,111 +405,213 @@ private struct FeaturedBrandCard: View {
     }
 }
 
-/// Non-linking page that keeps the carousel honest about what is not here yet.
-private struct FeaturedPlaceholderCard: View {
-    let placeholder: FeaturedPlaceholder
+/// Page-2 sponsor card. Same structure as `FeaturedBrandCard` (one whole-card button, with the
+/// inline failure message outside it, stretched to the carousel's height) but labeled "Sponsor":
+/// RVP Supply is an actual sponsor, so it is the one card here that may say so. It shares the
+/// brand card's link flow, and is a separate view only so the approved eFlexFuel card stays
+/// untouched.
+private struct FeaturedSponsorCard: View {
+    let brand: FeaturedBrand
     let position: Int
     let total: Int
+    let statusMessage: String?
+    let action: () -> Void
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            FeaturedBadge(title: "Coming Soon")
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: action) {
+                VStack(alignment: .leading, spacing: 14) {
+                    FeaturedBadge(title: "Sponsor")
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(placeholder.title)
-                    .font(.system(.title3, design: .rounded).weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(placeholder.message)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // This card is stretched to the brand card's height, so whatever height is left over
-            // is filled here. The artwork is an overlay on a clear, flexible region, so it takes
-            // up the spare room without adding to this card's own height and the carousel never
-            // changes size. If the room is ever too short for it (rare), it is simply dropped.
-            Color.clear
-                .frame(maxHeight: .infinity)
-                .overlay {
-                    ViewThatFits(in: .vertical) {
-                        FeaturedPlaceholderArtwork()
-                        Color.clear.frame(width: 0, height: 0)
+                    // Decorative only, and dropped at accessibility text sizes like the brand card's.
+                    if dynamicTypeSize.isAccessibilitySize == false {
+                        FeaturedSponsorArtwork()
                     }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        FeaturedBrandWordmark(name: brand.name)
+
+                        Text(brand.tagline)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text(brand.description)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    FeaturedCallToAction(title: brand.ctaTitle)
                 }
+                .padding(18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(brand.name). Sponsor. \(brand.accessibilityDescription) Featured card \(position) of \(total). \(brand.description) \(brand.ctaTitle).")
+            .accessibilityHint("Opens the \(brand.name) wheels website in your browser.")
+            .accessibilityAddTraits(.isButton)
+
+            // Outside the Button so it is its own VoiceOver element and never part of the tap target.
+            if let statusMessage {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(AppTheme.Colors.warningRed)
+                        .accessibilityHidden(true)
+
+                    Text(statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .gearCardChrome(dashed: true)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(placeholder.title) coming soon. Featured card \(position) of \(total). \(placeholder.message)")
+        .gearCardChrome()
     }
 }
 
-// Decorative stand-in for future featured gear: the same fuel, monitoring, and tools symbols as the
-// brand card's artwork, laid out on a dashed ring (the placeholder's "not yet" cue, echoing the
-// card's dashed border) with the tools tile emphasized at the center. Native shapes and SF Symbols
-// only; no brand, product, or claim.
-private struct FeaturedPlaceholderArtwork: View {
-    private static let diameter: CGFloat = 160
-    private static let sideTile: CGFloat = 52
+/// The inverted call-to-action pill, matching the one inside `FeaturedBrandCard` (kept separate
+/// so that approved card is untouched). Near-black on light, white on dark/OLED, so it never
+/// depends on the accent color; at accessibility sizes the external-link glyph moves below the text.
+private struct FeaturedCallToAction: View {
+    let title: String
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        let diameter = Self.diameter
-        let sideTile = Self.sideTile
+        let stacked = dynamicTypeSize.isAccessibilitySize
+        let layout = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
 
-        return ZStack {
-            Circle()
-                .fill(AppTheme.Colors.softGreenBackground)
-                .frame(width: diameter, height: diameter)
+        return layout {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Circle()
-                .strokeBorder(
-                    AppTheme.Colors.textMuted.opacity(0.55),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 6])
-                )
-                .frame(width: diameter, height: diameter)
+            if stacked == false {
+                Spacer(minLength: 8)
+            }
 
-            // Faint axis tying the three tiles together.
-            Capsule()
-                .fill(AppTheme.Colors.textMuted.opacity(0.3))
-                .frame(width: diameter, height: 1)
-
-            FeaturedPlaceholderTile(systemImage: "fuelpump.fill", size: sideTile, emphasized: false)
-                .offset(x: -diameter / 2)
-
-            FeaturedPlaceholderTile(systemImage: "waveform.path.ecg", size: sideTile, emphasized: false)
-                .offset(x: diameter / 2)
-
-            FeaturedPlaceholderTile(systemImage: "wrench.and.screwdriver", size: 72, emphasized: true)
+            Image(systemName: "arrow.up.forward.square")
+                .font(.subheadline.weight(.semibold))
+                .accessibilityHidden(true)
         }
-        .frame(width: diameter + sideTile, height: diameter)
+        .foregroundStyle(AppTheme.Colors.surfaceElevated)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .background(
+            AppTheme.Colors.textPrimary,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+    }
+}
+
+// Sponsor artwork: a native wheel illustration beside the RVP mark on a dark plate. Same 120pt
+// panel as the brand card's artwork so the two pages stay the same height. Decorative.
+private struct FeaturedSponsorArtwork: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(AppTheme.Colors.charcoal)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(AppTheme.Colors.stationYellow.opacity(0.35), lineWidth: 1)
+                )
+
+            HStack(spacing: 20) {
+                FeaturedWheelArtwork()
+                FeaturedSponsorLogoPlate()
+            }
+        }
+        .frame(height: 120)
+        .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
     }
 }
 
-private struct FeaturedPlaceholderTile: View {
-    let systemImage: String
-    let size: CGFloat
-    let emphasized: Bool
-
+// Line-art beadlock wheel from shapes only: tire, rim edge, a ring of 24 bolts (a dashed stroke
+// with round caps and a pitch that divides the circumference exactly), five spokes, and a hub
+// with a small yellow center cap (the same yellow the app uses for the sponsor card in More).
+private struct FeaturedWheelArtwork: View {
     var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: size * 0.4, weight: .semibold))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
-            .frame(width: size, height: size)
-            .background(
-                AppTheme.Colors.surfaceElevated,
-                in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-            )
+        ZStack {
+            Circle()
+                .stroke(AppTheme.Colors.textMuted.opacity(0.4), lineWidth: 10)
+                .frame(width: 94, height: 94)
+
+            Circle()
+                .stroke(AppTheme.Colors.textPrimary, lineWidth: 2.5)
+                .frame(width: 82, height: 82)
+
+            // Circumference at this 72pt diameter is about 226.2pt; 24 bolts means a pitch of
+            // about 9.425pt (0.1 dash + 9.325 gap).
+            Circle()
+                .stroke(
+                    AppTheme.Colors.textPrimary,
+                    style: StrokeStyle(lineWidth: 4.5, lineCap: .round, dash: [0.1, 9.325])
+                )
+                .frame(width: 72, height: 72)
+
+            Circle()
+                .fill(AppTheme.Colors.surfaceElevated)
+                .frame(width: 60, height: 60)
+
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(AppTheme.Colors.textPrimary.opacity(0.85))
+                    .frame(width: 9, height: 24)
+                    .offset(y: -17)
+                    .rotationEffect(.degrees(Double(index) * 72))
+            }
+
+            Circle()
+                .fill(AppTheme.Colors.surfaceElevated)
+                .frame(width: 22, height: 22)
+
+            Circle()
+                .strokeBorder(AppTheme.Colors.textPrimary, lineWidth: 2)
+                .frame(width: 22, height: 22)
+
+            Circle()
+                .fill(AppTheme.Colors.stationYellow)
+                .frame(width: 6, height: 6)
+        }
+        .frame(width: 104, height: 104)
+    }
+}
+
+// The existing RVPSupplyLogo asset (unmodified) has its black background baked in and a lot of
+// empty padding around the mark. Rather than edit it, it sits on an intentional dark plate,
+// cropped to the mark: at 150pt wide the 1500px image is 0.1pt per pixel, so the 104x64 window
+// shows roughly x 262-1302 and y 252-892, which contains the mark (about x 359-1204, y 308-845)
+// with margin. The small x offset centers the mark, which sits slightly right of the image center.
+// The frame needs its full height (150 x 1145/1500 = 114.5): with only a width, the plate's 64pt
+// height would be proposed to the image and scaledToFit would shrink it to fit that instead.
+private struct FeaturedSponsorLogoPlate: View {
+    var body: some View {
+        Image("RVPSupplyLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 150, height: 114.5)
+            .offset(x: -3.2)
+            .frame(width: 104, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                    .strokeBorder(
-                        emphasized ? AppTheme.Colors.accentGreen.opacity(0.45) : AppTheme.Colors.border,
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
     }
 }
@@ -653,18 +762,14 @@ private struct FeaturedPageIndicator: View {
 
 private extension View {
     // Same 22pt continuous surface + hairline border the rest of the app's cards use. The border
-    // is inset (strokeBorder) so it is not half-clipped. The placeholder page is dashed and uses a
-    // stronger stroke, because the standard hairline is nearly invisible once dashed.
-    func gearCardChrome(dashed: Bool = false) -> some View {
+    // is inset (strokeBorder) so it is not half-clipped.
+    func gearCardChrome() -> some View {
         self
             .background(AppTheme.Colors.surfaceElevated)
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(
-                        dashed ? AppTheme.Colors.textMuted.opacity(0.7) : AppTheme.Colors.border,
-                        style: StrokeStyle(lineWidth: 1, dash: dashed ? [6, 4] : [])
-                    )
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
     }
 }
