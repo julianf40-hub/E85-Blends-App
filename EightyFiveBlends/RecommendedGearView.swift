@@ -597,7 +597,7 @@ private struct FeaturedSponsorCard: View {
 
                 Spacer(minLength: 8)
 
-                FeaturedSponsorLogoPlate(width: 44, height: 28, scale: 0.044)
+                FeaturedSponsorLogoPlate(width: 72, height: 44, scale: 0.07)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -789,8 +789,8 @@ private struct FeaturedCallToAction: View {
 // baked in and a lot of empty padding around the mark. Rather than edit it, it sits on an
 // intentional dark plate, cropped to the mark: the mark spans roughly x 359-1204 and y 308-845 px,
 // so the window is centered on (781, 572) px, a little right of the image center, which the small
-// x offset (31.5px) corrects. `scale` is points per image pixel; at 0.044 a 44x28pt plate shows
-// about x 281-1281 and y 254-890 px, which holds the whole mark with margin.
+// x offset (31.5px) corrects. `scale` is points per image pixel; the sponsor header's 72x44pt plate
+// at 0.07 shows about x 267-1296 and y 258-887 px, which holds the whole mark with margin.
 // The image frame needs both dimensions at the same scale (1500 x 1145): with only a width, the
 // plate's own height would be proposed to the image and scaledToFit would shrink it to fit that.
 private struct FeaturedSponsorLogoPlate: View {
