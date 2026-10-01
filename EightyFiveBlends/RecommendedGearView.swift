@@ -408,13 +408,6 @@ private struct FeaturedPlaceholderCard: View {
         VStack(alignment: .leading, spacing: 14) {
             FeaturedBadge(title: "Coming Soon")
 
-            HStack(spacing: 10) {
-                FeaturedArtworkTile(systemImage: "fuelpump.fill", fill: AppTheme.Colors.charcoal)
-                FeaturedArtworkTile(systemImage: "waveform.path.ecg", fill: AppTheme.Colors.charcoal)
-                FeaturedArtworkTile(systemImage: "wrench.and.screwdriver", fill: AppTheme.Colors.charcoal)
-            }
-            .accessibilityHidden(true)
-
             VStack(alignment: .leading, spacing: 6) {
                 Text(placeholder.title)
                     .font(.system(.title3, design: .rounded).weight(.bold))
@@ -427,13 +420,90 @@ private struct FeaturedPlaceholderCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 0)
+            // This card is stretched to the brand card's height, so whatever height is left over
+            // is filled here. The artwork is an overlay on a clear, flexible region, so it takes
+            // up the spare room without adding to this card's own height and the carousel never
+            // changes size. If the room is ever too short for it (rare), it is simply dropped.
+            Color.clear
+                .frame(maxHeight: .infinity)
+                .overlay {
+                    ViewThatFits(in: .vertical) {
+                        FeaturedPlaceholderArtwork()
+                        Color.clear.frame(width: 0, height: 0)
+                    }
+                }
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .gearCardChrome(dashed: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(placeholder.title) coming soon. Featured card \(position) of \(total). \(placeholder.message)")
+    }
+}
+
+// Decorative stand-in for future featured gear: the same fuel, monitoring, and tools symbols as the
+// brand card's artwork, laid out on a dashed ring (the placeholder's "not yet" cue, echoing the
+// card's dashed border) with the tools tile emphasized at the center. Native shapes and SF Symbols
+// only; no brand, product, or claim.
+private struct FeaturedPlaceholderArtwork: View {
+    private static let diameter: CGFloat = 160
+    private static let sideTile: CGFloat = 52
+
+    var body: some View {
+        let diameter = Self.diameter
+        let sideTile = Self.sideTile
+
+        return ZStack {
+            Circle()
+                .fill(AppTheme.Colors.softGreenBackground)
+                .frame(width: diameter, height: diameter)
+
+            Circle()
+                .strokeBorder(
+                    AppTheme.Colors.textMuted.opacity(0.55),
+                    style: StrokeStyle(lineWidth: 1, dash: [3, 6])
+                )
+                .frame(width: diameter, height: diameter)
+
+            // Faint axis tying the three tiles together.
+            Capsule()
+                .fill(AppTheme.Colors.textMuted.opacity(0.3))
+                .frame(width: diameter, height: 1)
+
+            FeaturedPlaceholderTile(systemImage: "fuelpump.fill", size: sideTile, emphasized: false)
+                .offset(x: -diameter / 2)
+
+            FeaturedPlaceholderTile(systemImage: "waveform.path.ecg", size: sideTile, emphasized: false)
+                .offset(x: diameter / 2)
+
+            FeaturedPlaceholderTile(systemImage: "wrench.and.screwdriver", size: 72, emphasized: true)
+        }
+        .frame(width: diameter + sideTile, height: diameter)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct FeaturedPlaceholderTile: View {
+    let systemImage: String
+    let size: CGFloat
+    let emphasized: Bool
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.4, weight: .semibold))
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .frame(width: size, height: size)
+            .background(
+                AppTheme.Colors.surfaceElevated,
+                in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .strokeBorder(
+                        emphasized ? AppTheme.Colors.accentGreen.opacity(0.45) : AppTheme.Colors.border,
+                        lineWidth: 1
+                    )
+            )
     }
 }
 
