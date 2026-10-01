@@ -106,11 +106,15 @@ struct RecommendedGearView: View {
     private let pages = FeaturedGearPage.catalog
 
     // Each card takes most of the carousel's width so the next one peeks in from the trailing
-    // edge, which is what tells people the row swipes. The card spacing is at least the page
-    // margin so, once a later card is aligned to the margin, the previous one is fully off screen
-    // instead of leaving a sliver at the screen edge.
-    private static let cardWidthFraction: CGFloat = 0.88
-    private static let cardSpacing: CGFloat = 16
+    // edge, which is what tells people the row swipes. On page 1 the peek works out to
+    // (1 - cardWidthFraction) * container - (cardSpacing - pageMargin), about 16-21pt on 375-440pt
+    // wide phones. That is roughly a card's 18pt inner padding, so only the next card's outer edge
+    // (at most the first couple of points of its content) shows and none of its text is readable
+    // or clipped into view. The card spacing is also larger than the page margin so, once a later
+    // card is aligned to the margin, the previous one is fully off screen instead of leaving a
+    // sliver at the screen edge.
+    private static let cardWidthFraction: CGFloat = 0.93
+    private static let cardSpacing: CGFloat = 24
     private static let pageMargin: CGFloat = 16
 
     private var currentPageIndex: Int {
@@ -252,7 +256,7 @@ struct RecommendedGearView: View {
                     .font(.headline)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                Text("Featured brands open their own websites. Compatibility varies by vehicle, so check with the brand before installing.")
+                Text("Featured brands open their own websites. Check product compatibility with the manufacturer before installation.")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -472,40 +476,62 @@ private struct FeaturedBrandWordmark: View {
 }
 
 // Native placeholder artwork (fuel, ethanol level, monitoring), all SF Symbols and SwiftUI
-// shapes. Swap this body for an approved product image later; it is decorative either way.
+// shapes. Swap this body for an approved product image later; it is decorative either way. The
+// center dial is layered (face, scale ticks, level arc, droplet) from AppTheme tokens only.
 private struct FeaturedBrandArtwork: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(AppTheme.Colors.softGreenBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.25), lineWidth: 1)
+                )
 
             HStack(spacing: 18) {
                 FeaturedArtworkTile(systemImage: "fuelpump.fill", fill: AppTheme.Colors.surfaceElevated)
 
                 ZStack {
+                    Circle()
+                        .fill(AppTheme.Colors.surfaceElevated)
+
+                    Circle()
+                        .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+
+                    // One shared 270-degree sweep, rotated so the opening faces down: scale ticks
+                    // (a dashed arc), the track, and the level arc.
                     ZStack {
                         Circle()
                             .trim(from: 0, to: 0.75)
                             .stroke(
-                                AppTheme.Colors.textMuted.opacity(0.35),
-                                style: StrokeStyle(lineWidth: 9, lineCap: .round)
+                                AppTheme.Colors.textMuted.opacity(0.55),
+                                style: StrokeStyle(lineWidth: 5, dash: [1.5, 7.85])
                             )
+                            .padding(8)
+
+                        Circle()
+                            .trim(from: 0, to: 0.75)
+                            .stroke(
+                                AppTheme.Colors.textMuted.opacity(0.35),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .padding(18)
 
                         Circle()
                             .trim(from: 0, to: 0.52)
                             .stroke(
                                 AppTheme.Colors.accentGreen,
-                                style: StrokeStyle(lineWidth: 9, lineCap: .round)
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
                             )
+                            .padding(18)
                     }
-                    .padding(5)
                     .rotationEffect(.degrees(135))
 
                     Image(systemName: "drop.fill")
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                 }
-                .frame(width: 84, height: 84)
+                .frame(width: 96, height: 96)
 
                 FeaturedArtworkTile(systemImage: "waveform.path.ecg", fill: AppTheme.Colors.surfaceElevated)
             }
