@@ -222,6 +222,13 @@ final class RevenueCatSubscriptionService {
     /// `customerInfo.entitlements["pro"]?.isActive == true`. `SubscriptionManager.isPro` reads
     /// this directly (Internal/Debug may still layer the Developer Override on top).
     private(set) var revenueCatIsPro: Bool = false
+    /// Called at the end of every `apply(_:)` with the RAW `revenueCatIsPro` it just derived —
+    /// i.e. after every authoritative CustomerInfo this process accepts (purchase, restore,
+    /// refresh, `customerInfoStream`, RevenueCatUI hand-off). Lets `SubscriptionManager` end a
+    /// pending purchase/restore the moment RevenueCat confirms the entitlement, independent of
+    /// any paywall callback (which is lost when the entitlement flip swaps `PaywallView` out). Not
+    /// an entitlement source: it only reports what `apply(_:)` already decided.
+    @ObservationIgnored var onEntitlementApplied: (@MainActor (_ revenueCatIsPro: Bool) -> Void)?
     private(set) var initialEntitlementResolutionState: InitialEntitlementResolutionState = .notStarted
     private(set) var customerInfoLastUpdatedAt: Date?
     private(set) var maskedAppUserID: String?
@@ -374,6 +381,7 @@ final class RevenueCatSubscriptionService {
         // once already resolved (see the helper's own header).
         markInitialEntitlementResolutionCompleteIfNeeded()
         print("[85Blends][RevenueCat] CustomerInfo applied: pro=\(revenueCatIsPro)")
+        onEntitlementApplied?(revenueCatIsPro)
     }
 
     /// 85Blends 2.4.0 RevenueCatUI integration — the narrow bridge for a CustomerInfo RevenueCatUI

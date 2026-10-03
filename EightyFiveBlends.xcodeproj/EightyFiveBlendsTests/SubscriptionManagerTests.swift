@@ -626,9 +626,11 @@ struct SubscriptionManagerTests {
     // caller, so it earns direct coverage here: it takes plain values, needs no RevenueCat SDK fake,
     // and is exactly the kind of pure decision function this suite exists to test.
     //
-    // `SubscriptionManager.setPurchaseState(_:)` and `.defaultOffering` are not tested here — both
-    // are one-line stored-property passthroughs with no branching of their own, the same category
-    // as `setPaywallPresented`/`refreshProStatus()` in section K above.
+    // The paywall-callback state transitions (`paywallPurchaseStarted`/`paywallPurchaseFinished`/
+    // `paywallRestoreStarted`/`paywallRestoreFinished`) are thin wrappers over the pure
+    // `PurchaseFlow` state machine, which `PurchaseFlowTests` at the bottom of this file covers
+    // directly; `.defaultOffering` is a one-line passthrough with no branching of its own, the same
+    // category as `setPaywallPresented`/`refreshProStatus()` in section K above.
     //
     // ReferralAwareProPurchaseCoordinator.swift — the referral-before-purchase ordering guarantee
     // ProUpgradeView's new `.onPurchaseInitiated` interceptor still depends on — is completely
@@ -696,3 +698,325 @@ struct SubscriptionManagerOverrideTests {
     }
 }
 #endif
+
+// MARK: - Purchase / restore flow state machine (Build 239 device findings)
+//
+// Real-device observation: an authoritative Pro entitlement could already be active — Pro gates
+// unlocked, the "Pro Active" screen showing — while `purchaseState` still read `.purchasing`
+// ("Processing your purchase…") and Restore Purchases stayed disabled. RevenueCatUI delivers its
+// purchase/restore callbacks as SwiftUI preference changes on `PaywallView`, and `ProUpgradeView`
+// removes `PaywallView` the moment `isProUser` flips — so `.onPurchaseCompleted` could be lost.
+// `PurchaseFlow` (SubscriptionManager.swift) is the pure state machine that now guarantees a
+// pending state can never outlive its cause; these tests exercise it directly, with no
+// RevenueCat singleton. They reuse the existing pure mappings (`state(forPurchaseOutcome:)`,
+// `state(forRestoreOutcome:wasProBefore:)`) rather than restating their rules.
+
+struct PurchaseFlowTests {
+
+    // MARK: Purchase
+
+    @Test("Purchase begins → .purchasing, and the flow is busy (a new purchase/restore is blocked)")
+    func purchase_begins_isPurchasingAndBusy() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        #expect(flow.state == .purchasing)
+        #expect(flow.isBusy)
+    }
+
+    @Test("Authoritative active Pro arrives while .purchasing and the paywall callback never does → transient state cleared")
+    func purchase_entitlementArrivesWithoutCallback_clearsPurchasing() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)
+
+        #expect(flow.state == .succeeded)
+        #expect(flow.state != .purchasing)
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("A late .onPurchaseCompleted after the entitlement already reconciled leaves the same terminal state")
+    func purchase_lateCompletion_afterReconciliation_isConsistent() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)
+
+        flow.purchaseFinished(state: SubscriptionManager.state(forPurchaseOutcome: .proActivated))
+
+        #expect(flow.state == .succeeded)
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("Purchase cancelled → terminal non-purchasing state, and a new purchase can begin again")
+    func purchase_cancelled_isTerminalAndReEntrant() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.purchaseFinished(state: SubscriptionManager.state(forPurchaseOutcome: .cancelled))
+
+        #expect(flow.state == .idle)
+        #expect(flow.isBusy == false)
+
+        flow.purchaseStarted()
+        #expect(flow.state == .purchasing)
+    }
+
+    @Test("Purchase failure → terminal failure state (never succeeded), not busy")
+    func purchase_failure_isTerminalFailure() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.purchaseFinished(state: SubscriptionManager.state(forPurchaseOutcome: .failed("network error")))
+
+        #expect(flow.state == .failed("network error"))
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("A Free entitlement update (e.g. an unrelated CustomerInfo refresh) never ends a pending purchase")
+    func purchase_freeEntitlementUpdate_doesNotEndPurchasing() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+
+        flow.entitlementApplied(revenueCatIsPro: false, paywallPresented: true)
+
+        #expect(flow.state == .purchasing)
+    }
+
+    #if DEBUG || INTERNAL_BUILD
+    @Test("Developer Force Pro is not a purchase — only RevenueCat's RAW entitlement reconciles")
+    func purchase_forcePro_doesNotMasqueradeAsPurchase() {
+        // Force Pro makes the EFFECTIVE entitlement true while RevenueCat itself says Free…
+        #expect(SubscriptionManager.effectivePro(override: .forcePro, revenueCatIsPro: false))
+        // …but SubscriptionManager feeds the flow the raw `revenueCatIsPro` (false here), so a
+        // pending purchase is untouched: an override is not evidence a purchase succeeded.
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.entitlementApplied(revenueCatIsPro: false, paywallPresented: true)
+        #expect(flow.state == .purchasing)
+    }
+    #endif
+
+    @Test("Once reconciled, Restore is actionable again (a stale .purchasing must never disable it)")
+    func purchase_afterReconciliation_restoreIsActionable() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)
+        #expect(flow.isBusy == false)
+
+        flow.restoreStarted(wasProBefore: true)
+        #expect(flow.state == .restoring)
+    }
+
+    // MARK: Restore feedback mapping
+
+    @Test("Active Pro returned → Purchases Restored feedback with the exact copy")
+    func restoreFeedback_activePro() {
+        let feedback = SubscriptionManager.restoreFeedback(for: .proActive)
+        #expect(feedback == .restored)
+        #expect(feedback.title == "Purchases Restored")
+        #expect(feedback.message == "Your 85Blends Pro subscription has been restored successfully.")
+    }
+
+    @Test("Restore succeeds but no active Pro → No Active Subscription Found feedback with the exact copy")
+    func restoreFeedback_noActivePro() {
+        let feedback = SubscriptionManager.restoreFeedback(for: .noActivePro)
+        #expect(feedback == .noActiveSubscription)
+        #expect(feedback.title == "No Active Subscription Found")
+        #expect(feedback.message == "We couldn't find an active 85Blends Pro subscription associated with your Apple ID.")
+    }
+
+    @Test("Restore error → Restore Failed feedback, with friendly copy that never exposes the raw error text")
+    func restoreFeedback_failure_isFriendly() {
+        let feedback = SubscriptionManager.restoreFeedback(for: .failed("RevenueCat.ErrorCode 42: StoreKit internal"))
+        #expect(feedback == .failed)
+        #expect(feedback.title == "Restore Failed")
+        #expect(feedback.message.contains("42") == false)
+        #expect(feedback.message.contains("StoreKit") == false)
+        #expect(feedback.message.contains("RevenueCat") == false)
+    }
+
+    // MARK: Restore lifecycle
+
+    @Test("Every restore terminal outcome clears .restoring, queues its feedback, and Restore can be used again")
+    func restore_everyOutcome_clearsRestoringAndIsRepeatable() {
+        let outcomes: [(RevenueCatSubscriptionService.RestoreOutcome, RestoreFeedback)] = [
+            (.proActive, .restored),
+            (.noActivePro, .noActiveSubscription),
+            (.failed("network error"), .failed),
+        ]
+        var flow = PurchaseFlow()
+        for (outcome, expectedFeedback) in outcomes {
+            flow.restoreStarted(wasProBefore: false)
+            #expect(flow.state == .restoring)
+            #expect(flow.isBusy)
+
+            flow.restoreFinished(
+                state: SubscriptionManager.state(forRestoreOutcome: outcome, wasProBefore: false),
+                feedback: SubscriptionManager.restoreFeedback(for: outcome),
+                viaPaywallCallback: false,
+                paywallPresented: true
+            )
+
+            #expect(flow.state != .restoring)
+            #expect(flow.isBusy == false)
+            #expect(flow.restoreFeedback == expectedFeedback)
+
+            flow.dismissRestoreFeedback()           // user taps OK…
+            #expect(flow.restoreFeedback == nil)    // …and can tap Restore again (next loop turn)
+        }
+    }
+
+    @Test("Already-Pro user restoring: the call's own result ends it with a success response (not stuck on .restoring)")
+    func restore_alreadyPro_endsWithSuccessFeedback() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: true)
+
+        flow.restoreFinished(
+            state: SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: true),
+            feedback: SubscriptionManager.restoreFeedback(for: .proActive),
+            viaPaywallCallback: false,
+            paywallPresented: true
+        )
+
+        #expect(flow.state == .info("85Blends Pro is active."))
+        #expect(flow.restoreFeedback == .restored)
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("An unrelated entitlement update does NOT report a result for an already-Pro user's in-flight restore")
+    func restore_alreadyPro_entitlementUpdateDoesNotSettleEarly() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: true)
+
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)
+
+        #expect(flow.state == .restoring)
+        #expect(flow.restoreFeedback == nil)
+    }
+
+    @Test("Free → Pro during a paywall restore whose callback is lost → restored + feedback; the late callback is ignored")
+    func restore_entitlementArrivesWithoutCallback_settlesOnce() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)
+
+        #expect(flow.state == .restored)
+        #expect(flow.restoreFeedback == .restored)
+        #expect(flow.isBusy == false)
+
+        // The user acknowledges the alert, THEN the paywall's own callback for the same attempt
+        // finally arrives: it must not re-present the result.
+        flow.dismissRestoreFeedback()
+        flow.restoreFinished(
+            state: SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: false),
+            feedback: .restored,
+            viaPaywallCallback: true,
+            paywallPresented: true
+        )
+        #expect(flow.restoreFeedback == nil)
+        #expect(flow.state == .restored)
+    }
+
+    @Test("A paywall-callback restore result still applies normally when nothing settled it earlier (no entitlement change)")
+    func restore_paywallCallback_noActivePro_appliesNormally() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+
+        flow.restoreFinished(
+            state: SubscriptionManager.state(forRestoreOutcome: .noActivePro, wasProBefore: false),
+            feedback: .noActiveSubscription,
+            viaPaywallCallback: true,
+            paywallPresented: true
+        )
+
+        #expect(flow.state == .info("No active subscription found."))
+        #expect(flow.restoreFeedback == .noActiveSubscription)
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("A restore result is never queued while the paywall is not on screen")
+    func restore_resultNotQueuedWhenPaywallNotPresented() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+
+        flow.restoreFinished(
+            state: .restored,
+            feedback: .restored,
+            viaPaywallCallback: false,
+            paywallPresented: false
+        )
+
+        #expect(flow.state == .restored)
+        #expect(flow.restoreFeedback == nil)
+    }
+
+    @Test("A restore settled by an entitlement arrival never suppresses the NEXT restore attempt's own callback")
+    func restore_settledFlag_resetsOnNextRestore() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+        flow.entitlementApplied(revenueCatIsPro: true, paywallPresented: true)   // settles attempt 1; its callback never arrives
+        flow.dismissRestoreFeedback()
+
+        // Attempt 2 (e.g. Pro lapsed, user restores again) — its callback must apply normally.
+        flow.restoreStarted(wasProBefore: false)
+        flow.restoreFinished(
+            state: SubscriptionManager.state(forRestoreOutcome: .noActivePro, wasProBefore: false),
+            feedback: .noActiveSubscription,
+            viaPaywallCallback: true,
+            paywallPresented: true
+        )
+
+        #expect(flow.state == .info("No active subscription found."))
+        #expect(flow.restoreFeedback == .noActiveSubscription)
+    }
+
+    @Test("A new restore attempt discards the previous attempt's unacknowledged result")
+    func restore_newAttempt_clearsPreviousFeedback() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+        flow.restoreFinished(state: .restored, feedback: .restored, viaPaywallCallback: false, paywallPresented: true)
+        #expect(flow.restoreFeedback == .restored)
+
+        flow.restoreStarted(wasProBefore: true)
+
+        #expect(flow.restoreFeedback == nil)
+        #expect(flow.state == .restoring)
+    }
+
+    // MARK: Paywall dismissal
+
+    @Test("Dismissing the paywall mid-purchase clears .purchasing without claiming success or failure")
+    func dismissal_midPurchase_clearsWithoutClaimingOutcome() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+
+        flow.paywallDismissed()
+
+        #expect(flow.state == .idle)
+        #expect(flow.isBusy == false)
+    }
+
+    @Test("Dismissing the paywall mid-restore clears .restoring and drops any unacknowledged result alert")
+    func dismissal_midRestore_clearsRestoringAndPendingAlert() {
+        var flow = PurchaseFlow()
+        flow.restoreStarted(wasProBefore: false)
+        flow.paywallDismissed()
+        #expect(flow.state == .idle)
+
+        flow.restoreStarted(wasProBefore: false)
+        flow.restoreFinished(state: .restored, feedback: .restored, viaPaywallCallback: false, paywallPresented: true)
+        #expect(flow.restoreFeedback == .restored)
+        flow.paywallDismissed()
+        #expect(flow.restoreFeedback == nil)
+    }
+
+    @Test("Dismissing the paywall leaves already-terminal states alone")
+    func dismissal_terminalStates_untouched() {
+        var flow = PurchaseFlow()
+        flow.purchaseStarted()
+        flow.purchaseFinished(state: SubscriptionManager.state(forPurchaseOutcome: .proActivated))
+
+        flow.paywallDismissed()
+
+        #expect(flow.state == .succeeded)
+    }
+}
