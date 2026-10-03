@@ -56,16 +56,20 @@ struct AnalyticsFailureCategoryTests {
 
     @Test(
         "Every possible category satisfies the DB's non-empty, <=128-character shape constraint",
+        // The errors are the arguments (plain values); `category(for:)` is called in the test body.
+        // Calling the MainActor-isolated `category(for:)` inside this attribute's argument list
+        // would evaluate it in a nonisolated context, which is a Swift 6 error.
         arguments: [
-            AnalyticsFailureCategory.category(for: CommunityPriceServiceError.notConfigured),
-            AnalyticsFailureCategory.category(for: CommunityPriceServiceError.invalidBaseURL),
-            AnalyticsFailureCategory.category(for: CommunityPriceServiceError.requestFailed(statusCode: 500, message: "x")),
-            AnalyticsFailureCategory.category(for: CommunityPriceServiceError.invalidResponse),
-            AnalyticsFailureCategory.category(for: CommunityPriceServiceError.stationLookupFailed),
-            AnalyticsFailureCategory.category(for: URLError(.notConnectedToInternet)),
-        ]
+            CommunityPriceServiceError.notConfigured,
+            CommunityPriceServiceError.invalidBaseURL,
+            CommunityPriceServiceError.requestFailed(statusCode: 500, message: "x"),
+            CommunityPriceServiceError.invalidResponse,
+            CommunityPriceServiceError.stationLookupFailed,
+            URLError(.notConnectedToInternet),
+        ] as [any Error]
     )
-    func category_matchesDatabaseShapeConstraint(_ category: String) {
+    func category_matchesDatabaseShapeConstraint(_ error: any Error) {
+        let category = AnalyticsFailureCategory.category(for: error)
         #expect(Self.dbShapeRange.contains(category.count))
     }
 }

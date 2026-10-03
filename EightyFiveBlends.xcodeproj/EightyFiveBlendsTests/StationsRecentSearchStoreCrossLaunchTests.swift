@@ -60,6 +60,18 @@ struct StationsRecentSearchStoreCrossLaunchTests {
         )
     }
 
+    // MARK: 0. Default persistence location is unchanged by the isolation cleanup
+
+    @Test("defaultPersistenceURL is still <Caches>/85Blends/StationsCurrentLocationSnapshot-v1.json")
+    func defaultPersistenceURL_locationAndFileNameAreUnchanged() throws {
+        let url = StationsRecentSearchStore.defaultPersistenceURL
+        #expect(url.lastPathComponent == "StationsCurrentLocationSnapshot-v1.json")
+        let directory = url.deletingLastPathComponent()
+        #expect(directory.lastPathComponent == "85Blends")
+        let caches = try #require(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+        #expect(directory.deletingLastPathComponent().standardizedFileURL == caches.standardizedFileURL)
+    }
+
     // MARK: A/M. Persisted DTO round-trip, including search-center rounding
 
     @Test("A successful current-location result persists to disk and restores in a new store instance with matching station data and an approximately-rounded search center")

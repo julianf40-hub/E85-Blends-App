@@ -53,7 +53,11 @@ enum CommunityStationKey {
     /// Case/diacritic-folded, whitespace-trimmed form of a single field, used to build a stable
     /// key regardless of capitalization or accent differences between two reports of the same
     /// physical station.
-    static func normalizedText(_ value: String) -> String {
+    ///
+    /// `nonisolated`: pure `String` logic with no shared state. `normalizedKey` below passes it
+    /// as a function value (`.map(normalizedText)`), which is a nonisolated use under this
+    /// project's default MainActor isolation.
+    nonisolated static func normalizedText(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)

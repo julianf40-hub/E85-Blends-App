@@ -85,7 +85,7 @@ struct SupabaseTimestampDecodingTests {
 
 // MARK: - CommunityPriceService with a stubbed network
 
-final class SupabaseTimestampMockURLProtocol: URLProtocol, @unchecked Sendable {
+final class SupabaseTimestampMockURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _requestHandler: (@Sendable (URLRequest) throws -> (Int, Data))?
 

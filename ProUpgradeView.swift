@@ -396,14 +396,22 @@ struct ProUpgradeView: View {
                         // Type-erased immediately to a plain `(Bool) -> Void` so nothing else in
                         // this file needs to name RevenueCatUI's own resume-action type — see
                         // handlePurchaseInitiated's own header.
-                        let proceed: (Bool) -> Void = { shouldProceed in
-                            if shouldProceed {
-                                resume()
-                            } else {
-                                resume(shouldProceed: false)
-                            }
-                        }
+                        //
+                        // Built INSIDE the MainActor task: RevenueCatUI's `ResumeAction` is
+                        // callable only on the main actor (`@MainActor callAsFunction`), but this
+                        // handler itself is a nonisolated `@Sendable` closure — a closure literal
+                        // written out here would be nonisolated and could not call `resume`.
+                        // Created in the task, `proceed` is MainActor-isolated like everything
+                        // that calls it (handlePurchaseInitiated and the referral coordinator
+                        // are all MainActor), so nothing about when or where `resume` runs changes.
                         Task { @MainActor in
+                            let proceed: (Bool) -> Void = { shouldProceed in
+                                if shouldProceed {
+                                    resume()
+                                } else {
+                                    resume(shouldProceed: false)
+                                }
+                            }
                             await handlePurchaseInitiated(resume: proceed)
                         }
                     }
