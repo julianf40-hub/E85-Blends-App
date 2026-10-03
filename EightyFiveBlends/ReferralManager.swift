@@ -138,7 +138,10 @@ final class ReferralManager {
     private let credentialStore: ReferralCredentialStoring
     private let environmentProvider: ReferralRevenueEnvironmentProviding
     private let identityProvider: ReferralRevenueCatIdentityProviding
-    private let serviceFactory: @Sendable () throws -> ReferralAPIServicing
+    /// `@MainActor`: every call (`performRefresh`, `ensureBootstrapped`'s tasks, etc.) happens from
+    /// this MainActor-isolated type, and the default factory builds `ReferralAPIService`, whose
+    /// initializer is MainActor-isolated under this project's default isolation.
+    private let serviceFactory: @MainActor @Sendable () throws -> ReferralAPIServicing
     private var bootstrapTask: Task<Void, Error>?
     /// The most recently QUEUED post-bootstrap operation (refresh or apply), used purely as a
     /// join point — every new operation awaits this before doing its own network call, then
@@ -159,16 +162,23 @@ final class ReferralManager {
     /// `refresh()`'s dedup check and `clearInFlightRefresh(ifStillGeneration:)`.
     private var inFlightRefreshGeneration = 0
 
+    /// Every parameter defaults to the live production dependency when omitted (`nil`). The live
+    /// defaults are constructed here, inside this MainActor-isolated initializer, rather than as
+    /// default-argument expressions: default-argument expressions are evaluated in a nonisolated
+    /// context under this project's Swift 5 language mode, and each live dependency's initializer
+    /// is MainActor-isolated by the project's default isolation — so that spelling was a Swift 6
+    /// actor-isolation error. Behavior is identical: the same four live objects are created, on
+    /// the main actor, at the same point (`ReferralManager.shared`'s first access).
     init(
-        credentialStore: ReferralCredentialStoring = KeychainReferralCredentialStore(),
-        environmentProvider: ReferralRevenueEnvironmentProviding = StoreKitReferralRevenueEnvironmentProvider(),
-        identityProvider: ReferralRevenueCatIdentityProviding = LiveReferralRevenueCatIdentityProvider(),
-        serviceFactory: @escaping @Sendable () throws -> ReferralAPIServicing = { try ReferralAPIService() }
+        credentialStore: ReferralCredentialStoring? = nil,
+        environmentProvider: ReferralRevenueEnvironmentProviding? = nil,
+        identityProvider: ReferralRevenueCatIdentityProviding? = nil,
+        serviceFactory: (@MainActor @Sendable () throws -> ReferralAPIServicing)? = nil
     ) {
-        self.credentialStore = credentialStore
-        self.environmentProvider = environmentProvider
-        self.identityProvider = identityProvider
-        self.serviceFactory = serviceFactory
+        self.credentialStore = credentialStore ?? KeychainReferralCredentialStore()
+        self.environmentProvider = environmentProvider ?? StoreKitReferralRevenueEnvironmentProvider()
+        self.identityProvider = identityProvider ?? LiveReferralRevenueCatIdentityProvider()
+        self.serviceFactory = serviceFactory ?? { try ReferralAPIService() }
     }
 
     /// Best-effort, fire-and-forget startup entry point — see EightyFiveBlendsApp.swift's

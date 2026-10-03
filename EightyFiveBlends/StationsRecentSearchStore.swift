@@ -239,7 +239,12 @@ final class StationsRecentSearchStore {
     /// excluded from iCloud/device backup, and the OS may purge it under storage pressure —
     /// all acceptable, since the very next successful current-location search simply rewrites
     /// it (see recordCurrentLocationSearchResult).
-    static let defaultPersistenceURL: URL = {
+    ///
+    /// `nonisolated`: an immutable, `Sendable` `URL` computed once from `FileManager` (thread-safe)
+    /// with no store state. It is the default argument of `init(persistenceURL:)`, and default
+    /// argument expressions are evaluated in a nonisolated context under this project's Swift 5
+    /// language mode. The path, file name and format are unchanged.
+    nonisolated static let defaultPersistenceURL: URL = {
         let fileManager = FileManager.default
         let base = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
         let directory = base.appendingPathComponent("85Blends", isDirectory: true)

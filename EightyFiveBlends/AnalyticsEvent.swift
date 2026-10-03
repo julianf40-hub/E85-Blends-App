@@ -72,7 +72,13 @@ enum AnalyticsPriceState: String, Encodable, Sendable {
 /// StationsView's private `communityPriceSummaries`; and StationsView's own compact-mode call
 /// sites, where the value would only describe the report itself, not add new information) would
 /// mean fabricating a value rather than reading a real one.
-struct AnalyticsEventProperties: Encodable, Sendable {
+///
+/// `nonisolated`: a plain value type with no actor-owned state. Its memberwise `init()` is used
+/// as a default argument (`AnalyticsService.track`'s `properties:`), and default-argument
+/// expressions are evaluated in a nonisolated context under this project's Swift 5 language
+/// mode — leaving the project-wide default MainActor isolation on the type made that call an
+/// actor-isolation diagnostic that becomes an error in Swift 6 mode.
+nonisolated struct AnalyticsEventProperties: Encodable, Sendable {
     var stationSource: String?
     var entryPoint: AnalyticsEntryPoint?
     var priceState: AnalyticsPriceState?

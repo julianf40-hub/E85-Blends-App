@@ -285,12 +285,15 @@ enum MapsRoutingHelper {
     ///     exactly which navigation intent this resolves to (which preferred app, which URL,
     ///     whether the "not installed" fallback fired) without any map app actually installed.
     ///     Default to the real `UIApplication`/`MKMapItem` behavior; every existing call site is
-    ///     unaffected since it never needs to pass these.
+    ///     unaffected since it never needs to pass these. `canOpenURL`/`open` are `@MainActor`
+    ///     closures: their defaults call `UIApplication.shared` (MainActor-isolated), and
+    ///     default-argument closures are otherwise treated as nonisolated under this project's
+    ///     Swift 5 language mode. This function only ever invokes them from the main actor.
     @discardableResult
     static func openDirections(
         to destination: MapsRoutingDestination,
-        canOpenURL: (URL) -> Bool = { UIApplication.shared.canOpenURL($0) },
-        open: (URL) -> Void = { UIApplication.shared.open($0) },
+        canOpenURL: @MainActor (URL) -> Bool = { UIApplication.shared.canOpenURL($0) },
+        open: @MainActor (URL) -> Void = { UIApplication.shared.open($0) },
         openMapItem: (MKMapItem) -> Void = {
             $0.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
         }
@@ -433,7 +436,7 @@ enum MapsRoutingHelper {
         return true
     }
 
-    private static func openAppleMaps(to destination: MapsRoutingDestination, open: (URL) -> Void, openMapItem: (MKMapItem) -> Void) {
+    private static func openAppleMaps(to destination: MapsRoutingDestination, open: @MainActor (URL) -> Void, openMapItem: (MKMapItem) -> Void) {
         if let coordinate = destination.coordinate {
             let placemark = MKPlacemark(coordinate: coordinate)
             let item = MKMapItem(placemark: placemark)
@@ -493,7 +496,7 @@ enum MapsRoutingHelper {
     }
 
     @discardableResult
-    private static func openURL(_ url: URL?, canOpenURL: (URL) -> Bool, open: (URL) -> Void) -> Bool {
+    private static func openURL(_ url: URL?, canOpenURL: @MainActor (URL) -> Bool, open: @MainActor (URL) -> Void) -> Bool {
         guard let url, canOpenURL(url) else { return false }
         open(url)
         return true

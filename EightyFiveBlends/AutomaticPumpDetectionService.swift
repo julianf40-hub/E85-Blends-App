@@ -77,9 +77,12 @@ final class AutomaticPumpDetectionService: NSObject {
     static let backgroundConfirmationAttemptTimeout: TimeInterval = 4
 
     private static let notificationTitle = "You're at an E85 station"
-    private static let notificationTypeKey = "type"
-    private static let notificationTypeValue = "automaticPumpDetection"
-    private static let notificationStationIDKey = "stationRecordID"
+    // Immutable `String` literals — no actor-owned state. `nonisolated` because the
+    // `UNUserNotificationCenterDelegate.didReceive` callback (below) is itself `nonisolated` (the
+    // system delivers it off the main actor) and reads them before it hops to the main actor.
+    nonisolated private static let notificationTypeKey = "type"
+    nonisolated private static let notificationTypeValue = "automaticPumpDetection"
+    nonisolated private static let notificationStationIDKey = "stationRecordID"
 
     // MARK: - Public, observable state (drives Settings UI)
 
@@ -148,7 +151,11 @@ final class AutomaticPumpDetectionService: NSObject {
     func attach(to locationManager: StationLocationManager) {
         self.locationManager = locationManager
         locationManager.onRegionEvent = { [weak self] identifier, kind in
-            Task { @MainActor in
+            // The inner Task re-captures `self` weakly itself (same idiom as the observation
+            // callback and notification-delegate Tasks below) instead of reaching back through
+            // the outer closure's weak variable: it never retains the service, and if the
+            // service is gone by the time the Task runs this is a no-op, exactly as before.
+            Task { @MainActor [weak self] in
                 self?.handleRegionEvent(identifier: identifier, kind: kind)
             }
         }
