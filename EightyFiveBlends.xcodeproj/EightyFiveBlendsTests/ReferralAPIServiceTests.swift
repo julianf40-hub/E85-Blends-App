@@ -16,6 +16,12 @@ import Foundation
 /// capturing the last request it saw and returning a stubbed outcome. Registered on an
 /// `.ephemeral` `URLSessionConfiguration` passed into `ReferralAPIService`'s injectable
 /// `session:` initializer parameter — never the real shared/default session.
+///
+/// Its stub and capture state is process-wide `static` state, so it is only safe while exactly one
+/// test at a time uses it: `ReferralAPIServiceTests` is `@Suite(.serialized)` and is the ONLY user.
+/// Any other test needing a captured request body must use its own protocol class (see
+/// `ReferralModelsCapturingURLProtocol`), never this one, or it can read or overwrite this suite's
+/// state when Swift Testing runs the two suites in parallel.
 final class CapturingURLProtocol: URLProtocol, @unchecked Sendable {
     enum StubbedResponse {
         case success(statusCode: Int, body: Data)
@@ -40,25 +46,40 @@ final class CapturingURLProtocol: URLProtocol, @unchecked Sendable {
         lock.withLock { _lastRequestBody }
     }
 
+    /// Clears everything a previous test left behind, so a test can never observe another test's
+    /// stub or captured request.
+    static func reset() {
+        lock.withLock {
+            _stubbedResponse = .success(statusCode: 200, body: Data())
+            _lastRequest = nil
+            _lastRequestBody = nil
+        }
+    }
+
+    /// Reads a request body whether URLSession delivered it as `httpBody` or as a stream.
+    static func bodyData(of request: URLRequest) -> Data? {
+        request.httpBody ?? request.httpBodyStream.map { stream -> Data in
+            stream.open()
+            defer { stream.close() }
+            var data = Data()
+            let bufferSize = 4096
+            var buffer = [UInt8](repeating: 0, count: bufferSize)
+            while stream.hasBytesAvailable {
+                let read = stream.read(&buffer, maxLength: bufferSize)
+                if read > 0 { data.append(buffer, count: read) }
+                else { break }
+            }
+            return data
+        }
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         Self.lock.withLock {
             Self._lastRequest = request
-            Self._lastRequestBody = request.httpBody ?? request.httpBodyStream.map { stream -> Data in
-                stream.open()
-                defer { stream.close() }
-                var data = Data()
-                let bufferSize = 4096
-                var buffer = [UInt8](repeating: 0, count: bufferSize)
-                while stream.hasBytesAvailable {
-                    let read = stream.read(&buffer, maxLength: bufferSize)
-                    if read > 0 { data.append(buffer, count: read) }
-                    else { break }
-                }
-                return data
-            }
+            Self._lastRequestBody = Self.bodyData(of: request)
         }
 
         switch Self.stubbedResponse {
@@ -80,8 +101,10 @@ final class CapturingURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+@Suite(.serialized)
 struct ReferralAPIServiceTests {
     private static func makeService() throws -> ReferralAPIService {
+        CapturingURLProtocol.reset()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CapturingURLProtocol.self]
         return try ReferralAPIService(session: URLSession(configuration: configuration))

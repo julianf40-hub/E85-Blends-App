@@ -452,36 +452,9 @@ struct SubscriptionManagerTests {
     // the singleton's original override value via `defer` so it doesn't leak state into whichever
     // test runs next.
 
-    @Test("resetDebugProOverride() returns the override to .off from any prior state")
-    func resetDebugProOverride_returnsToOff() {
-        let manager = SubscriptionManager.shared
-        let originalOverride = manager.debugProOverride
-        defer { manager.debugProOverride = originalOverride }
-
-        manager.debugProOverride = .forcePro
-        #expect(manager.isDebugProOverrideActive)
-
-        manager.resetDebugProOverride()
-
-        #expect(manager.debugProOverride == .off)
-        #expect(manager.isDebugProOverrideActive == false)
-    }
-
-    @Test("isDebugProOverrideActive is true for Force Pro and Force Free, false only for Off")
-    func isDebugProOverrideActive_matchesNonOffCases() {
-        let manager = SubscriptionManager.shared
-        let originalOverride = manager.debugProOverride
-        defer { manager.debugProOverride = originalOverride }
-
-        manager.debugProOverride = .off
-        #expect(manager.isDebugProOverrideActive == false)
-
-        manager.debugProOverride = .forcePro
-        #expect(manager.isDebugProOverrideActive)
-
-        manager.debugProOverride = .forceFree
-        #expect(manager.isDebugProOverrideActive)
-    }
+    // The two tests that mutate the live `SubscriptionManager.shared` override live in
+    // `SubscriptionManagerOverrideTests` at the bottom of this file: they share one singleton and one
+    // persisted UserDefaults key, so they must not run in parallel with each other.
 
     // Item 22 — "production path remains RevenueCat-only" is a compile-time fact, not something a
     // Debug-compiled test binary can independently observe (identical reasoning to item 20).
@@ -607,15 +580,27 @@ struct SubscriptionManagerTests {
     // tested-by-production-use refreshCustomerInfoNow() (SubscriptionManager.swift) — it introduces
     // no new entitlement logic of its own to test.
 
-    @Test("hasAuthoritativeProStatus reads false before any CustomerInfo has ever been successfully applied this process (the untouched default customerInfoLastUpdatedAt == nil state)")
+    @Test("A RevenueCatSubscriptionService that has never applied a CustomerInfo has no authoritative status, and hasAuthoritativeProStatus mirrors that property exactly")
     func hasAuthoritativeProStatus_isFalseBeforeAnyRealCustomerInfo() {
-        // This test process never calls RevenueCatSubscriptionService.configureIfNeeded() (no
-        // SDK key is configured for the test target — see this file's header on why RevenueCat
-        // can't safely be driven end-to-end here), so customerInfoLastUpdatedAt can only still be
-        // at its declared `nil` default — proving hasAuthoritativeProStatus starts false rather
-        // than, say, accidentally defaulting to true. Does NOT prove the true-producing path;
-        // that's the code-inspection fact in this section's own header above.
-        #expect(SubscriptionManager.shared.hasAuthoritativeProStatus == false)
+        // The earlier version of this test asserted `SubscriptionManager.shared.hasAuthoritativeProStatus == false`
+        // on the assumption that this test process never configures RevenueCat. That assumption is false:
+        // EightyFiveBlendsTests is hosted by the real app, whose launch `.task` calls
+        // `RevenueCatSubscriptionService.shared.configureIfNeeded()` with the real public SDK key, so on a
+        // machine with network (Xcode Cloud) a real CustomerInfo can arrive at any moment and set
+        // `customerInfoLastUpdatedAt` before or while this test runs. Whether the shared singleton is
+        // still untouched is therefore a race with the host app, not a property of the code under test.
+        //
+        // What this can deterministically prove is the declared default on a FRESH service that no
+        // CustomerInfo has ever reached, plus that `hasAuthoritativeProStatus` is exactly
+        // `customerInfoLastUpdatedAt != nil` on the live singleton, whatever state that is in. Both reads
+        // are synchronous on the main actor, so a CustomerInfo cannot land between them.
+        let freshService = RevenueCatSubscriptionService(client: FakeRevenueCatClientWithAppUserID(currentAppUserID: "user_1"))
+        #expect(freshService.customerInfoLastUpdatedAt == nil)
+
+        #expect(
+            SubscriptionManager.shared.hasAuthoritativeProStatus
+                == (RevenueCatSubscriptionService.shared.customerInfoLastUpdatedAt != nil)
+        )
     }
 
     // MARK: L. RevenueCatUI paywall integration — 85Blends 2.4.0
@@ -668,3 +653,46 @@ struct SubscriptionManagerTests {
         #expect(outcome != .proActivated)
     }
 }
+
+// MARK: - Developer Pro Override tests that mutate the live singleton
+
+/// These two tests set and restore `SubscriptionManager.shared.debugProOverride`, which is process-wide
+/// state that also persists to `UserDefaults.standard`. In the parallel-by-default `SubscriptionManagerTests`
+/// suite they could interleave and see each other's `.forcePro`/`.forceFree`. A suite of their own,
+/// marked `.serialized`, makes them mutually exclusive without serializing the pure tests above.
+#if DEBUG || INTERNAL_BUILD
+@Suite(.serialized)
+struct SubscriptionManagerOverrideTests {
+
+    @Test("resetDebugProOverride() returns the override to .off from any prior state")
+    func resetDebugProOverride_returnsToOff() {
+        let manager = SubscriptionManager.shared
+        let originalOverride = manager.debugProOverride
+        defer { manager.debugProOverride = originalOverride }
+
+        manager.debugProOverride = .forcePro
+        #expect(manager.isDebugProOverrideActive)
+
+        manager.resetDebugProOverride()
+
+        #expect(manager.debugProOverride == .off)
+        #expect(manager.isDebugProOverrideActive == false)
+    }
+
+    @Test("isDebugProOverrideActive is true for Force Pro and Force Free, false only for Off")
+    func isDebugProOverrideActive_matchesNonOffCases() {
+        let manager = SubscriptionManager.shared
+        let originalOverride = manager.debugProOverride
+        defer { manager.debugProOverride = originalOverride }
+
+        manager.debugProOverride = .off
+        #expect(manager.isDebugProOverrideActive == false)
+
+        manager.debugProOverride = .forcePro
+        #expect(manager.isDebugProOverrideActive)
+
+        manager.debugProOverride = .forceFree
+        #expect(manager.isDebugProOverrideActive)
+    }
+}
+#endif
