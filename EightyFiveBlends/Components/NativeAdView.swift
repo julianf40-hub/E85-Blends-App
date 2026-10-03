@@ -713,6 +713,6 @@ private struct NativeAdContainer: UIViewRepresentable {
         (adView.advertiserView as? UILabel)?.isHidden = nativeAd.advertiser == nil
         (adView.callToActionView as? UIButton)?.setTitle(nativeAd.callToAction, for: .normal)
         (adView.callToActionView as? UIButton)?.isHidden = nativeAd.callToAction == nil
-        (adView.mediaView as? MediaView)?.mediaContent = nativeAd.mediaContent
+        adView.mediaView?.mediaContent = nativeAd.mediaContent
     }
 }
