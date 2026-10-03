@@ -151,11 +151,7 @@ final class AutomaticPumpDetectionService: NSObject {
     func attach(to locationManager: StationLocationManager) {
         self.locationManager = locationManager
         locationManager.onRegionEvent = { [weak self] identifier, kind in
-            // The inner Task re-captures `self` weakly itself (same idiom as the observation
-            // callback and notification-delegate Tasks below) instead of reaching back through
-            // the outer closure's weak variable: it never retains the service, and if the
-            // service is gone by the time the Task runs this is a no-op, exactly as before.
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 self?.handleRegionEvent(identifier: identifier, kind: kind)
             }
         }
@@ -563,7 +559,19 @@ final class AutomaticPumpDetectionService: NSObject {
             let box = ContinuationBox(continuation)
             withObservationTracking {
                 _ = locationManager.authorizationStatus
-            } onChange: {
+            } onChange: { [weak self] in
+                // Weak ownership is declared on BOTH closures. Declaring it only on the inner
+                // Task (`Task { [weak self] … }`) made this outer `@Sendable` closure implicitly
+                // capture `self` STRONGLY — the compiler's "weak ownership of capture 'self'
+                // differs from implicitly-captured strong reference in outer scope" — i.e. the
+                // observation registry kept the service alive until the observed property next
+                // changed, contradicting the inner weak capture's intent. (There was never a
+                // retain cycle: the closure is owned by the Observation registry, not by `self`.)
+                // The inner Task needs its own `[weak self]` too: it is a concurrently-executing
+                // closure, and referencing this closure's weak variable from it instead is itself
+                // diagnosed ("reference to captured var 'self' in concurrently-executing code").
+                // If the service is gone, `self?` resolves to nil and the continuation is still
+                // resumed (with `.notDetermined`), exactly as before.
                 Task { @MainActor [weak self] in
                     box.resume(with: self?.locationManager?.authorizationStatus ?? .notDetermined)
                 }

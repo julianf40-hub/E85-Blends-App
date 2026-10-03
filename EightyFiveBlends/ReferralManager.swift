@@ -167,8 +167,10 @@ final class ReferralManager {
     /// default-argument expressions: default-argument expressions are evaluated in a nonisolated
     /// context under this project's Swift 5 language mode, and each live dependency's initializer
     /// is MainActor-isolated by the project's default isolation — so that spelling was a Swift 6
-    /// actor-isolation error. Behavior is identical: the same four live objects are created, on
-    /// the main actor, at the same point (`ReferralManager.shared`'s first access).
+    /// actor-isolation error. Behavior is identical: the same three live dependencies (Keychain
+    /// store, StoreKit environment provider, RevenueCat identity provider) are created, on the
+    /// main actor, at the same point (`ReferralManager.shared`'s first access); the default
+    /// service factory still builds a `ReferralAPIService` lazily on each call, as before.
     init(
         credentialStore: ReferralCredentialStoring? = nil,
         environmentProvider: ReferralRevenueEnvironmentProviding? = nil,

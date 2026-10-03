@@ -657,6 +657,24 @@ struct MapsRoutingHelperTests {
         #expect(store.current == nil)
     }
 
+    @Test func omittingTheStoreParameterStillCompilesAndRecordsNothingForAnUnreportableDestination() {
+        // `store:` is now `PendingPriceContributionStore? = nil`, resolved to `.shared` inside the
+        // function body (see its doc comment). Production call sites all omit it, so this pins
+        // that the omitted form still compiles and returns `false` here. It is a compile-and-
+        // behavior pin for the omitted-argument form only — it deliberately does NOT assert which
+        // store was used: the destination is unreportable, so canReport refuses it before anything
+        // is recorded (`.shared` is resolved but never written), keeping the test from touching
+        // the real `.shared` store / UserDefaults.standard.
+        let unreportable = MapsRoutingDestination(
+            name: "Unknown Station", streetAddress: "", city: "", state: "", zip: "",
+            latitude: nil, longitude: nil)
+
+        let recorded = MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: unreportable, evidence: .liveNRELSearch)
+
+        #expect(recorded == false)
+    }
+
     @Test func aSecondEligibleCallReplacesAnyPriorPendingContribution() {
         let firstDestination = MapsRoutingDestination(
             name: "First Station", streetAddress: "1 First St", city: "Phoenix", state: "AZ", zip: "85001",

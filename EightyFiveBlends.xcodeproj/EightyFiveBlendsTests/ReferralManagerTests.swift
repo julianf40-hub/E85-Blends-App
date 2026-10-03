@@ -28,33 +28,37 @@ final class TestGate: @unchecked Sendable {
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
+    // Every critical section goes through `NSLock.withLock` (scoped, synchronous), so `lock()`/
+    // `unlock()` are never called directly from `wait()`'s async context — Foundation marks them
+    // unavailable there ("use async-safe scoped locking instead"; an error in Swift 6 mode).
+    // Continuations are always resumed OUTSIDE the lock, exactly as before.
+
     func open() {
-        lock.lock()
-        isOpen = true
-        let toResume = waiters
-        waiters = []
-        lock.unlock()
+        let toResume: [CheckedContinuation<Void, Never>] = lock.withLock {
+            isOpen = true
+            let pending = waiters
+            waiters = []
+            return pending
+        }
         for continuation in toResume {
             continuation.resume()
         }
     }
 
     func wait() async {
-        lock.lock()
-        if isOpen {
-            lock.unlock()
+        if lock.withLock({ isOpen }) {
             return
         }
-        lock.unlock()
 
         await withCheckedContinuation { continuation in
-            lock.lock()
-            if isOpen {
-                lock.unlock()
-                continuation.resume()
-            } else {
+            // Re-checked under the lock: `open()` may have run since the fast path above.
+            let alreadyOpen = lock.withLock { () -> Bool in
+                if isOpen { return true }
                 waiters.append(continuation)
-                lock.unlock()
+                return false
+            }
+            if alreadyOpen {
+                continuation.resume()
             }
         }
     }
@@ -208,15 +212,22 @@ private func sampleStatus(referralCode: String = "ABCD2345") -> ReferralStatus {
 
 @MainActor
 struct ReferralManagerTests {
+    /// `service`/`environmentProvider`/`store` default to fresh fakes when omitted (`nil`). The
+    /// fakes are built here in the body — on the MainActor, like the rest of this suite — instead
+    /// of as default-argument expressions: default-argument expressions are evaluated in a
+    /// nonisolated context under this project's Swift 5 language mode, and the fakes' initializers
+    /// are MainActor-isolated by the project's default isolation (they are plain test doubles with
+    /// no isolation annotation of their own).
     private func makeManager(
-        service: FakeReferralAPIService = FakeReferralAPIService(),
-        environmentProvider: FakeReferralEnvironmentProvider = FakeReferralEnvironmentProvider(environment: .production),
-        store: ReferralCredentialStoring = InMemoryReferralCredentialStore(),
+        service: FakeReferralAPIService? = nil,
+        environmentProvider: FakeReferralEnvironmentProvider? = nil,
+        store: ReferralCredentialStoring? = nil,
         appUserID: String? = "rc_user_1"
     ) -> ReferralManager {
-        ReferralManager(
-            credentialStore: store,
-            environmentProvider: environmentProvider,
+        let service = service ?? FakeReferralAPIService()
+        return ReferralManager(
+            credentialStore: store ?? InMemoryReferralCredentialStore(),
+            environmentProvider: environmentProvider ?? FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: appUserID),
             serviceFactory: { service }
         )

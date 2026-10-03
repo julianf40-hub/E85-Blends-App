@@ -385,15 +385,20 @@ enum MapsRoutingHelper {
     /// record(_:)` fails silently (see that method) and can never surface here.
     ///
     /// - Parameter store: Injectable for tests (mirrors `openDirections(to:)`'s own I/O seams) —
-    ///   production always uses `.shared`.
+    ///   production always uses `.shared`. `nil` (the default) means `.shared`, resolved inside
+    ///   this MainActor function's body rather than as a default-argument expression: default
+    ///   arguments are evaluated in a nonisolated context under this project's Swift 5 language
+    ///   mode, and `PendingPriceContributionStore` is deliberately `@MainActor` (it backs
+    ///   SwiftUI-observed state), so `.shared` can't be referenced from there.
     /// - Returns: `true` if a contribution was actually recorded, `false` if `destination` didn't
     ///   carry enough identifying data to satisfy `CommunityPriceEligibility.canReport`.
     @discardableResult
     static func recordPendingE85PriceContributionIfEligible(
         for destination: MapsRoutingDestination,
         evidence: PendingPriceContributionE85Evidence,
-        store: PendingPriceContributionStore = .shared
+        store: PendingPriceContributionStore? = nil
     ) -> Bool {
+        let store = store ?? .shared
         guard CommunityPriceEligibility.canReport(
             name: destination.name,
             streetAddress: destination.streetAddress,
