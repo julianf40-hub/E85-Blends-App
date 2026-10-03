@@ -241,18 +241,13 @@ struct AnalyticsServiceTests {
         }
     }
 
-    @Test("track(_:properties:) never throws and never blocks its caller, even when the request fails")
-    func track_neverThrowsEvenOnFailure() async {
-        AnalyticsMockURLProtocol.requestHandler = { _ in
-            (500, Data())
-        }
-
-        // No `try`, no `await` on the network call itself — `track` is a plain, synchronous,
-        // non-throwing call. This line compiling and returning at all (rather than requiring
-        // any error handling) IS the test: a caller has no way to make its own behavior depend
-        // on whether this analytics call ultimately succeeds.
-        await MainActor.run {
-            AnalyticsService.track(.priceReportPromptShown, properties: AnalyticsEventProperties(entryPoint: .proximityPrompt))
-        }
+    @Test("track(_:properties:) is a plain synchronous, non-throwing call, so a caller can never depend on whether analytics succeeded")
+    func track_isSynchronousAndNonThrowing() {
+        // Referencing `track` as a value pins its signature (synchronous, non-throwing, returns Void)
+        // WITHOUT calling it. Calling it builds an `AnalyticsService` on the real default URLSession, which
+        // POSTs to the production analytics endpoint; `track` has no session seam, so no mock can intercept
+        // it. The failure-swallowing behavior behind that signature is production code in `track` itself,
+        // and `send`'s throwing behavior is covered by the mocked tests above.
+        let _: @MainActor (AnalyticsEventName, AnalyticsEventProperties, Date) -> Void = AnalyticsService.track
     }
 }

@@ -274,4 +274,41 @@ struct WhatsNewPresentationTests {
         )
         #expect(secondAttemptShouldPresent)
     }
+
+    // MARK: - A version bump without release notes for that version
+
+    @Test("An existing user is not shown the previous release's notes after a version bump that has no new notes")
+    func shouldPresent_releaseNotesWrittenForAnotherVersion_isFalse() {
+        #expect(
+            WhatsNewPresentation.shouldPresent(
+                currentAppVersion: "2.4.1",
+                lastPresentedVersion: "2.4.0",
+                hasCompletedOnboarding: true,
+                onboardingJustCompletedThisLaunch: false,
+                isRequiredConsentPresentationPending: false,
+                releaseNotesVersion: "2.4.0"
+            ) == false
+        )
+    }
+
+    @Test("Once the notes are written for the new version, the same user is presented them")
+    func shouldPresent_releaseNotesWrittenForCurrentVersion_isTrue() {
+        #expect(
+            WhatsNewPresentation.shouldPresent(
+                currentAppVersion: "2.4.1",
+                lastPresentedVersion: "2.4.0",
+                hasCompletedOnboarding: true,
+                onboardingJustCompletedThisLaunch: false,
+                isRequiredConsentPresentationPending: false,
+                releaseNotesVersion: "2.4.1"
+            )
+        )
+    }
+
+    @Test("The release-notes title names the version the highlights were written for, and that version is well formed")
+    func currentHighlightsTitle_namesHighlightsVersion() {
+        #expect(ReleaseNotes.currentHighlightsTitle == "What's New in \(ReleaseNotes.highlightsVersion)")
+        let parts = ReleaseNotes.highlightsVersion.split(separator: ".")
+        #expect(parts.count == 3 && parts.allSatisfy { Int($0) != nil })
+    }
 }

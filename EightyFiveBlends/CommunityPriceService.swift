@@ -49,7 +49,9 @@ struct CommunityPriceService {
         self.session = session
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // PostgREST returns created_at with fractional seconds, which `.iso8601` is not guaranteed
+        // to read on every supported OS; see SupabaseTimestampDecoding.swift. The encoder is unchanged.
+        decoder.dateDecodingStrategy = SupabaseTimestamp.decodingStrategy
         self.decoder = decoder
 
         let encoder = JSONEncoder()
