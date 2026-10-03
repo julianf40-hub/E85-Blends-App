@@ -11,6 +11,45 @@ import Testing
 import Foundation
 @testable import EightyFiveBlends
 
+/// Private to this file's one networked test. It deliberately does NOT reuse `CapturingURLProtocol`
+/// (ReferralAPIServiceTests.swift): that class keeps process-wide static state, and sharing it let this
+/// test read another suite's captured request body when the two ran in parallel.
+final class ReferralModelsCapturingURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _lastRequestBody: Data?
+    nonisolated(unsafe) private static var _responseBody = Data()
+
+    static var lastRequestBody: Data? { lock.withLock { _lastRequestBody } }
+
+    static func prepare(responseBody: Data) {
+        lock.withLock {
+            _lastRequestBody = nil
+            _responseBody = responseBody
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let body = Self.lock.withLock { () -> Data in
+            Self._lastRequestBody = CapturingURLProtocol.bodyData(of: request)
+            return Self._responseBody
+        }
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://example.com")!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 struct ReferralModelsTests {
     private static let encoder = JSONEncoder()
     private static let decoder = JSONDecoder()
@@ -97,15 +136,15 @@ struct ReferralModelsTests {
     func referralCode_trimAndUppercase() async throws {
         let service = try ReferralAPIService(session: URLSession(configuration: {
             let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [CapturingURLProtocol.self]
+            configuration.protocolClasses = [ReferralModelsCapturingURLProtocol.self]
             return configuration
         }()))
         let credential = ReferralInstallationCredential.generate()
 
-        CapturingURLProtocol.stubbedResponse = .success(statusCode: 200, body: Self.statusJSON())
+        ReferralModelsCapturingURLProtocol.prepare(responseBody: Self.statusJSON())
         _ = try? await service.applyCode("  abcd2345  ", credential: credential)
 
-        let sentBody = try #require(CapturingURLProtocol.lastRequestBody)
+        let sentBody = try #require(ReferralModelsCapturingURLProtocol.lastRequestBody)
         let json = try #require(try JSONSerialization.jsonObject(with: sentBody) as? [String: Any])
         #expect(json["referral_code"] as? String == "ABCD2345")
     }
