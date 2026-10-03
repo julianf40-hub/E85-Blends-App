@@ -14,7 +14,7 @@ import Foundation
 /// Private to this file's one networked test. It deliberately does NOT reuse `CapturingURLProtocol`
 /// (ReferralAPIServiceTests.swift): that class keeps process-wide static state, and sharing it let this
 /// test read another suite's captured request body when the two ran in parallel.
-final class ReferralModelsCapturingURLProtocol: URLProtocol, @unchecked Sendable {
+final class ReferralModelsCapturingURLProtocol: URLProtocol {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var _lastRequestBody: Data?
     nonisolated(unsafe) private static var _responseBody = Data()

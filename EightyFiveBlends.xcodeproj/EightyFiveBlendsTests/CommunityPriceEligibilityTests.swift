@@ -101,6 +101,22 @@ import Testing
 
 struct CommunityPriceEligibilityTests {
 
+    // MARK: 0. normalizedText is pure and nonisolated (Swift 6 actor-isolation cleanup)
+
+    @Test("normalizedText trims whitespace and folds case and diacritics — and is callable from a nonisolated context")
+    func normalizedText_foldsTextAndIsCallableOffTheMainActor() async {
+        // `Task.detached`'s closure is nonisolated: calling `normalizedText` here without `await` is
+        // only free of an actor-isolation diagnostic (a Swift 6 error) while `normalizedText` itself
+        // stays `nonisolated`, which is the property this pins.
+        let folded = await Task.detached { CommunityStationKey.normalizedText("  CAFÉ  Main ") }.value
+        #expect(folded == "cafe  main")
+        #expect(CommunityStationKey.normalizedText("   ") == "")
+        // The key built from it is unchanged by that isolation cleanup.
+        #expect(CommunityStationKey.normalizedKey(
+            name: " Shell ", streetAddress: "1 Main St", city: "Élan", state: "tx", zip: "75001"
+        ) == "shell|1 main st|elan|tx|75001")
+    }
+
     // MARK: 1-2. A valid, location-identified station — regardless of how it's represented — can report
 
     @Test("A station with full nearby-search-shaped data (name, address, city, state, zip, coordinates) is eligible to report")

@@ -10,7 +10,7 @@ import Foundation
 import Testing
 @testable import EightyFiveBlends
 
-final class EthanolMockURLProtocol: URLProtocol, @unchecked Sendable {
+final class EthanolMockURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _requestHandler: (@Sendable (URLRequest) throws -> (Int, Data))?
 

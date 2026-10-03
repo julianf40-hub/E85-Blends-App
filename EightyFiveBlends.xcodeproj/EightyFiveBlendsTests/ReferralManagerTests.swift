@@ -230,6 +230,18 @@ struct ReferralManagerTests {
         #expect(manager.bootstrappedEnvironment == nil)
     }
 
+    @Test("The all-defaults initializer (what ReferralManager.shared uses) builds the live dependencies without any I/O and starts idle")
+    func defaultInitializer_startsIdleWithoutSideEffects() {
+        // Every parameter omitted: the live Keychain store / StoreKit environment provider /
+        // RevenueCat identity provider / ReferralAPIService factory are constructed inside the
+        // initializer. Constructing them must not read the Keychain, call StoreKit, or reach the
+        // network — nothing is attempted until bootstrapIfNeeded()/refresh()/applyReferralCode.
+        let manager = ReferralManager()
+        #expect(manager.loadState == .idle)
+        #expect(manager.hasBootstrappedThisLaunch == false)
+        #expect(manager.bootstrappedEnvironment == nil)
+    }
+
     @Test("A successful SANDBOX bootstrap records .sandbox — the exact value sent to the backend")
     func bootstrappedEnvironment_recordsSandboxAfterSuccess() async {
         let service = FakeReferralAPIService()

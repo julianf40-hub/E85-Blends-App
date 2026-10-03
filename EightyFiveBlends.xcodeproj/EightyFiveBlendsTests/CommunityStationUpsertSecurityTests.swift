@@ -79,7 +79,7 @@ nonisolated private final class TestCallTracker: @unchecked Sendable {
 /// plain stored `static var`) since it is written from @MainActor test code and read from
 /// `startLoading()`'s nonisolated context; the suite below is additionally marked `.serialized`
 /// so tests never race each other for the single shared handler slot.
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+final class MockURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _requestHandler: (@Sendable (URLRequest) throws -> (Int, Data))?
 

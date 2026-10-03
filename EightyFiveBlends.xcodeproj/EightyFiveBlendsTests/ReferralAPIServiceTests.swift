@@ -22,7 +22,7 @@ import Foundation
 /// Any other test needing a captured request body must use its own protocol class (see
 /// `ReferralModelsCapturingURLProtocol`), never this one, or it can read or overwrite this suite's
 /// state when Swift Testing runs the two suites in parallel.
-final class CapturingURLProtocol: URLProtocol, @unchecked Sendable {
+final class CapturingURLProtocol: URLProtocol {
     enum StubbedResponse {
         case success(statusCode: Int, body: Data)
         case failure(URLError.Code)

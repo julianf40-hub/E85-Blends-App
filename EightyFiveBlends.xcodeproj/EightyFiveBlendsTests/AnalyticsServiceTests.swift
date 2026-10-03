@@ -19,7 +19,7 @@ import Foundation
 import Testing
 @testable import EightyFiveBlends
 
-final class AnalyticsMockURLProtocol: URLProtocol, @unchecked Sendable {
+final class AnalyticsMockURLProtocol: URLProtocol {
     private static let lock = NSLock()
     private static var _requestHandler: (@Sendable (URLRequest) throws -> (Int, Data))?
 
@@ -90,6 +90,14 @@ private func makeMockedAnalyticsService() throws -> AnalyticsService {
 
 @Suite(.serialized)
 struct AnalyticsServiceTests {
+    @Test("A default AnalyticsEventProperties() — what track(_:) uses when no properties are passed — encodes to an empty JSON object")
+    func defaultProperties_encodeToAnEmptyObject() throws {
+        // Every field is nil and Optional stored properties are omitted (never encoded as null),
+        // so the `properties` column's `jsonb_typeof(properties) = 'object'` check still holds.
+        let data = try JSONEncoder().encode(AnalyticsEventProperties())
+        #expect(String(decoding: data, as: UTF8.self) == "{}")
+    }
+
     @Test("send posts to the e85_analytics_events table")
     func send_usesCorrectTablePath() async throws {
         AnalyticsMockURLProtocol.requestHandler = { request in
@@ -127,6 +135,10 @@ struct AnalyticsServiceTests {
     @Test("send encodes event_name, occurred_at, app_version, and contributor_id")
     func send_encodesRequiredTopLevelFields() async throws {
         let occurredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        // Read once up front, on the test's own (MainActor) context: the request handler below is
+        // a nonisolated `@Sendable` closure, which can't touch a MainActor static directly. The ID
+        // is persisted on first read, so this is the same value `send` puts in `contributor_id`.
+        let expectedContributorID = CommunityPriceService.anonymousReporterID
 
         AnalyticsMockURLProtocol.requestHandler = { request in
             let body = try #require(request.httpBody)
@@ -135,7 +147,7 @@ struct AnalyticsServiceTests {
             #expect(json["app_version"] as? String != nil)
             #expect((json["app_version"] as? String)?.isEmpty == false)
             #expect((json["contributor_id"] as? String)?.isEmpty == false)
-            #expect(json["contributor_id"] as? String == CommunityPriceService.anonymousReporterID)
+            #expect(json["contributor_id"] as? String == expectedContributorID)
             #expect(json["occurred_at"] as? String != nil)
             return (200, Data())
         }
