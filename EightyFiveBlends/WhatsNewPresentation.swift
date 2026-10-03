@@ -20,6 +20,8 @@ enum WhatsNewPresentation {
     ///   snapshot taken once at launch by the caller (see ContentView), not derived here.
     /// - No required consent presentation is still pending (see `isRequiredConsentPresentationPending`).
     /// - The current app version differs from the last version this sheet was shown for.
+    /// - The bundled release notes were written for the current app version. `releaseNotesVersion`
+    ///   is that version; nil means "not provided" and skips this check. ContentView always passes it.
     ///
     /// An existing user upgrading from a version that predates this feature has
     /// `lastPresentedVersion == ""` (the key never existed for them) and
@@ -31,10 +33,13 @@ enum WhatsNewPresentation {
         lastPresentedVersion: String,
         hasCompletedOnboarding: Bool,
         onboardingJustCompletedThisLaunch: Bool,
-        isRequiredConsentPresentationPending: Bool
+        isRequiredConsentPresentationPending: Bool,
+        releaseNotesVersion: String? = nil
     ) -> Bool {
         guard hasCompletedOnboarding else { return false }
         guard onboardingJustCompletedThisLaunch == false else { return false }
+        // A version bump without new notes must not present the previous release's notes as new.
+        if let releaseNotesVersion, releaseNotesVersion != currentAppVersion { return false }
         // 2.3.2 release-polish fix: at launch, AdManager may still be gathering/presenting
         // required UMP consent (see AdManager.gatherConsent()) via a raw UIKit `present(...)` on
         // the same window ContentView's own SwiftUI `.sheet` would use. Presenting both around

@@ -8,7 +8,7 @@ Project quick facts:
 - **Schemes (shared):** `EightyFiveBlends`, `EightyFiveBlends Internal`
 - **iOS deployment target:** 17.6 (App Store), 26.4 (Internal)
 - **Xcode Cloud config:** present at `EightyFiveBlends.xcodeproj/xcshareddata/xcodecloud/manifest.json` (workflow ID `7dd08a73-3551-4068-8509-7fe8d370bf4d`, workflow target label `85Blends`). Xcode Cloud triggers off pushes to the branch(es) configured in App Store Connect — this repo does **not** hold the trigger rules. See **Xcode Cloud Workflows** below for the Internal vs Production split.
-- **Tests:** `EightyFiveBlends.xcodeproj/EightyFiveBlendsTests/BlendCalculatorTests.swift` exists on disk but there is **no** test target in the pbxproj and no testable reference in either scheme. `xcodebuild test` will not run these until a test target is added. Do not assume tests exist — treat this repo as build-only until the test target is wired up.
+- **Tests:** unit-test target `EightyFiveBlendsTests` (sources in the synced folder `EightyFiveBlends.xcodeproj/EightyFiveBlendsTests/`, hosted by the app) is a Testable in both shared schemes, so `xcodebuild test` runs it. Swift Testing (`import Testing`, `@Test`) is used in nearly every test file; XCTest is used only in `NativeAdTextLayoutTests.swift` and `NearbyE85RenderingTests.swift`.
 
 ## Default Rule: Internal Builds Only
 
@@ -54,11 +54,11 @@ Follow this exact loop for a small bug fix pushed via Xcode Cloud → TestFlight
 
 ### 1. Create a fix branch
 
-Always branch from the current release/working branch (usually `trip-planner-v2.2` or whatever main is at the time), never from a stale local branch:
+Always branch from the current `origin/main` (`main` is the primary branch), never from a stale local branch:
 
 ```sh
 git fetch origin
-git checkout -b fix/<short-slug> origin/<base-branch>
+git checkout -b fix/<short-slug> origin/main
 ```
 
 Naming: `fix/<area>-<one-word>` (e.g. `fix/trip-planner-crash`, `fix/pump-partial-fill-warning`). For a true hotfix off `main`, use `hotfix/<version>-<slug>`.
@@ -72,7 +72,7 @@ Naming: `fix/<area>-<one-word>` (e.g. `fix/trip-planner-crash`, `fix/pump-partia
 
 ### 3. Run this before pushing
 
-There is no wired test target, so the smoke check is a build against the simulator SDK:
+The smoke check is a build against the simulator SDK:
 
 ```sh
 xcodebuild \
@@ -85,7 +85,17 @@ xcodebuild \
 
 The `| tail -40` keeps the terminal output short — the important signal is the last few lines (`BUILD SUCCEEDED` or the first error). If it fails, fix the error before pushing.
 
-If the fix touches `BlendCalculator.swift` or math logic, mention it in the commit message so a human knows to run the on-disk unit tests locally in Xcode until they are wired into the scheme.
+The `EightyFiveBlendsTests` target is wired into both shared schemes, so also run the tests for the area you changed. `test` needs a concrete simulator destination (list the installed ones with `xcrun simctl list devices available`):
+
+```sh
+xcodebuild \
+  -project EightyFiveBlends.xcodeproj \
+  -scheme EightyFiveBlends \
+  -destination 'platform=iOS Simulator,name=<installed iPhone simulator>' \
+  test | tail -40
+```
+
+If the fix touches `BlendCalculator.swift` or math logic, make sure `BlendCalculatorTests` is among the tests you ran and mention it in the commit message.
 
 ### 4. Commit
 

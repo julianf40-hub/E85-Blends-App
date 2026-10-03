@@ -394,7 +394,8 @@ struct ContentView: View {
             lastPresentedVersion: lastPresentedWhatsNewVersion,
             hasCompletedOnboarding: hasCompletedOnboarding,
             onboardingJustCompletedThisLaunch: onboardingJustCompletedThisLaunch,
-            isRequiredConsentPresentationPending: isConsentPending
+            isRequiredConsentPresentationPending: isConsentPending,
+            releaseNotesVersion: ReleaseNotes.highlightsVersion
         )
     }
 

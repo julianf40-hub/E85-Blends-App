@@ -7,14 +7,19 @@
 //  currentHighlights, so the two can never drift into independently maintained copies — update
 //  this file when preparing a new release's changelog, and both surfaces pick it up.
 //
-//  currentHighlightsTitle reads the version number live from the app bundle
-//  (CFBundleShortVersionString) rather than hardcoding it, so a future release only needs its
-//  highlights array updated here — the title is automatically correct.
+//  The highlights are written for one specific release, `highlightsVersion`. When preparing a new
+//  release's changelog, update `currentHighlights` and `highlightsVersion` together: the title
+//  names that version, and the What's New popup only presents when it matches the running app
+//  version, so a version bump that ships without new notes never shows the previous release's
+//  notes under the new version number.
 //
 
 import Foundation
 
 enum ReleaseNotes {
+    /// The app version `currentHighlights` was written for. Not read from the bundle on purpose.
+    static let highlightsVersion = "2.4.0"
+
     /// This release's customer-facing highlights, in display order. Keep these short, concrete,
     /// and free of internal engineering/branch/build/QA language — this is shown directly to
     /// users in both AboutView and the What's New popup.
@@ -31,10 +36,10 @@ enum ReleaseNotes {
         "Bug Fixes & Reliability — improvements across station reporting, referrals, subscriptions, navigation, and general app stability.",
     ]
 
-    /// "What's New in X.Y.Z" — the version is read live from the bundle, never hardcoded, so
-    /// this label is correct for every future release without any code change here.
+    /// "What's New in X.Y.Z" — names the version the highlights were written for, never the
+    /// running app version, so older notes are not labeled with a newer version number.
     static var currentHighlightsTitle: String {
-        "What's New in \(currentAppVersion)"
+        "What's New in \(highlightsVersion)"
     }
 
     /// CFBundleShortVersionString (MARKETING_VERSION at build time), with a safe fallback for
