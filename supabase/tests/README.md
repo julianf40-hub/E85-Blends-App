@@ -44,6 +44,20 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   a stale delivery. Run it with the libpq environment (`PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE`) pointing
   at a scratch database with the migrations applied. It COMMITS its fixtures under a unique marker and
   deletes them on exit — never point it at a hosted project.
+- `price_alert_cross_platform_delivery_safety.test.sql` — the cross-platform claim path
+  (`claim_price_alert_deliveries_v2`, migrations `20261005211547` + `20261005233000`), single transaction,
+  run on a database with the FULL chain applied (the same file passes on a chronological replay and on a
+  database built in the production order): v2 shape, iOS/Android isolation (the sweep and the claim are
+  per platform), the 2-hour freshness boundaries, stale and device-unusable expiry (stale wins,
+  attempts not burned), retries, job finalization, argument validation, the iOS-only v1 wrapper, the
+  bounded 500-row sweep per platform with fresh rows behind a stale backlog, partially drained unusable
+  backlogs, pinned `search_path`, grants (no PUBLIC/anon/authenticated), cron inactive and unique, and an
+  idempotent re-apply. It `\ir`-includes the compatibility migration, so run it from any directory.
+- `price_alert_cross_platform_concurrency.test.sh` — the multi-session checks for the same path
+  (a locked stale row, a locked FRESH row and a locked job row never block a claim; one call expires at
+  most 500 of a 20,000-row backlog; two iOS plus two Android concurrent workers never double-claim,
+  never cross platforms, never receive a stale delivery, and drain both platforms). Same environment
+  rules as the other concurrency script; it COMMITS fixtures under a marker and removes them on exit.
 
 The worker-side Node tests (`node --test supabase/functions/price-alerts-worker/*.test.ts`) include
 `contract.test.ts`, which pins the scheduler's names together across the SQL invoker (Vault secret

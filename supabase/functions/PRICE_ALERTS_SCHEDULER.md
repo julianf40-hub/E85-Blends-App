@@ -1,5 +1,16 @@
 # Price Alerts worker scheduler — readiness runbook (2.4.1)
 
+> **UPDATE 2026-10-05 (read first): the production project has moved on since this runbook was
+> written.** The worker was redeployed (the live version is the *cross-platform* worker, v4, which
+> sends iOS through APNs and Android through FCM) and migration `20261005211547_price_alerts_cross_platform_push`
+> was applied to production without being committed to git. The live worker no longer calls
+> `private.claim_price_alert_deliveries(integer)`; it calls `private.claim_price_alert_deliveries_v2(limit, platform)`.
+> This runbook's delivery-safety changes therefore only protect the real send path through the
+> compatibility migration `20261005233000_price_alert_cross_platform_delivery_safety`. See
+> [Cross-platform reconciliation and deployment plan](#cross-platform-reconciliation-and-deployment-plan)
+> at the end. The migration, the scheduler secret provisioning and the cron activation described
+> below are still **not** applied/activated in production as of this update.
+
 **Status: prepared, NOT deployed, NOT applied.** Nothing in this document has been run against the
 production project (`zefkbtscieokkdenvnkg`). The migration, the worker auth change and the cron job
 described here only take effect when someone performs the steps in
@@ -295,3 +306,91 @@ expired at claim time), the worker's APNs logic, the retry ladder, the API funct
   `supabase/tests/price_alert_worker_concurrency.test.sh` (see `supabase/tests/README.md`).
 - The `cron` / `net` call shapes and the replaced functions' fingerprints were compared against
   production, read-only.
+
+## Cross-platform reconciliation and deployment plan
+
+Written 2026-10-05 after a read-only production inspection found drift between git `main` and
+production. Nothing here has been applied or deployed.
+
+### What production contains that `main` did not
+
+| Item | Production | Git before this change |
+|---|---|---|
+| Migration `20261005211547_price_alerts_cross_platform_push` | applied (ledger row present) | missing |
+| `private.claim_price_alert_deliveries_v2(integer, text)` | live, owner `postgres` only, **no freshness/device-safety hardening** | missing |
+| `price-alerts-api` Edge Function | v4: `client_platform`, `platform = ios \| android`, Android `package_name` + `fcm_token` registration | v1 source (iOS only) |
+| `price-alerts-worker` Edge Function | v4: iOS → APNs, Android → FCM HTTP v1 (`FIREBASE_SERVICE_ACCOUNT_JSON`), calls `claim_price_alert_deliveries_v2` once per platform, still `x-85blends-cron-secret` / `PRICE_ALERTS_WORKER_CRON_SECRET` / service-role fallback, `verify_jwt = false` | v3-era source (APNs only) |
+| Four migrations in the ledger that are not in git: `20260927065249`, `20260927065816`, `20260927065914`, `20260927070519` (App Store growth sync / growth snapshot) | applied | missing |
+
+This change recovers the first three rows into git byte-for-byte (the migration from the ledger's
+stored statement, the functions from the deployed bundles; see the PR description for hashes) and adds
+the compatibility migration below. The four growth migrations are *not* recovered here (out of scope) but
+they matter for deployment (next section).
+
+### Compatibility migration `20261005233000_price_alert_cross_platform_delivery_safety`
+
+Ports the reviewed freshness/device safety to the claim path the live worker uses, keeping iOS and
+Android separate: both the expiry sweep (500 rows per call, `FOR UPDATE ... SKIP LOCKED`) and the claim
+are scoped to the requested platform; reports older than 2 hours are excluded by the claim predicate
+itself; disabled/invalidated devices become terminal `skipped` / `device_unusable` (stale wins); retries
+are unchanged. The old v1 claim function becomes an iOS-only wrapper over v2 so the safety logic lives in
+one place and v1 can no longer hand an Android row to an APNs-only caller. The migration has
+preconditions (it refuses to run unless `20261005211547` and `20261005120000` are already applied) and
+never touches the scheduler or activates cron.
+
+### Migration order
+
+Production applied `20261005211547` first; `20261005120000` is still pending. Replays on a scratch
+PostgreSQL 16 (stand-ins for `pg_cron`, `pg_net`, Vault only) prove the two orders end in the **same**
+catalog (functions with ACLs, constraints, indexes, columns, cron jobs, triggers all identical): the
+chronological chain `120000 → 211547 → 233000`, and the production order `211547` (already applied) then
+`120000` then `233000`. `20261005120000` only replaces `claim_price_alert_jobs` and the v1 claim function
+(unchanged return shape; `apns_environment` is returned as `text` either way), adds one index and the
+inactive cron job; it does not touch any object `20261005211547` created. Between the two migrations of a
+single push the v2 path is briefly un-hardened and v1 briefly unfiltered; nothing calls either (cron is
+inactive, tables are empty), but apply them in the same push.
+
+### Exact deployment procedure (future, needs explicit authorization)
+
+Verified with Supabase CLI 2.119.0 against a scratch database whose migration ledger mirrors production:
+
+| Command (dir = full repo `supabase/`) | Result |
+|---|---|
+| `supabase db push --dry-run` | **Error** `DbPushMissingLocalError`: remote versions `20260927065249 20260927065816 20260927065914 20260927070519` are not in the local directory |
+| same, after adding placeholder files for those four versions | **Error** `DbPushMissingRemoteError`: local migrations older than the latest remote one (`20260921000000` promo, `20261005120000`); re-run with `--include-all` |
+| `... --include-all --dry-run` (promo present) | would push promo + `20261005120000` + `20261005233000` (**not acceptable**) |
+| `... --include-all --dry-run` with promo excluded | would push **exactly** `20261005120000` and `20261005233000` |
+
+`--include-all` ("Include all migrations not found on remote history table") is the supported mechanism
+for applying migrations older than the latest remote one. A real push of that exact plan into the scratch
+database recorded only `20261005120000` and `20261005233000`, did not re-run `20261005211547`, never
+touched the promo version, and produced a catalog identical to the chronological replay.
+
+So the production procedure is, in a **temporary deployment copy** of `supabase/` (never committed):
+
+1. Add one placeholder `.sql` file for each of the four missing growth versions
+   (`<version>_<ledger name>.sql`, a comment line only; they are already applied and the CLI only checks
+   that the version exists locally). Do **not** use `supabase migration repair` (it rewrites the
+   production ledger).
+2. Remove `20260921000000_promo_campaign_foundation.sql` from the copy (it must stay unapplied).
+3. `supabase db push --linked --include-all --dry-run --skip-vault` — the list **must be exactly**
+   `20261005120000_price_alert_worker_scheduler_and_freshness.sql` and
+   `20261005233000_price_alert_cross_platform_delivery_safety.sql`. Anything else: stop.
+4. Only then, with authorization: the same command without `--dry-run`.
+5. Verify: ledger contains both versions, not `20260921000000`; `private.invoke_price_alerts_worker()` and
+   `price_alert_jobs_stuck_processing_idx` exist; `85blends-price-alerts-worker-invoke` exists with
+   `active = false`.
+
+The Edge Functions are already deployed at the recovered source (v4); no function redeploy is part of
+this plan. If one is ever needed, deploy by name with the whole directory (`index.ts`, `auth.ts`,
+`deno.json`) and `verify_jwt = false`.
+
+### Open items (not changed here)
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON` presence is unknown; without it the worker never claims Android rows
+  (they wait, then expire after 2 hours as stale). With only one provider configured, the other
+  platform's deliveries are not consumed (live v4 behavior).
+- `price_alert_push_devices_one_active_per_install_idx` is on `(installation_id, bundle_id, apns_environment)`;
+  Android rows have a NULL environment, so it does not constrain Android (NULLs are distinct). The API
+  deactivates a replaced Android token itself.
+- `price-alerts-api` / worker source recovered here is exactly what is deployed; neither has new unit tests.
