@@ -24,12 +24,27 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   alias ownership), the reward/code state machine, and `fulfill_referral_reward_offer_code` (see
   the file header for the full scenario list).
 - `price_alert_worker_readiness.test.sql` — Price Alerts worker scheduler + stale-work safety
-  (migration `20261005120000`): the pg_net invoker (config failures, exact URL/header/body), the
-  inactive-by-default and re-apply-idempotent cron job, stale-job reclaim (and the cases that must
-  never be reclaimed), the 2-hour freshness guard/expiry, a post-outage burst, and grants. Run it
-  from the repository root (it `\ir`-includes the migration to prove re-apply idempotency). Unlike
-  the referral matrix it DOES depend on cron: the migration calls `cron.schedule`/`cron.alter_job`,
-  so the scratch database needs real `pg_cron` or a stand-in providing `cron.job`, `cron.schedule`
-  and `cron.alter_job`. The invoker scenarios additionally need a recording stand-in for pg_net
-  (`net.sent_requests`) and Vault; they are skipped automatically when the real `pg_net` is present
-  so the file can never send a request.
+  (migration `20261005120000`), single transaction: the pg_net invoker's configuration matrix (HTTPS
+  origin only, token trimming/strength, fixed value-free errors, exact URL/header/body), the
+  inactive-by-default and replay-idempotent cron job (active stays active, inactive stays inactive,
+  no duplicate), stale-job reclaim incl. the exact 15-minute and attempt-limit boundaries and the
+  jobs that must never be reclaimed, the 2-hour freshness guard incl. exact/±1 s/future boundaries,
+  the bounded (500-row) expiry with partial-drain safety, disabled/invalidated-device handling, the
+  supporting partial index and its query plan, and grants. Run it from the repository root (it
+  `\ir`-includes the migration to prove replay idempotency). Unlike the referral matrix it DOES depend
+  on cron: the migration calls `cron.schedule`/`cron.alter_job`, so the scratch database needs real
+  `pg_cron` or a stand-in providing `cron.job`, `cron.schedule` and `cron.alter_job`. The invoker
+  scenarios additionally need a recording stand-in for pg_net (`net.sent_requests`) and Vault
+  (`vault.secrets` / `vault.decrypted_secrets`); they are skipped automatically when the real `pg_net`
+  is present so the file can never send a request.
+- `price_alert_worker_concurrency.test.sh` — the same migration's behavior that needs MORE THAN ONE
+  session, so it cannot run in a single transaction: a stale delivery row or a job row locked by
+  another transaction must not block a claim (`SKIP LOCKED`), one claim call expires at most 500 rows
+  of a 20,000-row stale backlog, and two concurrent workers never double-claim, deadlock, or receive
+  a stale delivery. Run it with the libpq environment (`PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE`) pointing
+  at a scratch database with the migrations applied. It COMMITS its fixtures under a unique marker and
+  deletes them on exit — never point it at a hosted project.
+
+The worker-side Node tests (`node --test supabase/functions/price-alerts-worker/*.test.ts`) include
+`contract.test.ts`, which pins the scheduler's names together across the SQL invoker (Vault secret
+names, header, URL path), the worker (`auth.ts`, `index.ts`, Edge secret name) and the runbook.
