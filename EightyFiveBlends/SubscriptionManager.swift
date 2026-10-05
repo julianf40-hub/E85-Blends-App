@@ -285,7 +285,20 @@ final class SubscriptionManager {
         /// Neutral, non-error message (e.g. a restore that found nothing to restore).
         case info(String)
     }
-    private(set) var purchaseState: PurchaseState = .idle
+
+    /// The purchase/restore state machine. See `PurchaseFlow`'s own header for the invariants it
+    /// enforces (transient `.purchasing`/`.restoring` are never allowed to outlive their cause).
+    /// All mutation goes through the intent methods below, never by assigning states directly.
+    private(set) var flow = PurchaseFlow()
+
+    /// The user-visible purchase/restore state. Derived from `flow`, so every reader — the
+    /// paywall's status row, the Restore button's enabled state, ContentView's review-request
+    /// gate — sees exactly what the state machine says.
+    var purchaseState: PurchaseState { flow.state }
+
+    /// Pending Restore Purchases result for the paywall to present, or `nil`. Cleared by
+    /// `dismissRestoreFeedback()` when the user acknowledges the alert.
+    var restoreFeedback: RestoreFeedback? { flow.restoreFeedback }
 
     /// 85Blends 2.4.0 — true whenever the single 85Blends Pro paywall (`ProUpgradeView`) is
     /// currently on screen, in either presentation style (`.modal` sheet or `.pushed`
@@ -296,27 +309,89 @@ final class SubscriptionManager {
     /// a presentation signal for the App Store review-request system (see
     /// ReviewRequestManager/ContentView) to avoid ever prompting for a review while the paywall
     /// is visible — it has no effect on entitlement, purchasing, or the paywall itself.
-    private(set) var isPaywallPresented = false
+    var isPaywallPresented: Bool { paywallPresentationCount > 0 }
+
+    /// How many `ProUpgradeView` instances are currently on screen — normally 0 or 1, but a
+    /// second paywall can be presented over the first (e.g. a widget deep-link paywall sheet over
+    /// the pushed More → 85Blends Pro screen). A plain Bool let the upper instance's disappearance
+    /// report "no paywall" while the lower one was still showing, which would also have cleared the
+    /// lower one's pending purchase/restore state and result alert.
+    private var paywallPresentationCount = 0
 
     /// Called only by `ProUpgradeView`. Not private so that view (a separate file) can call it,
     /// but deliberately not part of the "Public API" section below — this is presentation
     /// bookkeeping, not an entitlement or purchasing action.
     func setPaywallPresented(_ presented: Bool) {
-        isPaywallPresented = presented
+        paywallPresentationCount = presented ? paywallPresentationCount + 1 : max(0, paywallPresentationCount - 1)
+        if paywallPresentationCount == 0 {
+            // The paywall's callbacks (`.onPurchaseStarted`/`.onPurchaseCompleted`/…) live on its
+            // view tree, so once it is gone nothing is left to ever clear a pending transient
+            // state — it would otherwise outlive the screen for the rest of the session. This
+            // claims NO outcome: StoreKit/RevenueCat own any in-flight transaction independently
+            // of this view, and its result still arrives through the authoritative CustomerInfo
+            // path (`RevenueCatSubscriptionService.apply(_:)` → `entitlementApplied(…)` below).
+            flow.paywallDismissed()
+        }
     }
 
-    /// 85Blends 2.4.0 RevenueCatUI integration — called only by `ProUpgradeView`, exactly like
-    /// `setPaywallPresented` above, whenever RevenueCatUI's hosted paywall performs a purchase or
-    /// restore directly (see that view's header). Mirrors the exact same state transitions
-    /// `purchase(_:)`/`restorePurchases()` below already produce when this type drives the
-    /// RevenueCat call itself — via the same `state(forPurchaseOutcome:)`/
-    /// `state(forRestoreOutcome:wasProBefore:)` pure mappings — so `purchaseState`/
-    /// `isPurchaseActive` (see ContentView's review-request gate) stays meaningful regardless of
-    /// which call path actually performed the purchase. Not part of the "Public API" section below
-    /// for the same reason `setPaywallPresented` isn't: this is presentation/outcome bookkeeping,
-    /// never itself an entitlement or purchasing action.
-    func setPurchaseState(_ state: PurchaseState) {
-        purchaseState = state
+    // MARK: - RevenueCatUI paywall callbacks (called only by `ProUpgradeView`)
+    //
+    // 85Blends 2.4.0 RevenueCatUI integration — whenever RevenueCatUI's hosted paywall performs a
+    // purchase or restore directly (see that view's header), `ProUpgradeView` reports it through
+    // these intent methods, which apply the exact same state transitions `purchase(_:)`/
+    // `restorePurchases()` below produce when this type drives the RevenueCat call itself — via
+    // the same `state(forPurchaseOutcome:)`/`state(forRestoreOutcome:wasProBefore:)` pure
+    // mappings — so `purchaseState`/`isPurchaseActive` (see ContentView's review-request gate)
+    // stays meaningful regardless of which call path actually performed the purchase. Not part of
+    // the "Public API" section below: this is presentation/outcome bookkeeping, never itself an
+    // entitlement or purchasing action.
+    //
+    // RevenueCatUI delivers these callbacks via SwiftUI preference changes on `PaywallView`, which
+    // are LOST if the entitlement flips and `ProUpgradeView` swaps `PaywallView` out first — so
+    // none of them is the only thing that can end a transient state; see `entitlementApplied`.
+
+    func paywallPurchaseStarted() {
+        // A purchase cannot genuinely be starting while RevenueCat already reports Pro (the paywall
+        // is not shown to a Pro user); ignoring it keeps a late/duplicate "started" signal from
+        // re-arming `.purchasing` over an active entitlement.
+        guard RevenueCatSubscriptionService.shared.revenueCatIsPro == false else { return }
+        flow.purchaseStarted()
+    }
+
+    func paywallPurchaseFinished(_ outcome: RevenueCatSubscriptionService.PurchaseOutcome) {
+        flow.purchaseFinished(state: Self.state(forPurchaseOutcome: outcome))
+    }
+
+    func paywallRestoreStarted() {
+        // The raw RevenueCat entitlement, not `isPro` — a Developer Force Pro/Force Free override
+        // must never distort restore messaging (e.g. reporting "restored" when Force Pro was
+        // already masking a Free RevenueCat account).
+        flow.restoreStarted(wasProBefore: RevenueCatSubscriptionService.shared.revenueCatIsPro)
+    }
+
+    func paywallRestoreFinished(_ outcome: RevenueCatSubscriptionService.RestoreOutcome) {
+        flow.restoreFinished(
+            state: Self.state(forRestoreOutcome: outcome, wasProBefore: flow.restoreWasProBefore),
+            feedback: Self.restoreFeedback(for: outcome),
+            viaPaywallCallback: true,
+            paywallPresented: isPaywallPresented
+        )
+    }
+
+    /// The user acknowledged the restore-result alert.
+    func dismissRestoreFeedback() {
+        flow.dismissRestoreFeedback()
+    }
+
+    /// Called by `RevenueCatSubscriptionService.apply(_:)` after EVERY authoritative CustomerInfo
+    /// it applies — a purchase, a restore, a refresh, or a `customerInfoStream` emission alike —
+    /// with the RAW RevenueCat Pro entitlement (`revenueCatIsPro`), deliberately never `isPro`:
+    /// the Developer Pro Override can force `isPro` without any purchase having happened and must
+    /// never be mistaken for one. This is the one place that guarantees an active authoritative
+    /// entitlement can never coexist with a stuck `.purchasing`/`.restoring`, independent of
+    /// whether the paywall's own callbacks ever arrive.
+    func entitlementApplied(revenueCatIsPro: Bool) {
+        flow.entitlementApplied(revenueCatIsPro: revenueCatIsPro, paywallPresented: isPaywallPresented)
     }
 
     private init() {
@@ -329,6 +404,11 @@ final class SubscriptionManager {
             debugProOverride = saved
         }
         #endif
+        // Reconcile transient purchase/restore state against every authoritative entitlement
+        // update — see `entitlementApplied(revenueCatIsPro:)`.
+        RevenueCatSubscriptionService.shared.onEntitlementApplied = { [weak self] revenueCatIsPro in
+            self?.entitlementApplied(revenueCatIsPro: revenueCatIsPro)
+        }
         // RevenueCat configuration + the initial CustomerInfo/offerings load happen once from
         // app startup (see EightyFiveBlendsApp.swift's launch `.task`), not here — see Phase 15
         // of the RevenueCat cutover task for why an explicit app-lifecycle hook is preferred over
@@ -362,29 +442,37 @@ final class SubscriptionManager {
     @MainActor
     func purchase(_ package: Package) async {
         // Ignore repeat taps while a purchase or restore is already in flight.
-        guard purchaseState != .purchasing, purchaseState != .restoring else { return }
-        purchaseState = .purchasing
+        guard flow.isBusy == false else { return }
+        flow.purchaseStarted()
         print("[85Blends][RevenueCat] Purchase requested: \(package.storeProduct.productIdentifier)")
 
         let outcome = await RevenueCatSubscriptionService.shared.purchase(package)
         print("[85Blends][RevenueCat] Purchase outcome: \(outcome)")
-        purchaseState = Self.state(forPurchaseOutcome: outcome)
+        flow.purchaseFinished(state: Self.state(forPurchaseOutcome: outcome))
     }
 
     @MainActor
     func restorePurchases() async {
         // Guard against rapid repeat taps kicking off overlapping restores.
-        guard purchaseState != .restoring, purchaseState != .purchasing else { return }
+        guard flow.isBusy == false else { return }
         // The raw RevenueCat entitlement, not `isPro` — a Developer Force Pro/Force Free override
         // must never distort restore messaging (e.g. reporting "restored" when Force Pro was
         // already masking a Free RevenueCat account).
         let wasProBefore = RevenueCatSubscriptionService.shared.revenueCatIsPro
-        purchaseState = .restoring
+        flow.restoreStarted(wasProBefore: wasProBefore)
         print("[85Blends][RevenueCat] Restore requested")
 
+        // This call always returns (never throws — failures come back as `.failed`), so unlike the
+        // paywall-callback path this one can never strand `.restoring`; whatever the outcome, the
+        // user gets a result alert and Restore becomes tappable again.
         let outcome = await RevenueCatSubscriptionService.shared.restore()
         print("[85Blends][RevenueCat] Restore outcome: \(outcome)")
-        purchaseState = Self.state(forRestoreOutcome: outcome, wasProBefore: wasProBefore)
+        flow.restoreFinished(
+            state: Self.state(forRestoreOutcome: outcome, wasProBefore: wasProBefore),
+            feedback: Self.restoreFeedback(for: outcome),
+            viaPaywallCallback: false,
+            paywallPresented: isPaywallPresented
+        )
     }
 
     // MARK: - Pure state-transition logic (unit-testable — see SubscriptionManagerTests.swift)
@@ -422,11 +510,164 @@ final class SubscriptionManager {
     static func state(forRestoreOutcome outcome: RevenueCatSubscriptionService.RestoreOutcome, wasProBefore: Bool) -> PurchaseState {
         switch outcome {
         case .proActive:
-            return wasProBefore ? .info("85Blends Pro is active.") : .restored
+            return PurchaseFlow.stateForActiveRestore(wasProBefore: wasProBefore)
         case .noActivePro:
             return .info("No active subscription found.")
         case .failed:
             return .failed("We couldn't restore your purchases. Please try again.")
         }
+    }
+
+    /// Maps a RevenueCat restore outcome to the result alert the paywall presents. An already-Pro
+    /// user restoring is still a success here (`.proActive` regardless of `wasProBefore`): the
+    /// restore genuinely re-verified an active subscription. Never carries the raw RevenueCat/
+    /// StoreKit error text — `.failed(_)`'s message is deliberately dropped.
+    static func restoreFeedback(for outcome: RevenueCatSubscriptionService.RestoreOutcome) -> RestoreFeedback {
+        switch outcome {
+        case .proActive:   return .restored
+        case .noActivePro: return .noActiveSubscription
+        case .failed:      return .failed
+        }
+    }
+}
+
+// MARK: - Restore result feedback
+
+/// The outcome of a Restore Purchases attempt, as shown to the user in one native alert. A single
+/// enum (not one boolean per outcome) so exactly one result can be pending at a time.
+enum RestoreFeedback: Equatable {
+    /// An active 85Blends Pro entitlement was confirmed.
+    case restored
+    /// Restore completed but RevenueCat reports no active Pro entitlement for this Apple ID.
+    case noActiveSubscription
+    /// The restore itself failed (network, StoreKit, RevenueCat).
+    case failed
+
+    var title: String {
+        switch self {
+        case .restored:             return "Purchases Restored"
+        case .noActiveSubscription: return "No Active Subscription Found"
+        case .failed:               return "Restore Failed"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .restored:
+            return "Your 85Blends Pro subscription has been restored successfully."
+        case .noActiveSubscription:
+            return "We couldn't find an active 85Blends Pro subscription associated with your Apple ID."
+        case .failed:
+            return "We couldn't restore your purchases right now. Please check your connection and try again."
+        }
+    }
+}
+
+// MARK: - Purchase / restore flow state machine
+
+/// Pure state machine behind `SubscriptionManager.purchaseState`/`restoreFeedback` — no
+/// RevenueCat, StoreKit or SwiftUI types, so every transition is directly unit-testable
+/// (see SubscriptionManagerTests.swift's `PurchaseFlowTests`).
+///
+/// INVARIANTS it enforces:
+///   1. `.purchasing` and `.restoring` are TRANSIENT. An authoritative active entitlement
+///      (`entitlementApplied`) ends a pending purchase (→ `.succeeded`) and a pending restore that
+///      began while Free (→ `.restored` + result alert) — so a purchase/restore whose paywall
+///      callback was lost (RevenueCatUI delivers them as SwiftUI preference changes on
+///      `PaywallView`, which `ProUpgradeView` removes the instant `isProUser` flips) can never
+///      leave the screen showing "Processing your purchase…" over an active Pro entitlement, nor
+///      leave Restore Purchases disabled.
+///   2. Every terminal path leaves the transient state: success, cancel, failure, entitlement
+///      arrival, and paywall dismissal.
+///   3. A restore always ends with a result (`restoreFeedback`) — restored / none found / failed —
+///      and is immediately actionable again.
+///   4. Dismissing the paywall clears transient state WITHOUT claiming an outcome — StoreKit/
+///      RevenueCat own any in-flight transaction independent of the view, and the authoritative
+///      CustomerInfo path still resolves the final entitlement.
+///
+/// The entitlement signal fed in here is always RevenueCat's RAW Pro entitlement, never the
+/// Developer Pro Override-affected `isPro` — an override is not a purchase.
+struct PurchaseFlow: Equatable {
+    typealias State = SubscriptionManager.PurchaseState
+
+    private(set) var state: State = .idle
+    private(set) var restoreFeedback: RestoreFeedback?
+    /// Snapshot of the raw RevenueCat entitlement when the current restore began.
+    private(set) var restoreWasProBefore = false
+    /// True once an entitlement arrival already settled (and reported) the current restore, so the
+    /// paywall's own late `onRestoreCompleted` for that same attempt can't report it a second time.
+    private var restoreSettledByEntitlement = false
+
+    /// A purchase or restore is currently pending — new ones must not start, and the Restore
+    /// button is disabled.
+    var isBusy: Bool { state == .purchasing || state == .restoring }
+
+    /// The state a restore that found an active Pro entitlement resolves to — shared by
+    /// `SubscriptionManager.state(forRestoreOutcome:wasProBefore:)` and the entitlement
+    /// reconciliation below so the two can never disagree.
+    static func stateForActiveRestore(wasProBefore: Bool) -> State {
+        wasProBefore ? .info("85Blends Pro is active.") : .restored
+    }
+
+    mutating func purchaseStarted() {
+        state = .purchasing
+    }
+
+    /// `state` is the already-mapped terminal state (`SubscriptionManager.state(forPurchaseOutcome:)`).
+    mutating func purchaseFinished(state resulting: State) {
+        state = resulting
+    }
+
+    mutating func restoreStarted(wasProBefore: Bool) {
+        state = .restoring
+        restoreWasProBefore = wasProBefore
+        restoreSettledByEntitlement = false
+        restoreFeedback = nil
+    }
+
+    /// Records a restore result. `viaPaywallCallback` is `true` for RevenueCatUI's
+    /// `.onRestoreCompleted`/`.onRestoreFailure`, whose delivery is not guaranteed and may arrive
+    /// after `entitlementApplied` already settled this attempt (then it is ignored); an awaited
+    /// `SubscriptionManager.restorePurchases()` result is always final. The result alert is only
+    /// queued while the paywall is on screen, so it can never surface later over something else.
+    mutating func restoreFinished(state resulting: State, feedback: RestoreFeedback, viaPaywallCallback: Bool, paywallPresented: Bool) {
+        if viaPaywallCallback && restoreSettledByEntitlement {
+            restoreSettledByEntitlement = false
+            return
+        }
+        restoreSettledByEntitlement = false
+        state = resulting
+        restoreFeedback = paywallPresented ? feedback : nil
+    }
+
+    /// An authoritative RevenueCat entitlement was just applied. See this type's header.
+    mutating func entitlementApplied(revenueCatIsPro: Bool, paywallPresented: Bool) {
+        guard revenueCatIsPro else { return }
+        switch state {
+        case .purchasing:
+            state = .succeeded
+        case .restoring where restoreWasProBefore == false:
+            // Only a Free → Pro transition during a restore is attributable to it. A user who was
+            // ALREADY Pro keeps `.restoring` until the restore call itself reports — an unrelated
+            // CustomerInfo refresh must not report a restore result that hasn't happened yet.
+            state = Self.stateForActiveRestore(wasProBefore: false)
+            restoreFeedback = paywallPresented ? .restored : nil
+            restoreSettledByEntitlement = true
+        default:
+            break
+        }
+    }
+
+    /// The paywall left the screen. Ends any pending transient state without claiming an outcome
+    /// and drops an unacknowledged result alert so it can't reappear on the next presentation.
+    mutating func paywallDismissed() {
+        if isBusy {
+            state = .idle
+        }
+        restoreFeedback = nil
+    }
+
+    mutating func dismissRestoreFeedback() {
+        restoreFeedback = nil
     }
 }

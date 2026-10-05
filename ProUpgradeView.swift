@@ -17,8 +17,10 @@
 //    - entitlement authority (still exclusively `SubscriptionManager`/`RevenueCatSubscriptionService`
 //      — RevenueCatUI never touches `pro` directly; see that type's own "KEY AUTHORITY INVARIANT")
 //    - presentation/routing (`presentationMode`, every existing call site is unchanged)
-//    - post-purchase state bookkeeping (`SubscriptionManager.setPurchaseState`, mirroring the
-//      exact same transitions `purchase(_:)`/`restorePurchases()` already produce)
+//    - post-purchase/restore state bookkeeping (`SubscriptionManager.paywallPurchaseStarted`/
+//      `paywallPurchaseFinished`/`paywallRestoreStarted`/`paywallRestoreFinished`, mirroring the
+//      exact same transitions `purchase(_:)`/`restorePurchases()` already produce) and the
+//      Restore Purchases result alert (`SubscriptionManager.restoreFeedback`)
 //  RevenueCatUI owns paywall rendering, package selection, purchase UI, restore UI, and the
 //  remote paywall content itself — this file never duplicates that in SwiftUI.
 //
@@ -74,10 +76,6 @@ struct ProUpgradeView: View {
     /// raw backend string, error description, or OSStatus. Cleared whenever the code field changes
     /// or a new purchase attempt begins.
     @State private var referralErrorMessage: String?
-    /// Snapshot of `manager.isProUser` taken the moment RevenueCatUI's restore flow starts, so the
-    /// resulting message can distinguish a fresh restore from "already active" — mirrors
-    /// `restorePurchases()`'s own `wasProBefore` snapshot.
-    @State private var restoreWasProBefore = false
     /// 85Blends 2.4.0 paywall-layout refinement — the compact referral row's "Add Code" affordance
     /// presents the actual code-entry UI in this sheet instead of inline, so the main paywall stays
     /// short enough that Pro's benefits/plans/CTA are visible without scrolling. See
@@ -187,6 +185,24 @@ struct ProUpgradeView: View {
         .toolbar(.hidden, for: .tabBar)
         .sheet(isPresented: $isShowingReferralCodeSheet) {
             referralCodeEntrySheet
+        }
+        // Restore Purchases result — one native alert for all three outcomes (restored / none
+        // found / failed). Attached here at the root, deliberately OUTSIDE `body`'s
+        // proActiveContent/freePaywallContent branch swap: a restore that activates Pro swaps the
+        // branch out from under the user, and an alert hosted inside the outgoing branch would
+        // vanish with it. Backed by `SubscriptionManager.restoreFeedback`, so it is dismissed
+        // (and the state cleared) exactly once, whichever restore button started the restore.
+        .alert(
+            manager.restoreFeedback?.title ?? "",
+            isPresented: Binding(
+                get: { manager.restoreFeedback != nil },
+                set: { if $0 == false { manager.dismissRestoreFeedback() } }
+            ),
+            presenting: manager.restoreFeedback
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { feedback in
+            Text(feedback.message)
         }
         // A CustomerInfo update (restore, family sharing, a purchase completed on another device)
         // can flip isProUser to true while this sheet happens to be open — `body`'s Group already
@@ -416,7 +432,7 @@ struct ProUpgradeView: View {
                         }
                     }
                     .onPurchaseStarted { _ in
-                        manager.setPurchaseState(.purchasing)
+                        manager.paywallPurchaseStarted()
                     }
                     .onPurchaseCompleted { customerInfo in
                         // Apply this authoritative, already-resolved CustomerInfo IMMEDIATELY —
@@ -426,26 +442,24 @@ struct ProUpgradeView: View {
                         // customerInfoStream's own timing. See applyAuthoritativeCustomerInfo(_:)'s
                         // own header.
                         RevenueCatSubscriptionService.shared.applyAuthoritativeCustomerInfo(customerInfo)
-                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: RevenueCatSubscriptionService.purchaseOutcome(
+                        manager.paywallPurchaseFinished(RevenueCatSubscriptionService.purchaseOutcome(
                             userCancelled: false,
                             isProEntitlementActiveAfterPurchase: RevenueCatSubscriptionService.isProEntitlementActive(
                                 entitlementIsActive: customerInfo.entitlements[RevenueCatSubscriptionService.proEntitlementID]?.isActive
                             )
-                        )))
+                        ))
                     }
                     .onPurchaseCancelled {
-                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: .cancelled))
+                        manager.paywallPurchaseFinished(.cancelled)
                     }
                     .onPurchaseFailure { error in
-                        manager.setPurchaseState(SubscriptionManager.state(forPurchaseOutcome: .failed(error.localizedDescription)))
+                        manager.paywallPurchaseFinished(.failed(error.localizedDescription))
                     }
                     .onRestoreStarted {
-                        // The raw RevenueCat entitlement, not `manager.isProUser` — mirrors
-                        // SubscriptionManager.restorePurchases()'s own snapshot: a Developer
-                        // Force Pro/Force Free override (Internal/Debug only) must never distort
-                        // restore messaging.
-                        restoreWasProBefore = RevenueCatSubscriptionService.shared.revenueCatIsPro
-                        manager.setPurchaseState(.restoring)
+                        // SubscriptionManager snapshots the RAW RevenueCat entitlement itself (not
+                        // `manager.isProUser`) — a Developer Force Pro/Force Free override
+                        // (Internal/Debug only) must never distort restore messaging.
+                        manager.paywallRestoreStarted()
                     }
                     .onRestoreCompleted { customerInfo in
                         // Apply this authoritative, already-resolved CustomerInfo IMMEDIATELY —
@@ -458,16 +472,13 @@ struct ProUpgradeView: View {
                         let isActive = RevenueCatSubscriptionService.isProEntitlementActive(
                             entitlementIsActive: customerInfo.entitlements[RevenueCatSubscriptionService.proEntitlementID]?.isActive
                         )
-                        manager.setPurchaseState(SubscriptionManager.state(
-                            forRestoreOutcome: isActive ? .proActive : .noActivePro,
-                            wasProBefore: restoreWasProBefore
-                        ))
+                        // Reports the result (state + the result alert below). If applying the
+                        // CustomerInfo above already ended this restore (entitlement just became
+                        // active), SubscriptionManager ignores this late duplicate.
+                        manager.paywallRestoreFinished(isActive ? .proActive : .noActivePro)
                     }
                     .onRestoreFailure { error in
-                        manager.setPurchaseState(SubscriptionManager.state(
-                            forRestoreOutcome: .failed(error.localizedDescription),
-                            wasProBefore: restoreWasProBefore
-                        ))
+                        manager.paywallRestoreFinished(.failed(error.localizedDescription))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
