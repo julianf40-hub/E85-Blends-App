@@ -136,3 +136,17 @@ worker invocation.
 
 These are documented observations only. This recovery snapshot intentionally makes no behavior
 change.
+
+## Update (2026-10-05): invocation gap confirmed, fix prepared but not deployed
+
+A read-only follow-up audit established that nothing in the project invokes `price-alerts-worker`
+(no cron job, database function, trigger, webhook or platform scheduler, and zero calls in the Edge
+Function logs since deployment), and that all Price Alerts tables are empty. The scheduler, stale-job
+recovery and freshness guard that address this are prepared in
+`migrations/20261005120000_price_alert_worker_scheduler_and_freshness.sql` and documented in
+[`PRICE_ALERTS_SCHEDULER.md`](PRICE_ALERTS_SCHEDULER.md). They are **not applied or deployed**. The
+worker source in this repository adds a dedicated scheduler-secret auth path
+(`price-alerts-worker/auth.ts`) and `verify_jwt = false`, so until the worker is redeployed the
+repository is intentionally ahead of the deployed v1 described above. Note also that the 4-hour retry
+step in the delay table is unreachable with the worker's five-attempt cap (the retry horizon is about
+81 minutes).

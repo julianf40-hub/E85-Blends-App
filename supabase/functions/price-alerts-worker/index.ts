@@ -1,9 +1,11 @@
 // 85Blends 2.4.0 — private station price-alert worker.
-// Service-role-only. Prepares queued DB jobs even before APNs is configured, but never
+// Server-to-server only (see auth.ts: dedicated scheduler secret header, or the service-role
+// Bearer). Prepares queued DB jobs even before APNs is configured, but never
 // claims/sends device deliveries unless all APNs signing secrets are present.
 
 import postgres from "npm:postgres@3.4.5";
 import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
+import { isAuthorizedWorkerCall } from "./auth.ts";
 
 type Json = Record<string, unknown>;
 type Sql = ReturnType<typeof postgres>;
@@ -30,18 +32,6 @@ function response(status: number, body: Json): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
-}
-
-function bearer(req: Request): string {
-  const value = req.headers.get("authorization")?.trim() ?? "";
-  return value.toLowerCase().startsWith("bearer ") ? value.slice(7).trim() : "";
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const len = Math.max(a.length, b.length, 1);
-  let diff = a.length === b.length ? 0 : 1;
-  for (let i = 0; i < len; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
-  return diff === 0;
 }
 
 function integer(value: unknown, fallback: number, min: number, max: number): number {
@@ -175,9 +165,9 @@ async function sendDeliveries(sql: Sql, limit: number, config: { teamId: string;
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return response(405, { error: "method_not_allowed" });
 
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() ?? "";
-  const incoming = bearer(req);
-  if (!serviceKey || !incoming || !constantTimeEqual(serviceKey, incoming)) return response(401, { error: "unauthorized" });
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim() ?? "";
+  const cronSecret = Deno.env.get("PRICE_ALERTS_WORKER_CRON_SECRET")?.trim() ?? "";
+  if (!isAuthorizedWorkerCall(req.headers, { serviceRoleKey, cronSecret })) return response(401, { error: "unauthorized" });
 
   const dbUrl = Deno.env.get("SUPABASE_DB_URL");
   if (!dbUrl) return response(503, { error: "server_not_configured" });
