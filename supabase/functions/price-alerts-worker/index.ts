@@ -7,6 +7,7 @@
 import postgres from "npm:postgres@3.4.5";
 import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 import { isAuthorizedWorkerCall } from "./auth.ts";
+import { classifyFcmResponse } from "./fcm.ts";
 
 type Json = Record<string, unknown>;
 type Sql = ReturnType<typeof postgres>;
@@ -179,22 +180,6 @@ async function sendApns(delivery: Delivery, config: ApnsConfig): Promise<SendRes
   return { ok: false, status: res.status, reason, retryable, invalidate };
 }
 
-function fcmErrorCode(body: unknown): string | null {
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
-  const error = (body as Record<string, unknown>).error;
-  if (typeof error !== "object" || error === null || Array.isArray(error)) return null;
-  const record = error as Record<string, unknown>;
-  if (Array.isArray(record.details)) {
-    for (const detail of record.details) {
-      if (typeof detail !== "object" || detail === null || Array.isArray(detail)) continue;
-      const d = detail as Record<string, unknown>;
-      if (typeof d.errorCode === "string" && d.errorCode.length > 0) return d.errorCode.slice(0, 128);
-    }
-  }
-  if (typeof record.status === "string" && record.status.length > 0) return record.status.slice(0, 128);
-  return null;
-}
-
 async function sendFcm(delivery: Delivery, config: FcmConfig): Promise<SendResult> {
   const accessToken = await fcmAccessToken(config);
   const copy = messageFor(delivery);
@@ -218,13 +203,15 @@ async function sendFcm(delivery: Delivery, config: FcmConfig): Promise<SendResul
     }),
   });
 
-  if (res.ok) return { ok: true, status: res.status, reason: "sent", retryable: false, invalidate: false };
   let parsed: unknown = null;
-  try { parsed = await res.json(); } catch {}
-  const code = fcmErrorCode(parsed) ?? `http_${res.status}`;
-  const invalidate = code === "UNREGISTERED" || code === "SENDER_ID_MISMATCH" || res.status === 404;
-  const retryable = !invalidate && (res.status === 429 || res.status >= 500 || code === "QUOTA_EXCEEDED" || code === "UNAVAILABLE" || code === "INTERNAL");
-  return { ok: false, status: res.status, reason: code, retryable, invalidate };
+  if (!res.ok) { try { parsed = await res.json(); } catch {} }
+  // Only an explicit UNREGISTERED may invalidate the device; configuration and provider errors never do
+  // (see fcm.ts). The device token and credentials are never logged.
+  const result = classifyFcmResponse(res.status, parsed);
+  if (result.kind === "configuration") {
+    console.error(JSON.stringify({ level: "error", message: "price-alerts-worker fcm configuration failure", status: result.status, code: result.reason, ts: new Date().toISOString() }));
+  }
+  return result;
 }
 
 async function prepareJobs(sql: Sql, limit: number): Promise<{ claimed: number; prepared: number; failed: number }> {
