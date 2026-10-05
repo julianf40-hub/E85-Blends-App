@@ -71,6 +71,17 @@ enabled = false
 [functions.revenuecat-webhook]
 verify_jwt = false
 
+# 85Blends 2.4.1 — exact source-recovery snapshot of the deployed Station Price Alerts API.
+# The app does not use Supabase Auth sessions, so this function performs its own client-safe
+# API-key plus per-installation-secret authentication.
+[functions.price-alerts-api]
+verify_jwt = false
+
+# 85Blends 2.4.1 — exact source-recovery snapshot of the deployed private delivery worker.
+# Keep the platform JWT gate enabled; the function additionally requires the service-role bearer.
+[functions.price-alerts-worker]
+verify_jwt = true
+
 # 85Blends 2.4.0 — Referral client API. 85Blends does not use Supabase Auth sessions, so there is
 # no Supabase user JWT for the iOS app to send here either. `verify_jwt = false` is scoped to this
 # one function only, same as revenuecat-webhook above — the function performs its own independent
