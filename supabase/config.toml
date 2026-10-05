@@ -77,10 +77,15 @@ verify_jwt = false
 [functions.price-alerts-api]
 verify_jwt = false
 
-# 85Blends 2.4.1 — exact source-recovery snapshot of the deployed private delivery worker.
-# Keep the platform JWT gate enabled; the function additionally requires the service-role bearer.
+# 85Blends 2.4.1 — private APNs delivery worker, invoked server-to-server by pg_cron/pg_net
+# (private.invoke_price_alerts_worker()). The platform JWT gate is turned OFF for this one function
+# because the scheduler authenticates with a dedicated secret header, not a Supabase JWT (a new-style
+# sb_secret_ key is not a JWT and would be rejected by the gate). The function performs its own
+# constant-time check in price-alerts-worker/auth.ts: dedicated scheduler secret OR the service-role
+# Bearer, and returns 401 before any database work otherwise. NOTE: the DEPLOYED worker (v1) still
+# has verify_jwt = true until it is redeployed — see supabase/functions/PRICE_ALERTS_SCHEDULER.md.
 [functions.price-alerts-worker]
-verify_jwt = true
+verify_jwt = false
 
 # 85Blends 2.4.0 — Referral client API. 85Blends does not use Supabase Auth sessions, so there is
 # no Supabase user JWT for the iOS app to send here either. `verify_jwt = false` is scoped to this
