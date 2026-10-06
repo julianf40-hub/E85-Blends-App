@@ -21,8 +21,8 @@ private final class FakePushSystem: PushRegistrationSystem {
     var status: PushAuthorizationStatus
     var userGrantsPermission = true
     var requestError: Error?
-    /// Awaited at the start of `authorizationStatus()`, so a test can hold one call open while a
-    /// second one arrives.
+    /// Awaited inside `authorizationStatus()` once the answer is fixed, so a test can hold one call
+    /// open (see `StatusGate`) while a second one arrives.
     var beforeStatusAnswer: (() async -> Void)?
 
     private(set) var promptCount = 0
@@ -51,6 +51,41 @@ private final class FakePushSystem: PushRegistrationSystem {
 
     func registerForRemoteNotifications() {
         registerCount += 1
+    }
+}
+
+/// Holds the FIRST status read open until the test releases it, so one call stays in flight while a
+/// second arrives — deterministically, with no reliance on how the scheduler orders yielding tasks
+/// (an earlier version of these tests used `Task.yield()` for that and failed about 1 run in 70
+/// under load, whenever the first call happened to finish before the second began). Every later
+/// read returns immediately, so a call that wrongly does NOT stand aside for the parked one fails
+/// an expectation instead of hanging the suite.
+@MainActor
+private final class StatusGate {
+    private var parkedCall: CheckedContinuation<Void, Never>?
+    private var hasParkedACall = false
+
+    var isParked: Bool { parkedCall != nil }
+
+    func parkFirstCaller() async {
+        guard hasParkedACall == false else { return }
+        hasParkedACall = true
+        await withCheckedContinuation { parkedCall = $0 }
+    }
+
+    func release() {
+        parkedCall?.resume()
+        parkedCall = nil
+    }
+
+    /// Suspends the test until a call is parked inside its status read. Bounded, so a call that
+    /// never reaches the system fails the test rather than hanging it.
+    func waitUntilParked() async -> Bool {
+        for _ in 0..<10_000 {
+            if isParked { return true }
+            await Task.yield()
+        }
+        return isParked
     }
 }
 
@@ -215,51 +250,79 @@ struct PushRegistrationTests {
     }
 
     @MainActor
-    @Test("Two overlapping opt-in calls coalesce into one prompt and one registration")
-    func optIn_overlappingCallsCoalesce() async {
+    @Test("A second opt-in made while one is awaiting the system returns at once — one prompt, one registration")
+    func optIn_overlappingCallsCoalesce() async throws {
         let system = FakePushSystem(status: .notDetermined)
-        system.beforeStatusAnswer = { await Task.yield() }
+        let gate = StatusGate()
+        system.beforeStatusAnswer = { await gate.parkFirstCaller() }
         let service = PushRegistrationService(system: system)
 
-        async let first: Void = service.requestAuthorizationAndRegister()
-        async let second: Void = service.requestAuthorizationAndRegister()
-        _ = await (first, second)
+        let first = Task { await service.requestAuthorizationAndRegister() }
+        let isParked = await gate.waitUntilParked()
+        try #require(isParked) // the first call is now inside its status read
+
+        await service.requestAuthorizationAndRegister()
+
+        // The overlapping call neither prompted nor registered on its own behalf.
+        #expect(system.promptCount == 0)
+        #expect(system.registerCount == 0)
+
+        gate.release()
+        await first.value
 
         #expect(system.promptCount == 1)
         #expect(system.registerCount == 1)
     }
 
     @MainActor
-    @Test("An explicit opt-in made while a background refresh is still awaiting the system is not dropped")
-    func optIn_isNotSwallowedByAnInFlightRefresh() async {
+    @Test("An explicit opt-in made while a background refresh is awaiting the system is not dropped")
+    func optIn_isNotSwallowedByAnInFlightRefresh() async throws {
         let system = FakePushSystem(status: .notDetermined)
-        system.beforeStatusAnswer = { await Task.yield() }
+        let gate = StatusGate()
+        system.beforeStatusAnswer = { await gate.parkFirstCaller() }
         let service = PushRegistrationService(system: system)
 
         let refresh = Task { await service.refreshRegistrationIfAuthorized() }
-        await Task.yield() // let the refresh start and suspend inside the status read
-        await service.requestAuthorizationAndRegister()
-        await refresh.value
+        let isParked = await gate.waitUntilParked()
+        try #require(isParked) // the refresh is now inside its status read
 
+        await service.requestAuthorizationAndRegister()
+
+        // The opt-in ran to completion while the refresh was still parked.
         #expect(system.promptCount == 1)
         #expect(system.registerCount == 1)
         #expect(service.state == .authorizedAwaitingToken)
+
+        gate.release()
+        await refresh.value
+
+        // The refresh's answer predates the prompt (not determined), so it adds nothing.
+        #expect(system.promptCount == 1)
+        #expect(system.registerCount == 1)
     }
 
     @MainActor
     @Test("A background refresh yields to an opt-in already in flight instead of racing it")
-    func refresh_yieldsToAnInFlightOptIn() async {
-        let system = FakePushSystem(status: .notDetermined)
-        system.beforeStatusAnswer = { await Task.yield() }
+    func refresh_yieldsToAnInFlightOptIn() async throws {
+        let system = FakePushSystem(status: .authorized)
+        let gate = StatusGate()
+        system.beforeStatusAnswer = { await gate.parkFirstCaller() }
         let service = PushRegistrationService(system: system)
 
         let optIn = Task { await service.requestAuthorizationAndRegister() }
-        await Task.yield() // let the opt-in start and suspend inside the status read
+        let isParked = await gate.waitUntilParked()
+        try #require(isParked) // the opt-in is now inside its status read
+
         await service.refreshRegistrationIfAuthorized()
+
+        // The refresh left registering to the opt-in already underway: it asked the system for nothing.
+        #expect(system.registerCount == 0)
+
+        gate.release()
         await optIn.value
 
-        #expect(system.promptCount == 1)
         #expect(system.registerCount == 1)
+        #expect(system.promptCount == 0) // already authorized: never prompted
     }
 
     // MARK: - No registration loop
