@@ -44,7 +44,37 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   a stale delivery. Run it with the libpq environment (`PGHOST`/`PGPORT`/`PGUSER`/`PGDATABASE`) pointing
   at a scratch database with the migrations applied. It COMMITS its fixtures under a unique marker and
   deletes them on exit — never point it at a hosted project.
+- `price_alert_cross_platform_delivery_safety.test.sql` — the cross-platform claim path
+  (`claim_price_alert_deliveries_v2`, migrations `20261005211547` + `20261005233000`), single transaction,
+  run on a database with the FULL chain applied (the same file passes on a chronological replay and on a
+  database built in the production order): v2 shape, iOS/Android isolation (the sweep and the claim are
+  per platform), the 2-hour freshness boundaries, stale and device-unusable expiry (stale wins,
+  attempts not burned), retries, job finalization, argument validation, the iOS-only v1 wrapper, the
+  bounded 500-row sweep per platform with fresh rows behind a stale backlog, partially drained unusable
+  backlogs, pinned `search_path`, grants (no PUBLIC/anon/authenticated), cron inactive and unique, and an
+  idempotent re-apply. It `\ir`-includes the compatibility migration, so run it from any directory.
+- `price_alert_cross_platform_concurrency.test.sh` — the multi-session checks for the same path
+  (a locked stale row, a locked FRESH row and a locked job row never block a claim; one call expires at
+  most 500 of a 20,000-row backlog; two iOS plus two Android concurrent workers never double-claim,
+  never cross platforms, never receive a stale delivery, and drain both platforms). Same environment
+  rules as the other concurrency script; it COMMITS fixtures under a marker and removes them on exit.
+- `price_alert_android_active_device_uniqueness.test.sql` — the Android invariant (migration
+  `20261006000000`): the partial unique index on `(installation_id, bundle_id)` for active Android rows;
+  a second active device is rejected by the database while other packages, other installations, disabled
+  and invalidated rows are unrestricted; re-enabling is rejected while another is active; the exact
+  statements `price-alerts-api` runs for a registration (lock, deactivate the others, upsert) leave one
+  active token across sequential registrations (replacement active, previous disabled + invalidated);
+  independent installations; iOS unchanged and coexisting with Android; idempotent re-apply.
+- `price_alert_api_android_registration.test.sh` — starts the REAL `price-alerts-api` under Deno against a
+  scratch database (needs `deno`, `curl`, `psql`; `API_DB_URL` if the server is not at `127.0.0.1:$PGPORT`)
+  and drives it with concurrent HTTP registrations: 12 concurrent Android registrations x 5 rounds for one
+  installation all return 200 and leave exactly one active token; independent installations; iOS unchanged
+  and coexisting; the installation lock is per installation (an unrelated installation does not wait); the
+  migration refuses to run, without touching data, when duplicate active Android rows already exist.
+  Same environment rules as the other concurrency scripts; it COMMITS fixtures and removes them on exit.
 
 The worker-side Node tests (`node --test supabase/functions/price-alerts-worker/*.test.ts`) include
-`contract.test.ts`, which pins the scheduler's names together across the SQL invoker (Vault secret
+`fcm.test.ts` (the FCM response classification: only an explicit `UNREGISTERED` invalidates a device; generic
+404, `SENDER_ID_MISMATCH`, auth/config and provider errors never do; 429/5xx/`UNAVAILABLE`/`INTERNAL` are
+retryable) and `contract.test.ts`, which pins the scheduler's names together across the SQL invoker (Vault secret
 names, header, URL path), the worker (`auth.ts`, `index.ts`, Edge secret name) and the runbook.

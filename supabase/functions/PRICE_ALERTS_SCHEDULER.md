@@ -1,14 +1,54 @@
 # Price Alerts worker scheduler — readiness runbook (2.4.1)
 
-**Status: prepared, NOT deployed, NOT applied.** Nothing in this document has been run against the
-production project (`zefkbtscieokkdenvnkg`). The migration, the worker auth change and the cron job
-described here only take effect when someone performs the steps in
-[Activation order](#activation-order). No secret value appears in this repository; only secret
-*names* are used.
+> **How to read this document.** It has two parts. **Current state and plan**: the next section and the
+> last section, [Cross-platform reconciliation and deployment plan](#cross-platform-reconciliation-and-deployment-plan),
+> say what production contains today and what to do next. Everything between them is the **original PR #120
+> design and observations (HISTORICAL, written 2026-10-05)**, kept for its reasoning. Its "observed"
+> statements (the worker is v1 or v2, `verify_jwt = true`, scheduler secrets missing, APNs secrets unknown,
+> the worker has never been invoked, `prepared_only` means APNs is missing) were true when written and are
+> **not** current; where such a statement remains below it is marked *(historical)*.
+>
+> No secret value appears in this repository; only secret *names* are used.
+
+## Current production state (as of 2026-10-06; re-verify read-only before acting)
+
+| Item | State |
+|---|---|
+| `price-alerts-worker` Edge Function | **v4 deployed**, ACTIVE, `verify_jwt = false`, bundle `81ff89f36ba9394bced217433d02fc817f30a1ee156c740e4bb504d24c5d642f`. Cross-platform: iOS through APNs, Android through FCM HTTP v1, claiming with `claim_price_alert_deliveries_v2` once per platform. Authenticates with `x-85blends-cron-secret` (`PRICE_ALERTS_WORKER_CRON_SECRET`) or the service-role Bearer, constant-time, 401 before any database work |
+| `price-alerts-api` Edge Function | **v4 deployed**, ACTIVE, `verify_jwt = false`, bundle `6e86ad838de7618b549ed0c2d6d6a806c3f6333dcd222d82db67a6d415cf9e2a` (iOS and Android registration) |
+| Edge secret `PRICE_ALERTS_WORKER_CRON_SECRET` | already provisioned |
+| Vault secret `price_alerts_worker_cron_token` | already provisioned (and `project_url`) |
+| `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8` | already provisioned |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | presence not verified by this work |
+| Migration `20261005211547_price_alerts_cross_platform_push` | **already applied** in production (recovered into git by PR #121) |
+| Migration `20261005120000_price_alert_worker_scheduler_and_freshness` | **NOT applied** |
+| Migration `20261005233000_price_alert_cross_platform_delivery_safety` | **NOT applied** |
+| Migration `20261006000000_price_alert_android_active_device_uniqueness` | **NOT applied** |
+| `private.invoke_price_alerts_worker()`, `price_alert_jobs_stuck_processing_idx` | absent (created by `20261005120000`) |
+| Cron job `85blends-price-alerts-worker-invoke` | **absent** (created *inactive* by `20261005120000`); nothing calls the worker |
+| Existing cron jobs | `85blends-price-alert-job-prepare` (every minute), the growth snapshot job, the App Store growth sync job |
+| Price Alerts data | empty: no installations, devices, alerts, jobs or deliveries |
+| `20260921000000_promo_campaign_foundation` | intentionally **not** applied |
+
+**The repository is no longer identical to the deployed v4 Edge Functions.** PR #121 first recorded the
+deployed v4 source exactly (commit `d15112b`), then intentionally changed two functions:
+
+- `price-alerts-worker`: FCM response classification moved to a tested helper, `fcm.ts`; only an explicit
+  `UNREGISTERED` invalidates a device (see [FCM failure classification](#fcm-failure-classification)).
+- `price-alerts-api`: `registerDevice` takes a row lock on the installation (see
+  [Android active-device invariant](#android-active-device-invariant)).
+
+Both must be redeployed, individually and by name, and verified, **before the migrations are applied and before**
+the scheduler is activated (see the current activation order at the end).
+
+**Status of this change: prepared, NOT deployed, NOT applied.** Nothing in this PR has been run against the
+production project (`zefkbtscieokkdenvnkg`).
+
+## Original PR #120 design and observations (HISTORICAL)
 
 ## Why this exists
 
-Verified read-only against production on 2026-10-05:
+Verified read-only against production on 2026-10-05 *(historical: this was before the worker was redeployed and before secrets were provisioned)*:
 
 - `price-alerts-worker` (the only code that talks to APNs) has **never been invoked**. No cron job,
   database function, trigger, webhook or platform scheduler calls it, and the Edge Function logs
@@ -55,7 +95,7 @@ Be precise about this before applying it:
 
 ## Auth strategy (decision)
 
-The worker is currently deployed with `verify_jwt = true` and additionally requires
+*(Historical: when this decision was made.)* The worker was deployed with `verify_jwt = true` and additionally required
 `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>`. Options considered:
 
 - **A — send the legacy service-role JWT from pg_cron.** No worker change, but it puts the project's
@@ -82,14 +122,14 @@ a holder of the service-role key, which can also read Vault.
 
 ## Secret names (values are never stored in git)
 
-| Name | Where | Used by | State observed 2026-10-05 |
+| Name | Where | Used by | State observed 2026-10-05 *(historical; see Current production state)* |
 |---|---|---|---|
 | `project_url` | Vault | `invoke_price_alerts_worker()` | present (shared with the App Store sync job) |
 | `price_alerts_worker_cron_token` | Vault | `invoke_price_alerts_worker()` | **missing** — must be created |
 | `PRICE_ALERTS_WORKER_CRON_SECRET` | Edge Function secret | worker `auth.ts` (same value as the Vault token) | **not set** (code does not exist in production yet) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Edge Function (platform-provided) | worker `auth.ts` (operator path) | provided by the platform; not inspected |
 | `SUPABASE_DB_URL` | Edge Function (platform-provided) | worker | not inspected |
-| `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8` | Edge Function secrets | worker `sendApns` | **unknown** — no read-only way to list Edge Function secrets; without all three the worker returns `prepared_only` and never claims or sends deliveries |
+| `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8` | Edge Function secrets | worker `sendApns` | **unknown at the time** (now provisioned). Cross-platform worker: without the three APNs secrets the iOS claim path is not called; without `FIREBASE_SERVICE_ACCOUNT_JSON` the Android claim path is not called; `prepared_only` means neither provider is configured |
 
 ## Trusted `project_url` and invoker validation
 
@@ -108,7 +148,7 @@ Every failure raises inside the cron job, so it appears as `failed` in `cron.job
 secret is sent only in the `x-85blends-cron-secret` header, never in the URL or in the cron command
 text (`select private.invoke_price_alerts_worker();`).
 
-## Activation order
+## Activation order (ORIGINAL PR #120 plan — HISTORICAL; superseded by the current activation order at the end)
 
 Each step is a deliberate, separately authorized action. The new worker-invocation cron job is created
 **inactive**; see [what takes effect when the migration is applied](#what-takes-effect-when-the-migration-is-applied)
@@ -116,7 +156,7 @@ for what is *not* inactive.
 
 1. Generate one secret value `S` (≥ 32 random characters), for example `openssl rand -hex 32`.
 2. Set Edge Function secret `PRICE_ALERTS_WORKER_CRON_SECRET = S`. Confirm the three `APNS_*` secrets
-   exist (if they are missing the scheduler is still safe: the worker stays `prepared_only`).
+   exist (if they are missing the scheduler is still safe: that provider's claim path is simply not called).
 3. Create Vault secret `price_alerts_worker_cron_token = S` **through the Supabase Dashboard Vault UI**
    (Integrations → Vault → Add new secret). Avoid doing this with
    `select vault.create_secret('<S>', …)` in the SQL editor: the secret literal would then sit in SQL
@@ -142,8 +182,8 @@ for what is *not* inactive.
 ## Rollback
 
 **Order matters: DEACTIVATE the worker-invocation cron job BEFORE rolling the Edge Function back to
-v1.** v1 has `verify_jwt = true`; its platform gate rejects the dedicated-header scheduler request
-(no JWT), so an active job against v1 produces a 401 every minute while cron itself still reports
+any version that has `verify_jwt = true` (the original v1/v2 did; v4 and later do not).** Such a version has `verify_jwt = true`; its platform gate rejects the dedicated-header scheduler request
+(no JWT), so an active job against such a version produces a 401 every minute while cron itself still reports
 success.
 
 1. **Stop the scheduler:**
@@ -151,19 +191,25 @@ success.
    (or `select cron.unschedule('85blends-price-alerts-worker-invoke');`). In-flight pg_net requests
    still complete; claimed deliveries whose worker dies are reclaimed after 15 minutes.
 2. **Roll the Edge Function back** (optional, only after step 1): redeploy the previous version with its
-   previous `verify_jwt` setting. Removing the `PRICE_ALERTS_WORKER_CRON_SECRET` secret is optional;
-   an unset secret simply disables the header path.
+   previous `verify_jwt` setting. The exact deployed v4 source is recorded in git at commit `d15112b` (the
+   recovery commit of PR #121); roll back to a *scheduler-compatible* version only (v4 or later accept the
+   scheduler header). Removing the `PRICE_ALERTS_WORKER_CRON_SECRET` secret is optional; an unset secret
+   simply disables the header path.
 3. **Revert the SQL function replacements** (optional — they are safe to leave in place). Re-create the
    previous definitions from the repository history, running only the function statements and their
    `revoke`/`grant` lines:
    - `private.claim_price_alert_jobs(integer)` → from `supabase/migrations/20260917232104_price_alert_worker_primitives.sql`
-   - `private.claim_price_alert_deliveries(integer)` → from `supabase/migrations/20260918001525_price_alert_delivery_claim_payload.sql`
+   - `private.claim_price_alert_deliveries_v2(integer, text)` → from `supabase/migrations/20261005211547_price_alerts_cross_platform_push.sql`
+     (the version production had before `20261005233000`; same signature and return shape)
+   - `private.claim_price_alert_deliveries(integer)` (v1) → from `supabase/migrations/20260918001525_price_alert_delivery_claim_payload.sql`
      (that migration drops and re-creates the function; return shape is identical)
    - then remove the additions:
+     `drop index if exists private.price_alert_push_devices_one_active_android_per_install_idx;`
      `drop index if exists private.price_alert_jobs_stuck_processing_idx;`
      `drop function if exists private.invoke_price_alerts_worker();`
      `select cron.unschedule('85blends-price-alerts-worker-invoke');`
-   The migration's row in the migration ledger stays; that is expected.
+   The migrations' rows in the migration ledger stay; that is expected. Do not use
+   `supabase migration repair`.
 4. **Irreversible effects:** deliveries already expired to `skipped` (`stale_report` /
    `device_unusable`) are terminal and are not re-queued by any rollback. Re-sending one would need a
    manual update and is deliberately not recommended (it is stale or undeliverable by definition).
@@ -173,10 +219,11 @@ success.
 | Cron activated, then the worker fails (5xx / APNs outage) | Deliveries stay pending/failed and retry; nothing is lost; stale ones expire after 2 h | Step 1, fix, re-activate |
 | Wrong scheduler secret (Vault ≠ Edge) | Every call returns 401; cron still shows success | Step 1, fix one side, re-activate; detect with the health checks |
 | Wrong/invalid `project_url` or token in Vault | The invoker raises; `failed` in `cron.job_run_details`; no request is sent | Fix the Vault value |
-| APNs failure | Retryable failures follow the 1m / 5m / 15m / 1h ladder, then `dead`; invalid tokens disable the device | None needed |
-| Auth regression in worker v2 | 401s | Step 1, then roll back (step 2) |
-| Migration applied, worker not yet deployed (v1 live) | Cron is inactive, nothing calls the worker; the new claim logic is live for the job-prep cron | Continue the activation order |
-| Worker v2 deployed, migration not applied | Extra auth path only; the old claim functions still work | Continue the activation order |
+| APNs or FCM provider failure | Retryable failures follow the 1m / 5m / 15m / 1h ladder, then `dead`; only an explicit invalid-token verdict (APNs `BadDeviceToken` / `Unregistered` / 410, FCM `UNREGISTERED`) disables the device | None needed |
+| Auth regression in a newly deployed worker | 401s | Step 1, then roll back (step 2) |
+| Migrations applied, hardened Edge Functions not yet deployed (v4 live) | Cron is inactive, nothing calls the worker; the new claim logic is live for the job-prep cron and for any manual worker call | Continue the current activation order |
+| Hardened Edge Functions deployed, migrations not applied | The FCM classifier and the API lock work against the old claim functions; the Android index is simply absent | Continue the current activation order |
+| FCM configuration failure (wrong Firebase project / credentials) | Android deliveries are retried (`failed`, then `dead` after the attempt cap); **no device is disabled** | Fix `FIREBASE_SERVICE_ACCOUNT_JSON`; no cleanup needed |
 
 ## pg_net queue exposure
 
@@ -205,11 +252,17 @@ produces repeated `401` responses while `cron.job_run_details` shows `succeeded`
   inside the cron job, so it *does* show as `failed` in `cron.job_run_details`.
 - **`pg_net` response history is retained only temporarily** (`pg_net.ttl` is **6 hours** on this
   project). Check it regularly during the first days, and do not rely on it for after-the-fact audit.
-- HTTP outcomes: `401` = secret mismatch (or the v1 JWT gate), `405` = not a POST, `503` =
-  `SUPABASE_DB_URL` missing, `500` = internal error, `200` + `prepared_only` = APNs secrets not all
-  present.
+- HTTP outcomes: `401` = secret mismatch (or a `verify_jwt = true` version), `405` = not a POST, `503` =
+  `SUPABASE_DB_URL` missing, `500` = internal error, `200` + `prepared_only` = **neither** push provider is
+  configured. The v4 response also reports `apns_configured`, `fcm_configured`, `ios_deliveries` and
+  `android_deliveries` (each `null` when that provider is not configured, because its claim path is then
+  not called).
 
 ```sql
+-- 0. is the scheduler actually on? (cron success below does not say whether the job is active)
+select jobname, schedule, active from cron.job
+where jobname in ('85blends-price-alerts-worker-invoke', '85blends-price-alert-job-prepare');
+
 -- 1. cron health (the new job)
 select status, count(*), max(start_time)
 from cron.job_run_details
@@ -219,11 +272,11 @@ group by status;
 -- 2. worker HTTP outcomes (last 6 h). net._http_response covers EVERY pg_net request, so classify by body.
 select status_code,
        case when content like '%"status":"ok"%'       then 'worker ok'
-            when content like '%prepared_only%'       then 'worker prepared_only (APNs secrets missing)'
+            when content like '%prepared_only%'       then 'worker prepared_only (no push provider configured)'
             when content like '%unauthorized%'        then 'worker 401 (scheduler secret mismatch)'
             when content like '%server_not_configured%' then 'worker 503 (SUPABASE_DB_URL)'
             when content like '%internal_error%'      then 'worker 500'
-            when content ilike '%authorization%'      then 'platform JWT gate (v1 still deployed?)'
+            when content ilike '%authorization%'      then 'platform JWT gate (a verify_jwt = true version deployed?)'
             else 'other request / not the worker' end as outcome,
        count(*) as n, max(created) as latest
 from net._http_response
@@ -261,10 +314,10 @@ infrastructure is added by this change; a scheduled check of query 4 is the reco
 | Expiry action | delivery → terminal `skipped`, `last_error_code` = `stale_report` or `device_unusable` (stale wins), then the job is finalized | Reuses an existing terminal state (no schema change); not counted as sent; no APNs verdict implied; fully idempotent. |
 | Sweep size | **500 rows per claim call**, `FOR UPDATE … SKIP LOCKED` on deliveries and on each job row | One call is a short transaction, never waits behind a row or job another session holds (measured: a locked stale row no longer delays a claim; a 20,000-row backlog expires 500 rows in ~0.1 s per call and drains incrementally). A job whose row is locked elsewhere is left for its holder or, failing that, the stale-job reclaim. No `lock_timeout` is set: every lock taken is `SKIP LOCKED`, so there is nothing left to time out, and a timeout error would only roll back good work. |
 | Claim exclusion | the claim predicate independently excludes stale reports **and** unusable devices | A partially drained backlog is never sent, whatever the sweep has or has not reached. |
-| Burst limit | worker `delivery_limit` 50 per run, one run per minute | Already enforced by the invoker body; combined with the 2 h window this caps recovery to a bounded drain. Per-device APNs collapse ids (`station-<id>`) additionally merge repeats. |
+| Burst limit | worker `delivery_limit` (default 50) **per platform**, one run per minute | The worker calls the claim function separately for each configured provider, so with `delivery_limit = 50` and both APNs and FCM configured one run can claim up to **50 iOS plus 50 Android** deliveries (100 in total), never more than 50 per platform. Combined with the 2 h window this bounds recovery to a bounded drain. Per-device APNs collapse ids (`station-<id>`) additionally merge repeats. |
 
-Not changed: `prepare_price_alert_deliveries` (still creates rows for any report; stale ones are
-expired at claim time), the worker's APNs logic, the retry ladder, the API function.
+Not changed by the original PR #120: `prepare_price_alert_deliveries` (still creates rows for any report; stale ones are
+expired at claim time), the retry ladder. (The cross-platform worker and API are covered in the last section.)
 
 ## Known gaps / follow-ups (not part of this change)
 
@@ -272,13 +325,14 @@ expired at claim time), the worker's APNs logic, the retry ladder, the API funct
   `dead`; it stays visible in the queue-health queries above.
 - Whether `SUPABASE_SERVICE_ROLE_KEY` (legacy JWT key) remains valid is unverified; the scheduler no
   longer depends on it.
-- `claim_price_alert_deliveries` scans the deliveries table on every worker run (it did before this
+- The claim functions scan the deliveries table on every worker run (it did before this
   change, because of its `processing` branch; the new sweep adds about 17 ms at 200,000 deliveries,
   ~48 ms total vs ~31 ms). Deliveries accumulate (nothing prunes them), so if this ever matters a
   partial index on the non-terminal statuses (`pending`, `failed`, `processing`) is the straightforward
   follow-up. It is intentionally not added now.
-- The worker's APNs `fetch` has no timeout (pre-existing). A hung call leaves its rows `processing`
-  until the 15-minute reclaim, which can produce a duplicate push, bounded by the 2-hour window.
+- The worker's provider `fetch` calls (APNs, FCM and the Google OAuth token exchange) have no timeout
+  (pre-existing). A hung call leaves its rows `processing` until the 15-minute reclaim, which can produce a
+  duplicate push, bounded by the 2-hour window.
 - Pro gating happens when deliveries are prepared (up to about 81 minutes before a retry), not at the
   instant of each send.
 - Pro gating reads the RevenueCat ledger. A separate, unrelated production problem was found: the
@@ -295,3 +349,188 @@ expired at claim time), the worker's APNs logic, the retry ladder, the API funct
   `supabase/tests/price_alert_worker_concurrency.test.sh` (see `supabase/tests/README.md`).
 - The `cron` / `net` call shapes and the replaced functions' fingerprints were compared against
   production, read-only.
+
+## Cross-platform reconciliation and deployment plan
+
+Written 2026-10-05/06 after read-only production inspections found drift between git `main` and production,
+and updated after the first adversarial review of PR #121. Nothing here has been applied or deployed.
+
+### What production contained that `main` did not (recovered by PR #121)
+
+| Item | Production | Git `main` before PR #121 |
+|---|---|---|
+| Migration `20261005211547_price_alerts_cross_platform_push` | applied | missing |
+| `private.claim_price_alert_deliveries_v2(integer, text)` | live; had no freshness/device-safety hardening | missing |
+| `price-alerts-api` | v4 (iOS and Android registration) | iOS-only source |
+| `price-alerts-worker` | v4 (APNs + FCM, claim v2 per platform) | APNs-only source |
+| Ledger versions `20260927065249`, `20260927065816`, `20260927065914`, `20260927070519` (App Store growth sync / growth snapshot) | applied | missing |
+
+PR #121 recovers all of them into git. Each recovered migration is byte-for-byte the statement stored in
+`supabase_migrations.schema_migrations` (plus the repository's final newline); the PR description lists size,
+md5 and SHA-256 of each. The migrations contain no secret literal (the App Store sync token is generated at
+apply time with `gen_random_uuid()`; the only literal is the public project URL). Because the four growth
+migrations are now in git, **no placeholder or empty migration files are needed any more.**
+
+### Deployed v4 versus the repository now
+
+| Function | Deployed (v4) | Repository after PR #121 | Why it differs |
+|---|---|---|---|
+| `price-alerts-worker` | exact recovered source | `index.ts` delegates FCM classification to the new `fcm.ts` | invalidating a device on a generic 404 or `SENDER_ID_MISMATCH` could permanently disable valid users' tokens |
+| `price-alerts-api` | exact recovered source | `registerDevice` locks the installation row | concurrent Android registrations could race |
+
+### Compatibility migration `20261005233000_price_alert_cross_platform_delivery_safety`
+
+Ports the reviewed freshness/device safety to the claim path the live worker uses, keeping iOS and Android
+separate: both the expiry sweep (500 rows per call, `FOR UPDATE ... SKIP LOCKED`) and the claim are scoped to
+the requested platform; reports older than 2 hours are excluded by the claim predicate itself;
+disabled/invalidated devices become terminal `skipped` / `device_unusable` (stale wins); retries are
+unchanged. The old v1 claim function becomes an iOS-only wrapper over v2. The migration has preconditions
+(it refuses to run unless `20261005211547` and `20261005120000` are applied) and never touches the scheduler
+or activates cron.
+
+**What "stale" means when a provider is not configured.** With worker v4 the claim path of a platform is only
+called when that provider's credentials exist. If `FIREBASE_SERVICE_ACCOUNT_JSON` is absent the worker does
+**not** call `claim_price_alert_deliveries_v2(..., 'android')`, so the Android sweep does not run either:
+pending Android deliveries are neither sent nor expired, and can stay `pending` for longer than 2 hours (the
+same holds for iOS without the APNs secrets). Once the provider is configured and the claim path runs, the
+freshness predicate keeps stale rows from ever being sent and the sweep marks them `skipped` /
+`stale_report` (at most 500 per call per platform).
+
+### FCM failure classification
+
+`private.mark_price_alert_delivery_failed(..., p_invalidate_device => true)` permanently disables the device
+row, so the worker may request it only on explicit evidence that the registration token itself is dead.
+`price-alerts-worker/fcm.ts` (pure, covered by `fcm.test.ts`) classifies an FCM response as:
+
+| Kind | FCM signal | Delivery | Device |
+|---|---|---|---|
+| `invalid_token` | `UNREGISTERED` | `invalid_device` (not retried) | **disabled / invalidated** |
+| `transient` | HTTP 429, any 5xx, `QUOTA_EXCEEDED`, `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, `INTERNAL`, `UNSPECIFIED_ERROR`, `DEADLINE_EXCEEDED` | retried (1m/5m/15m/1h ladder), `dead` after 5 attempts | untouched |
+| `configuration` | `SENDER_ID_MISMATCH`, `THIRD_PARTY_AUTH_ERROR`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, and any 401 / 403 / 404 that does not carry `UNREGISTERED` | retried (a fix to the Firebase configuration inside the window recovers it), `dead` after 5 attempts; logged once per failure with status and code only | untouched |
+| `rejected` | anything else, e.g. `INVALID_ARGUMENT` | `dead` (not retried) | untouched |
+
+The database side is covered too: no failure path other than `p_invalidate_device => true` changes
+`enabled` or `invalidated_at` (a failure only increments `failure_count`). Neither the device token, the
+OAuth token nor the service-account JSON is logged. The APNs path is unchanged.
+
+### Android active-device invariant
+
+`price_alert_push_devices_one_active_per_install_idx` is on `(installation_id, bundle_id, apns_environment)`;
+Android rows have a NULL environment and NULLs are distinct in a unique index, so it never constrained Android.
+Migration `20261006000000_price_alert_android_active_device_uniqueness` adds a partial unique index on
+`(installation_id, bundle_id) WHERE platform = 'android' AND enabled AND invalidated_at IS NULL`. It never
+modifies data: it raises (a count, no token) if duplicates already exist; production has no devices.
+`price-alerts-api` `registerDevice` now starts its transaction with
+`select id from private.price_alert_installations where id = $1 for no key update`, so concurrent
+registrations for one installation run one after the other and the second deactivates the first's token
+instead of failing on the index. Only that installation's row is locked (measured: another installation's
+registration returned in ~40 ms while the first was locked, the competing one waited for the release);
+`NO KEY UPDATE` does not block foreign-key checks from alert or device inserts. iOS semantics are unchanged.
+
+### Migration order
+
+Production applied `20261005211547` first; `20261005120000` is pending. Replays on a scratch PostgreSQL 16
+(stand-ins for `pg_cron`, `pg_net`, Vault only) prove the two orders end in the **same** catalog: the
+chronological chain `... 120000 → 211547 → 233000 → 20261006000000`, and the production order (`211547`
+already applied) then `120000`, `233000`, `20261006000000`. `20261005120000` only replaces
+`claim_price_alert_jobs` and the v1 claim, adds one index and the inactive cron job; it does not touch any
+object `20261005211547` created. Between migrations of a single push the live claim path is briefly
+un-hardened (nothing calls it: cron is inactive, tables are empty), so apply them in the same push.
+
+### Exact migration procedure (future, needs explicit authorization)
+
+Verified with Supabase CLI **2.119.0** (`supabase db push --help`: `--include-all` "Include all migrations not
+found on remote history table", `--dry-run`, `--skip-vault`) against a scratch database whose migration
+ledger mirrors production's 40 rows, using the real repository migration files:
+
+| Command (dir = a copy of the repo `supabase/`) | Result |
+|---|---|
+| `db push --dry-run`, promo present | `DbPushMissingRemoteError`: local migrations older than the latest remote one (`20260921000000` promo, `20261005120000`); asks for `--include-all` |
+| `--include-all --dry-run`, promo present | would apply promo + three Price Alerts migrations: **not acceptable** |
+| `db push --dry-run`, promo excluded | the same error for `20261005120000` only |
+| `--include-all --dry-run`, promo excluded | **exactly** `20261005120000`, `20261005233000`, `20261006000000` |
+
+`--skip-vault` is accepted and is a no-op for this repository (`config.toml` defines no Vault secrets); keep
+it so the push can never touch Vault. A real push of the exact plan into the scratch database recorded only
+those three versions, did not re-run `20261005211547` or any recovered growth migration, left the promo version
+absent, and produced a catalog identical to the chronological replay; a second dry-run then reported "up to date".
+
+Production procedure, in a **temporary deployment copy** of `supabase/` (nothing is committed):
+
+1. Remove `supabase/migrations/20260921000000_promo_campaign_foundation.sql` from the copy. This is the only
+   exclusion. Do not add placeholder files; do not run `supabase migration repair`.
+2. `supabase db push --linked --include-all --dry-run --skip-vault` — the list **must be exactly**
+   `20261005120000_price_alert_worker_scheduler_and_freshness.sql`,
+   `20261005233000_price_alert_cross_platform_delivery_safety.sql`,
+   `20261006000000_price_alert_android_active_device_uniqueness.sql`. Anything else (promo,
+   `20261005211547`, a growth migration): stop.
+3. Only then, with authorization: the same command without `--dry-run`.
+4. Verify: the ledger contains the three versions and not `20260921000000`; `private.invoke_price_alerts_worker()`,
+   `price_alert_jobs_stuck_processing_idx` and `price_alert_push_devices_one_active_android_per_install_idx`
+   exist; `85blends-price-alerts-worker-invoke` exists with `active = false`.
+
+### Current activation order (supersedes the original one above)
+
+Each step is separately authorized; stop at the first failed check. **Edge Functions are deployed BEFORE the
+database migrations.** This gives a cleaner rollback boundary: if either Edge Function deployment turns out
+unhealthy, the database is still unchanged (no new functions, index or cron job), so recovery is a function
+redeploy only. It also removes a window the previous order had: the new Android active-device unique index
+must never be live while the old, race-prone `registerDevice` (without the installation lock) is still serving
+registrations, so the API that carries the lock goes first. Deploying the hardened worker before the scheduler
+exists is safe because nothing invokes it until the cron job is created (inactive) and later activated.
+
+1. **Re-verify production read-only:** migration ledger (latest `20261005211547`, none of the three pending
+   versions, promo absent); Edge Function versions and bundle hashes; secrets by **name** only; every Price
+   Alert table empty; no `invoke_price_alerts_worker()`, no stuck-job index, no worker cron job.
+2. **Deploy ONLY `price-alerts-api` from PR #121:** the whole function directory (`index.ts`, `deno.json`), by
+   name, `verify_jwt = false`. Verify: status ACTIVE, the deployed source matches the branch (the
+   `registerDevice` installation lock is present), an unauthenticated request receives the application-level
+   401, and no other function changed version or hash.
+3. **Deploy ONLY `price-alerts-worker` from PR #121:** run `deno check` first, then the whole directory
+   (`index.ts`, `auth.ts`, `fcm.ts`, `deno.json`), by name, `verify_jwt = false`. Verify: ACTIVE, deployed
+   source matches the branch (`fcm.ts` present and imported), an unauthenticated POST receives the
+   application-level 401, no other function changed. The scheduler still does not exist, so the worker is
+   not invoked automatically.
+4. **Only after both deployments pass validation, the controlled migration dry run** (procedure above:
+   temporary deployment copy with only the promo migration removed; `supabase db push --linked --include-all
+   --dry-run --skip-vault`). The plan must contain exactly
+   `20261005120000_price_alert_worker_scheduler_and_freshness.sql`,
+   `20261005233000_price_alert_cross_platform_delivery_safety.sql` and
+   `20261006000000_price_alert_android_active_device_uniqueness.sql`, and must NOT contain
+   `20260921000000_promo_campaign_foundation.sql`, `20261005211547_price_alerts_cross_platform_push.sql`, any
+   recovered September growth migration, or anything else. Anything else: stop.
+5. **Apply those exact three migrations in one controlled push** (the same command without `--dry-run`).
+6. **Verify:** the ledger contains exactly those three new versions and still not `20260921000000`;
+   `private.invoke_price_alerts_worker()` exists; `price_alert_jobs_stuck_processing_idx` exists;
+   `price_alert_push_devices_one_active_android_per_install_idx` exists; `85blends-price-alerts-worker-invoke`
+   exists exactly once with `active = false`; the pre-existing cron jobs are unchanged; the Price Alert tables
+   are still empty.
+7. Run `select private.invoke_price_alerts_worker();` **exactly once**.
+8. **Verify the result:** the `net._http_response` row and the Edge log show HTTP 200 with zero work
+   (`jobs` all zero, `ios_deliveries` / `android_deliveries` zero or null) and no APNs or FCM send, because
+   there are no deliveries.
+9. **Only then activate the job:**
+   `select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alerts-worker-invoke'), active := true);`
+10. **Observe** several scheduled runs: `cron.job_run_details`, the actual Edge HTTP responses in
+    `net._http_response`, and the Edge logs (queries above). `pg_cron` success alone does not prove a 2xx.
+
+### Open items (not changed here)
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON` presence is unverified; without it the Android claim path is not called (see
+  above). The same holds for iOS and the APNs secrets.
+- The recovered growth migrations match production's *definitions*; production has since changed operational
+  state they do not describe (for example the App Store growth sync cron job was created inactive by
+  `20260927065816` and is now active).
+- Neither `price-alerts-api` nor the worker's provider calls have a fetch timeout.
+
+## Validation (this change)
+
+- `node --test supabase/functions/**/*.test.ts` (auth, contract, FCM classification, shared).
+- Full migration chain replayed on a scratch PostgreSQL 16 in chronological order and in production order;
+  final catalogs identical. `supabase/tests/price_alert_worker_readiness.test.sql`,
+  `price_alert_worker_concurrency.test.sh`, `price_alert_cross_platform_delivery_safety.test.sql`,
+  `price_alert_cross_platform_concurrency.test.sh`, `price_alert_android_active_device_uniqueness.test.sql`
+  and `price_alert_api_android_registration.test.sh` (the real API under Deno) all pass on both databases
+  (see `supabase/tests/README.md`).
+- Mutation testing of the delivery-safety migration, the Android index, the registration lock and the FCM
+  classifier; see the PR description for the result.
