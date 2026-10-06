@@ -40,13 +40,28 @@ Info.plist values are trivially extractable from .ipa bundles. If this key has r
 
 **Files:** `Info.plist`, `NRELStationService.swift:137-141`, `SupabaseConfig.swift`.
 
-### A3. Entitlements: `aps-environment` Set to `development`
+### A3. Entitlements: `aps-environment` Set to `development` — CORRECTED (claim no longer accurate)
 
 **Risk:** Push notification entitlement mismatch.
 
 `EightyFiveBlends.entitlements:5` has `aps-environment` set to `development`. Xcode's archive process typically overrides this to `production` for App Store builds, but this should be verified. If it doesn't, push-related capabilities will fail in production.
 
 The app registers `remote-notification` as a background mode (`Info.plist:23-25`) but does not appear to have any push notification handling code. If push notifications are not used, consider removing both the `aps-environment` entitlement and the `remote-notification` background mode to avoid unnecessary App Store review scrutiny.
+
+**Correction (2026-10-06, verified against current code during the 2.4.1 Price Alerts iOS foundation work):** neither claim above holds at HEAD, so the risk described here does not exist and there is nothing to remove.
+
+- `EightyFiveBlends/EightyFiveBlends.entitlements` and `EightyFiveBlends/EightyFiveBlendsInternal.entitlements` each contain exactly three keys — the iCloud container identifiers, the iCloud services (CloudKit) and the App Group. Neither has `aps-environment`. `NearbyE85Widget/NearbyE85Widget.entitlements` has only the App Group.
+- `EightyFiveBlends/Info.plist` and `NearbyE85Widget/Info.plist` have no `UIBackgroundModes` key, so no `remote-notification` mode, and `project.pbxproj`'s `SystemCapabilities` lists App Groups only — Push Notifications is not an enabled capability on any target.
+- `git grep -nE 'aps-environment|remote-notification|UIBackgroundModes' -- . ':!docs' ':!supabase'` matches nothing but a comment in `AutomaticPumpDetectionService.swift` explaining why the `location` background mode is deliberately not declared.
+- This review was written against 2.0.1 (2026-05-09). The repository history available when this was checked is shallow (it starts 2026-09-18), and in it the strings appear only in this document, never in an entitlements, `Info.plist` or `project.pbxproj` file — so whether either entry existed when the review was written cannot be established from that history. They do not exist now.
+
+The only notification code in the app is local (Automatic Pump Detection's arrival notification), which needs neither.
+
+**Planning note for server-side Price Alerts (APNs):** remote registration cannot succeed until the Push Notifications capability exists — without an `aps-environment` entitlement `registerForRemoteNotifications()` reports a registration failure. Adding it is an owner-approved, App-Review-sensitive change (`CLAUDE.md`: entitlements, signing and capabilities are not touched in a routine fix), not something to add casually, and it is not a one-line edit:
+
+- an `aps-environment` entitlement in **both** `EightyFiveBlends.entitlements` (Debug/Release, `com.e85blends.app.ios`) and `EightyFiveBlendsInternal.entitlements` (Internal, `com.e85blends.app.ios.internal`), with Push Notifications enabled on **both** App IDs and the provisioning profiles regenerated;
+- no `remote-notification` background mode: the worker (`supabase/functions/price-alerts-worker`) sends visible `alert` pushes (`apns-push-type: alert`), not silent ones;
+- the `apns_environment` the app later registers with `price-alerts-api` (`sandbox` or `production`) must match the environment the build's APNs token belongs to — development-signed builds mint sandbox tokens, TestFlight/App Store builds production ones.
 
 **Files:** `EightyFiveBlends.entitlements`, `Info.plist`.
 
@@ -208,7 +223,7 @@ Community prices are fetched once when `StationsView` appears but there's no pul
 
 This order minimizes risk and avoids cascading changes:
 
-1. **A3** — Verify entitlements (inspect only; Xcode may auto-fix on archive).
+1. ~~**A3** — Verify entitlements (inspect only; Xcode may auto-fix on archive).~~ **Superseded** — the entitlement it asked to verify does not exist; see the correction note under A3 above (2026-10-06).
 2. **B3** — Resolve location usage description conflict (one small string change).
 3. **B6** — Move misplaced files into source subfolder (file move + pbxproj update).
 4. **B4** — Add notes length limit in community price report (one guard clause).
