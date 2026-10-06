@@ -38,7 +38,8 @@ deployed v4 source exactly (commit `d15112b`), then intentionally changed two fu
 - `price-alerts-api`: `registerDevice` takes a row lock on the installation (see
   [Android active-device invariant](#android-active-device-invariant)).
 
-Both must be redeployed, individually and by name, and verified, **before** the scheduler is activated.
+Both must be redeployed, individually and by name, and verified, **before the migrations are applied and before**
+the scheduler is activated (see the current activation order at the end).
 
 **Status of this change: prepared, NOT deployed, NOT applied.** Nothing in this PR has been run against the
 production project (`zefkbtscieokkdenvnkg`).
@@ -470,20 +471,48 @@ Production procedure, in a **temporary deployment copy** of `supabase/` (nothing
 
 ### Current activation order (supersedes the original one above)
 
-Each step is separately authorized; stop at the first failed check.
+Each step is separately authorized; stop at the first failed check. **Edge Functions are deployed BEFORE the
+database migrations.** This gives a cleaner rollback boundary: if either Edge Function deployment turns out
+unhealthy, the database is still unchanged (no new functions, index or cron job), so recovery is a function
+redeploy only. It also removes a window the previous order had: the new Android active-device unique index
+must never be live while the old, race-prone `registerDevice` (without the installation lock) is still serving
+registrations, so the API that carries the lock goes first. Deploying the hardened worker before the scheduler
+exists is safe because nothing invokes it until the cron job is created (inactive) and later activated.
 
-1. Re-verify production read-only (versions, ledger, secrets by **name**, empty tables, no scheduler).
-2. Apply the three migrations as described above; verify; the worker cron job must exist **inactive**.
-3. Deploy `price-alerts-api` from this branch (whole directory, `verify_jwt = false`), by name; verify its
-   metadata and that an unauthenticated POST is rejected by the application (401).
-4. Deploy `price-alerts-worker` from this branch (whole directory: `index.ts`, `auth.ts`, `fcm.ts`,
-   `deno.json`; `verify_jwt = false`), by name; run `deno check` first; verify metadata and the unauthenticated
-   401. Do not deploy any other function.
-5. Run `select private.invoke_price_alerts_worker();` **once** and check the `net._http_response` row (expect
-   200; zero work with empty tables).
-6. Activate the job only after steps 1-5 pass:
+1. **Re-verify production read-only:** migration ledger (latest `20261005211547`, none of the three pending
+   versions, promo absent); Edge Function versions and bundle hashes; secrets by **name** only; every Price
+   Alert table empty; no `invoke_price_alerts_worker()`, no stuck-job index, no worker cron job.
+2. **Deploy ONLY `price-alerts-api` from PR #121:** the whole function directory (`index.ts`, `deno.json`), by
+   name, `verify_jwt = false`. Verify: status ACTIVE, the deployed source matches the branch (the
+   `registerDevice` installation lock is present), an unauthenticated request receives the application-level
+   401, and no other function changed version or hash.
+3. **Deploy ONLY `price-alerts-worker` from PR #121:** run `deno check` first, then the whole directory
+   (`index.ts`, `auth.ts`, `fcm.ts`, `deno.json`), by name, `verify_jwt = false`. Verify: ACTIVE, deployed
+   source matches the branch (`fcm.ts` present and imported), an unauthenticated POST receives the
+   application-level 401, no other function changed. The scheduler still does not exist, so the worker is
+   not invoked automatically.
+4. **Only after both deployments pass validation, the controlled migration dry run** (procedure above:
+   temporary deployment copy with only the promo migration removed; `supabase db push --linked --include-all
+   --dry-run --skip-vault`). The plan must contain exactly
+   `20261005120000_price_alert_worker_scheduler_and_freshness.sql`,
+   `20261005233000_price_alert_cross_platform_delivery_safety.sql` and
+   `20261006000000_price_alert_android_active_device_uniqueness.sql`, and must NOT contain
+   `20260921000000_promo_campaign_foundation.sql`, `20261005211547_price_alerts_cross_platform_push.sql`, any
+   recovered September growth migration, or anything else. Anything else: stop.
+5. **Apply those exact three migrations in one controlled push** (the same command without `--dry-run`).
+6. **Verify:** the ledger contains exactly those three new versions and still not `20260921000000`;
+   `private.invoke_price_alerts_worker()` exists; `price_alert_jobs_stuck_processing_idx` exists;
+   `price_alert_push_devices_one_active_android_per_install_idx` exists; `85blends-price-alerts-worker-invoke`
+   exists exactly once with `active = false`; the pre-existing cron jobs are unchanged; the Price Alert tables
+   are still empty.
+7. Run `select private.invoke_price_alerts_worker();` **exactly once**.
+8. **Verify the result:** the `net._http_response` row and the Edge log show HTTP 200 with zero work
+   (`jobs` all zero, `ios_deliveries` / `android_deliveries` zero or null) and no APNs or FCM send, because
+   there are no deliveries.
+9. **Only then activate the job:**
    `select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alerts-worker-invoke'), active := true);`
-7. Watch several minutes of `cron.job_run_details`, `net._http_response` and the Edge logs (queries above).
+10. **Observe** several scheduled runs: `cron.job_run_details`, the actual Edge HTTP responses in
+    `net._http_response`, and the Edge logs (queries above). `pg_cron` success alone does not prove a 2xx.
 
 ### Open items (not changed here)
 
