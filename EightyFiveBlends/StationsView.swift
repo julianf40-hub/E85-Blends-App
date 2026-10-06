@@ -3081,9 +3081,10 @@ struct StationsView: View {
     /// view. The lookup is by `communityStationID` ALONE (StationDeepLinkResolver) — never by name,
     /// address or coordinates — and the presentation reuses what already exists: the embedded
     /// map's selection and the shared camera. The Pro map keeps its selection private to
-    /// ProStationsMapView, so there this only recenters. A station this device does not have saved
-    /// (never saved, deleted, or its UUID discarded after an edit) is not an error: the user is
-    /// simply left on the Stations tab, which stays fully usable.
+    /// ProStationsMapView, so there this recenters and stops its one-time initial framing from
+    /// undoing that. A station this device does not have saved (never saved, deleted, or its UUID
+    /// discarded after an edit) is not an error: the user is simply left on the Stations tab,
+    /// which stays fully usable.
     private func focusDeepLinkedStation(communityStationID: UUID) {
         guard let index = StationDeepLinkResolver.firstMatchIndex(
             for: communityStationID,
@@ -3102,7 +3103,13 @@ struct StationsView: View {
             return
         }
 
-        if usesPremiumStationsMapPresentation == false {
+        if usesPremiumStationsMapPresentation {
+            // The Pro map's one-time initial framing (user + nearest station) would otherwise run
+            // again when the first location fix or nearby result lands and pull the camera off this
+            // station. `.framedWithStation` is exactly "a station is framed — never touch the camera
+            // again"; a genuinely new search session still resets it to `.pending` as before.
+            premiumNearbyFramingState = .framedWithStation
+        } else {
             selectedMapStationID = station.persistentModelID
         }
         centerMap(on: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
