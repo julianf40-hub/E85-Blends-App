@@ -1062,6 +1062,16 @@ struct StationsView: View {
             PriceContributionPresentationRequest.shared.pendingRequest = nil
             beginPriceUpdate(fromPendingContribution: newValue)
         }
+        // Price Alerts iOS foundation — the Stations half of the stable-ID station route: ContentView
+        // has already switched to this tab (see StationDeepLinkRequest); this brings the station
+        // into view. Consume-once, like the request above. `.onAppear` covers a focus published
+        // before this view mounted, which `.onChange` alone would not replay.
+        .onChange(of: StationDeepLinkRequest.shared.focus) { _, _ in
+            consumeStationDeepLinkFocus()
+        }
+        .onAppear {
+            consumeStationDeepLinkFocus()
+        }
         .alert("Location Access Denied", isPresented: $locationDeniedAlert) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -3060,6 +3070,42 @@ struct StationsView: View {
             print("[85Blends] StationsView: community station ID save failed:", error)
             #endif
         }
+    }
+
+    private func consumeStationDeepLinkFocus() {
+        guard let communityStationID = StationDeepLinkRequest.shared.takeFocus() else { return }
+        focusDeepLinkedStation(communityStationID: communityStationID)
+    }
+
+    /// Price Alerts iOS foundation — brings the saved station a stable-ID route refers to into
+    /// view. The lookup is by `communityStationID` ALONE (StationDeepLinkResolver) — never by name,
+    /// address or coordinates — and the presentation reuses what already exists: the embedded
+    /// map's selection and the shared camera. The Pro map keeps its selection private to
+    /// ProStationsMapView, so there this only recenters. A station this device does not have saved
+    /// (never saved, deleted, or its UUID discarded after an edit) is not an error: the user is
+    /// simply left on the Stations tab, which stays fully usable.
+    private func focusDeepLinkedStation(communityStationID: UUID) {
+        guard let index = StationDeepLinkResolver.firstMatchIndex(
+            for: communityStationID,
+            in: stations.map(\.communityStationID)
+        ) else {
+            #if DEBUG
+            print("[85Blends] StationsView: no saved station matches the deep-linked community station ID")
+            #endif
+            return
+        }
+
+        let station = stations[index]
+        guard let latitude = station.latitude,
+              let longitude = station.longitude,
+              isValidCoordinate(latitude: latitude, longitude: longitude) else {
+            return
+        }
+
+        if usesPremiumStationsMapPresentation == false {
+            selectedMapStationID = station.persistentModelID
+        }
+        centerMap(on: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
     }
 
     private func refreshCommunityEthanolPreviews() {

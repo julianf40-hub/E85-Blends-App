@@ -221,6 +221,7 @@ struct ContentView: View {
                 .onChange(of: AdManager.shared.isInitialConsentResolutionPending) { _, _ in
                     if pendingWidgetURL != nil { openPendingWidgetLink() }
                     else { attemptWhatsNewPresentation() }
+                    openPendingStationLink()
                 }
                 // 85Blends 2.4.0 review-request system — the "next calm foreground moment"
                 // this feature waits for. A successful Directions launch typically backgrounds
@@ -272,6 +273,7 @@ struct ContentView: View {
                             currentAppVersion: ReleaseNotes.currentAppVersion
                         )
                         openPendingWidgetLink()
+                        openPendingStationLink()
                     }
                 ) {
                     WhatsNewView(onContinue: { isShowingWhatsNew = false })
@@ -285,8 +287,18 @@ struct ContentView: View {
             pendingWidgetURL = url
             openPendingWidgetLink()
         }
+        // Price Alerts iOS foundation — a tapped Price Alert arrives as a pending route on
+        // StationDeepLinkRequest, possibly before this view existed (cold start). `initial: true`
+        // picks up one already waiting; later arrivals are picked up as they are submitted. See
+        // openPendingStationLink().
+        .onChange(of: StationDeepLinkRequest.shared.inbound, initial: true) { _, _ in
+            openPendingStationLink()
+        }
         .onChange(of: hasCompletedOnboarding) { _, completed in
-            if completed { openPendingWidgetLink() }
+            if completed {
+                openPendingWidgetLink()
+                openPendingStationLink()
+            }
         }
         // A widget tap held at .waitForEntitlement (see openPendingWidgetLink) is retried here as
         // soon as the entitlement inputs change — typically RevenueCat's first CustomerInfo of the
@@ -302,6 +314,26 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingWidgetProPaywall) {
             NavigationStack { ProUpgradeView(presentationMode: .modal) }
         }
+    }
+
+    /// Price Alerts iOS foundation — the ContentView half of the stable-ID station route. Drains
+    /// the pending route on `StationDeepLinkRequest` exactly once, as soon as nothing in this
+    /// view's own presentation flow (onboarding, What's New, required ad consent) is in the way —
+    /// the same conditions `openPendingWidgetLink()` waits on — then shows the Stations tab, where
+    /// StationsView brings the station into view. It deliberately does NOT go through
+    /// `pendingWidgetURL` or the widget's Pro/entitlement gate: a Price Alert is not a widget link,
+    /// and a tap on an alert the user set up must never be held behind, or paywalled by, the
+    /// widget's access decision. Safe to call repeatedly and from any trigger: a route is
+    /// consumed exactly once, so nothing here can loop or navigate twice.
+    private func openPendingStationLink() {
+        let stationToShow = StationDeepLinkRequest.shared.drain(
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            isShowingWhatsNew: isShowingWhatsNew,
+            isConsentResolutionPending: AdManager.shared.isInitialConsentResolutionPending
+        )
+        guard stationToShow != nil else { return }
+        // Stations is present in every App Experience Mode, so this is always a valid tab.
+        selectedTab = .stations
     }
 
     private func openPendingWidgetLink() {
