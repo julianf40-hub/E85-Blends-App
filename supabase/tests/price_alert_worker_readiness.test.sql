@@ -255,7 +255,12 @@ begin
                          'C2 created INACTIVE (nothing calls the worker until deliberately activated)');
   perform pg_temp.expect((select count(*) from cron.job where jobname = '85blends-price-alert-job-prepare' and active) = 1,
                          'C2 the pre-existing job-prepare job is untouched and active');
-  perform pg_temp.expect((select count(*) from cron.job) = 2, 'C2 no other cron jobs were created');
+  -- (the two growth jobs recovered from production in migrations 20260927065249 / 20260927065816 are part of the
+  -- chain now; this test only asserts that the readiness migration added nothing besides the worker-invoke job)
+  perform pg_temp.expect((select count(*) from cron.job where jobname not in (
+                            '85blends-price-alerts-worker-invoke', '85blends-price-alert-job-prepare',
+                            'refresh-85blends-growth-snapshot', 'sync-85blends-app-store-growth')) = 0,
+                         'C2 no other cron jobs were created');
 
   -- an operator activates it and customizes its schedule; re-applying must change neither
   update cron.job set active = true, schedule = '*/2 * * * *' where jobname = '85blends-price-alerts-worker-invoke';
@@ -285,7 +290,10 @@ begin
                          'C6 an inactive job stays INACTIVE after the migration is replayed');
   perform pg_temp.expect((select count(*) from cron.job where jobname = '85blends-price-alerts-worker-invoke') = 1,
                          'C6 still exactly one job after two replays');
-  perform pg_temp.expect((select count(*) from cron.job) = 2, 'C6 no other cron jobs appeared');
+  perform pg_temp.expect((select count(*) from cron.job where jobname not in (
+                            '85blends-price-alerts-worker-invoke', '85blends-price-alert-job-prepare',
+                            'refresh-85blends-growth-snapshot', 'sync-85blends-app-store-growth')) = 0,
+                         'C6 no other cron jobs appeared');
   update cron.job set schedule = '* * * * *' where jobname = '85blends-price-alerts-worker-invoke';
 end;
 $$;
