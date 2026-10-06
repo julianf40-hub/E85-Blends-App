@@ -139,4 +139,48 @@ struct WidgetDirectionsPendingContributionTests {
 
         #expect(store.current?.stationKey == stationsViewKey)
     }
+
+    // MARK: - hasFlattenedAddress
+    //
+    // StationsView uses this to stop a widget contribution's flattened address from replacing the
+    // structured address of a saved station the report matches (which would change that station's
+    // community key and discard its community UUID). It is derived from where the contribution was
+    // recorded, so these go through the real recorder rather than constructing a contribution.
+
+    @Test func aWidgetContributionHasAFlattenedAddress() {
+        let store = makeIsolatedStore()
+
+        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: flattenedWidgetDestination, evidence: .nearbyE85Widget,
+            knownStationKey: stationsViewKey, store: store)
+
+        #expect(store.current?.hasFlattenedAddress == true)
+    }
+
+    @Test func aStationsContributionDoesNotHaveAFlattenedAddress() {
+        let store = makeIsolatedStore()
+
+        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: structuredDestination, evidence: .liveNRELSearch, store: store)
+
+        #expect(store.current?.hasFlattenedAddress == false)
+    }
+
+    @Test func hasFlattenedAddressIsDerivedNotPersisted() throws {
+        // The persisted wire format is unchanged: the flag is computed from the evidence that is
+        // already stored, so it never appears in the JSON and survives a round trip.
+        let store = makeIsolatedStore()
+        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+            for: flattenedWidgetDestination, evidence: .nearbyE85Widget,
+            knownStationKey: stationsViewKey, store: store)
+        let contribution = try #require(store.current)
+
+        let data = try JSONEncoder().encode(contribution)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try JSONDecoder().decode(PendingPriceContribution.self, from: data)
+
+        #expect(json.contains("hasFlattenedAddress") == false)
+        #expect(decoded == contribution)
+        #expect(decoded.hasFlattenedAddress == true)
+    }
 }

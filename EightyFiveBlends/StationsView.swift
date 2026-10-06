@@ -3629,17 +3629,22 @@ struct StationsView: View {
             station = createdStation
         }
 
-        let identityKeyBeforeUpdate = station.communityIdentityKey
-        station.name = context.stationName
-        station.address = context.address
-        station.city = context.city
-        station.state = context.state
-        station.zipCode = context.zipCode
-        station.latitude = context.latitude
-        station.longitude = context.longitude
-        // A matched saved station is overwritten with this context's identity; if that changes its
-        // canonical key it is no longer the place its stored community UUID described.
-        station.discardCommunityStationIDIfIdentityChanged(since: identityKeyBeforeUpdate)
+        // A flattened context (see `preservesSavedStationIdentity`) leaves the station's own
+        // structured identity alone, and with it the community key and UUID that identity yields. A
+        // station created above already carries this context's fields from its initializer.
+        if context.preservesSavedStationIdentity == false {
+            let identityKeyBeforeUpdate = station.communityIdentityKey
+            station.name = context.stationName
+            station.address = context.address
+            station.city = context.city
+            station.state = context.state
+            station.zipCode = context.zipCode
+            station.latitude = context.latitude
+            station.longitude = context.longitude
+            // A matched saved station is overwritten with this context's identity; if that changes
+            // its canonical key it is no longer the place its stored community UUID described.
+            station.discardCommunityStationIDIfIdentityChanged(since: identityKeyBeforeUpdate)
+        }
         station.lastKnownE85Price = price
         station.lastUpdated = .now
         station.updatedAt = .now
@@ -4882,6 +4887,14 @@ private struct StationPriceUpdateContext: Identifiable {
     /// `nil` for `.saved`/`.live`, which still have structured fields. See
     /// `CommunityStationKey.effectiveKey` and `StationsView.normalizedStationKey(for:)`.
     let communityStationKey: String?
+    /// True when this context's address fields are a flattened copy (the Nearby E85 widget's single
+    /// joined address string, city/state/zip blank) rather than a station's structured address.
+    /// Such a context may identify and report a station, but when it only MATCHES an already-saved
+    /// station it must not replace that station's own identity fields: the copy would change the
+    /// station's canonical community key — orphaning the community price it just reported under
+    /// the right one — and discard its stored community UUID. `false` for `.saved`/`.live`. See
+    /// `PendingPriceContribution.hasFlattenedAddress` and `upsertLocalStation(for:price:note:)`.
+    let preservesSavedStationIdentity: Bool
 
     // Fix-forward (Xcode Cloud Build 174) — a `let` property with a declaration-site default
     // value is excluded from Swift's synthesized memberwise initializer entirely, not merely
@@ -4901,7 +4914,8 @@ private struct StationPriceUpdateContext: Identifiable {
         presentationMode: StationPriceUpdatePresentationMode = .full,
         existingCommunityPrice: Double? = nil,
         existingCommunityPriceReportedAt: Date? = nil,
-        communityStationKey: String? = nil
+        communityStationKey: String? = nil,
+        preservesSavedStationIdentity: Bool = false
     ) {
         self.station = station
         self.stationName = stationName
@@ -4915,6 +4929,7 @@ private struct StationPriceUpdateContext: Identifiable {
         self.existingCommunityPrice = existingCommunityPrice
         self.existingCommunityPriceReportedAt = existingCommunityPriceReportedAt
         self.communityStationKey = communityStationKey
+        self.preservesSavedStationIdentity = preservesSavedStationIdentity
     }
 
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
@@ -4969,7 +4984,10 @@ private struct StationPriceUpdateContext: Identifiable {
             // The identity the contribution was recorded (and its existing price looked up) under —
             // the report must write to the SAME community row, not one re-derived from fields that
             // may have been flattened on the way here.
-            communityStationKey: contribution.stationKey
+            communityStationKey: contribution.stationKey,
+            // A widget-recorded contribution carries a flattened address: it may report the
+            // station, but must not overwrite a matched saved station's structured identity.
+            preservesSavedStationIdentity: contribution.hasFlattenedAddress
         )
     }
 

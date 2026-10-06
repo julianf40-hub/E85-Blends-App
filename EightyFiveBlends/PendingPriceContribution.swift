@@ -110,6 +110,18 @@ struct PendingPriceContribution: Codable, Equatable, Sendable {
         self.mapsProvider = mapsProvider
         self.e85Evidence = e85Evidence
     }
+
+    /// Whether this contribution's address fields are a flattened copy rather than the station's
+    /// structured address. True for one recorded from the Nearby E85 widget, whose snapshot carries
+    /// a single joined address string, so the destination it rebuilds has city/state/zip blank (see
+    /// MapsRoutingHelper.recordPendingE85PriceContributionIfEligible). Such a contribution can still
+    /// identify and report a station — `stationKey` is the station's own canonical key — but its
+    /// fields must never replace the structured address of a saved station it merely matches; see
+    /// StationsView.upsertLocalStation(for:price:note:). Derived from provenance, never stored, so
+    /// the persisted wire format is unchanged.
+    var hasFlattenedAddress: Bool {
+        e85Evidence == .nearbyE85Widget
+    }
 }
 
 // MARK: - Explicit Codable conformance
