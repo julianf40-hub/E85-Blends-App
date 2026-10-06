@@ -26,6 +26,17 @@ final class FuelStation {
     var isFavorite: Bool = false
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
+    // The community backend's stable station identifier (`community_stations.id`) — the only
+    // identity Price Alerts accepts. Optional with no default value on purpose: `nil` means "this
+    // device has not learned the backend row for this station yet" and is the state of every
+    // pre-existing store, so adding it is an additive, lightweight-migratable change. It is only
+    // ever copied from a backend response (never derived or fabricated) and is cleared if the
+    // station's identity-bearing fields are edited — see CommunityStationIdentity and
+    // FuelStation+CommunityIdentity.swift. Deliberately NOT part of how a saved station is
+    // matched or displayed: favorites, the unified list and the map still identify stations
+    // exactly as before. CloudKit note: this is a new `CD_communityStationID` field, which must
+    // exist in the CloudKit PRODUCTION schema before a release that populates it ships.
+    var communityStationID: UUID?
 
     init(
         name: String = "",
@@ -40,7 +51,8 @@ final class FuelStation {
         notes: String = "",
         isFavorite: Bool = false,
         createdAt: Date = .now,
-        updatedAt: Date = .now
+        updatedAt: Date = .now,
+        communityStationID: UUID? = nil
     ) {
         self.name = name
         self.address = address
@@ -55,5 +67,6 @@ final class FuelStation {
         self.isFavorite = isFavorite
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.communityStationID = communityStationID
     }
 }

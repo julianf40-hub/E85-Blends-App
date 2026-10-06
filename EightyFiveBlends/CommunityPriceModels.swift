@@ -138,6 +138,13 @@ struct CommunityPriceSummary: Decodable, Sendable {
         latestReport?.reportedAt
     }
 
+    /// The backend's stable station identifier (`community_stations.id`), as carried by the latest
+    /// report's `station_id`. `nil` means "not known from this summary" — never "this station has
+    /// no community row". See CommunityStationIdentity.
+    var communityStationID: UUID? {
+        latestReport?.stationID
+    }
+
     var latestReportedMileageLabel: String {
         "Community reported"
     }

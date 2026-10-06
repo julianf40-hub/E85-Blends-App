@@ -81,6 +81,13 @@ struct CommunityEthanolSummary: Decodable, Sendable {
         latestReport?.reportedAt
     }
 
+    /// Same meaning as `CommunityPriceSummary.communityStationID`: the backend's stable station
+    /// UUID as carried by the latest ethanol report, `nil` when unknown from this summary. Lets a
+    /// station that only has ethanol reports still learn its UUID.
+    var communityStationID: UUID? {
+        latestReport?.stationID
+    }
+
     var latestReportedMileageLabel: String {
         "Community reported"
     }

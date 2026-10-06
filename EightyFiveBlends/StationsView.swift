@@ -2145,6 +2145,7 @@ struct StationsView: View {
             return
         }
 
+        let identityKeyBeforeEdit = station.communityIdentityKey
         station.name = draft.name
         station.address = draft.address
         station.city = draft.city
@@ -2152,6 +2153,8 @@ struct StationsView: View {
         station.zipCode = draft.zipCode
         station.latitude = draft.latitude
         station.longitude = draft.longitude
+        // An edit that turns this into a different place must not keep the old place's community UUID.
+        station.discardCommunityStationIDIfIdentityChanged(since: identityKeyBeforeEdit)
         station.lastKnownE85Price = draft.lastKnownE85Price
         station.notes = draft.notes
         station.isFavorite = draft.isFavorite
@@ -3013,6 +3016,7 @@ struct StationsView: View {
                     communityPriceSummaries = summaries
                     communityPriceSyncMessage = nil
                     publishNearbyWidgetSnapshot()
+                    adoptCommunityStationIDs()
                 }
             } catch {
                 guard Task.isCancelled == false else { return }
@@ -3026,6 +3030,35 @@ struct StationsView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Price Alerts prerequisite — copies the backend's stable community-station UUID onto the
+    /// saved stations whose community summaries just loaded, so a saved station can later be
+    /// matched by `communityStationID` instead of by name/address/coordinates. Reuses the exact
+    /// `normalizedStationKey(for:)` lookup the price/ethanol cards above already use, so a UUID is
+    /// only ever copied onto the station whose canonical key the backend actually answered for.
+    /// Never fabricates (a summary without a UUID changes nothing) and only saves when a value
+    /// really changed, so opening Stations does not rewrite — or CloudKit-export — settled data.
+    /// Deliberately does not touch `updatedAt`: the saved list is sorted by it and this is not a
+    /// user edit. See CommunityStationIdentity.
+    private func adoptCommunityStationIDs() {
+        var didChange = false
+        for station in stations {
+            guard let key = normalizedStationKey(for: station) else { continue }
+            let incoming = communityPriceSummaries[key]?.communityStationID
+                ?? communityEthanolSummaries[key]?.communityStationID
+            if station.adoptCommunityStationID(incoming) {
+                didChange = true
+            }
+        }
+        guard didChange else { return }
+        do {
+            try modelContext.save()
+        } catch {
+            #if DEBUG
+            print("[85Blends] StationsView: community station ID save failed:", error)
+            #endif
         }
     }
 
@@ -3059,6 +3092,7 @@ struct StationsView: View {
                     // never reach the widget snapshot until some unrelated event (e.g. a price
                     // refresh) happened to publish next.
                     publishNearbyWidgetSnapshot()
+                    adoptCommunityStationIDs()
                 }
             } catch {
                 guard Task.isCancelled == false else { return }
@@ -3542,6 +3576,7 @@ struct StationsView: View {
             station = createdStation
         }
 
+        let identityKeyBeforeUpdate = station.communityIdentityKey
         station.name = context.stationName
         station.address = context.address
         station.city = context.city
@@ -3549,6 +3584,9 @@ struct StationsView: View {
         station.zipCode = context.zipCode
         station.latitude = context.latitude
         station.longitude = context.longitude
+        // A matched saved station is overwritten with this context's identity; if that changes its
+        // canonical key it is no longer the place its stored community UUID described.
+        station.discardCommunityStationIDIfIdentityChanged(since: identityKeyBeforeUpdate)
         station.lastKnownE85Price = price
         station.lastUpdated = .now
         station.updatedAt = .now
