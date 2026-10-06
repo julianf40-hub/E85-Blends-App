@@ -179,6 +179,47 @@ enum CommunityStationKey {
 
         return normalizedKey(name: name, streetAddress: streetAddress, city: city, state: state, zip: zip)
     }
+
+    /// The key a Community Pricing read or write for a station must use, when the caller may
+    /// already hold the station's canonical key.
+    ///
+    /// `knownKey` is a `canonicalKey` this app computed for the SAME station back when it still had
+    /// the station's structured fields — the Nearby E85 widget's `NearbyE85Station.id` is exactly
+    /// that. It wins over recomputing, because a later copy of the station can have been
+    /// flattened: the widget's directions handoff (NearbyE85WidgetRouting / NearbyE85StationView)
+    /// only has the single joined address string the snapshot stores, with city/state/zip blank.
+    /// `hasSufficientAddress` is then false, so `canonicalKey` falls into its coordinate branch
+    /// and returns a DIFFERENT key for the same station (`name|lat,lon` instead of
+    /// `name|street|city|state|zip`) — which splits one physical station across two
+    /// `community_stations` rows and makes its existing community price look missing.
+    ///
+    /// A `nil` or blank `knownKey` — every caller that still has structured fields — falls
+    /// straight through to `canonicalKey`, so for them this is exactly the function they already
+    /// used. A non-blank `knownKey` is returned unchanged: it is an opaque identity, never
+    /// re-normalized (re-deriving it is precisely what must not happen).
+    static func effectiveKey(
+        knownKey: String?,
+        name: String,
+        streetAddress: String,
+        city: String,
+        state: String,
+        zip: String,
+        latitude: Double?,
+        longitude: Double?
+    ) -> String? {
+        if let knownKey, knownKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return knownKey
+        }
+        return canonicalKey(
+            name: name,
+            streetAddress: streetAddress,
+            city: city,
+            state: state,
+            zip: zip,
+            latitude: latitude,
+            longitude: longitude
+        )
+    }
 }
 
 /// Whether a station has enough identifying information to safely report an E85 price to the

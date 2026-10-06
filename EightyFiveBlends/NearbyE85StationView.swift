@@ -43,7 +43,13 @@ struct NearbyE85StationView: View {
                         // from the widget's own snapshot, built exclusively from a LiveFuelStation
                         // NREL fuel_type=E85 search result (see
                         // StationsView.publishNearbyWidgetSnapshot()) — affirmative E85 evidence.
-                        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: destination, evidence: .nearbyE85Widget)
+                        //
+                        // `destination` is rebuilt from the snapshot's single flattened address
+                        // string, so recomputing its community key would land on a DIFFERENT key
+                        // than Stations uses for this station (see CommunityStationKey.effectiveKey);
+                        // `station.id` IS that canonical key, so pass it through.
+                        MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+                            for: destination, evidence: .nearbyE85Widget, knownStationKey: station.id)
                     }
                 }
                 if let directionsError { Text(directionsError).foregroundStyle(.secondary) }

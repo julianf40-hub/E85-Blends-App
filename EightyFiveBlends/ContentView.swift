@@ -379,7 +379,16 @@ struct ContentView: View {
                 // NearbyE85WidgetRouting.resolve), which StationsView.publishNearbyWidgetSnapshot()
                 // builds exclusively from a LiveFuelStation NREL fuel_type=E85 search result —
                 // never from a saved/manual FuelStation — so this is affirmative E85 evidence.
-                MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(for: mapsDestination, evidence: .nearbyE85Widget)
+                //
+                // `mapsDestination` is rebuilt from the snapshot's single flattened address
+                // string, so recomputing its community key would land on a DIFFERENT key than
+                // Stations uses for this station (see CommunityStationKey.effectiveKey). The
+                // link's `stationID` is the snapshot station id NearbyE85WidgetRouting.resolve
+                // just matched — the station's canonical key — so pass it through.
+                var widgetStationKey: String?
+                if case .directions(let stationID) = destination { widgetStationKey = stationID }
+                MapsRoutingHelper.recordPendingE85PriceContributionIfEligible(
+                    for: mapsDestination, evidence: .nearbyE85Widget, knownStationKey: widgetStationKey)
             }
         case .showStationDetail(let station, let snapshot):
             widgetSnapshot = snapshot

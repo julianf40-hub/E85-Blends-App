@@ -384,6 +384,15 @@ enum MapsRoutingHelper {
     /// pipeline would then refuse. A persistence failure inside `PendingPriceContributionStore.
     /// record(_:)` fails silently (see that method) and can never surface here.
     ///
+    /// - Parameter knownStationKey: The station's own `CommunityStationKey.canonicalKey`, when the
+    ///   caller already holds it. The two Nearby E85 widget call sites pass the widget station's
+    ///   `id`, which IS that key: a widget destination is rebuilt from the snapshot's single
+    ///   flattened address string (city/state/zip blank), and recomputing the key from it takes
+    ///   `canonicalKey`'s coordinate branch — a DIFFERENT key for the same station, which later
+    ///   splits it across two `community_stations` rows and makes its existing community price
+    ///   look missing in the post-navigation reporter. Callers that still have structured fields
+    ///   (StationsView) omit it and get exactly the key they always did. See
+    ///   `CommunityStationKey.effectiveKey`.
     /// - Parameter store: Injectable for tests (mirrors `openDirections(to:)`'s own I/O seams) —
     ///   production always uses `.shared`. `nil` (the default) means `.shared`, resolved inside
     ///   this MainActor function's body rather than as a default-argument expression: default
@@ -396,6 +405,7 @@ enum MapsRoutingHelper {
     static func recordPendingE85PriceContributionIfEligible(
         for destination: MapsRoutingDestination,
         evidence: PendingPriceContributionE85Evidence,
+        knownStationKey: String? = nil,
         store: PendingPriceContributionStore? = nil
     ) -> Bool {
         let store = store ?? .shared
@@ -411,7 +421,8 @@ enum MapsRoutingHelper {
             return false
         }
 
-        guard let stationKey = CommunityStationKey.canonicalKey(
+        guard let stationKey = CommunityStationKey.effectiveKey(
+            knownKey: knownStationKey,
             name: destination.name,
             streetAddress: destination.streetAddress,
             city: destination.city,

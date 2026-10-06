@@ -3665,7 +3665,11 @@ struct StationsView: View {
     }
 
     private func normalizedStationKey(for context: StationPriceUpdateContext) -> String {
-        normalizedStationKey(
+        // A key the context already carries (post-navigation reports) wins; every other context
+        // computes exactly what it always did — `effectiveKey` falls straight through to
+        // `canonicalKey`, the same function the private overload above wraps.
+        CommunityStationKey.effectiveKey(
+            knownKey: context.communityStationKey,
             name: context.stationName,
             streetAddress: context.address,
             city: context.city,
@@ -4863,6 +4867,14 @@ private struct StationPriceUpdateContext: Identifiable {
     /// price is available for this station.
     let existingCommunityPrice: Double?
     let existingCommunityPriceReportedAt: Date?
+    /// The station's canonical community key when it was already known BEFORE this context was
+    /// built — set only by `.postNavigation`, from the pending contribution's own `stationKey`. A
+    /// contribution recorded from the Nearby E85 widget was rebuilt from a flattened address
+    /// string, so recomputing the key from this context's fields would land on a different key
+    /// than Stations uses for the same station and write to a second `community_stations` row.
+    /// `nil` for `.saved`/`.live`, which still have structured fields. See
+    /// `CommunityStationKey.effectiveKey` and `StationsView.normalizedStationKey(for:)`.
+    let communityStationKey: String?
 
     // Fix-forward (Xcode Cloud Build 174) — a `let` property with a declaration-site default
     // value is excluded from Swift's synthesized memberwise initializer entirely, not merely
@@ -4881,7 +4893,8 @@ private struct StationPriceUpdateContext: Identifiable {
         longitude: Double?,
         presentationMode: StationPriceUpdatePresentationMode = .full,
         existingCommunityPrice: Double? = nil,
-        existingCommunityPriceReportedAt: Date? = nil
+        existingCommunityPriceReportedAt: Date? = nil,
+        communityStationKey: String? = nil
     ) {
         self.station = station
         self.stationName = stationName
@@ -4894,6 +4907,7 @@ private struct StationPriceUpdateContext: Identifiable {
         self.presentationMode = presentationMode
         self.existingCommunityPrice = existingCommunityPrice
         self.existingCommunityPriceReportedAt = existingCommunityPriceReportedAt
+        self.communityStationKey = communityStationKey
     }
 
     static func saved(_ station: FuelStation) -> StationPriceUpdateContext {
@@ -4944,7 +4958,11 @@ private struct StationPriceUpdateContext: Identifiable {
             longitude: contribution.longitude,
             presentationMode: .postNavigation,
             existingCommunityPrice: existingCommunityPrice?.latestPrice,
-            existingCommunityPriceReportedAt: existingCommunityPrice?.latestReportedAt
+            existingCommunityPriceReportedAt: existingCommunityPrice?.latestReportedAt,
+            // The identity the contribution was recorded (and its existing price looked up) under —
+            // the report must write to the SAME community row, not one re-derived from fields that
+            // may have been flattened on the way here.
+            communityStationKey: contribution.stationKey
         )
     }
 
