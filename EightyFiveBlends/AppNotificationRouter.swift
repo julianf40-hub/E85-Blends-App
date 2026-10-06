@@ -91,6 +91,13 @@ extension AppNotificationRouter: UNUserNotificationCenterDelegate {
         let isDefaultAction = response.actionIdentifier == UNNotificationDefaultActionIdentifier
         let disposition = AppNotificationDisposition.resolve(payload, isDefaultAction: isDefaultAction)
 
+        // Nothing to perform (an unrecognized or malformed payload, or a non-default action on a
+        // Price Alert): finish now instead of queueing a main-actor hop that has no work to do.
+        if disposition == .ignore {
+            completionHandler()
+            return
+        }
+
         Task { @MainActor [weak self] in
             self?.apply(disposition)
             completionHandler()
