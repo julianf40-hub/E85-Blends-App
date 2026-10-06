@@ -77,12 +77,16 @@ final class AutomaticPumpDetectionService: NSObject {
     static let backgroundConfirmationAttemptTimeout: TimeInterval = 4
 
     private static let notificationTitle = "You're at an E85 station"
-    // Immutable `String` literals — no actor-owned state. `nonisolated` because the
-    // `UNUserNotificationCenterDelegate.didReceive` callback (below) is itself `nonisolated` (the
-    // system delivers it off the main actor) and reads them before it hops to the main actor.
-    nonisolated private static let notificationTypeKey = "type"
-    nonisolated private static let notificationTypeValue = "automaticPumpDetection"
-    nonisolated private static let notificationStationIDKey = "stationRecordID"
+    // Immutable `String` constants — no actor-owned state. They are defined ONCE, in
+    // AppNotificationPayload, which is also what AppNotificationRouter (the app's single
+    // notification delegate, and the consumer of a tapped arrival notification) classifies with —
+    // so the `userInfo` this service schedules and the router that reads it back cannot drift
+    // apart. Their values are the literals earlier builds already shipped ("type" /
+    // "automaticPumpDetection" / "stationRecordID"); a notification delivered before an update can
+    // still be tapped after it.
+    nonisolated private static let notificationTypeKey = AppNotificationPayload.typeKey
+    nonisolated private static let notificationTypeValue = AppNotificationPayload.pumpArrivalTypeValue
+    nonisolated private static let notificationStationIDKey = AppNotificationPayload.pumpArrivalStationRecordIDKey
 
     // MARK: - Public, observable state (drives Settings UI)
 
@@ -155,7 +159,16 @@ final class AutomaticPumpDetectionService: NSObject {
                 self?.handleRegionEvent(identifier: identifier, kind: kind)
             }
         }
-        UNUserNotificationCenter.current().delegate = self
+        // This service no longer assigns itself as the notification center's delegate — that is a
+        // single slot, and AppNotificationRouter now owns it for every kind of notification the app
+        // can receive (including Price Alerts). The router hands this service the one thing it
+        // acts on, a tapped arrival notification, exactly as its own delegate used to. Installing
+        // the router here, during App.init, keeps the original guarantee: the delegate is in place
+        // before any view mounts, so a notification that launches the app is never missed.
+        AppNotificationRouter.shared.pumpArrivalHandler = { [weak self] stationRecordID in
+            self?.handleNotificationOpened(stationID: stationRecordID)
+        }
+        AppNotificationRouter.shared.installAsNotificationCenterDelegate()
 
         Task {
             notificationAuthorizationStatus = await Self.currentNotificationAuthorizationStatus()
@@ -662,37 +675,7 @@ final class AutomaticPumpDetectionService: NSObject {
     }
 }
 
-// MARK: - UNUserNotificationCenterDelegate
-
-extension AutomaticPumpDetectionService: UNUserNotificationCenterDelegate {
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        // Scheduling itself is already suppressed while foreground-active (see
-        // handleConfirmedArrival) — if one somehow still arrives while visible, show it
-        // plainly rather than silently dropping it.
-        completionHandler([.banner, .sound, .list])
-    }
-
-    nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
-        let userInfo = response.notification.request.content.userInfo
-        guard
-            userInfo[Self.notificationTypeKey] as? String == Self.notificationTypeValue,
-            let stationID = userInfo[Self.notificationStationIDKey] as? String
-        else {
-            completionHandler()
-            return
-        }
-
-        Task { @MainActor [weak self] in
-            self?.handleNotificationOpened(stationID: stationID)
-            completionHandler()
-        }
-    }
-}
+// The UNUserNotificationCenterDelegate conformance that used to live here moved to
+// AppNotificationRouter, the app's single notification delegate. A tapped arrival notification
+// reaches `handleNotificationOpened(stationID:)` through `AppNotificationRouter.pumpArrivalHandler`
+// (wired in `attach(to:)`), and foreground presentation is unchanged: banner + sound + list.

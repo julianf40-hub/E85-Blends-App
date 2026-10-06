@@ -16,6 +16,10 @@ import CoreLocation
 @MainActor
 @main
 struct EightyFiveBlendsApp: App {
+    // Price Alerts iOS foundation — the smallest thing that can receive the APNs registration
+    // callbacks, which SwiftUI delivers only to a UIApplicationDelegate. It does no startup work
+    // and does not request permission or register at launch; see AppDelegate.swift.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @AppStorage(AppPreferenceKey.themePreference) private var themePreference = ThemePreferenceOption.system.rawValue
     @AppStorage(AppPreferenceKey.accentTheme) private var accentThemeRaw = AppAccentTheme.originalGreen.rawValue
 
