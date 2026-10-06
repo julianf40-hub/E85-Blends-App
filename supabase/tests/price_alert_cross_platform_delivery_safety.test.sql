@@ -492,6 +492,59 @@ end;
 $$;
 
 -- ==================================================================================================
+-- X9: the delivery lifecycle never disables a device for a configuration/provider failure. The worker
+-- classifies FCM errors in fcm.ts (only an explicit UNREGISTERED asks to invalidate the device); this
+-- proves the database side of that contract for Android and iOS.
+-- ==================================================================================================
+delete from private.price_alert_deliveries;
+do $$
+declare
+  p text;
+  v_dev uuid;
+  v_del uuid;
+  v_state text;
+  r record;
+begin
+  foreach p in array array['android','ios'] loop
+    v_dev := (select v from t_ids where k = p || '_ok');
+
+    -- (a) configuration failure (e.g. SENDER_ID_MISMATCH / generic 404 / 401 / 403): retryable, not invalidating
+    v_del := pg_temp.mk_delivery(pg_temp.mk_report('station_n', interval '5 minutes'), 'pending', p || '_ok');
+    perform 1 from private.claim_price_alert_deliveries_v2(100, p);
+    v_state := private.mark_price_alert_delivery_failed(v_del, 403, 'SENDER_ID_MISMATCH', true, false, 5);
+    select * into r from private.price_alert_push_devices where id = v_dev;
+    perform pg_temp.expect(v_state = 'failed', 'X9 [' || p || '] a configuration failure leaves the delivery retryable (failed), got ' || v_state);
+    perform pg_temp.expect(r.enabled and r.invalidated_at is null, 'X9 [' || p || '] a configuration failure never disables or invalidates the device');
+    perform pg_temp.expect((select status || ':' || last_error_code from private.price_alert_deliveries where id = v_del) = 'failed:SENDER_ID_MISMATCH',
+                           'X9 [' || p || '] the failure is recorded with its code only');
+
+    -- (b) provider rejection (non-retryable, not invalidating): the delivery ends dead, the device stays usable
+    v_del := pg_temp.mk_delivery(pg_temp.mk_report('station_n', interval '5 minutes'), 'pending', p || '_ok');
+    perform 1 from private.claim_price_alert_deliveries_v2(100, p);
+    v_state := private.mark_price_alert_delivery_failed(v_del, 400, 'INVALID_ARGUMENT', false, false, 5);
+    select * into r from private.price_alert_push_devices where id = v_dev;
+    perform pg_temp.expect(v_state = 'dead', 'X9 [' || p || '] a non-retryable rejection ends the delivery dead');
+    perform pg_temp.expect(r.enabled and r.invalidated_at is null, 'X9 [' || p || '] a rejection never disables or invalidates the device');
+
+    -- (c) an exhausted retry on a transient/config failure is dead and STILL does not touch the device
+    v_del := pg_temp.mk_delivery(pg_temp.mk_report('station_n', interval '5 minutes'), 'processing', p || '_ok', interval '0', interval '1 minute', 5);
+    v_state := private.mark_price_alert_delivery_failed(v_del, 503, 'UNAVAILABLE', true, false, 5);
+    select * into r from private.price_alert_push_devices where id = v_dev;
+    perform pg_temp.expect(v_state = 'dead' and r.enabled and r.invalidated_at is null,
+                           'X9 [' || p || '] a transient failure past the attempt cap is dead and the device stays enabled');
+
+    -- (d) only an explicit invalid-token verdict disables the device (the UNREGISTERED path)
+    v_del := pg_temp.mk_delivery(pg_temp.mk_report('station_n', interval '5 minutes'), 'processing', p || '_ok', interval '0', interval '1 minute', 1);
+    v_state := private.mark_price_alert_delivery_failed(v_del, 404, 'UNREGISTERED', false, true, 5);
+    select * into r from private.price_alert_push_devices where id = v_dev;
+    perform pg_temp.expect(v_state = 'invalid_device' and not r.enabled and r.invalidated_at is not null,
+                           'X9 [' || p || '] an explicit invalid-token verdict (invalidate=true) is the only thing that disables the device');
+    -- restore for the next platform's checks is unnecessary: devices are per platform
+  end loop;
+end;
+$$;
+
+-- ==================================================================================================
 -- X8: chain state, grants, idempotent re-apply
 -- ==================================================================================================
 do $$

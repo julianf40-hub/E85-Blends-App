@@ -260,6 +260,11 @@ async function registerDevice(sql: Sql, body: JsonObject): Promise<Response> {
   const tokenHash = await sha256Hex(deviceToken);
   let deviceId: string | null = null;
   await sql.begin(async (tx) => {
+    // Serialize concurrent registrations for the same installation: the second waits for the first to
+    // commit, then (READ COMMITTED) deactivates the first's token below instead of racing it. Only the
+    // authenticated installation's own row is locked, so unrelated installations never wait. NO KEY
+    // UPDATE (not UPDATE) so foreign-key checks from alert/device inserts are not blocked.
+    await tx`select id from private.price_alert_installations where id = ${auth.installation.id} for no key update`;
     await tx`
       update private.price_alert_push_devices
       set enabled = false, invalidated_at = coalesce(invalidated_at, now())
