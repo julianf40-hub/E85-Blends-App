@@ -34,8 +34,10 @@ final class FuelStation {
     // station's identity-bearing fields are edited — see CommunityStationIdentity and
     // FuelStation+CommunityIdentity.swift. Deliberately NOT part of how a saved station is
     // matched or displayed: favorites, the unified list and the map still identify stations
-    // exactly as before. CloudKit note: this is a new `CD_communityStationID` field, which must
-    // exist in the CloudKit PRODUCTION schema before a release that populates it ships.
+    // exactly as before. CloudKit note: this is a new `CD_communityStationID` field. It must be in
+    // the CloudKit PRODUCTION schema of BOTH containers — `iCloud.com.e85blends.app.ios` and
+    // `iCloud.com.e85blends.app.ios.internal` — before any TestFlight or App Store build that
+    // populates it ships: those builds run against Production, where a client cannot add fields.
     var communityStationID: UUID?
 
     init(

@@ -175,18 +175,28 @@ struct FuelStationCommunityIdentityTests {
 
     // MARK: - Equality semantics are untouched
 
-    @Test("FuelStation equality stays SwiftData's instance identity — the UUID is not part of it")
-    func equality_isInstanceIdentityNotFieldEquality() {
-        let a = savedStation(communityStationID: first)
-        let twinWithSameFieldsAndUUID = savedStation(communityStationID: first)
+    // FuelStation has no hand-written Equatable/Hashable: its conformance is the one SwiftData's
+    // @Model macro generates, and nothing in this change references `communityStationID` from an
+    // equality or hashing path. How two distinct instances compare is therefore SwiftData's rule,
+    // not ours, and is deliberately not pinned here — it cannot be observed meaningfully without a
+    // ModelContainer. What is checkable is that none of the mutations this change adds disturbs a
+    // station's equality with itself.
 
-        #expect(a == a)
-        // Two separately saved copies of the same station are still two stations: carrying the
-        // same community UUID must not merge them or change how favorites/lists treat them.
-        #expect(a != twinWithSameFieldsAndUUID)
+    @Test("A station stays equal to itself as its community UUID is adopted, replaced and discarded")
+    func equality_isReflexiveAcrossUUIDChanges() {
+        let saved = savedStation()
+        #expect(saved == saved)
 
-        a.adoptCommunityStationID(second)
-        #expect(a == a)
-        #expect(a != twinWithSameFieldsAndUUID)
+        saved.adoptCommunityStationID(first)
+        #expect(saved == saved)
+
+        saved.adoptCommunityStationID(second)
+        #expect(saved == saved)
+
+        let keyBeforeEdit = saved.communityIdentityKey
+        saved.address = "9 Elm St"
+        saved.discardCommunityStationIDIfIdentityChanged(since: keyBeforeEdit)
+        #expect(saved.communityStationID == nil)
+        #expect(saved == saved)
     }
 }
