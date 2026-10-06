@@ -20,6 +20,10 @@
 //      is called, so there is nothing worth caching. The token is also never logged — see
 //      PushDeviceToken, which redacts every description path.
 //
+//  An outstanding registration has no timeout: `.authorizedAwaitingToken` simply stays until the OS
+//  answers (it may take a while offline). `refreshRegistrationIfAuthorized()` is the only thing that
+//  re-asks the OS, so any future "try again" affordance must call it.
+//
 //  Capability note: remote registration only succeeds when the app carries the Push Notifications
 //  capability (the `aps-environment` entitlement). This repository's entitlements do not include
 //  it at the time of writing, so on a real device the OS answers with a registration failure and
@@ -54,9 +58,13 @@ final class PushRegistrationService {
     private(set) var state: PushRegistrationState = .notRequested
 
     private let system: any PushRegistrationSystem
-    /// Coalesces overlapping calls: a second call made while one is awaiting the system returns
-    /// immediately instead of racing it (and instead of showing a second prompt).
-    @ObservationIgnored private var isRequestInFlight = false
+    /// Coalesce overlapping calls: a second call of the same kind made while one is awaiting the
+    /// system returns immediately instead of racing it (and instead of showing a second prompt).
+    /// Two flags, not one, so a background refresh can never swallow a user's explicit opt-in: an
+    /// opt-in proceeds even while a refresh is awaiting the system, whereas a refresh yields to an
+    /// opt-in (which already covers registering).
+    @ObservationIgnored private var isOptInInFlight = false
+    @ObservationIgnored private var isRefreshInFlight = false
 
     init(system: any PushRegistrationSystem) {
         self.system = system
@@ -79,9 +87,9 @@ final class PushRegistrationService {
     /// denied user simply stays `.denied`. Call `refreshRegistrationIfAuthorized()` to deliberately
     /// ask the OS for the current token again.
     func requestAuthorizationAndRegister() async {
-        guard isRequestInFlight == false else { return }
-        isRequestInFlight = true
-        defer { isRequestInFlight = false }
+        guard isOptInInFlight == false else { return }
+        isOptInInFlight = true
+        defer { isOptInInFlight = false }
 
         switch await system.authorizationStatus() {
         case .denied:
@@ -111,9 +119,9 @@ final class PushRegistrationService {
     /// prompts. A call is one request to the OS and nothing more — no result of it (including a
     /// failure) triggers another, so there is no registration loop.
     func refreshRegistrationIfAuthorized() async {
-        guard isRequestInFlight == false else { return }
-        isRequestInFlight = true
-        defer { isRequestInFlight = false }
+        guard isRefreshInFlight == false, isOptInInFlight == false else { return }
+        isRefreshInFlight = true
+        defer { isRefreshInFlight = false }
 
         switch await system.authorizationStatus() {
         case .authorized:
@@ -168,7 +176,9 @@ final class PushRegistrationService {
     /// without push support and on builds without the Push Notifications capability. Recorded as
     /// state and nothing else — no retry — and never discards a token already held.
     func handleRegistrationFailure(_ error: Error) {
-        guard currentToken == nil else { return }
+        // Neither a token we hold nor a permission the user denied is overwritten by a failure
+        // callback — the same rule `handleDeviceToken` applies to a late token.
+        guard currentToken == nil, state != .denied else { return }
         let nsError = error as NSError
         state = .failed(.registrationFailed(domain: nsError.domain, code: nsError.code))
     }

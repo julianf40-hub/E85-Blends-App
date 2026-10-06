@@ -33,8 +33,13 @@ private final class FakePushSystem: PushRegistrationSystem {
     }
 
     func authorizationStatus() async -> PushAuthorizationStatus {
+        // The answer is fixed when the call STARTS, as a real status read is: an overlapping call
+        // made while this one is suspended must not see a status changed by the other call's
+        // prompt. (Reading `status` after the suspension made this fake hide the very race the
+        // coalescing tests below exist to catch — the service passed even with its guards removed.)
+        let answer = status
         await beforeStatusAnswer?()
-        return status
+        return answer
     }
 
     func requestAuthorization() async throws -> Bool {
@@ -224,6 +229,39 @@ struct PushRegistrationTests {
         #expect(system.registerCount == 1)
     }
 
+    @MainActor
+    @Test("An explicit opt-in made while a background refresh is still awaiting the system is not dropped")
+    func optIn_isNotSwallowedByAnInFlightRefresh() async {
+        let system = FakePushSystem(status: .notDetermined)
+        system.beforeStatusAnswer = { await Task.yield() }
+        let service = PushRegistrationService(system: system)
+
+        let refresh = Task { await service.refreshRegistrationIfAuthorized() }
+        await Task.yield() // let the refresh start and suspend inside the status read
+        await service.requestAuthorizationAndRegister()
+        await refresh.value
+
+        #expect(system.promptCount == 1)
+        #expect(system.registerCount == 1)
+        #expect(service.state == .authorizedAwaitingToken)
+    }
+
+    @MainActor
+    @Test("A background refresh yields to an opt-in already in flight instead of racing it")
+    func refresh_yieldsToAnInFlightOptIn() async {
+        let system = FakePushSystem(status: .notDetermined)
+        system.beforeStatusAnswer = { await Task.yield() }
+        let service = PushRegistrationService(system: system)
+
+        let optIn = Task { await service.requestAuthorizationAndRegister() }
+        await Task.yield() // let the opt-in start and suspend inside the status read
+        await service.refreshRegistrationIfAuthorized()
+        await optIn.value
+
+        #expect(system.promptCount == 1)
+        #expect(system.registerCount == 1)
+    }
+
     // MARK: - No registration loop
 
     @MainActor
@@ -356,6 +394,18 @@ struct PushRegistrationTests {
 
         #expect(service.state == .denied)
         #expect(service.currentToken == nil)
+    }
+
+    @MainActor
+    @Test("A registration failure that arrives after the user denied permission leaves the state denied")
+    func failure_ignoredWhenDenied() async {
+        let system = FakePushSystem(status: .denied)
+        let service = PushRegistrationService(system: system)
+        await service.requestAuthorizationAndRegister()
+
+        service.handleRegistrationFailure(NSError(domain: NSCocoaErrorDomain, code: 3010))
+
+        #expect(service.state == .denied)
     }
 
     // MARK: - Simulator / no-push-capability path
