@@ -62,7 +62,8 @@ disagree with what is sent.
 
 ### 1.4 The price field (`PriceAlertPriceInput`)
 
-Dollars per gallon, decimal-pad keyboard, accessible label and hint, `$` prefix. It is parsed to **integer
+Dollars per gallon, decimal-pad keyboard, accessible label and hint, `$` prefix; a tap anywhere in the
+drawn box focuses it. It is parsed to **integer
 thousandths** — never through a `Double` — and converted to `PriceAlertAmount`.
 
 * digits and one decimal mark; a pasted leading `$` is tolerated; a comma is read as the decimal mark
@@ -216,6 +217,7 @@ What was verified, and where. Nothing here was run against Supabase, APNs, Reven
 | The same sources and tests in Swift 6 language mode (extra signal for concurrency problems) | passes, no diagnostics |
 | Mutation check: 36 defects injected one at a time into the new logic (a double tap saving twice, a failed save wiping the form, an unresolved entitlement treated as Free, a 4th decimal rounded away, a token callback re-asking the OS, a registration that creates an installation without a person, …) | all 36 detected: 33 by failing tests, 2 by a test that deadlocks (a missing double-tap guard), 1 by the compiler (an extra alert kind cannot compile without words). One mutant first survived — a slow earlier load re-seeding the form *while* a save was in flight — which exposed a gap; a test for it was added and the mutant is now caught. Source restored byte-for-byte after every run |
 | The three SwiftUI files against the real models, using a stand-in for SwiftUI | type-checks. **This is a structural check only, not a compile of real SwiftUI**: it proves the views use the app's own models, enums, optionals and closures consistently (a planted typo is caught), not that every modifier label matches Apple's API. They have **not been built by Xcode** |
+| A separate read-only review of the committed SwiftUI files and the hunks in `StationsView` / `ProStationsMapView` / `MoreView` / the app and AppDelegate wiring, by reading them against the real declarations in this repository (no compiler was available to it) | found nothing that should fail to compile — it checked project membership, the declaration order of every memberwise initializer at every call site, each shared component's real signature, every theme token, exhaustive switches, imports, actor isolation and name collisions. It raised two small items and one trade-off: the price field's tap target was only its line of text (**fixed**: the whole box now focuses it); the pale-red error text has low contrast in Light appearance (it is the app-wide error literal used by the Garage and price-report screens, so **left as is** — see §8); and the sheet's Close / swipe-dismiss are disabled while a request is in flight (**kept**, see §8) |
 | Xcode build and tests | not run here (Linux). The gate is Xcode Cloud's *Test – iOS* action on the pushed commit; this phase is validated only when that reports success |
 
 Test map: scenarios are covered in `PriceAlertsStationTargetTests` (entry / eligibility / Pro cue),
@@ -231,5 +233,13 @@ idempotence, backoff, convergence, the real push service's no-loop property) and
 * A station needs a community UUID for the bell to appear; stations nobody has reported on never get one.
 * The sheet offers no minimum-change or cooldown controls (the backend supports them; the MVP does not).
 * The Price Alerts screen has no search, and lists in the server's order (by station name).
+* While a save or turn-off is in flight, Close and swipe-to-dismiss are disabled (as in the price-report
+  sheet), so the person always sees the outcome instead of losing it behind a dismissed sheet. It is
+  bounded by the request timeouts (15 s per request, 30 s per resource); a save that needs the
+  re-bootstrap path is a few sequential requests.
+* Validation text (the price field, a failed save) uses the app's existing pale-red error colour, which
+  has low contrast against the Light appearance's page background. It is the same literal as the Garage
+  and price-report screens; fixing it properly means an appearance-adaptive error token in `Theme`,
+  an app-wide change this phase did not make.
 * `Simple Mode` question above; and whether the Pro section header wording ("Route planning and price
   alerts.") is the wording you want.

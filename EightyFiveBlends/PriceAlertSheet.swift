@@ -324,6 +324,10 @@ struct PriceAlertSheet: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
+            // The whole drawn box focuses the field, not only the line of text inside it (the padding
+            // and the "$" would otherwise be dead space, and the line alone is under 44 pt tall).
+            .contentShape(Rectangle())
+            .onTapGesture { isPriceFieldFocused = true }
             .background(AppTheme.Colors.surface)
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
