@@ -27,6 +27,10 @@ struct StationsView: View {
     @State private var selectedRadius = "25 mi"
     @State private var sheetStation: FuelStation?
     @State private var priceUpdateContext: StationPriceUpdateContext?
+    // 2.4.1 Price Alerts — the station whose Price Alert sheet is open. Only ever set from a station
+    // that has a backend community UUID (see presentPriceAlert), so the sheet can never be about an
+    // ineligible station. Shared by the Classic cards and the Pro map, exactly like priceUpdateContext.
+    @State private var priceAlertTarget: PriceAlertStationTarget?
     @State private var stationPendingDeletion: FuelStation?
     @State private var infoMessage: String?
     @State private var mapPosition: MapCameraPosition = .region(StationsView.neutralUSRegion)
@@ -665,7 +669,8 @@ struct StationsView: View {
                     distanceMiles: item.distanceMiles,
                     price: price,
                     ethanol: ethanol
-                )
+                ),
+                communityStationID: priceAlertCommunityStationID(for: item)
             )
         }
     }
@@ -784,7 +789,8 @@ struct StationsView: View {
             // premiumFavorite(for:) above.
             onFavorite: { premiumFavorite(for: $0) },
             onReportPrice: { premiumReportPrice(for: $0) },
-            onOpenTripPlanner: openTripPlannerFromPremiumMap
+            onOpenTripPlanner: openTripPlannerFromPremiumMap,
+            onPriceAlert: { premiumPriceAlert(for: $0) }
         )
     }
 
@@ -839,7 +845,6 @@ struct StationsView: View {
                             // and community pricing below remain fully functional in both modes.
                             if appExperienceMode == .normal {
                                 proFeaturesSection
-                                comingSoonSection
                             }
                             mapSection
                             findNearbyButton
@@ -1051,6 +1056,11 @@ struct StationsView: View {
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice || isSubmittingCommunityEthanol)
         }
+        // 2.4.1 Price Alerts — one sheet for every entry point (Classic cards and the Pro map). It
+        // owns its own presentation detents and dismissal rules; see PriceAlertSheet.
+        .sheet(item: $priceAlertTarget) { target in
+            PriceAlertSheet(target: target)
+        }
         // 85Blends 2.4.0 post-navigation price-contribution prompt — the narrow bridge that
         // lets ContentView's banner open this view's otherwise-private community-reporting
         // sheet (see PriceContributionPresentationRequest's own header for why this pattern,
@@ -1124,10 +1134,11 @@ struct StationsView: View {
     // saved stations below remain fully free.
     private var proFeaturesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // "Smarter E85 route planning." (was "Smarter planning and price tracking.") —
-            // price tracking/alerts isn't available yet, so this section only describes what
-            // Trip Planner (the one feature actually in it now) delivers today.
-            SectionHeader(title: "85Blends Pro", subtitle: "Smarter E85 route planning.")
+            // 2.4.1 — was "Smarter E85 route planning." while Trip Planner was the only feature
+            // here. Station Price Alerts (previously a "Coming Soon" placeholder shell in its own
+            // section below this one) is a real feature now, so it sits here beside Trip Planner and
+            // the section says so.
+            SectionHeader(title: "85Blends Pro", subtitle: "Route planning and price alerts.")
 
             ProFeatureGate(
                 icon: "map.fill",
@@ -1136,22 +1147,11 @@ struct StationsView: View {
             ) {
                 TripPlannerView()
             }
-        }
-    }
-
-    // 2.3.0 UI polish pass: split out of proFeaturesSection above — Station Price Alerts is a
-    // placeholder shell today (see StationAlertsView). .comingSoon availability means no "PRO"
-    // badge and no "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability), and it's no
-    // longer visually grouped under the "85Blends Pro" header as if it were current, paid value.
-    private var comingSoonSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Coming Soon", subtitle: "Features planned for a future update.")
 
             ProFeatureGate(
                 icon: "bell.badge.fill",
                 title: "Station Price Alerts",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
-                availability: .comingSoon
+                description: "Get notified when a station's E85 price drops or reaches your target."
             ) {
                 StationAlertsView()
             }
@@ -1448,7 +1448,9 @@ struct StationsView: View {
                 deleteAction: { stationPendingDeletion = saved },
                 // No live counterpart to borrow a missing field from — Share derives the
                 // address purely from `saved`, unchanged from this feature's original behavior.
-                shareAddressOverride: nil
+                shareAddressOverride: nil,
+                priceAlertCommunityStationID: priceAlertCommunityStationID(for: item),
+                priceAlertAction: { presentPriceAlert(for: item) }
             )
         case .nearbyOnly(let live):
             LiveStationRowCard(
@@ -1460,7 +1462,9 @@ struct StationsView: View {
                 reportPriceAction: { beginPriceUpdate(for: live) },
                 // PR D — the Classic nearby-station action is now Favorite, matching the
                 // premium map: one tap saves the station AND marks it favorite.
-                saveAction: { saveLiveStation(live, markFavorite: true) }
+                saveAction: { saveLiveStation(live, markFavorite: true) },
+                priceAlertCommunityStationID: priceAlertCommunityStationID(for: item),
+                priceAlertAction: { presentPriceAlert(for: item) }
             )
         case .merged(let saved, let live):
             if stationListFilter == .nearby {
@@ -1471,7 +1475,9 @@ struct StationsView: View {
                     communityEthanolSummary: communityEthanolSummary(for: saved),
                     directionsAction: { directionsMessage(for: live) },
                     reportPriceAction: { beginPriceUpdate(for: saved) },
-                    saveAction: { }
+                    saveAction: { },
+                    priceAlertCommunityStationID: priceAlertCommunityStationID(for: item),
+                    priceAlertAction: { presentPriceAlert(for: item) }
                 )
             } else {
                 StationRowCard(
@@ -1487,7 +1493,9 @@ struct StationsView: View {
                     // address (item.shareAddress) so a saved record missing e.g. city/ZIP still
                     // shares the fuller address the matching live record has, rather than the
                     // truncated one `saved` alone would produce.
-                    shareAddressOverride: item.shareAddress
+                    shareAddressOverride: item.shareAddress,
+                    priceAlertCommunityStationID: priceAlertCommunityStationID(for: item),
+                    priceAlertAction: { presentPriceAlert(for: item) }
                 )
             }
         }
@@ -2969,6 +2977,60 @@ struct StationsView: View {
         return communityEthanolSummaries[key]
     }
 
+    // MARK: - 2.4.1 Price Alerts
+
+    /// The backend's community-station UUID for a saved station, or `nil` — in which case no Price
+    /// Alert entry is offered for it. Only ever a UUID the backend itself supplied: the one saved on
+    /// the station, or the one on its community summaries (the freshest wins, as when it is stored —
+    /// see PriceAlertsStationIdentity). Never derived from the name, address, coordinates or key.
+    private func priceAlertCommunityStationID(for station: FuelStation) -> UUID? {
+        PriceAlertsStationIdentity.communityStationID(
+            persisted: station.communityStationID,
+            priceSummaryID: communitySummary(for: station)?.communityStationID,
+            ethanolSummaryID: communityEthanolSummary(for: station)?.communityStationID
+        )
+    }
+
+    /// The same for a nearby station that is not saved: only its community summaries can carry one.
+    private func priceAlertCommunityStationID(for station: LiveFuelStation) -> UUID? {
+        PriceAlertsStationIdentity.communityStationID(
+            persisted: nil,
+            priceSummaryID: communitySummary(for: station)?.communityStationID,
+            ethanolSummaryID: communityEthanolSummary(for: station)?.communityStationID
+        )
+    }
+
+    /// For a unified item: the saved record's UUID when there is one (a merged station is the saved
+    /// station), otherwise the nearby station's.
+    private func priceAlertCommunityStationID(for item: StationDisplayItem) -> UUID? {
+        switch item.content {
+        case .savedOnly(let saved), .merged(let saved, _):
+            return priceAlertCommunityStationID(for: saved)
+        case .nearbyOnly(let nearby):
+            return priceAlertCommunityStationID(for: nearby)
+        }
+    }
+
+    /// Opens the Price Alert sheet for a station. A station without a community UUID gets no target
+    /// and nothing opens — its entry point is hidden anyway, so this is only a backstop.
+    private func presentPriceAlert(for item: StationDisplayItem) {
+        guard let target = PriceAlertStationTarget(
+            communityStationID: priceAlertCommunityStationID(for: item),
+            name: item.displayName,
+            address: item.displayAddress,
+            city: item.displayCity,
+            state: item.displayState
+        ) else { return }
+        priceAlertTarget = target
+    }
+
+    /// The Pro map's Price Alert row — resolves the selection to the same unified item and opens the
+    /// same sheet, like premiumReportPrice(for:) does for the price editor.
+    private func premiumPriceAlert(for selection: PremiumStationMapSelection) {
+        guard let item = resolveStationDisplayItem(for: selection) else { return }
+        presentPriceAlert(for: item)
+    }
+
     /// Only validated current-session, current-location results may cross into the widget.
     /// Typed searches and cold-launch provisional previews cannot relocate "nearby".
     private func publishNearbyWidgetSnapshot() {
@@ -3996,6 +4058,10 @@ private struct StationRowCard: View {
     /// unchanged from this feature's original implementation. Presentation-only; never written
     /// back onto FuelStation.
     let shareAddressOverride: String?
+    /// 2.4.1 Price Alerts — the station's backend community UUID, if it has one (`nil`: no bell is
+    /// shown), and what a tap on the bell does. Defaulted, so a card built without them is unchanged.
+    var priceAlertCommunityStationID: UUID? = nil
+    var priceAlertAction: () -> Void = {}
     @State private var directionsMessage: String?
 
     var body: some View {
@@ -4178,6 +4244,13 @@ private struct StationRowCard: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .accessibilityLabel("Share \(station.name)")
+
+                    // 2.4.1 Price Alerts — hidden unless this station has a community UUID.
+                    PriceAlertsBellButton(
+                        communityStationID: priceAlertCommunityStationID,
+                        stationName: station.name,
+                        action: priceAlertAction
+                    )
 
                     Button(action: editAction) {
                         Image(systemName: "pencil")
@@ -4551,6 +4624,10 @@ private struct LiveStationRowCard: View {
     let directionsAction: () -> String?
     let reportPriceAction: () -> Void
     let saveAction: () -> Void
+    /// 2.4.1 Price Alerts — see StationRowCard. For a nearby station that is not saved, the UUID can
+    /// only come from its community summaries, so the bell appears once the community has reported it.
+    var priceAlertCommunityStationID: UUID? = nil
+    var priceAlertAction: () -> Void = {}
     @State private var directionsMessage: String?
 
     var body: some View {
@@ -4663,6 +4740,13 @@ private struct LiveStationRowCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .accessibilityLabel("Share \(station.name)")
+
+                // 2.4.1 Price Alerts — hidden unless this station has a community UUID.
+                PriceAlertsBellButton(
+                    communityStationID: priceAlertCommunityStationID,
+                    stationName: station.name,
+                    action: priceAlertAction
+                )
 
                 Spacer()
             }

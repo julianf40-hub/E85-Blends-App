@@ -325,15 +325,25 @@ struct MoreView: View {
             ) {
                 TripPlannerView()
             }
+
+            // 2.4.1 — Price Alerts is a real feature now (it was a placeholder shell under "Coming
+            // Soon" below): a Pro entry like Trip Planner, whose destination lists the alerts.
+            ProFeatureGate(
+                icon: "bell.badge.fill",
+                title: "Station Price Alerts",
+                description: "Get notified when a station's E85 price drops or reaches your target."
+            ) {
+                StationAlertsView()
+            }
         }
     }
 
     // 2.3.0 UI polish pass: split out of proPreviewSection above so "current Pro features" and
     // "not built yet" are never visually adjacent under the same "Included with 85Blends Pro"
     // header — device feedback found that juxtaposition read as if purchasing today unlocks
-    // these too. Both entries are placeholder shells (see AdvancedAnalyticsView/
-    // StationAlertsView) — .comingSoon availability means neither shows a "PRO" badge or an
-    // "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability).
+    // these too. The entry is a placeholder shell (see AdvancedAnalyticsView) — .comingSoon
+    // availability means it shows no "PRO" badge and no "Unlock 85Blends Pro" CTA (see
+    // ProFeatureGate.Availability).
     private var comingSoonSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
@@ -348,15 +358,6 @@ struct MoreView: View {
                 availability: .comingSoon
             ) {
                 AdvancedAnalyticsView()
-            }
-
-            ProFeatureGate(
-                icon: "bell.badge.fill",
-                title: "Station Price Alerts",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
-                availability: .comingSoon
-            ) {
-                StationAlertsView()
             }
         }
     }

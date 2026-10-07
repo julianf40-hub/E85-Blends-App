@@ -3,6 +3,12 @@
 Status of Phase 3A as delivered: client/API plumbing only — no Price Alerts UI, nothing in that phase runs
 at launch, and no network call to Supabase was made while building it (every test uses fakes).
 
+> **Phase 3B has since added the UI and the app wiring** — see [`PRICE_ALERTS_UI_2.4.1.md`](PRICE_ALERTS_UI_2.4.1.md).
+> The statements below about launch describe Phase 3A as delivered. Phase 3B adds exactly one launch-time
+> call, `reconcileDeviceRegistrationIfPreviouslyRegistered()`, which is a complete no-op for an install that
+> never opted in and, for one that did, only maintains an existing registration (it never creates an
+> installation and never prompts).
+
 > **Production backend state — corrected at the start of Phase 3B.** The first version of this document
 > described the worker scheduler as not yet active, three migrations as not applied and the APNs secrets as
 > still to be provisioned. That was stale. As reported by the project owner (Supabase project
@@ -321,12 +327,13 @@ The bundle id is read from the running bundle, never hard-coded, so the Producti
 
 ### 2.7 What Phase 3B (the UI) must wire
 
-Nothing below is done in 3A:
+*Done in Phase 3B — see [`PRICE_ALERTS_UI_2.4.1.md`](PRICE_ALERTS_UI_2.4.1.md) (§1 for 1–3 and 5, §3 for 4). The list is kept
+as the original hand-off.* Nothing below was done in 3A:
 
 1. A Price Alerts screen calls `refreshAlerts()`; saving calls `createAlert(communityStationID: station.communityStationID, …)`; "off" is `deleteAlert`.
 2. Surface `stationNotEligibleForPriceAlerts` (no UUID yet), `proRequired` (paywall), `entitlementUnresolved` (call `SubscriptionManager.refreshProStatus()` and retry), `proRequiredByServer`, and `stationNotFound`.
 3. The notification opt-in control calls `enablePushDelivery()`; render the returned outcome.
-4. App-level code should call `reconcileDeviceRegistrationIfPreviouslyRegistered()` when the app becomes active (it is a no-op for installs that never registered) so a rotated token reaches the backend; optionally also from the AppDelegate token callback. This is deliberately not wired at launch in 3A.
+4. App-level code should call `reconcileDeviceRegistrationIfPreviouslyRegistered()` when the app becomes active (it is a no-op for installs that never registered) so a rotated token reaches the backend; optionally also from the AppDelegate token callback. This is deliberately not wired at launch in 3A. *(3B: wired at launch and on every return to active through one function, and from the token callback — gated on the token having changed, and without re-asking the OS, so it cannot loop.)*
 5. After a reinstall the OS notification permission is reset, so `enablePushDelivery()` must be offered again; that prompt needs a user action.
 
 ---

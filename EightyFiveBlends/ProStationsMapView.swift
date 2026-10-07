@@ -94,6 +94,10 @@ struct ProStationMapItem: Identifiable {
     let isFavorite: Bool
     let kind: ProStationKind
     let accessibilityDescription: String
+    /// 2.4.1 Price Alerts — the backend's community-station UUID for this station, resolved by
+    /// StationsView (nil: not eligible, so no Price Alert row is shown). Defaulted so nothing else
+    /// that builds an item has to change.
+    var communityStationID: UUID? = nil
 }
 
 // MARK: - Pin
@@ -214,6 +218,9 @@ struct ProStationsMapView: View {
     // NavigationLink/sheet/destination of its own) — it only signals intent; StationsView owns
     // the actual navigation trigger, same as every other action above.
     let onOpenTripPlanner: () -> Void
+    // 2.4.1 Price Alerts — like every action above, this only signals intent; StationsView presents
+    // the sheet. Optional and defaulted so a caller that has no Price Alerts changes nothing.
+    var onPriceAlert: ((PremiumStationMapSelection) -> Void)? = nil
 
     @State private var selectedStationID: PremiumStationMapSelection?
     @State private var directionsErrorMessage: String?
@@ -1023,6 +1030,19 @@ struct ProStationsMapView: View {
 
                     priceSection(item.price)
                     ethanolSection(item.ethanol)
+
+                    // 2.4.1 Price Alerts — a full-width row rather than a fifth action button: the
+                    // button row below is four equal columns that already shrink their labels, and
+                    // this block scrolls and grows with Dynamic Type. Hidden for a station with no
+                    // community UUID.
+                    if let onPriceAlert {
+                        PriceAlertsEntryRow(
+                            communityStationID: item.communityStationID,
+                            stationName: item.displayName
+                        ) {
+                            onPriceAlert(item.selection)
+                        }
+                    }
 
                     if browsableItems.count > 1 {
                         pageIndicator
