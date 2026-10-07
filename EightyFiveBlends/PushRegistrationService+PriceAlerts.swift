@@ -16,3 +16,17 @@ extension PushRegistrationService: PriceAlertsPushStateProviding {
         state
     }
 }
+
+/// Whether an APNs token callback delivered a token this process was not already holding.
+///
+/// The AppDelegate asks this to decide whether to re-register with Price Alerts. It must be a real
+/// change, because the OS calls back with the SAME token every time `registerForRemoteNotifications()`
+/// is called — including the call the app-active reconcile makes on every foreground. If an unchanged
+/// token started a reconcile, that reconcile's own OS request would produce another callback, and
+/// another reconcile: a loop. Only a token that differs from the one held (or the first one) is news.
+nonisolated enum PushTokenChange {
+    static func isNewToken(previous: PushDeviceToken?, current: PushDeviceToken?) -> Bool {
+        guard let current else { return false }
+        return current != previous
+    }
+}

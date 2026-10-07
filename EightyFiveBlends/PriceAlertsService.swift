@@ -10,9 +10,12 @@
 //      PriceAlertsDeviceRegistrar         APNs token → backend                (PriceAlertsDeviceRegistration.swift)
 //      PriceAlertsEntitlementProviding    "may this user configure alerts?"   (PriceAlertsEntitlement.swift)
 //
-//  Each is injected, so each can be replaced by a fake. There is no UI here, and NOTHING RUNS AT
-//  LAUNCH: constructing this service reads no Keychain item, makes no request, asks for no
-//  permission and creates no installation. A screen calls into it when the user acts.
+//  Each is injected, so each can be replaced by a fake. There is no UI here, and constructing this
+//  service reads no Keychain item, makes no request, asks for no permission and creates no
+//  installation. A screen calls into it when the user acts. The one app-level caller (Phase 3B) is
+//  the launch / return-to-active / APNs-token-callback reconcile: a complete no-op for an install
+//  that never turned notifications on, and for one that did it only MAINTAINS the existing
+//  registration — it never prompts and never creates an installation (see PriceAlertsDeviceRegistrar).
 //
 //  THE RULES
 //  - STATION IDENTITY. An alert is created for a `communityStationID` — `FuelStation.communityStationID`,
@@ -247,10 +250,28 @@ final class PriceAlertsService {
     }
 
     /// Safe for app-level code (e.g. when the app becomes active): a complete no-op — no OS call, no
-    /// network — for an install that has never registered a device.
+    /// network, nothing recorded — for an install that has never registered a device. For one that
+    /// has, it re-reads the OS token (never prompting) and updates the backend only if something
+    /// changed.
     @discardableResult
     func reconcileDeviceRegistrationIfPreviouslyRegistered() async -> PriceAlertsDeviceRegistrationOutcome {
-        record(await registrar.refreshIfPreviouslyRegistered())
+        recordUnlessNotOptedIn(await registrar.refreshIfPreviouslyRegistered())
+    }
+
+    /// For the APNs token callback: the OS has just delivered a token. Registers it if this install
+    /// has registered before; does NOT ask the OS for a token (it just gave one — asking again would
+    /// make it call back again) and, like the hook above, does nothing at all for an install that never
+    /// opted in.
+    @discardableResult
+    func reconcileDeviceRegistrationAfterTokenChangeIfPreviouslyRegistered() async -> PriceAlertsDeviceRegistrationOutcome {
+        recordUnlessNotOptedIn(await registrar.reconcileAfterTokenChangeIfPreviouslyRegistered())
+    }
+
+    /// Whether this install has registered a device before — the local record only, with no OS call,
+    /// no network call and no Keychain read. Lets a screen show "notifications are on" for a returning
+    /// user without asking the system anything.
+    var hasRegisteredDevice: Bool {
+        registrar.hasRegisteredBefore
     }
 
     /// Asks the backend to retire this device's token. Alerts are untouched. Not automatic anywhere.
@@ -262,6 +283,16 @@ final class PriceAlertsService {
     private func record(_ outcome: PriceAlertsDeviceRegistrationOutcome) -> PriceAlertsDeviceRegistrationOutcome {
         lastDeviceRegistrationOutcome = outcome
         return outcome
+    }
+
+    /// "Nothing happened because this install never opted in" is not an outcome a screen should keep:
+    /// recording it on every foreground would overwrite what the person last saw (say, a denied
+    /// permission) and churn observers for an install that does not use the feature at all.
+    private func recordUnlessNotOptedIn(_ outcome: PriceAlertsDeviceRegistrationOutcome) -> PriceAlertsDeviceRegistrationOutcome {
+        if outcome == .skipped(.notOptedIn) {
+            return outcome
+        }
+        return record(outcome)
     }
 
     // MARK: - Internals

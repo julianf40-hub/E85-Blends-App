@@ -211,6 +211,12 @@ struct EightyFiveBlendsApp: App {
                     Task {
                         await ReferralManager.shared.bootstrapIfNeeded()
                     }
+
+                    // 85Blends 2.4.1 Price Alerts — the launch half of keeping the backend's record of
+                    // THIS device's APNs token current; the foreground half is in the scenePhase
+                    // handler below (the same launch/foreground split as recordLaunch() above and
+                    // recordSceneBecameActive() below). See reconcilePriceAlertsDeviceRegistration().
+                    reconcilePriceAlertsDeviceRegistration()
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-verify entitlement on every return to active (App Store changes,
@@ -237,6 +243,9 @@ struct EightyFiveBlendsApp: App {
                         }
 
                         attemptPendingNearbyE85RefreshIfNeeded()
+
+                        // 85Blends 2.4.1 Price Alerts — see reconcilePriceAlertsDeviceRegistration().
+                        reconcilePriceAlertsDeviceRegistration()
 
                         // 85Blends 2.4.0 review-request system — only counts a NEW session if
                         // the app was genuinely backgrounded long enough (see
@@ -290,6 +299,22 @@ struct EightyFiveBlendsApp: App {
     /// underlying RevenueCat state or the Developer Pro Override changes.
     private var nearbyE85WidgetAccessStatus: NearbyE85WidgetAccessStatus? {
         NearbyE85WidgetAccessPublisher.mirroredStatus(for: SubscriptionManager.shared)
+    }
+
+    /// 85Blends 2.4.1 Price Alerts — re-reads the OS's APNs token and tells the backend only if it
+    /// changed, for a user who has ALREADY turned Price Alerts notifications on. Called at launch and
+    /// on every return to active; both go through this one function and the service's own
+    /// de-duplication, so they cannot double up and there is no second observer of any lifecycle.
+    ///
+    /// A COMPLETE NO-OP for everyone else — an install that never opted in makes no OS call, no
+    /// network call, no Keychain read and creates no installation — and it NEVER prompts for
+    /// permission: that happens only when someone taps "Turn On Notifications"
+    /// (PriceAlertsNotificationModel). Idempotent (an unchanged token costs no request), bounded by
+    /// the registrar's backoff after a failure, and not awaited, so it cannot delay anything here.
+    private func reconcilePriceAlertsDeviceRegistration() {
+        Task {
+            _ = await PriceAlertsService.shared.reconcileDeviceRegistrationIfPreviouslyRegistered()
+        }
     }
 
     /// The active-app half of the Nearby E85 widget's manual refresh button. The widget

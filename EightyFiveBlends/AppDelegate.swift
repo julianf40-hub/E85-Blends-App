@@ -12,6 +12,10 @@
 //  Launch behavior is unchanged for every existing user: this file does not ask for notification
 //  permission and does not call `registerForRemoteNotifications()`. See PushRegistrationService.
 //
+//  One thing is forwarded beyond the token itself (2.4.1): when the OS delivers a token the app was
+//  not already holding, Price Alerts is told, so a rotated token reaches the backend without waiting
+//  for the next time the app becomes active. See the callback below for why that is loop-free.
+//
 
 import Foundation
 import UIKit
@@ -31,7 +35,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
-        PushRegistrationService.shared.handleDeviceToken(deviceToken)
+        let push = PushRegistrationService.shared
+        let previousToken = push.currentToken
+        push.handleDeviceToken(deviceToken)
+
+        // 85Blends 2.4.1 Price Alerts. The OS answers EVERY registerForRemoteNotifications() with the
+        // current token — including the one the app-active reconcile makes — so only a token that
+        // differs from the one held (or the first) is news. Reacting to an unchanged one would let a
+        // reconcile's own OS request start the next reconcile. And that reconcile
+        // (reconcileDeviceRegistrationAfterTokenChangeIfPreviouslyRegistered) does not ask the OS for
+        // anything, does nothing at all for an install that never turned notifications on, never
+        // prompts, and runs on a Task so this callback returns at once.
+        guard PushTokenChange.isNewToken(previous: previousToken, current: push.currentToken) else { return }
+        Task {
+            _ = await PriceAlertsService.shared.reconcileDeviceRegistrationAfterTokenChangeIfPreviouslyRegistered()
+        }
     }
 
     func application(

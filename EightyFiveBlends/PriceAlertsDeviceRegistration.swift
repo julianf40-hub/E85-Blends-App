@@ -9,11 +9,15 @@
 //  and register — and never writes to it, so a failed backend call can never cost the app a good
 //  local token.
 //
-//  NOTHING HERE RUNS AT LAUNCH. Constructing a registrar does nothing. Registration happens only when
-//  a caller asks: `enable()` (the user opting in to Price Alerts notifications), `refresh(...)` (a
-//  returning user on a Price Alerts screen), or `refreshIfPreviouslyRegistered()` (safe to call from
-//  app-level code such as scenePhase handling — it does nothing for any install that has never
-//  registered).
+//  CONSTRUCTING A REGISTRAR DOES NOTHING. Registration happens only when a caller asks:
+//    - `enable()`: the user opting in to Price Alerts notifications — the only thing that may prompt
+//      for permission, and with `refresh(...)` (a returning user on a Price Alerts screen) the only
+//      way an installation is ever created;
+//    - `refreshIfPreviouslyRegistered()` / `reconcileAfterTokenChangeIfPreviouslyRegistered()`: the
+//      app-level triggers (launch, returning to the app, an APNs token callback). Each does nothing
+//      at all for an install that never registered a device, never prompts, and only MAINTAINS a
+//      registration that exists — an automatic trigger that finds no installation skips rather than
+//      create one.
 //
 //  IDEMPOTENT, AND ONLY AS CHATTY AS NEEDED. The server's register_device is an idempotent upsert,
 //  but the client avoids calling it needlessly. After a successful registration it persists a
@@ -29,7 +33,9 @@
 //  FAILURE IS CONTAINED. A failed call leaves the previous fingerprint and the push token untouched,
 //  and starts a bounded backoff (30 s, 2 min, 10 min, then 30 min between automatic attempts; an
 //  explicit user action bypasses the wait but is still exactly one attempt). Nothing retries by
-//  itself, so there is no loop. Concurrent callers share one in-flight attempt.
+//  itself, so there is no loop. Concurrent callers share one in-flight attempt, and an attempt that
+//  ends without an error while the OS has meanwhile delivered a DIFFERENT token goes round again
+//  (bounded), so a token that rotates mid-request is not left unregistered.
 //
 //  DENIED / NO TOKEN / UNKNOWN ENVIRONMENT never reach the network. A user who denied notifications
 //  is not registered; a simulator or a build without the Push Notifications capability has no token;
@@ -106,7 +112,8 @@ nonisolated enum PriceAlertsDeviceRegistrationSkipReason: Equatable, Sendable {
     case noDeviceToken
     /// The APNs environment (or bundle identifier) could not be established; never guessed.
     case pushEnvironmentUnresolved
-    /// `refreshIfPreviouslyRegistered` on an install that has never registered.
+    /// An app-level (automatic) trigger on an install with nothing to maintain: it never registered a
+    /// device, or it has no installation (automatic triggers never create one).
     case notOptedIn
     /// A new installation would be needed and the user is not Pro.
     case proRequired
@@ -163,6 +170,8 @@ final class PriceAlertsDeviceRegistrar {
     /// How long an opt-in or refresh waits for the OS to deliver a token it was just asked for.
     static let tokenPollInterval: Duration = .milliseconds(250)
     static let maximumTokenPolls = 40
+    /// How many extra attempts a reconcile may make to catch a token the OS delivered mid-attempt.
+    static let maximumConvergenceRounds = 3
 
     private let api: any PriceAlertsAPIClienting
     private let installation: PriceAlertsInstallationManager
@@ -174,7 +183,7 @@ final class PriceAlertsDeviceRegistrar {
     private let sleep: @Sendable (Duration) async -> Void
 
     private var backoff = PriceAlertsRetryBackoff()
-    private var inFlight: Task<PriceAlertsDeviceRegistrationOutcome, Never>?
+    private var inFlight: Task<Attempt, Never>?
 
     init(
         api: any PriceAlertsAPIClienting,
@@ -229,9 +238,44 @@ final class PriceAlertsDeviceRegistrar {
         return await refresh(trigger: .automatic)
     }
 
+    /// For the APNs token callback: the OS has JUST delivered a token, so this does not ask it for one
+    /// (asking again would only make it call back again) and never prompts. It registers the token the
+    /// app now holds if — and only if — this install has registered before; an install that never
+    /// opted in is left exactly as it was (no network call, no installation, no Keychain read).
+    func reconcileAfterTokenChangeIfPreviouslyRegistered() async -> PriceAlertsDeviceRegistrationOutcome {
+        guard records.load() != nil else { return .skipped(.notOptedIn) }
+        return await reconcile(trigger: .automatic)
+    }
+
+    /// Whether this install has ever registered a device: the local record and nothing else — no OS
+    /// call, no network call, no Keychain read. A screen uses it to show "notifications are on" for a
+    /// returning user without asking the system anything.
+    var hasRegisteredBefore: Bool {
+        records.load() != nil
+    }
+
     /// Compares what the OS currently holds with what the backend was last given and registers only
     /// if they differ. Concurrent callers share one attempt.
+    ///
+    /// CONVERGES ON THE LATEST TOKEN. An attempt reads the token when it starts, and a caller that
+    /// arrives while one is in flight joins it. If the OS delivers a different token in the meantime
+    /// (a rotation during a slow request, or a token that arrives just after an attempt found none),
+    /// the finished attempt did not cover it — and nothing else would retry until the next time the
+    /// app becomes active. So when an attempt ends without an error and the app now holds a token it
+    /// did not use, it goes round again, at most `maximumConvergenceRounds` more times. A failed or
+    /// backed-off attempt is not repeated: that is what the backoff is for.
     func reconcile(trigger: PriceAlertsReconcileTrigger) async -> PriceAlertsDeviceRegistrationOutcome {
+        var attempt = await runAttempt(trigger: trigger)
+        var rounds = 0
+        while rounds < Self.maximumConvergenceRounds, needsAnotherAttempt(after: attempt) {
+            rounds += 1
+            attempt = await runAttempt(trigger: trigger)
+        }
+        return attempt.outcome
+    }
+
+    /// One attempt, shared with any caller that arrives while it runs.
+    private func runAttempt(trigger: PriceAlertsReconcileTrigger) async -> Attempt {
         if let inFlight {
             return await inFlight.value
         }
@@ -239,6 +283,25 @@ final class PriceAlertsDeviceRegistrar {
         inFlight = task
         defer { inFlight = nil }
         return await task.value
+    }
+
+    private func needsAnotherAttempt(after attempt: Attempt) -> Bool {
+        switch attempt.outcome {
+        case .failed:
+            return false
+        case .skipped(let reason):
+            if case .backingOff = reason { return false }
+        case .registered, .alreadyRegistered:
+            break
+        }
+        guard case .registered(let current) = push.pushState else { return false }
+        return current != attempt.token
+    }
+
+    /// What one attempt did, and which token it acted on (`nil` when it found none).
+    private nonisolated struct Attempt: Sendable {
+        let outcome: PriceAlertsDeviceRegistrationOutcome
+        let token: PushDeviceToken?
     }
 
     /// Turns delivery off for this device's token: asks the backend to retire it and forgets the local
@@ -268,17 +331,23 @@ final class PriceAlertsDeviceRegistrar {
 
     // MARK: Reconciling
 
-    private func performReconcile(trigger: PriceAlertsReconcileTrigger) async -> PriceAlertsDeviceRegistrationOutcome {
+    private func performReconcile(trigger: PriceAlertsReconcileTrigger) async -> Attempt {
         let token: PushDeviceToken
         switch push.pushState {
         case .denied:
-            return .skipped(.notificationsDenied)
+            return Attempt(outcome: .skipped(.notificationsDenied), token: nil)
         case .registered(let current):
             token = current
         case .notRequested, .authorizedAwaitingToken, .failed:
-            return .skipped(.noDeviceToken)
+            return Attempt(outcome: .skipped(.noDeviceToken), token: nil)
         }
+        return Attempt(outcome: await performRegistration(of: token, trigger: trigger), token: token)
+    }
 
+    private func performRegistration(
+        of token: PushDeviceToken,
+        trigger: PriceAlertsReconcileTrigger
+    ) async -> PriceAlertsDeviceRegistrationOutcome {
         guard let metadata = metadataProvider.currentMetadata() else {
             return .skipped(.pushEnvironmentUnresolved)
         }
@@ -294,6 +363,12 @@ final class PriceAlertsDeviceRegistrar {
                 if isCurrent(fingerprint, at: attemptTime) {
                     return .alreadyRegistered
                 }
+            } else if trigger == .automatic {
+                // App-level triggers (launch, returning to the app, an APNs token callback) only
+                // MAINTAIN a registration that exists. An installation is a new identity on the
+                // server; creating one takes a person (`enable()` / an explicit refresh), whatever the
+                // Pro state and whatever a stray local record claims.
+                return .skipped(.notOptedIn)
             } else if let blocked = try installationCreationBlock() {
                 return .skipped(blocked)
             }
