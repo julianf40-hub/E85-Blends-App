@@ -237,6 +237,12 @@ idempotence, backoff, convergence, the real push service's no-loop property) and
   sheet), so the person always sees the outcome instead of losing it behind a dismissed sheet. It is
   bounded by the request timeouts (15 s per request, 30 s per resource); a save that needs the
   re-bootstrap path is a few sequential requests.
+* If the list refresh that follows a *successful* save or turn-off itself fails (two requests failing in a
+  row), the sheet says so ("Couldn't refresh", with a Refresh button), but until a refresh succeeds its
+  status card shows the last list the app holds: the service keeps the last good list on a failed refresh,
+  and the sheet reads only that list instead of keeping a copy of its own. The server has the right state,
+  the form already shows what was saved, and repeating either action is harmless (a test pins this for
+  Save). Patching the list from the write's own answer would be a Phase 3A service change.
 * Validation text (the price field, a failed save) uses the app's existing pale-red error colour, which
   has low contrast against the Light appearance's page background. It is the same literal as the Garage
   and price-report screens; fixing it properly means an appearance-adaptive error token in `Theme`,
