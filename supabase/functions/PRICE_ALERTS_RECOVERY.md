@@ -137,7 +137,7 @@ worker invocation.
 These are documented observations only. This recovery snapshot intentionally makes no behavior
 change.
 
-## Update (2026-10-05): invocation gap confirmed, fix prepared but not deployed
+## Update (2026-10-05): invocation gap confirmed, fix prepared but not deployed *(HISTORICAL — superseded below)*
 
 A read-only follow-up audit established that nothing in the project invokes `price-alerts-worker`
 (no cron job, database function, trigger, webhook or platform scheduler, and zero calls in the Edge
@@ -150,3 +150,15 @@ worker source in this repository adds a dedicated scheduler-secret auth path
 repository is intentionally ahead of the deployed v1 described above. Note also that the 4-hour retry
 step in the delay table is unreachable with the worker's five-attempt cap (the retry horizon is about
 81 minutes).
+
+## Update (start of Phase 3B): activation completed
+
+The scheduler, stale-job recovery and freshness guard that the 2026-10-05 update above describes as prepared
+but **not applied or deployed** are now live. As reported by the project owner (not re-verified from this
+repository): migrations `20261005120000_price_alert_worker_scheduler_and_freshness`,
+`20261005233000_price_alert_cross_platform_delivery_safety` and
+`20261006000000_price_alert_android_active_device_uniqueness` are applied; the worker cron job
+`85blends-price-alerts-worker-invoke` is active on `* * * * *`; the APNs secrets and the scheduler credentials
+are provisioned; and the invocation path was verified with a manual scheduler-path smoke test (pg_net HTTP 200,
+worker Edge Function HTTP 200) followed by three consecutive scheduled HTTP 200 runs. The "invocation gap" is
+therefore closed. See "Current production state" in [`PRICE_ALERTS_SCHEDULER.md`](PRICE_ALERTS_SCHEDULER.md).

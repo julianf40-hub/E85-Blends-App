@@ -1,7 +1,26 @@
 # Price Alerts — iOS client integration (2.4.1, Phase 3A)
 
-Status: client/API plumbing only. **No Price Alerts UI exists yet**, nothing in this phase runs at
-launch, and no network call to Supabase was made while building it (every test uses fakes).
+Status of Phase 3A as delivered: client/API plumbing only — no Price Alerts UI, nothing in that phase runs
+at launch, and no network call to Supabase was made while building it (every test uses fakes).
+
+> **Production backend state — corrected at the start of Phase 3B.** The first version of this document
+> described the worker scheduler as not yet active, three migrations as not applied and the APNs secrets as
+> still to be provisioned. That was stale. As reported by the project owner (Supabase project
+> `zefkbtscieokkdenvnkg`; not re-verified from this repository, which never touches production):
+>
+> * the Price Alerts backend is **active**;
+> * migrations `20261005120000_price_alert_worker_scheduler_and_freshness`,
+>   `20261005233000_price_alert_cross_platform_delivery_safety` and
+>   `20261006000000_price_alert_android_active_device_uniqueness` are **applied**;
+> * the worker cron job `85blends-price-alerts-worker-invoke` is **active** (`* * * * *`), verified by a
+>   manual scheduler-path smoke test (pg_net HTTP 200, worker Edge Function HTTP 200) and three consecutive
+>   scheduled HTTP 200 runs — the worker is healthy;
+> * the APNs secrets (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8`) and the scheduler credentials
+>   are **already provisioned** (names only; no value appears in this repository).
+>
+> Nothing on the backend remains to be done for a real push. What is still missing is on the app side — the
+> Apple Push capability and `aps-environment` entitlement (§3.1), the CloudKit Production schema (§3.2) and a
+> physical-iPhone end-to-end test.
 
 This document has three parts:
 
@@ -329,7 +348,7 @@ Consequence today: `registerForRemoteNotifications()` fails on a real device, Ph
 1. Enable **Push Notifications** on both App IDs — `com.e85blends.app.ios` and `com.e85blends.app.ios.internal` — in the Apple Developer portal (or by adding the capability in Xcode with an account allowed to edit identifiers), and let the provisioning profiles regenerate.
 2. *Then*, as an owner-approved, App-Review-sensitive repo change (CLAUDE.md): add `aps-environment` = `development` to **both** app entitlements files (Xcode rewrites it to `production` when signing for distribution). Not to the widget. **No** `remote-notification` background mode: the worker sends visible `alert` pushes.
 3. Confirm the Xcode Cloud Internal workflow still signs after the capability is added.
-4. Backend side (already supported by the worker, user-owned): provision the APNs auth key secrets (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8`). One token-based key serves sandbox and production for every bundle id of the team.
+4. Backend side: **no action.** The APNs auth key secrets (`APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8`) are already provisioned and the worker runs on schedule (see the note at the top). One token-based key serves sandbox and production for every bundle id of the team.
 5. Separate, pre-existing blocker for the Internal TestFlight path: the Internal bundle id has no App Store Connect app record.
 
 ### 3.2 CloudKit readiness for `FuelStation.communityStationID` (nothing was changed)
@@ -358,14 +377,14 @@ There is no Xcode on the machine that built this phase. What was run instead, an
 * **Real compile and test, same language settings as the Xcode project** (Swift 5 mode, `MainActor` default isolation, approachable concurrency), on the official Swift 6.4 Linux toolchain (the compiler generation that ships with Xcode 27): all new Foundation-only sources and all new Swift Testing files, together with the existing foundation tests. **216 tests in 19 suites pass** (157 new, 59 existing). The same code also builds and passes with **zero diagnostics in Swift 6 language mode**.
 * **Mutation check:** 22 deliberate defects were injected into the production code one at a time (e.g. re-registering an unchanged token, treating an unreadable Keychain as absent, dropping the device-only Keychain accessibility, fabricating a station UUID, removing the Pro gate, leaking the secret in a description, un-serializing operations); every one was caught by the suite.
 * **Type-checked against stubs:** `PriceAlertsLiveDependencies.swift`, against stubs that replicate the real signatures of `SubscriptionManager`, the Referral identity/environment providers and `PushRegistrationService.shared`.
-* **Not compiled anywhere yet:** `SystemKeychain.swift` (three one-line `SecItem` pass-throughs mirroring `KeychainReferralCredentialStore` exactly) and the real StoreKit/RevenueCat/UIKit-backed types it sits beside. The first Xcode compile of the whole app and test target will be the Xcode Cloud Test action on this branch; the smoke build from CLAUDE.md (`xcodebuild … build`) and the full `EightyFiveBlendsTests` run were not possible here.
+* **Xcode compile — resolved after this phase.** `SystemKeychain.swift` (three one-line `SecItem` pass-throughs mirroring `KeychainReferralCredentialStore`) and the StoreKit/RevenueCat/UIKit-backed types it sits beside could not be compiled on the machine that wrote Phase 3A. Xcode Cloud build 247 of the *85Blends Internal* workflow (Xcode 27, 27A266a) later built the app and test target at `767f9de` and its *Test – iOS* action succeeded (owner-reported; GitHub combined status SUCCESS). That is the first full Xcode compile and the first run of these tests inside the app's test host.
 * **Never done:** a call to the live Supabase function, a real Keychain operation, a real APNs token. Every test uses fakes and local fixtures.
 
 ### 3.4 Known limitations and deferred items
 
 * **No live contract check.** §1.4's response encodings are derived from the source and the driver's defaults; the decoders accept either reading.
 * **No enable/disable and no secret recovery in the backend** (§1.7); both are backend work if wanted.
-* **Backend deployment state is outside this phase.** Per `supabase/functions/PRICE_ALERTS_SCHEDULER.md` the worker is not scheduled and some migrations are not applied in production; the client is written to the API's contract, which those changes do not alter.
+* **Backend deployment state** is as described in the note at the top (activation complete). The client is written to the API's contract, which the activation did not change.
 * **Unverifiable here:** that the TestFlight build of the Internal app mints a production token (documented Apple behaviour, consistent with `docs/app-store-readiness-code-review.md` A3) — confirm on the first Internal TestFlight device.
 * **Identity-lookup latency.** If RevenueCat has an App User ID but the verified App Store environment cannot be obtained, each operation can wait up to the Referral provider's 5 s bound for it before proceeding without an identity. Bounded, and only in a failure mode where Pro cannot be verified anyway.
 * **Reinstall** resets the OS notification permission; push must be re-enabled by the user (§2.7).

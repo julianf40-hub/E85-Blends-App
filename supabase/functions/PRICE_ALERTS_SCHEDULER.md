@@ -8,9 +8,40 @@
 > the worker has never been invoked, `prepared_only` means APNs is missing) were true when written and are
 > **not** current; where such a statement remains below it is marked *(historical)*.
 >
+> **Updated at the start of Phase 3B:** the first section below now states the *completed* activation. The
+> older 2026-10-06 table is kept after it as the pre-activation record, marked SUPERSEDED.
+>
 > No secret value appears in this repository; only secret *names* are used.
 
-## Current production state (as of 2026-10-06; re-verify read-only before acting)
+## Current production state (owner-reported at the start of Phase 3B — activation COMPLETE)
+
+The activation plan in the last section of this document has been carried out. This is what the project
+owner reported; nothing here was re-verified from this repository, which never touches production.
+
+| Item | State |
+|---|---|
+| Price Alerts backend (Supabase project `zefkbtscieokkdenvnkg`) | **ACTIVE** |
+| Migration `20261005120000_price_alert_worker_scheduler_and_freshness` | **applied** |
+| Migration `20261005233000_price_alert_cross_platform_delivery_safety` | **applied** |
+| Migration `20261006000000_price_alert_android_active_device_uniqueness` | **applied** |
+| Cron job `85blends-price-alerts-worker-invoke` | **active**, schedule `* * * * *` |
+| Scheduler credentials (Edge secret `PRICE_ALERTS_WORKER_CRON_SECRET`, Vault secret `price_alerts_worker_cron_token`) | **provisioned** |
+| `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_P8` | **provisioned** (names only; no value appears in this repository) |
+| How activation was verified | a manual scheduler-path smoke test (pg_net HTTP 200, worker Edge Function HTTP 200), then three consecutive scheduled runs, each HTTP 200 |
+| Worker health | healthy: scheduled invocations return HTTP 200 |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | presence still not verified by this work |
+| Price Alerts data (installations, devices, alerts, jobs, deliveries) | not re-verified |
+| `20260921000000_promo_campaign_foundation` | intentionally **not** applied (unchanged) |
+
+Do not redeploy or reconfigure any of this as part of app work. The header comments inside the three
+migration `.sql` files above were written before they were applied and still say "NOT APPLIED TO
+PRODUCTION"; they were left byte-for-byte unchanged on purpose (migration files are not edited after the
+fact) and are historical.
+
+## Production state on 2026-10-06 (SUPERSEDED — the pre-activation record, kept for history)
+
+*Every row below that says **NOT applied**, **absent**, **created inactive** or "nothing calls the worker" described the
+state BEFORE activation and is no longer true; see the section above.*
 
 | Item | State |
 |---|---|
@@ -41,7 +72,7 @@ deployed v4 source exactly (commit `d15112b`), then intentionally changed two fu
 Both must be redeployed, individually and by name, and verified, **before the migrations are applied and before**
 the scheduler is activated (see the current activation order at the end).
 
-**Status of this change: prepared, NOT deployed, NOT applied.** Nothing in this PR has been run against the
+*(Historical — written when PR #121 was prepared; superseded by the section above.)* **Status of this change: prepared, NOT deployed, NOT applied.** Nothing in this PR has been run against the
 production project (`zefkbtscieokkdenvnkg`).
 
 ## Original PR #120 design and observations (HISTORICAL)
@@ -471,6 +502,9 @@ Production procedure, in a **temporary deployment copy** of `supabase/` (nothing
 
 ### Current activation order (supersedes the original one above)
 
+**Status: COMPLETED.** These steps have been carried out; see "Current production state" at the top. The list is kept as the
+record of the procedure and as the template for any future re-activation.
+
 Each step is separately authorized; stop at the first failed check. **Edge Functions are deployed BEFORE the
 database migrations.** This gives a cleaner rollback boundary: if either Edge Function deployment turns out
 unhealthy, the database is still unchanged (no new functions, index or cron job), so recovery is a function
@@ -517,7 +551,8 @@ exists is safe because nothing invokes it until the cron job is created (inactiv
 ### Open items (not changed here)
 
 - `FIREBASE_SERVICE_ACCOUNT_JSON` presence is unverified; without it the Android claim path is not called (see
-  above). The same holds for iOS and the APNs secrets.
+  above). *(Update: the three `APNS_*` secrets are now provisioned, so the worker's iOS claim path runs; only
+  `FIREBASE_SERVICE_ACCOUNT_JSON` remains unverified.)*
 - The recovered growth migrations match production's *definitions*; production has since changed operational
   state they do not describe (for example the App Store growth sync cron job was created inactive by
   `20260927065816` and is now active).
