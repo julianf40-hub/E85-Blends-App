@@ -422,6 +422,8 @@ struct FuelLogView: View {
         // person chooses Cash, Credit or Same for Both; the sheet stays open and says so.
         guard let reportedPaymentType = CommunityPaymentTypeValidation.reportableChoice(reportPaymentType) else {
             reportPaymentMessage = CommunityPaymentTypeValidation.missingChoiceMessage
+            // Said on every attempt (not only when the text first appears), so VoiceOver users hear why nothing happened.
+            AccessibilityNotification.Announcement(CommunityPaymentTypeValidation.missingChoiceMessage).post()
             return
         }
         reportPaymentMessage = nil

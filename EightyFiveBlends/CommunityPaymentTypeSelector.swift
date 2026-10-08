@@ -14,9 +14,10 @@
 //  ("`.unknown` is not an answer") live in CommunityPaymentTypeValidation; this file is only the control.
 //
 //  Selected state is carried by a check mark, a thicker border and the selected accessibility trait, never by colour
-//  alone. The three buttons sit in an adaptive grid whose minimum column width grows with Dynamic Type, so at large
-//  text sizes they stack into fewer columns (more rows) instead of breaking a label; every label scales with its text
-//  style. A missing-choice message is announced to VoiceOver when it appears.
+//  alone. The three buttons sit in an adaptive grid whose minimum column width grows with Dynamic Type (up to a cap
+//  that fits the narrowest supported phone), so at large text sizes they stack into fewer columns (more rows) instead
+//  of breaking a label; every label scales with its text style. The missing-choice message is announced to VoiceOver
+//  by the screens that set it, on every attempt.
 //
 
 import SwiftUI
@@ -28,7 +29,13 @@ struct CommunityPaymentTypeSelector: View {
     var isDisabled = false
 
     /// Scales with Dynamic Type (a fixed width would break "Credit" or "Same for Both" at the accessibility sizes).
-    @ScaledMetric(relativeTo: .subheadline) private var minimumButtonWidth: CGFloat = 104
+    @ScaledMetric(relativeTo: .subheadline) private var scaledButtonWidth: CGFloat = 104
+
+    /// The scaled width, capped below the narrowest container this control sits in (a 375 pt phone's card interior is
+    /// about 307 pt): an adaptive column is a floor, so a minimum wider than its container would overflow and clip.
+    private var minimumButtonWidth: CGFloat {
+        min(scaledButtonWidth, 280)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -58,11 +65,6 @@ struct CommunityPaymentTypeSelector: View {
         .onChange(of: selection) { _, newValue in
             if newValue != nil {
                 AppHaptics.selection()
-            }
-        }
-        .onChange(of: message) { _, newValue in
-            if let newValue {
-                AccessibilityNotification.Announcement(newValue).post()
             }
         }
     }

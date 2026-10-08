@@ -3525,6 +3525,10 @@ struct StationsView: View {
         )
         priceValidationMessage = inputCheck.priceMessage
         paymentTypeValidationMessage = inputCheck.paymentMessage
+        if let paymentMessage = inputCheck.paymentMessage {
+            // Said on every attempt (not only when the text first appears), so VoiceOver users hear why nothing happened.
+            AccessibilityNotification.Announcement(paymentMessage).post()
+        }
         guard inputCheck.isValid, let parsedPrice = inputCheck.price else {
             return
         }

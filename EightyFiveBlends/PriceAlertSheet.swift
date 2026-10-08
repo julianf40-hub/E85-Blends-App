@@ -37,9 +37,13 @@ struct PriceAlertSheet: View {
     @FocusState private var focusedField: Field?
 
     /// The option grids' minimum column widths grow with Dynamic Type, so a larger text size gives each option more
-    /// room (fewer columns, more rows) instead of breaking its label.
-    @ScaledMetric(relativeTo: .headline) private var paymentColumnMinimum: CGFloat = 150
-    @ScaledMetric(relativeTo: .headline) private var sensitivityColumnMinimum: CGFloat = 88
+    /// room (fewer columns, more rows) instead of breaking its label. Capped below the narrowest container (a 375 pt
+    /// phone's content width is 343 pt): an adaptive column is a floor, so a wider minimum would overflow and clip.
+    @ScaledMetric(relativeTo: .headline) private var scaledPaymentColumnMinimum: CGFloat = 150
+    @ScaledMetric(relativeTo: .headline) private var scaledSensitivityColumnMinimum: CGFloat = 88
+
+    private var paymentColumnMinimum: CGFloat { min(scaledPaymentColumnMinimum, 320) }
+    private var sensitivityColumnMinimum: CGFloat { min(scaledSensitivityColumnMinimum, 320) }
 
     /// The two text fields the sheet can show (the target price, and a Custom drop size).
     private enum Field: Hashable {
