@@ -999,8 +999,9 @@ end;
 $$;
 
 -- ==================================================================================================
--- D16: the exact upsert price-alerts-api runs for set_alert (kept in sync with index.ts by
---      price-alerts-api/alert-input.test.ts, which pins its clauses). p_updates_min is what alert-input.ts decides
+-- D16: the exact upsert price-alerts-api runs for set_alert (this copy is pinned to index.ts, and to the copy in
+--      price_alert_payment_type_concurrency.test.sh, by price-alerts-api/alert-input.test.ts, so it cannot drift
+--      unnoticed). p_updates_min is what alert-input.ts decides
 --      (the sensitivity contract): true = this request replaces an EXISTING alert's minimum_change (a client that
 --      declared alert_contract_version >= 2, or any explicit value other than the fixed legacy 0.05); false = it keeps
 --      the stored one (an older client re-saving, or a request that does not name a value). The real function is
@@ -1370,9 +1371,10 @@ begin
                          'D25e ...and the cumulative 25c fall alerts');
   perform pg_temp.deliver(v_alert, interval '7 hours');
 
-  -- the same older client, again, with a stray non-default value: that is a value it meant, so it is stored
+  -- the same older client, again, with a stray non-default value: alert-input.ts decides "replace" (a value other than the
+  -- fixed 0.05 is one it meant; that decision is pinned by alert-input.test.ts and A10f), and the statement applies it
   select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.120, 360, null, true);
-  perform pg_temp.expect(r.minimum_change = 0.120 and r.payment_type = 'credit', 'D25f an explicit non-default value from a pre-contract client is taken as meant');
+  perform pg_temp.expect(r.minimum_change = 0.120 and r.payment_type = 'credit', 'D25f a "replace" decision (an explicit non-default value from a pre-contract client) is applied by the statement');
 
   -- a client that declared the contract deliberately chooses 5 cents: that is applied, and the engine follows
   select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'credit', true);
@@ -1381,9 +1383,11 @@ begin
   perform pg_temp.expect(pg_temp.prep(q3) = '1/0' and pg_temp.verdict(v_alert, q3) = 'pending:price_dropped',
                          'D25h ...and a 6c fall now alerts');
 
-  -- a request that does not name a drop size at all (a payment-only edit) leaves it alone
+  -- a request that does not name a drop size at all (a payment-only edit) leaves it alone - discriminating: the stored 7c
+  -- differs from the 5c the request carries, so a statement that overwrote it would show 5c
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.070, 360, null, true);
   select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'cash', false);
-  perform pg_temp.expect(r.minimum_change = 0.050 and r.payment_type = 'cash', 'D25i a payment-only edit changes the method and nothing else');
+  perform pg_temp.expect(r.minimum_change = 0.070 and r.payment_type = 'cash', 'D25i a payment-only edit changes the method and leaves a 7c drop size at 7c');
   select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.200, 360, 'cash', true);
   select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'credit', false);
   perform pg_temp.expect(r.minimum_change = 0.200 and r.payment_type = 'credit', 'D25j ...and a payment-only edit leaves a 20c drop size at 20c');

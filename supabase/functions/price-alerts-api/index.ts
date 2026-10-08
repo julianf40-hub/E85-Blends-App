@@ -341,7 +341,8 @@ async function setAlert(sql: Sql, body: JsonObject): Promise<Response> {
   // minimum_change: see "THE SENSITIVITY CONTRACT" in alert-input.ts. A new alert stores the request's value
   // (or the 0.05 default); an existing alert's value is replaced only when the request means it
   // (updatesMinimumChange) and is otherwise KEPT, so an older app re-saving the alert cannot reset a drop size that
-  // a newer app chose. The CASE reads the row being updated, which Postgres has locked, so two concurrent saves
+  // a newer app chose BY OMITTING it or by sending the fixed legacy 0.05 (any other value is taken as meant). Mode, target
+  // and cooldown are still replaced by every save. The CASE reads the row being updated, which Postgres has locked, so two concurrent saves
   // (say one that changes the payment method and one that changes the drop size) both survive.
   const rows = await sql<{
     id: string; station_id: string; alert_mode: string; threshold_price: string | null;

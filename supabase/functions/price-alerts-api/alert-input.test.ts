@@ -280,6 +280,41 @@ test("set_alert keeps an existing alert's drop size unless the request means to 
   assert.ok(!/alert_contract_version|contractVersion/.test(setAlert), "set_alert must not read or store the raw version");
 });
 
+// The SQL and shell tests cannot import index.ts, so they carry a hand-written copy of the set_alert upsert. A copy that
+// drifted would leave those tests green while proving nothing about the statement that actually runs - so the three are pinned
+// to each other here. Only the way the two inputs are WRITTEN may differ (a template placeholder, a function argument, a shell
+// variable); every other character, after whitespace is squashed, must be the same.
+test("the upsert the SQL tests exercise is the statement index.ts runs (three copies pinned together)", () => {
+  const tests = join(here, "..", "..", "tests");
+  const sources: Record<string, string> = {
+    "index.ts": indexSource,
+    "price_alert_payment_type.test.sql": readFileSync(join(tests, "price_alert_payment_type.test.sql"), "utf8"),
+    "price_alert_payment_type_concurrency.test.sh": readFileSync(join(tests, "price_alert_payment_type_concurrency.test.sh"), "utf8"),
+  };
+  const normalize = (text: string) => text
+    .replace(/\s+/g, " ")
+    .replace(/\( /g, "(")
+    .replace(/ \)/g, ")")
+    .replace(/\$\{updatesMinimumChange\}|p_updates_min|\$2(?![0-9])/g, "<replaces>")
+    .replace(/(?:\$\{paymentType\}|p_payment|\$pay\b)(?:::text)?/g, "<payment>::text")
+    .trim();
+  const pieces = (name: string, source: string) => {
+    const insert = source.match(/insert into private\.price_alerts \(\s*installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled\s*\)/);
+    assert.ok(insert, `${name}: the insert column list`);
+    const conflict = source.match(/on conflict \(installation_id, station_id\) do update\s+set alert_mode = excluded\.alert_mode,[\s\S]*?enabled = true/);
+    assert.ok(conflict, `${name}: the ON CONFLICT ... DO UPDATE SET list`);
+    return { insert: normalize(insert[0]), conflict: normalize(conflict[0]) };
+  };
+  const reference = pieces("index.ts", sources["index.ts"]!);
+  assert.match(reference.conflict, /minimum_change = case when <replaces>::boolean then excluded\.minimum_change else private\.price_alerts\.minimum_change end/);
+  assert.match(reference.conflict, /payment_type = coalesce\(<payment>::text, private\.price_alerts\.payment_type\)/);
+  for (const [name, source] of Object.entries(sources)) {
+    const copy = pieces(name, source);
+    assert.equal(copy.insert, reference.insert, `${name}: the INSERT column list drifted from index.ts`);
+    assert.equal(copy.conflict, reference.conflict, `${name}: the ON CONFLICT list drifted from index.ts`);
+  }
+});
+
 test("set_alert never writes the reference price or notification history (the database owns those)", () => {
   const start = indexSource.indexOf("async function setAlert");
   const end = indexSource.indexOf("async function deleteAlert");

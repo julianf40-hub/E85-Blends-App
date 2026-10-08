@@ -13,7 +13,7 @@
 # connects over TCP: set API_DB_URL if the scratch server is not reachable at 127.0.0.1:$PGPORT (default:
 # postgresql://$PGUSER@127.0.0.1:$PGPORT/$PGDATABASE). Optional: DENO (path to deno), API_PORT (default 8792), DENO_CERT /
 # HOME when the environment needs them. It COMMITS its fixtures under a marker and deletes them on exit.
-# NEVER point it at a hosted project (it refuses a non-local PGHOST).
+# NEVER point it at a hosted project (it refuses a non-local PGHOST or API_DB_URL host).
 #
 # What it proves:
 #   A1  an OLDER client (no payment_type, no minimum_change) stores a legacy 'unknown' alert with the legacy 0.05 / 360 defaults
@@ -62,6 +62,15 @@ case "${PGHOST:-/var/run/postgresql}" in
   /*|localhost|127.0.0.1|::1) ;;
   *) echo "REFUSING: PGHOST=${PGHOST} is not a local socket or loopback address" >&2; exit 2 ;;
 esac
+# The API under test connects with API_DB_URL, not with PGHOST: it writes installation rows, so its host must be loopback too.
+if [[ "$API_DB_URL" =~ ^postgres(ql)?://([^@/]*@)?(\[[^]]+\]|[^:/?]+)(:[0-9]+)?(/|\?|$) ]]; then
+  case "${BASH_REMATCH[3]}" in
+    localhost|127.0.0.1|'[::1]') ;;
+    *) echo "REFUSING: the host of API_DB_URL (${BASH_REMATCH[3]}) is not a loopback address" >&2; exit 2 ;;
+  esac
+else
+  echo "REFUSING: cannot read the host of API_DB_URL" >&2; exit 2
+fi
 for tool in "$DENO" curl jq psql; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FAILED: '$tool' is required (set DENO=/path/to/deno if needed)" >&2; exit 1; }
 done

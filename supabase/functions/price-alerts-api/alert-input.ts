@@ -19,7 +19,7 @@ export const MINIMUM_CHANGE_RANGE = { min: 0.01, max: 2 } as const;
 export const COOLDOWN_MINUTES_RANGE = { min: 60, max: 10080 } as const;
 
 /** Defaults for a request that omits the field. These are the LEGACY server defaults; the 10-cent default
- *  of the newer app is sent explicitly by that app, so older clients behave exactly as they always did. */
+ *  of the newer app is sent explicitly by that app, so a NEW alert from an older client is stored exactly as it always was. */
 export const LEGACY_DEFAULT_MINIMUM_CHANGE = 0.05;
 export const DEFAULT_COOLDOWN_MINUTES = 360;
 
