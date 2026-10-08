@@ -26,8 +26,8 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
 - `price_alert_payment_type.test.sql` — 2.4.1 Phase 3C: cash/credit/same-for-both report storage and
   grants, the comparable-stream rules, the pure `evaluate_price_alert_v2` decision function, and the
   `prepare_price_alert_deliveries` scenarios (cross-payment isolation, cumulative drops, cooldown and rearm,
-  out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring) — see the file header for the
-  scenario index. Run it on a database with the FULL chain applied.
+  out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring, `same_for_both` price drops, and the
+  documented fail-closed pause) — see the file header for the scenario index. Run it on a database with the FULL chain applied.
 - `price_alert_payment_type_migration.test.sh` — Phase 3C migrations A and B applied to "production-shaped"
   legacy data: nothing rewritten or backfilled, every report/alert/delivery preserved, no retroactive send, cron and
   Vault untouched, old and new clients both able to insert, idempotent re-apply. It builds its own scratch database.

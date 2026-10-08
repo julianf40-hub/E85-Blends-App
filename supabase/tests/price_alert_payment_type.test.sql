@@ -33,6 +33,11 @@
 --       (no rows, no state change, alerts not deleted).  D11 devices: one row per ACTIVE device, none for
 --       disabled/invalidated.  D12 idempotence: re-preparing a report decides nothing twice.  D13 fail closed
 --       on an unrecognised report value.  D14 anchor trigger rules.  D15 deliveries record the alert's method.
+--   D16 the exact set_alert upsert (incl. an older client).  D17 list_alerts: legacy latest vs comparable latest.
+--   D18 a same_for_both report drives a PRICE DROP alert of either method (cumulatively) and never reaches a
+--       legacy (unknown) alert.
+--   D19 the documented fail-closed PAUSE (rollout doc, "Rollback / fail-closed"): a no-op prepare decides nothing and
+--       queues nothing, keeps its ACL, and re-applying migration B puts the real engine back.
 --   G1  grants/ACL of the new internals and index/plan sanity; migration re-apply is a no-op.
 
 begin;
@@ -1075,6 +1080,68 @@ end;
 $$;
 
 -- ==================================================================================================
+-- D18: a same_for_both report is a price for BOTH methods. It drives a Price Drop alert of either method
+--      (cumulatively), and a legacy (unknown) alert never sees it.
+-- ==================================================================================================
+select pg_temp.mk_world('d18c');
+do $$
+declare
+  v_alert uuid;
+  v_small uuid;
+  v_drop uuid;
+begin
+  perform pg_temp.report('d18c', 'credit', 3.19, interval '90 minutes', 'd18c-reporter');
+  v_alert := pg_temp.mk_alert('d18c', 'credit', 'price_drop', null, 0.100);
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.19, 'D18a the credit alert is anchored to the credit price');
+
+  v_small := pg_temp.report('d18c', 'same_for_both', 3.14, interval '60 minutes', 'd18c-reporter');
+  perform pg_temp.expect(pg_temp.prep(v_small) = '0/1' and pg_temp.verdict(v_alert, v_small) = 'skipped:no_meaningful_drop',
+                         'D18b same_for_both 3.14 is a 5c fall for a 10c credit alert: no alert');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.19, 'D18c ...and the reference stays at 3.19, so the drops accumulate');
+
+  v_drop := pg_temp.report('d18c', 'same_for_both', 3.09, interval '30 minutes', 'd18c-reporter');
+  perform pg_temp.expect(pg_temp.prep(v_drop) = '1/0' and pg_temp.verdict(v_alert, v_drop) = 'pending:price_dropped',
+                         'D18d same_for_both 3.09 is 10c below the credit reference: the credit alert fires');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.09, 'D18e ...and the reference rearms at the notified price');
+  perform pg_temp.expect((select payment_type from private.price_alert_deliveries
+                          where alert_id = v_alert and price_report_id = v_drop) = 'credit',
+                         'D18f ...recording the alert''s method (credit), not the report''s');
+end;
+$$;
+
+select pg_temp.mk_world('d18k');
+do $$
+declare
+  v_alert uuid;
+  v_drop uuid;
+begin
+  perform pg_temp.report('d18k', 'cash', 3.19, interval '90 minutes', 'd18k-reporter');
+  v_alert := pg_temp.mk_alert('d18k', 'cash', 'price_drop', null, 0.100);
+  v_drop := pg_temp.report('d18k', 'same_for_both', 3.09, interval '30 minutes', 'd18k-reporter');
+  perform pg_temp.expect(pg_temp.prep(v_drop) = '1/0' and pg_temp.verdict(v_alert, v_drop) = 'pending:price_dropped',
+                         'D18g the same same_for_both 3.09 report fires a CASH price-drop alert too');
+  perform pg_temp.expect((select payment_type from private.price_alert_deliveries
+                          where alert_id = v_alert and price_report_id = v_drop) = 'cash',
+                         'D18h ...recording the alert''s method (cash)');
+end;
+$$;
+
+select pg_temp.mk_world('d18u');
+do $$
+declare
+  v_alert uuid;
+  v_rep uuid;
+begin
+  perform pg_temp.report('d18u', 'unknown', 3.19, interval '90 minutes', 'd18u-reporter');
+  v_alert := pg_temp.mk_alert('d18u', 'unknown', 'price_drop', null, 0.050);
+  v_rep := pg_temp.report('d18u', 'same_for_both', 2.90, interval '30 minutes', 'd18u-reporter');
+  perform pg_temp.expect(pg_temp.prep(v_rep) = '0/1' and pg_temp.verdict(v_alert, v_rep) = 'skipped:payment_type_mismatch',
+                         'D18i a legacy (unknown) alert never sees a same_for_both report, however large the fall');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.19, 'D18j ...and its reference does not move');
+end;
+$$;
+
+-- ==================================================================================================
 -- G1: grants / ACL of the new internals, the index, re-apply
 -- ==================================================================================================
 do $$
@@ -1138,6 +1205,61 @@ begin
 end;
 $$;
 
+-- ==================================================================================================
+-- D19: the documented fail-closed PAUSE. Replacing prepare_price_alert_deliveries with a no-op decides nothing and
+--      queues nothing (an alert is never evaluated by the OLD engine, which compares across payment methods),
+--      keeps the function's ACL, and re-applying migration B puts the real engine back. The statement below is
+--      the one in docs/PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md (section 10); keep the two identical.
+-- ==================================================================================================
+select pg_temp.mk_world('d19');
+do $$
+declare
+  v_alert uuid;
+begin
+  perform pg_temp.report('d19', 'credit', 3.19, interval '120 minutes', 'd19-reporter');
+  v_alert := pg_temp.mk_alert('d19', 'credit', 'price_drop', null, 0.100);
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.19, 'D19a the alert is armed at the credit price');
+end;
+$$;
+
+create or replace function private.prepare_price_alert_deliveries(p_price_report_id uuid)
+returns table(pending_count integer, skipped_count integer)
+language sql
+security definer
+set search_path = ''
+as $$ select 0, 0 $$;
+
+do $$
+declare
+  v_alert uuid := (select a.id from private.price_alerts a join t_world w on w.station_id = a.station_id where w.label = 'd19');
+  v_drop uuid;
+begin
+  v_drop := pg_temp.report('d19', 'credit', 3.00, interval '30 minutes', 'd19-reporter');   -- a 19c fall: would fire
+  perform pg_temp.expect(pg_temp.prep(v_drop) = '0/0', 'D19b paused: the report is "decided" as nothing');
+  perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert) = 0,
+                         'D19c ...no delivery of any status exists (nothing queued, nothing skipped)');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.19 and (select last_notified_at is null from private.price_alerts where id = v_alert),
+                         'D19d ...and no alert state moved');
+  perform pg_temp.expect(not has_function_privilege('anon', 'private.prepare_price_alert_deliveries(uuid)', 'execute')
+                         and not has_function_privilege('authenticated', 'private.prepare_price_alert_deliveries(uuid)', 'execute')
+                         and has_function_privilege('service_role', 'private.prepare_price_alert_deliveries(uuid)', 'execute'),
+                         'D19e ...and the ACL is unchanged by the replacement');
+end;
+$$;
+
+\ir ../migrations/20261007130000_price_alert_payment_aware_evaluation.sql
+
+do $$
+declare
+  v_alert uuid := (select a.id from private.price_alerts a join t_world w on w.station_id = a.station_id where w.label = 'd19');
+  v_next uuid;
+begin
+  v_next := pg_temp.report('d19', 'credit', 2.95, interval '10 minutes', 'd19-reporter');
+  perform pg_temp.expect(pg_temp.prep(v_next) = '1/0' and pg_temp.verdict(v_alert, v_next) = 'pending:price_dropped',
+                         'D19f re-applying migration B restores the real engine: the next qualifying report fires');
+end;
+$$;
+
 rollback;
 
-\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D17, G1)
+\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D19, G1)

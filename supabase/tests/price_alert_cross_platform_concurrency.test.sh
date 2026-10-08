@@ -70,6 +70,9 @@ mk_bulk() {
   join private.price_alert_installations i on i.id = a.installation_id
   join private.price_alert_push_devices d on d.installation_id = i.id and d.platform = '$1'
   where i.installation_secret_hash like case '$1' when 'ios' then md5('$M-i') else md5('$M-a') end || '%';"
+  # Refresh the planner's row counts (see price_alert_worker_concurrency.test.sh): stale "0 rows" statistics left by an
+  # earlier test run make the planner pick nested loops that take minutes over a 20,000-row backlog.
+  sql "analyze public.e85_price_reports, private.price_alert_deliveries, private.price_alert_jobs" >/dev/null
 }
 
 count_by() { sql "select count(*) from private.price_alert_deliveries d join public.e85_price_reports r on r.id = d.price_report_id

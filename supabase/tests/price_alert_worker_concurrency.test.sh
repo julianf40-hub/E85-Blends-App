@@ -67,6 +67,10 @@ mk_bulk() {
   from r, private.price_alerts a
   join private.price_alert_installations i on i.id = a.installation_id and i.revenuecat_app_user_id = '$M'
   join private.price_alert_push_devices d on d.installation_id = i.id;"
+  # Refresh the planner's row counts. When an earlier test run emptied these tables and autovacuum recorded "0 rows"
+  # before this bulk load, the planner picks nested loops that take minutes over a 20,000-row backlog (seen after
+  # running the whole suite in one database). That is a property of the fixture, not of the claim function.
+  sql "analyze public.e85_price_reports, private.price_alert_deliveries, private.price_alert_jobs" >/dev/null
 }
 
 count_by() { sql "select count(*) from private.price_alert_deliveries d join public.e85_price_reports r on r.id = d.price_report_id
