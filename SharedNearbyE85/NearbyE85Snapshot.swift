@@ -16,12 +16,47 @@ nonisolated struct NearbyE85Price: Codable, Equatable, Sendable {
     let dollarsPerGallon: Double
     let reportedAt: Date?
     let source: Source
+    /// 2.4.1 (Phase 3C) — which price this is: the payment type of the community report it came from, as the
+    /// backend spells it ("cash", "credit", "same_for_both"). `nil` for a saved price and for any report that did
+    /// not say (everything reported before payment types existed). Optional and defaulted on purpose: an older
+    /// cached snapshot without the key still decodes, an older widget ignores the key, and every existing call
+    /// site compiles unchanged. A plain string, not an app type, because this file is shared with the widget.
+    var paymentType: String? = nil
 
-    static func validated(_ amount: Double?, reportedAt: Date?, source: Source, now: Date) -> Self? {
+    static func validated(_ amount: Double?, reportedAt: Date?, source: Source, paymentType: String? = nil, now: Date) -> Self? {
         guard let amount, StationDataValidation.isValidPrice(amount) else { return nil }
         return Self(dollarsPerGallon: amount,
                     reportedAt: reportedAt.flatMap { StationDataValidation.isValidTimestamp($0, asOf: now) ? $0 : nil },
-                    source: source)
+                    source: source,
+                    paymentType: paymentType)
+    }
+
+    /// "Cash", "Credit", "Cash/Credit" — short enough for a widget line; `nil` when no payment type is known.
+    var paymentShortLabel: String? {
+        switch paymentType {
+        case "cash": return "Cash"
+        case "credit": return "Credit"
+        case "same_for_both": return "Cash/Credit"
+        default: return nil
+        }
+    }
+
+    /// "Cash price", "Credit price", "Same price for cash and credit"; `nil` when no payment type is known.
+    var paymentDescription: String? {
+        switch paymentType {
+        case "cash": return "Cash price"
+        case "credit": return "Credit price"
+        case "same_for_both": return "Same price for cash and credit"
+        default: return nil
+        }
+    }
+
+    /// `status(at:)` with the payment type in front when there is one ("Cash · Reported today"); identical to
+    /// `status(at:)` otherwise, so a price without a known payment type reads exactly as it always did.
+    func labeledStatus(at date: Date) -> String {
+        let base = status(at: date)
+        guard let label = paymentShortLabel else { return base }
+        return "\(label) · \(base)"
     }
 
     func status(at date: Date) -> String {

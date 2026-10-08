@@ -47,7 +47,7 @@ struct PrivacyView: View {
                 )
                 InfoCard(
                     title: "Community Price Reports",
-                    message: "If you choose to share an E85 price, the app sends the station details, reported price, report time, optional note, and app version to the community pricing service."
+                    message: "If you choose to share an E85 price, the app sends the station details, reported price, which price it is (Cash, Credit, or Same for Both), report time, optional note, and app version to the community pricing service."
                 )
                 InfoCard(
                     title: "Anonymous Reporter ID",

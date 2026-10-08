@@ -476,7 +476,7 @@ struct NearbyE85WidgetView: View {
 
     private func priceLine(_ station: NearbyE85Station) -> String {
         guard let price = station.price else { return "No price reported" }
-        return "\(price.dollarsPerGallon.formatted(.currency(code: "USD"))) · \(price.status(at: entry.date))"
+        return "\(price.dollarsPerGallon.formatted(.currency(code: "USD"))) · \(price.labeledStatus(at: entry.date))"
     }
 
     // MARK: - Shared map area (medium's full canvas, large's top portion)
@@ -621,13 +621,13 @@ struct NearbyE85WidgetView: View {
                         .font(compact ? .subheadline.bold() : .title2.bold())
                         .minimumScaleFactor(0.8)
                     Text("/gal").font(.caption2).foregroundStyle(.secondary)
-                    if compact { Text(price.status(at: entry.date)).font(.caption2).lineLimit(1) }
+                    if compact { Text(price.labeledStatus(at: entry.date)).font(.caption2).lineLimit(1) }
                 } else {
                     Text("No price reported").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if !compact, let price = station.price {
-                Text(price.status(at: entry.date)).font(.caption2).lineLimit(1)
+                Text(price.labeledStatus(at: entry.date)).font(.caption2).lineLimit(1)
             }
             // No placeholder when absent — the `if let` simply contributes no sibling, so the
             // VStack collapses with no leftover gap (spacing only applies between views that

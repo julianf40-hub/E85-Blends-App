@@ -18,6 +18,7 @@ struct NearbyE85StationView: View {
                     if let price = station.price {
                         Text(price.dollarsPerGallon, format: .currency(code: "USD")) + Text(" / US gallon")
                         Text(price.source == .saved ? "Saved by you" : "Community reported")
+                        if let paymentDescription = price.paymentDescription { Text(paymentDescription) }
                         Text(price.status(at: .now))
                         if let date = price.reportedAt { Text(date.formatted(date: .abbreviated, time: .shortened)) }
                     } else {

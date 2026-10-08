@@ -82,6 +82,11 @@ struct StationsView: View {
     @State private var priceInput = ""
     @State private var priceNoteInput = ""
     @State private var priceValidationMessage: String?
+    // 2.4.1 (Phase 3C) — which price the person is reporting: Cash, Credit or Same for Both. `nil` = not chosen
+    // yet; there is deliberately NO default and it is not remembered between reports, so a price is never
+    // silently labelled. Cleared with the rest of the report state whenever a report starts or the sheet closes.
+    @State private var reportPaymentType: CommunityPaymentType?
+    @State private var paymentTypeValidationMessage: String?
     // Pre-commit fix (validation pass) — inline "could not report to the community, try
     // again" text for the compact post-navigation reporter only (see savePriceUpdate). The
     // full sheet never sets this; it keeps using the existing dismiss-then-alert(infoMessage)
@@ -527,6 +532,10 @@ struct StationsView: View {
             community = communitySummary(for: nearby)
         }
 
+        // 2.4.1 (Phase 3C) — the community's prices by payment method; EMPTY (legacy behavior) when every report
+        // is unclassified.
+        let typedLines = CommunityPriceLinePresenter.typedLines(from: community)
+
         if let saved = item.savedStation, saved.lastKnownE85Price > 0 {
             let days = StationDataValidation.daysSince(saved.lastUpdated)
             let tier = StationDataValidation.priceFreshnessTier(hasPrice: true, daysSinceUpdate: days)
@@ -538,7 +547,10 @@ struct StationsView: View {
             case .stale: freshnessLabel = "Stale"
             }
             var supportingText: String?
-            if let community, let latestPrice = community.latestPrice, let latestReportedAt = community.latestReportedAt {
+            if typedLines.isEmpty == false {
+                // 2.4.1 (Phase 3C) — one supporting line per payment method, each with its own age.
+                supportingText = typedLines.map { "Community \($0.summaryText)" }.joined(separator: "\n")
+            } else if let community, let latestPrice = community.latestPrice, let latestReportedAt = community.latestReportedAt {
                 supportingText = "Community \(latestPrice.communityPriceText)/gal · \(latestReportedAt.communityReportedText)"
             }
             return PremiumStationPricePresentation(
@@ -547,6 +559,21 @@ struct StationsView: View {
                 freshnessText: freshnessLabel,
                 supportingText: supportingText,
                 hasNoPriceAtAll: false
+            )
+        }
+
+        if let first = typedLines.first {
+            // 2.4.1 (Phase 3C) — community is primary and has Cash / Credit prices: the first (Cash, else Credit)
+            // is the headline, labelled with its method, and any other method is the supporting line — each with
+            // its own age. Nothing is averaged, and nothing is shown under the wrong method's name.
+            let others = typedLines.dropFirst()
+            return PremiumStationPricePresentation(
+                primaryText: first.priceText,
+                primarySource: "Community",
+                freshnessText: first.captionText,
+                supportingText: others.isEmpty ? nil : others.map(\.summaryText).joined(separator: "\n"),
+                hasNoPriceAtAll: false,
+                primaryMethodLabel: first.label
             )
         }
 
@@ -621,10 +648,18 @@ struct StationsView: View {
             parts.append(String(format: "%.1f miles away", distanceMiles))
         }
         if let primaryText = price.primaryText {
-            parts.append("E85 \(primaryText)")
+            // 2.4.1 (Phase 3C) — a community price with a payment method is spoken with it ("Cash E85 $2.99/gal").
+            if let methodLabel = price.primaryMethodLabel {
+                parts.append("\(methodLabel) E85 \(primaryText)")
+            } else {
+                parts.append("E85 \(primaryText)")
+            }
         }
         if let freshnessText = price.freshnessText {
             parts.append(freshnessText)
+        }
+        if price.primaryMethodLabel != nil, let supportingText = price.supportingText {
+            parts.append(supportingText.replacingOccurrences(of: "\n", with: ", "))
         }
         if let ethanol {
             // Deliberately never asserts verified/current pump composition — mirrors
@@ -1017,6 +1052,8 @@ struct StationsView: View {
                 priceInput: $priceInput,
                 noteInput: $priceNoteInput,
                 validationMessage: $priceValidationMessage,
+                paymentType: $reportPaymentType,
+                paymentValidationMessage: $paymentTypeValidationMessage,
                 isSubmittingCommunityPrice: isSubmittingCommunityPrice,
                 saveAndReportAction: { savePriceUpdate(for: context, reportToCommunity: true) },
                 cancelAction: { handlePriceUpdateCancel(for: context) },
@@ -3046,7 +3083,17 @@ struct StationsView: View {
             let community = saved.flatMap { communitySummary(for: $0) } ?? communitySummary(for: live)
             // Matches Stations' saved-first hierarchy; never invent a price from NLR data.
             let localPrice = NearbyE85Price.validated(saved?.lastKnownE85Price, reportedAt: saved?.lastUpdated, source: .saved, now: now)
-            let communityPrice = NearbyE85Price.validated(community?.latestPrice, reportedAt: community?.latestReportedAt, source: .community, now: now)
+            // 2.4.1 (Phase 3C) — a station with Cash / Credit community prices shows its newest TYPED price,
+            // labelled with its payment type (the widget has room for one price, not two). A station whose
+            // reports are all unclassified (legacy) is exactly as before. See CommunityPriceLinePresenter.
+            let communityPrice: NearbyE85Price?
+            if let typed = CommunityPriceLinePresenter.newestTypedLine(from: community, now: now) {
+                communityPrice = NearbyE85Price.validated(
+                    typed.price, reportedAt: typed.reportedAt, source: .community,
+                    paymentType: CommunityPriceLinePresenter.widgetPaymentType(for: typed.kind), now: now)
+            } else {
+                communityPrice = NearbyE85Price.validated(community?.latestPrice, reportedAt: community?.latestReportedAt, source: .community, now: now)
+            }
             // Ethanol has no "saved" tier — it's community-reported only. validated(...) applies
             // the same 14-day freshness bar StationsView already uses before showing a community
             // ethanol reading, so the widget only ever receives readings that already qualify.
@@ -3315,6 +3362,8 @@ struct StationsView: View {
         priceInput = station.lastKnownE85Price > 0 ? String(format: "%.2f", station.lastKnownE85Price) : ""
         priceNoteInput = station.notes
         priceValidationMessage = nil
+        reportPaymentType = nil
+        paymentTypeValidationMessage = nil
         remoteReportFailureMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
@@ -3329,6 +3378,8 @@ struct StationsView: View {
         priceNoteInput = ""
         remoteReportFailureMessage = nil
         priceValidationMessage = nil
+        reportPaymentType = nil
+        paymentTypeValidationMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
         pendingOutOfRangeEthanolPercentage = nil
@@ -3348,6 +3399,8 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        reportPaymentType = nil
+        paymentTypeValidationMessage = nil
         remoteReportFailureMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
@@ -3371,6 +3424,8 @@ struct StationsView: View {
         priceInput = ""
         priceNoteInput = ""
         priceValidationMessage = nil
+        reportPaymentType = nil
+        paymentTypeValidationMessage = nil
         remoteReportFailureMessage = nil
         ethanolInput = ""
         ethanolValidationMessage = nil
@@ -3430,10 +3485,22 @@ struct StationsView: View {
         // equally to "Save Locally" and "Save & Report" since a local-only absurd price would
         // otherwise sit uncaught in FuelStation.lastKnownE85Price and skew Trip Planner's cost
         // estimates.
-        guard let parsedPrice = CommunityPriceValidation.parseValidPrice(from: priceInput) else {
-            priceValidationMessage = "Enter an E85 price between $1.00 and $8.00."
+        //
+        // 2.4.1 (Phase 3C) — a report that is going to the community must also say which price it is (Cash,
+        // Credit or Same for Both): there is no default, so nothing is saved or sent until it is chosen. A station
+        // that cannot be reported (too little location information) is only saved locally, as before, and is not
+        // asked. Both problems are shown together. CommunityReportInputCheck holds the rules.
+        let inputCheck = CommunityReportInputCheck.evaluate(
+            priceText: priceInput,
+            paymentSelection: reportPaymentType,
+            requiresPaymentChoice: reportToCommunity && context.canReportToCommunity
+        )
+        priceValidationMessage = inputCheck.priceMessage
+        paymentTypeValidationMessage = inputCheck.paymentMessage
+        guard inputCheck.isValid, let parsedPrice = inputCheck.price else {
             return
         }
+        let reportedPaymentType = inputCheck.paymentType
 
         let roundedLocalPrice = roundedPrice(parsedPrice)
         let trimmedNote = priceNoteInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3496,7 +3563,8 @@ struct StationsView: View {
                     price: roundedLocalPrice,
                     reportedAt: .now,
                     notes: trimmedNote.isEmpty ? nil : trimmedNote,
-                    appVersion: appVersionString
+                    appVersion: appVersionString,
+                    paymentType: reportedPaymentType
                 )
             } catch {
 #if DEBUG
@@ -4135,27 +4203,42 @@ private struct StationRowCard: View {
                         .tracking(0.9)
                         .foregroundStyle(AppTheme.Colors.textMuted)
 
-                    Text(primaryPriceText ?? "No price yet")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(primaryPriceText == nil ? AppTheme.Colors.textMuted : AppTheme.Colors.textPrimary)
-
-                    if let primaryPriceCaptionText {
-                        HStack(spacing: 4) {
-                            if let priceProvenanceLabel {
-                                Text(priceProvenanceLabel)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(AppTheme.Colors.textMuted)
-                            }
-                            Text(primaryPriceCaptionText)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(primaryPriceCaptionColor)
+                    if communityLinesArePrimary {
+                        // 2.4.1 (Phase 3C) — no saved price, and the community has Cash / Credit prices: each is
+                        // shown with its own method and its own age, never one under the other's name.
+                        ForEach(communityLines) { line in
+                            communityPriceLineView(line)
                         }
-                    }
+                    } else {
+                        Text(primaryPriceText ?? "No price yet")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(primaryPriceText == nil ? AppTheme.Colors.textMuted : AppTheme.Colors.textPrimary)
 
-                    if let supportingCommunityPriceText {
-                        Text(supportingCommunityPriceText)
-                            .font(.caption2)
-                            .foregroundStyle(AppTheme.Colors.textMuted)
+                        if let primaryPriceCaptionText {
+                            HStack(spacing: 4) {
+                                if let priceProvenanceLabel {
+                                    Text(priceProvenanceLabel)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(AppTheme.Colors.textMuted)
+                                }
+                                Text(primaryPriceCaptionText)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(primaryPriceCaptionColor)
+                            }
+                        }
+
+                        if communityLines.isEmpty == false {
+                            // A saved price is primary; the community's per-method prices support it.
+                            ForEach(communityLines) { line in
+                                Text("Community \(line.summaryText)")
+                                    .font(.caption2)
+                                    .foregroundStyle(line.isStale ? AppTheme.Colors.stationYellow : AppTheme.Colors.textMuted)
+                            }
+                        } else if let supportingCommunityPriceText {
+                            Text(supportingCommunityPriceText)
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                        }
                     }
                 }
                 .accessibilityElement(children: .ignore)
@@ -4380,6 +4463,36 @@ private struct StationRowCard: View {
         return (latestPrice, latestReportedAt)
     }
 
+    /// 2.4.1 (Phase 3C) — the community's prices by payment method (Cash, Credit, or one "Cash & Credit"), each
+    /// with its own age. EMPTY when every report is unclassified (made before payment types existed, or by an older
+    /// app): the card then shows its single community price exactly as it always did, claiming no payment method.
+    private var communityLines: [CommunityPriceLinePresentation] {
+        CommunityPriceLinePresenter.typedLines(from: communitySummary)
+    }
+
+    /// With no saved price and typed community prices, the per-method lines ARE the price.
+    private var communityLinesArePrimary: Bool {
+        localPriceIsPrimary == false && communityLines.isEmpty == false
+    }
+
+    private func communityPriceLineView(_ line: CommunityPriceLinePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let label = line.label {
+                    Text(label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                }
+                Text(line.priceText)
+                    .font(communityLines.count > 1 ? .headline.weight(.bold) : .title3.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+            }
+            Text(line.captionText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(line.isStale ? AppTheme.Colors.stationYellow : AppTheme.Colors.textMuted)
+        }
+    }
+
     /// `nil` only when there is no price to show at all — never shown for the ethanol column,
     /// which has no local/saved concept (ethanol is always community-reported in this app).
     private var priceProvenanceLabel: String? {
@@ -4485,7 +4598,9 @@ private struct StationRowCard: View {
     /// was itself community reported when only the ethanol reading (or a merely-supporting
     /// community price) is.
     private var communityDisclaimerText: String? {
-        let priceIsCommunityInvolved = (localPriceIsPrimary == false && communityPrice != nil) || supportingCommunityPriceText != nil
+        let priceIsCommunityInvolved = (localPriceIsPrimary == false && communityPrice != nil)
+            || supportingCommunityPriceText != nil
+            || communityLines.isEmpty == false
         let hasEthanolReport = ethanolPercentage != nil
 
         switch (priceIsCommunityInvolved, hasEthanolReport) {
@@ -4501,6 +4616,18 @@ private struct StationRowCard: View {
     }
 
     private var priceAccessibilityLabel: String {
+        if communityLines.isEmpty == false {
+            // Every method is spoken with its own number and its own age.
+            var parts: [String] = []
+            if localPriceIsPrimary, let primaryPriceText {
+                parts.append("Saved E85 price \(primaryPriceText)")
+                if let primaryPriceCaptionText {
+                    parts.append(primaryPriceCaptionText)
+                }
+            }
+            parts.append(contentsOf: communityLines.map { "Community reported \($0.accessibilityText)" })
+            return parts.joined(separator: ", ")
+        }
         guard let primaryPriceText else { return "No E85 price saved yet" }
         var parts = [
             localPriceIsPrimary ? "Saved E85 price \(primaryPriceText)" : "Community reported E85 price \(primaryPriceText)"
@@ -4837,7 +4964,39 @@ private struct LiveStationRowCard: View {
 
     @ViewBuilder
     private var communityPricePreview: some View {
-        if let communitySummary,
+        let typedLines = CommunityPriceLinePresenter.typedLines(from: communitySummary)
+        if typedLines.isEmpty == false {
+            // 2.4.1 (Phase 3C) — Cash / Credit prices, each with its own age and its own staleness. A station
+            // whose reports are all unclassified takes the original branch below, unchanged.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Community E85")
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.9)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+
+                ForEach(typedLines) { line in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(line.label.map { "\($0) \(line.priceText)" } ?? line.priceText)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                            Text(line.captionText)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(AppTheme.Colors.textMuted)
+                        }
+
+                        if line.isStale {
+                            Text("Community price may be stale")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(AppTheme.Colors.stationYellow)
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Community reported \(line.accessibilityText)")
+                }
+            }
+        } else if let communitySummary,
            let latestPrice = communitySummary.latestPrice,
            let latestReportedAt = communitySummary.latestReportedAt {
             VStack(alignment: .leading, spacing: 4) {
@@ -4963,6 +5122,10 @@ private struct StationPriceUpdateContext: Identifiable {
     /// price is available for this station.
     let existingCommunityPrice: Double?
     let existingCommunityPriceReportedAt: Date?
+    /// 2.4.1 (Phase 3C) — the same read-only context, by payment method, when the station has Cash / Credit
+    /// prices. Empty for a station whose reports are all unclassified (legacy), in which case the single price
+    /// above is shown exactly as before.
+    let existingCommunityLines: [CommunityPriceLinePresentation]
     /// The station's canonical community key when it was already known BEFORE this context was
     /// built — set only by `.postNavigation`, from the pending contribution's own `stationKey`. A
     /// contribution recorded from the Nearby E85 widget was rebuilt from a flattened address
@@ -4998,6 +5161,7 @@ private struct StationPriceUpdateContext: Identifiable {
         presentationMode: StationPriceUpdatePresentationMode = .full,
         existingCommunityPrice: Double? = nil,
         existingCommunityPriceReportedAt: Date? = nil,
+        existingCommunityLines: [CommunityPriceLinePresentation] = [],
         communityStationKey: String? = nil,
         preservesSavedStationIdentity: Bool = false
     ) {
@@ -5012,6 +5176,7 @@ private struct StationPriceUpdateContext: Identifiable {
         self.presentationMode = presentationMode
         self.existingCommunityPrice = existingCommunityPrice
         self.existingCommunityPriceReportedAt = existingCommunityPriceReportedAt
+        self.existingCommunityLines = existingCommunityLines
         self.communityStationKey = communityStationKey
         self.preservesSavedStationIdentity = preservesSavedStationIdentity
     }
@@ -5065,6 +5230,7 @@ private struct StationPriceUpdateContext: Identifiable {
             presentationMode: .postNavigation,
             existingCommunityPrice: existingCommunityPrice?.latestPrice,
             existingCommunityPriceReportedAt: existingCommunityPrice?.latestReportedAt,
+            existingCommunityLines: CommunityPriceLinePresenter.typedLines(from: existingCommunityPrice),
             // The identity the contribution was recorded (and its existing price looked up) under —
             // the report must write to the SAME community row, not one re-derived from fields that
             // may have been flattened on the way here.
@@ -5114,6 +5280,10 @@ private struct StationPriceUpdateSheet: View {
     @Binding var priceInput: String
     @Binding var noteInput: String
     @Binding var validationMessage: String?
+    /// 2.4.1 (Phase 3C) — which price is being reported (nil until chosen) and why a submit was refused for lack of
+    /// one. Both layouts show CommunityPaymentTypeSelector, so there is one control and one rule.
+    @Binding var paymentType: CommunityPaymentType?
+    @Binding var paymentValidationMessage: String?
     let isSubmittingCommunityPrice: Bool
     let saveAndReportAction: () -> Void
     let cancelAction: () -> Void
@@ -5184,6 +5354,11 @@ private struct StationPriceUpdateSheet: View {
                 focusedField = nil
             }
         )
+        .onChange(of: paymentType) { _, newValue in
+            if newValue != nil {
+                paymentValidationMessage = nil
+            }
+        }
     }
 
     // MARK: - Full mode (unchanged behavior — every pre-existing call site uses this)
@@ -5203,6 +5378,16 @@ private struct StationPriceUpdateSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
+                        // 2.4.1 (Phase 3C) — only when a community report is possible for this station: it is
+                        // what the report is labelled with, and the local save below is unaffected.
+                        if context.canReportToCommunity {
+                            CommunityPaymentTypeSelector(
+                                selection: $paymentType,
+                                message: paymentValidationMessage,
+                                isDisabled: isSubmittingCommunityPrice
+                            )
+                        }
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("E85 Price")
                                 .font(.caption.weight(.semibold))
@@ -5318,6 +5503,18 @@ private struct StationPriceUpdateSheet: View {
     /// should type what they actually saw, not blindly resubmit a possibly-stale prior value.
     @ViewBuilder
     private var compactReportContent: some View {
+        // 2.4.1 (Phase 3C) — scrollable now: the Payment Type choice makes this layout taller, and at large
+        // Dynamic Type sizes (or with the keyboard up) it must not push the Submit button out of reach.
+        ScrollView {
+            compactReportColumn
+        }
+        .onAppear {
+            focusedField = .price
+        }
+    }
+
+    @ViewBuilder
+    private var compactReportColumn: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(context.stationName.isEmpty ? "Station" : context.stationName)
@@ -5330,7 +5527,35 @@ private struct StationPriceUpdateSheet: View {
                     .foregroundStyle(AppTheme.Colors.primaryGreen)
             }
 
-            if let existingCommunityPrice = context.existingCommunityPrice,
+            if context.existingCommunityLines.isEmpty == false {
+                // 2.4.1 (Phase 3C) — the station has Cash / Credit prices: each is shown with its own method and
+                // its own age.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("CURRENT COMMUNITY PRICES")
+                        .font(.caption2.weight(.bold))
+                        .tracking(0.9)
+                        .foregroundStyle(AppTheme.Colors.textMuted)
+                    ForEach(context.existingCommunityLines) { line in
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 8) {
+                                if let label = line.label {
+                                    Text(label)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.Colors.textMuted)
+                                }
+                                Text(line.priceText)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                            Text(line.captionText)
+                                .font(.caption)
+                                .foregroundStyle(line.isStale ? AppTheme.Colors.stationYellow : AppTheme.Colors.textMuted)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(line.accessibilityText)
+                    }
+                }
+            } else if let existingCommunityPrice = context.existingCommunityPrice,
                let existingCommunityPriceReportedAt = context.existingCommunityPriceReportedAt {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("CURRENT COMMUNITY PRICE")
@@ -5348,6 +5573,13 @@ private struct StationPriceUpdateSheet: View {
                 }
                 .accessibilityElement(children: .combine)
             }
+
+            // 2.4.1 (Phase 3C) — which price is being reported; required, no default.
+            CommunityPaymentTypeSelector(
+                selection: $paymentType,
+                message: paymentValidationMessage,
+                isDisabled: isSubmittingCommunityPrice
+            )
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("E85 price you saw")
@@ -5413,9 +5645,6 @@ private struct StationPriceUpdateSheet: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .onAppear {
-            focusedField = .price
-        }
     }
 
     private var ethanolReportCard: some View {
@@ -5541,20 +5770,14 @@ extension Double {
 }
 
 private extension Date {
+    /// 2.4.1 (Phase 3C) — one implementation of "Reported today / yesterday / N days ago" and of the 14-day
+    /// staleness rule, shared with the per-payment-method lines (CommunityPriceLinePresenter). The wording and the
+    /// thresholds are unchanged.
     var communityReportedText: String {
-        if Calendar.current.isDateInToday(self) {
-            return "Reported today"
-        }
-
-        if Calendar.current.isDateInYesterday(self) {
-            return "Reported yesterday"
-        }
-
-        let days = StationDataValidation.daysSince(self)
-        return "Reported \(days) day\(days == 1 ? "" : "s") ago"
+        CommunityPriceLinePresenter.reportedText(for: self)
     }
 
     var communityPriceIsStale: Bool {
-        StationDataValidation.isStale(daysSince: StationDataValidation.daysSince(self))
+        CommunityPriceLinePresenter.isStale(self)
     }
 }

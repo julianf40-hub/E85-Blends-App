@@ -58,6 +58,28 @@ struct PremiumStationPricePresentation {
     let freshnessText: String?
     let supportingText: String?
     let hasNoPriceAtAll: Bool
+    /// 2.4.1 (Phase 3C) — which payment method the primary price is for ("Cash", "Credit", "Cash & Credit"),
+    /// set only for a community price that says so. `nil` for a saved price and for every price whose reports did
+    /// not say (everything reported before payment types existed), which then reads exactly as it always did.
+    var primaryMethodLabel: String? = nil
+
+    /// The source capsule's text: "Saved", "Community", or "Community · Cash".
+    var sourceCapsuleText: String? {
+        guard let primarySource else { return nil }
+        if let primaryMethodLabel {
+            return "\(primarySource) · \(primaryMethodLabel)"
+        }
+        return primarySource
+    }
+
+    /// The compact one-line price in the station list: "Cash $2.99/gal" when the method is known, else the price.
+    var listText: String? {
+        guard let primaryText else { return nil }
+        if let primaryMethodLabel {
+            return "\(primaryMethodLabel) \(primaryText)"
+        }
+        return primaryText
+    }
 }
 
 /// Already-resolved community ethanol copy for one station, mirroring
@@ -950,8 +972,8 @@ struct ProStationsMapView: View {
 
             Spacer()
 
-            if let primaryText = item.price.primaryText {
-                Text(primaryText)
+            if let listText = item.price.listText {
+                Text(listText)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(AppTheme.Colors.primaryGreen)
             }
@@ -1145,7 +1167,7 @@ struct ProStationsMapView: View {
                     Text(primaryText)
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundStyle(AppTheme.Colors.primaryGreen)
-                    if let primarySource = price.primarySource {
+                    if let primarySource = price.sourceCapsuleText {
                         Text(primarySource)
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 6)

@@ -26,6 +26,11 @@ struct FuelLogView: View {
     @State private var entryPendingDeletion: FuelLogEntry?
     @State private var communityReportContext: FuelLogCommunityReportContext?
     @State private var communityReportMessage: String?
+    // 2.4.1 (Phase 3C) — which price this fill-up's price is: Cash, Credit or Same for Both. The fill-up does not
+    // record how it was paid for, so nothing is assumed: `nil` until the person chooses, never remembered, and a
+    // report is not sent without it. Reset every time the prompt appears.
+    @State private var reportPaymentType: CommunityPaymentType?
+    @State private var reportPaymentMessage: String?
     @State private var isSubmittingCommunityPrice = false
     @State private var saveErrorMessage: String?
 
@@ -198,13 +203,20 @@ struct FuelLogView: View {
         .sheet(item: $communityReportContext) { context in
             FuelLogCommunityReportSheet(
                 context: context,
+                paymentType: $reportPaymentType,
+                paymentMessage: reportPaymentMessage,
                 isSubmitting: isSubmittingCommunityPrice,
                 reportAction: { submitCommunityPriceReport(for: context) },
                 cancelAction: { communityReportContext = nil }
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice)
+            .onChange(of: reportPaymentType) { _, newValue in
+                if newValue != nil {
+                    reportPaymentMessage = nil
+                }
+            }
         }
         .onAppear {
             if let initialDraft {
@@ -357,6 +369,8 @@ struct FuelLogView: View {
         guard outcome.shouldOfferCommunityPriceReport else { return }
 
         let station = matchedStation(for: outcome)
+        reportPaymentType = nil
+        reportPaymentMessage = nil
         communityReportContext = FuelLogCommunityReportContext(
             stationName: outcome.stationName,
             e85PricePerGallon: outcome.e85PricePerGallon,
@@ -402,6 +416,14 @@ struct FuelLogView: View {
             return
         }
 
+        // 2.4.1 (Phase 3C) — a report says which price it is. There is no default, so nothing is sent until the
+        // person chooses Cash, Credit or Same for Both; the sheet stays open and says so.
+        guard let reportedPaymentType = CommunityPaymentTypeValidation.reportableChoice(reportPaymentType) else {
+            reportPaymentMessage = CommunityPaymentTypeValidation.missingChoiceMessage
+            return
+        }
+        reportPaymentMessage = nil
+
         isSubmittingCommunityPrice = true
 
         Task {
@@ -430,7 +452,8 @@ struct FuelLogView: View {
                     normalizedStationKey: normalizedStationKey,
                     stationID: station.id,
                     price: context.e85PricePerGallon,
-                    reportedAt: context.fillUpDate
+                    reportedAt: context.fillUpDate,
+                    paymentType: reportedPaymentType
                 )
 
                 await MainActor.run {
@@ -761,6 +784,8 @@ private struct FuelLogCommunityReportContext: Identifiable {
 
 private struct FuelLogCommunityReportSheet: View {
     let context: FuelLogCommunityReportContext
+    @Binding var paymentType: CommunityPaymentType?
+    let paymentMessage: String?
     let isSubmitting: Bool
     let reportAction: () -> Void
     let cancelAction: () -> Void
@@ -784,6 +809,20 @@ private struct FuelLogCommunityReportSheet: View {
                         reportRow(title: "E85 Price", value: "\(formattedPrice)/gal")
                         reportRow(title: "Fill-Up Date", value: context.fillUpDate.formatted(date: .abbreviated, time: .shortened))
                     }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.surfaceElevated)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+                    CommunityPaymentTypeSelector(
+                        selection: $paymentType,
+                        message: paymentMessage,
+                        isDisabled: isSubmitting
+                    )
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(AppTheme.Colors.surfaceElevated)
