@@ -95,7 +95,7 @@ answer, which is what clears it for a Price Drop alert.
 
 * **Save** is offered only for a complete form that differs from what the server holds ("Create Alert" /
   "Update Alert"). A double tap saves once. An update sends the alert's **full state**: the preferences
-  it already had are carried forward (the backend replaces the whole alert). A failed save keeps
+  it already had are carried forward (the backend replaces mode, target and cooldown on every save, and the drop size when the request means it). A failed save keeps
   everything typed, says why in plain words and can be retried; the success is announced to VoiceOver
   and gets a subtle haptic.
 * **Turn Off** asks first, using the app's `DestructiveConfirmationOverlay`: "Turn Off Price Alert?" /
@@ -172,7 +172,9 @@ Rules (each is a test in `PriceAlertsLegacyMigrationTests.swift`):
 * **Honest outcome.** After saving, the answer must carry the chosen type; if a backend that predates payment types answers `unknown`,
   the sheet says "Price type not saved" (keeping the choice, retryable) rather than "Price Alert updated".
 * **No promise.** When no price of the chosen kind exists, the sheet says the next one — or one reported as the same for both — sets the
-  starting point; it never says a notification is coming.
+  starting point (the reference is taken only from a report of the last week, and the words say so); it never says a notification is coming.
+* **Nothing unreadable is rewritten.** An alert whose rule this build cannot read shows no alert type as selected, and Save waits until one is
+  picked on purpose.
 * **Pro unchanged.** Free sees the Pro card, unresolved entitlement is "checking", a lapse deletes nothing, the server still enforces Pro.
 
 ## 2. How it is built
@@ -308,3 +310,14 @@ idempotence, backoff, convergence, the real push service's no-loop property) and
   `PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md` §12 question 17).
 * **(3C.1) The prompt appears in the list only after the list has loaded** (not while loading, failed, empty or the entitlement is
   resolving), so it never shows beside a spinner or an error.
+* **(3C.1) A choice that saved but whose follow-up refresh failed** leaves the sheet reading the last list it holds, so "Choose Your Price
+  Type" can still show beside "Price Alert updated." and the refresh warning ("Couldn't refresh"), and the list keeps its banner until a
+  refresh succeeds. Nothing is wrong on the server and saving again is harmless; this is the same documented limitation as above, now
+  with a prompt in it.
+* **(3C.1) An alert whose rule this build cannot read** (a mode a newer backend might add — today the database allows only three) is no longer
+  rewritten by a choice of price type alone: no alert type looks selected, Save says "Choose an alert type first.", and picking a type
+  is the decision to replace it. Unreachable with the current backend; pinned by tests.
+* **(3C.1) A payment type this build does not know** (say a future "debit") decodes as `unknown`, so such an alert would be offered Cash and
+  Credit and overwritten by the choice. Fine while the backend has the four values; revisit if it grows a fifth.
+* **(3C.1) Contrast.** The "Payment type needed" title and the watch line no longer use the warning yellow (it is far below readable contrast on
+  the Light card); the yellow stays on the icon and the card border. A pass at the largest Dynamic Type, in Light and Dark, on a 375 pt phone is still worth doing on a device.

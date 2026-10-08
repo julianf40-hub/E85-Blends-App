@@ -69,8 +69,10 @@ Rules that hold everywhere:
   PostgreSQL 11+: **no table rewrite, no per-row backfill**. Existing rows read as `unknown` and keep their id,
   price, `reported_at`, `created_at` and reporter exactly. (Proved by `price_alert_payment_type_migration.test.sh`,
   which loads rows before the migration and compares them after.)
-- `CHECK (payment_type in ('cash','credit','same_for_both','unknown'))`, added `NOT VALID` then `VALIDATE`d so
-  inserts keep flowing during the scan.
+- `CHECK (payment_type in ('cash','credit','same_for_both','unknown'))`, added `NOT VALID` then `VALIDATE`d (the pattern
+  `20260918000954` used). The migration is one transaction and its first `ALTER TABLE` takes `ACCESS EXCLUSIVE`, so reads and writes of
+  the table **queue until it commits**, validation scan and index build included (0.3 s at 300k rows, 1.3 s at 1M, measured locally; see
+  the readiness document, section 5).
 - `GRANT INSERT (payment_type) ... TO anon, authenticated` — additive. The clients' INSERT grant was already
   **column-scoped**, so without this a new app naming the column is refused with `permission denied for column`.
   An old app that omits the column needs no privilege for it (it takes the default).
@@ -223,7 +225,7 @@ produce a duplicate while it is still waiting to go out (scenario D22).
   existing alert keeps its current method (`coalesce`), a new alert is stored `unknown`. `minimum_change` keeps its
   contract (0.01–2.00, default `0.05` when omitted — the **legacy** server default is unchanged; the app sends its
   10¢ new-alert default explicitly). Editing one field never resets another: the app sends the alert's full state, and
-  a client that does not choose a drop size cannot reset one (§6.1).
+  a client that does not choose a drop size cannot reset one by omitting it or by sending the fixed `0.05` (§6.1).
 - Responses (`set_alert` alert object, `list_alerts` rows) add `payment_type`. `list_alerts` also adds
   `latest_comparable_price`, `latest_comparable_reported_at`, `latest_comparable_payment_type` — the newest report the
   alert is actually judged on. `latest_price` / `latest_reported_at` keep their original meaning (newest report of any
@@ -236,9 +238,18 @@ produce a duplicate while it is still waiting to go out (scenario D22).
 **The problem (3C.1).** Until the payment-aware alerts, no client could choose how big a drop an alert waits for: the
 iOS app sent the fixed `0.05` (3A/3B) and a client that named nothing got the server default `0.05`. `set_alert` is an upsert
 that **replaced** every setting on every save, so a request that said nothing about the drop size (or sent the fixed
-default) reset a stored `0.20` to `0.05`. Once an app lets people choose 5¢ / 10¢ / 20¢ / Custom, an older client that
-re-saves the same alert (an Android build, an iOS build that was downgraded or is a pre-3C.1 internal build) silently undid
-the choice. Omitted and "the fixed default" were indistinguishable from a deliberate 5¢.
+default) reset a stored `0.20` to `0.05`. Once a client lets people choose 5¢ / 10¢ / 20¢ / Custom, a request from a client that does
+**not** choose would silently undo the choice whenever it re-saves that alert. Omitted and "the fixed default" were indistinguishable
+from a deliberate 5¢.
+
+**Who can actually collide.** An alert belongs to an *installation* (a client-generated id and secret; alerts are unique per
+installation and station). On iOS that credential is a Keychain item marked `ThisDeviceOnly` and never synchronized, so an iPhone's
+installation never reaches another device or another platform, and Android mints its own. An Android build therefore cannot re-save an
+iOS installation's alert, or the reverse. The "older client" is always **another build of the same client on the same installation**:
+an internal TestFlight build older than 3C.1 on a device whose alerts a 3C.1 build edited (a build mix or a downgrade), or — once
+Android adds a drop-size choice — an older Android build next to a newer one. That is a narrower population than "any older client",
+and today it is essentially the internal testers, who are also the group a marker cannot help (their builds do not send it); the
+rollout therefore moves internal testers to the 3C.1 build together with the API (readiness document, Step 5).
 
 **Who sends what.** (Established by reading every client in this repository and the API; the Android wire format is not
 visible here.)
@@ -251,7 +262,7 @@ visible here.)
 | Android | unknown (no code here); it was written against the `0.05` default | none |
 | the `list_alerts`, `delete_alert` and device actions | never read or write it | — |
 
-No released App Store build (2.4.0) has a Price Alerts client at all, so only internal builds and Android can be affected.
+No released App Store build (2.4.0) has a Price Alerts client at all, so only internal builds and (later) Android can be affected.
 
 **The rule.** `alert_contract_version` is an optional integer, 1–1000; absent or `null` means 1; anything else
 (`"2"`, `0`, `2.5`, `true`, `[]`, `1001`) is `400 invalid_alert_contract_version` and nothing is stored. For an alert that **already
@@ -266,7 +277,10 @@ exists**, `minimum_change` is replaced only when
 | no version, any other value (`0.10`, `0.137`, …) | **yes** — it cannot be the fixed default, so it was meant |
 
 A **new** alert always takes the request's value, or `0.05` when it names none. Mode, target price and cooldown are still
-replaced in full, as before; the payment type still uses `coalesce` (a request that names none keeps the alert's). The
+replaced in full by every save, and a save still re-enables the alert, as before; the payment type still uses `coalesce` (a request that
+names none keeps the alert's). So the guarantee is exactly: **a request cannot reset a stored drop size by omitting it, or by sending the
+fixed `0.05`** — a marker-less request that carries any other value (say `0.10` over a stored `0.20`) still replaces it, because that value
+cannot be an artifact of the fixed default. The
 decision is made once, in `replacesStoredMinimumChange` (`alert-input.ts`), and applied in SQL as
 `minimum_change = case when <replaces> then excluded.minimum_change else private.price_alerts.minimum_change end`.
 Because `ON CONFLICT DO UPDATE` re-reads the locked row, two concurrent saves (one changing the payment type, one the
@@ -279,9 +293,11 @@ rounds of three concurrent saves over HTTP.
   client's own `minimum_change`; the installation secret and the Pro gate are what authorize a save, and neither changed.
 - The real ambiguity is irreducible: a client with no marker that sends `0.05` might mean a deliberate 5¢ or might be an old
   client's fixed default. The contract resolves it toward **keeping** the stored value, so the cost lands only on the rare
-  case: **an iOS build older than 3C.1 cannot deliberately switch an existing alert *back to* 5¢** (it can raise it, and a new
-  alert starts at the value it sends). Updating the app fixes it; nothing is lost silently, the alert simply keeps the size it
-  had. Alerts that were already reset to 5¢ before this fix are indistinguishable from chosen 5¢ ones and are not touched.
+  case: **a build without the marker cannot deliberately switch an existing alert *back to* 5¢** (it can raise it, and a new
+  alert starts at the value it sends). The iOS builds before 3C.1 are the ones affected today, and in the 3C build the save *looks*
+  successful: the app announces "Price Alert updated." and the form re-seeds to the size the server kept (10¢, say) rather than the 5¢
+  the person chose. No data is lost and the screen shows the stored value, but the announcement is misleading. Updating to 3C.1 removes
+  it. Alerts that were already reset to 5¢ before this fix are indistinguishable from chosen 5¢ ones and are not touched.
 - **Cooldown is still replaced in full.** No client offers a cooldown choice today (the iOS form never edits it and sends the
   alert's own), so there is nothing to protect yet; a future client that lets people pick one needs the same capability.
 - The default for an omitted `minimum_change` is still the legacy `0.05` for a **new** alert, so an Android alert created
@@ -397,15 +413,19 @@ Check price · 14d ago") can clip its age; it is a Pro-only line and only appear
     **Cash and Credit only; "Same for Both" is a reporting choice and is not offered for an alert**. **Nothing is preselected and Save
     stays off until a type is chosen.** The form opens on exactly what the server holds (rule, target, drop size, cooldown), says "Your
     alert type and settings stay the same." while that is true, and — once Cash or Credit is picked on a Price Drop — says how the starting
-    point works: "Drops are measured from the latest Credit price reported for this station. If there isn't one yet, the next Credit price —
-    or one reported as the same for both — sets the starting point." It never promises a notification (alerts follow community reports).
+    point works: "Drops are measured from the latest Credit price reported for this station in the past week. If there isn't one, the next
+    Credit price — or one reported as the same for both — sets the starting point." (The server anchors only to a report from the last
+    7 days.) It never promises a notification (alerts follow community reports).
   - *What is preserved:* the alert id (the save is an upsert on the same installation + station, never a delete-and-create), station,
     mode, At-or-Below target, drop size, cooldown, installation and Pro state. The old *notify on any price change* rule
     (`any_change`), which this screen has no card for, is **carried** unchanged until the person picks another type explicitly;
-    saving the payment type alone does not convert it.
+    saving the payment type alone does not convert it. A rule this build cannot read at all (a mode a newer backend might add) cannot be
+    carried: no alert type looks selected and Save waits ("Choose an alert type first.") until one is picked on purpose.
   - *Honest outcome:* after Save the app compares what the server answers with what was chosen. If the backend does not apply the
     choice (an API that predates payment types answers `unknown`), the sheet shows "Price type not saved — We couldn't save your Cash or
-    Credit choice just now. Your alert is unchanged. Try again in a little while." and keeps the choice on screen; it never says
+    Credit choice just now. Your alert is unchanged. Try again in a little while." (for a brand-new alert, which *was* created: "Alert saved
+    without a price type — Your alert was saved, but we couldn't save your Cash or Credit choice just now. Choose it again in a little while.")
+    and keeps the choice on screen; it never says
     "Price Alert updated." for a save that changed nothing.
   - *Pro and entitlement:* unchanged. A Free person sees the Pro card; an entitlement that is still resolving is "checking", never Free;
     nothing is deleted when Pro lapses; the server still refuses a non-Pro save (`pro_required`).
@@ -512,7 +532,8 @@ readiness document; the incident drill is executed by `price_alert_rollout_compa
   keeps the function's ACL. Scenario D19 runs exactly this statement, checks that nothing is queued and no alert state
   moves, and that re-applying migration B restores the real engine. Pausing the two cron jobs instead keeps the job queue,
   but a job older than the 2-hour send window can no longer notify when it is finally processed; either way nothing false is
-  sent. Only while NO typed report exists yet is the previous engine a safe fallback.
+  sent. Once migration B is applied the previous engine is **never** a fallback, typed reports or not (it ignores the alert's price type, and
+  B's `mark_price_alert_delivery_sent` guard would not record its notifications on a Cash or Credit alert): pause, then fix forward.
 - Reports: before anything depends on it, migration A's header lists the exact drops. After clients send `payment_type`,
   drop the column last.
 - Fail-closed behavior built in: an unrecognised payment value is not comparable (no notification), a corrupted alert
@@ -526,9 +547,9 @@ readiness document; the incident drill is executed by `price_alert_rollout_compa
 | SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D27 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, `list_alerts` returning both the legacy latest and the comparable latest, a `same_for_both` report driving a Price Drop alert of either method while never reaching a legacy one, the fail-closed pause, an unsent notification not holding the cooldown, the `mark_sent` guard, a pre-migration queued delivery, a notification queued under the other method, the station advisory lock, **and (3C.1) D25 an older client's save keeping a chosen drop size while a declared client's deliberate 5¢ is applied, D26 repeated identical saves, D27 a legacy alert moving to Cash/Credit through the real upsert**), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
 | Migration preservation (rows unchanged, no rewrite, idempotent re-apply, legacy fill, old-client insert, permission matrix) | `price_alert_payment_type_migration.test.sh` | same |
 | Concurrency (PC1 cooldown race, PC2 one report prepared twice, PC3 a burst through the real grants while the job processor runs, PC4 the `set_alert` upsert racing a prepare, PC5 the lock-order deadlock, **PC6 (3C.1) two saves racing each other — payment-only vs drop-size-only vs an older client — in four forced interleavings**) | `price_alert_payment_type_concurrency.test.sh` | same |
-| Edge Function pure modules (input rules, **the drop-size truth table**, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping) or `deno test`; the entry points are also pinned by source-text assertions |
+| Edge Function pure modules (input rules, **the drop-size truth table**, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping) or `deno test --allow-read` (**without `--allow-read` Deno silently drops the tests that read source files — the wiring pins, including the cross-file pin of the upsert — and still reports success**); the entry points are also pinned by source-text assertions |
 | The Edge Functions themselves, end to end, under Deno against a local Postgres: the API's `set_alert` / `list_alerts` / `delete_alert` over HTTP (A1–A9: an older client, the 2.4.1 app, edits that keep the method, `invalid_payment_type`, bounds, comparable-latest fields, re-anchoring, non-Pro, delete; **A10–A16 (3C.1): an older client's re-save keeps the drop size, the 2.4.1 app's 5¢/10¢/20¢/Custom round-trip, single-field edits, sixteen malformed versions, repeated saves, concurrent saves, the Pro gate regardless of the version, and a legacy alert moving to Cash then Credit**), and the worker preparing, claiming and "sending" five notifications with the push providers stubbed (3 APNs, 2 FCM: copy, additive `payment_type`, legacy payload unchanged, the delivery's recorded method) | `price_alert_api_payment_type.test.sh`, `price_alert_worker_message.test.sh` (+ `support/worker_with_recorded_fetch.ts`) | Deno 2.x, jq, curl, openssl, psql and a replayed scratch database; nothing leaves the machine (the wrapper refuses any URL but the providers') |
-| **Rollout compatibility (3C.1)**: the previous API and worker (exported from git) and the new ones against a database before A, with A only, and with A + B (M1–M3), a false alert between A and B (T1), a notification queued by the previous engine surviving B (T2), a job still queued when B is applied (T3), a B that fails (T4), a report submitted while B runs (T5), the incident drill (T6), the lock window at 300k–1M rows (T7) | `price_alert_rollout_compat.test.sh` | Deno 2.x, psql and scratch databases it creates and drops; `OLD_REV` (default `1f88df0`) names the previous sources |
+| **Rollout compatibility (3C.1)**: the previous API and worker (exported from git) and the new ones against a database before A, with A only, and with A + B (M1–M3), a false alert between A and B (T1), a notification queued by the previous engine surviving B (T2), a job still queued when B is applied (T3), a B (T4) or an A (T4b) that fails, a report submitted while B runs (T5), the incident drill (T6), the lock window at 300k–1M rows (T7) | `price_alert_rollout_compat.test.sh` | Deno 2.x, psql and scratch databases it creates and drops; `OLD_REV` (default `1f88df0`) names the previous sources |
 | Swift (models, form, presets, service, wire contract, report rules, breakdown, presenter, widget model, notification payload; **3C.1: the legacy-alert prompt, list banners, carried rule, honest outcome and the wire marker**) | `EightyFiveBlendsTests/*` (`PriceAlertsLegacyMigrationTests.swift` is new) | Xcode (`xcodebuild test`) |
 
 **What Linux could and could not prove.** The two Edge Function entry points pass `deno check` under the functions' own
@@ -606,4 +627,4 @@ from `list_alerts` (fall back to `latest_price` when absent); read the optional 
 same Payment Type choice to price reports (`payment_type` on insert, omitted when unchosen) and the 5¢/10¢/20¢/Custom
 drop-size choice; show an alert without a payment type as "Payment type needed" and offer Cash or Credit (not "Same for Both"),
 carrying the rest of the alert unchanged — the iOS copy is in §8.3. Until then Android alerts are legacy
-alerts (see question 1), and an Android re-save never resets a drop size chosen elsewhere.
+alerts (see question 1), and an Android re-save cannot reset a drop size stored on that Android installation by omitting it or sending the fixed `0.05`.

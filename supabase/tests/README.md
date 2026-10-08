@@ -42,7 +42,8 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   Phase 3C.1, the drop-size contract (A10 an older client's re-save keeps the size and the 2.4.1 app can still choose any size,
   5¢ included; A11 single-field edits; A12 sixteen malformed `alert_contract_version` values refused with nothing stored; A13
   repeated saves; A14 concurrent saves; A15 the Pro gate whatever the version; A16 a legacy alert moving to Cash then Credit).
-  Needs deno, curl, jq, psql; COMMITS fixtures under a marker and removes them; refuses a non-local `PGHOST`. `API_DIR`
+  Needs deno, curl, jq, psql; COMMITS fixtures under a marker and removes them; refuses a non-local `PGHOST` **and a non-loopback
+  `API_DB_URL` host** (the API under test writes through that URL). `API_DIR`
   points it at a different copy of the API (the rollout script uses that for the previous version).
 - `price_alert_worker_message.test.sh` + `support/worker_with_recorded_fetch.ts` — Phase 3C: the REAL `price-alerts-worker`
   under Deno with `fetch()` replaced by a recorder (nothing is sent to Apple or Google; any other URL is refused): five alerts
@@ -58,8 +59,9 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   `price-alerts-worker` from git (`OLD_REV`, default the Phase 3B tip), and runs the previous and the new functions in each
   (M1 API × state, M2 worker × state, M3 a Cash/Credit alert with the previous worker). Then the transition scenarios: T1 a
   false alert between A and B, T2 a notification queued by the previous engine surviving B, T3 a job still queued when B is
-  applied, T4 a B that fails, T5 a report submitted while B runs, T6 the incident drill (pause, cancel, pause the two jobs,
-  resume), T7 the lock window at `ROLLOUT_MEASURE_A_ROWS` rows (default 300000; 0 skips). Local-replay only: it refuses a
+  applied, T4 a B that fails, T4b an A that cannot get its lock (and what queues behind its pending request), T5 a report submitted
+  while B runs, T6 the incident drill (pause decisions, pause the two jobs, cancel, resume - with the runbook queries telling the
+  no-op from the real engine), T7 the lock window at `ROLLOUT_MEASURE_A_ROWS` rows (default 300000; 0 skips). Local-replay only: it refuses a
   non-local `PGHOST`, drops its own `e85_rollout*` databases, stubs the push providers, and reaches nothing outside the machine.
   Needs deno, curl, jq, openssl, psql, git, tar. The statements it runs in T6 are the ones in
   `docs/PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md` section 9.
