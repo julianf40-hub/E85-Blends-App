@@ -22,11 +22,15 @@
 --     legacy alert. A person moves an alert to Cash or Credit by editing it in the updated app.
 --     Legacy alerts are decided by the same state machine, so three things differ from the old engine, all
 --     toward fewer wrong or duplicate notifications: drops smaller than the minimum now add up; a late or
---     back-dated report no longer notifies as if it were current (nor a reference older than 7 days: it is
---     re-established instead); and two reports prepared before the first was sent cannot both pass the
---     cooldown.
+--     back-dated report no longer notifies as if it were current (nor a reference that no report has
+--     refreshed for 7 days: it is re-established instead); and two reports prepared before the first was
+--     sent cannot both pass the cooldown.
 --   * Deliveries already queued or prepared are NOT touched, re-evaluated or re-sent.
 --   * Nothing here sends anything, schedules anything, or changes the cron jobs.
+--   * Locks: this file runs in ONE transaction, so the ALTER TABLEs below hold ACCESS EXCLUSIVE locks on
+--     private.price_alerts and private.price_alert_deliveries until it commits, and the constraint validation
+--     scans run inside that window. The worker's claim and the prepare job queue behind it for that moment
+--     (short at this table size). Apply it in a quiet minute.
 --
 -- THE MODEL
 --   Comparable stream of an alert (the ONLY reports it may be judged on):
@@ -42,8 +46,10 @@
 --                    a 10c alert and a fall from a new high counts. It is set to the notified price when an
 --                    alert fires (that is the rearm point). A rise or an equal price moves it up. A smaller
 --                    drop leaves it alone. It is established from the first comparable report when none
---                    existed at configuration time; it is never invented. A reference older than 7 days is
---                    discarded and re-established without notifying.
+--                    existed at configuration time; it is never invented. A reference that no comparable
+--                    report has refreshed for 7 days is discarded and re-established without notifying (every
+--                    comparable report that is decided moves baseline_at to that report, so while reports keep
+--                    arriving the reference is a running high-water mark since the last notification).
 --     at_or_below  : the previous comparable price (used to detect a crossing).
 --     any_change   : the previous comparable price.
 --   Cooldown is checked against last_notified_at, which is now stamped when a notification is RESERVED
@@ -66,10 +72,17 @@
 --   worker depends on it). The worker reads the new deliveries.payment_type with one extra lookup by
 --   delivery id, so the claim contract, its safety logic and its tests stay byte-for-byte as they are.
 --
--- ROLLBACK
---   Re-apply the previous definition of prepare_price_alert_deliveries (20260918001318) and drop the
---   trigger price_alerts_anchor_baseline; the new columns can stay (they are inert without the new
---   functions). Nothing here deletes data.
+-- ROLLBACK / FAIL-CLOSED
+--   Do NOT go back to the previous prepare_price_alert_deliveries (20260918001318) once cash / credit /
+--   same_for_both reports exist: that engine compares a report with the previous report whatever its payment
+--   method, which is the false alert this migration removes. To stop alerting while a problem is fixed forward,
+--   PAUSE instead: replace prepare_price_alert_deliveries (same signature, same ACL via CREATE OR REPLACE) with a
+--   no-op that returns (0, 0) - it decides and queues nothing. The exact statement is in
+--   docs/PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md section 10 and is executed by scenario D19 of
+--   supabase/tests/price_alert_payment_type.test.sql. (Or pause the two cron jobs; reports that arrive while the
+--   no-op is installed are consumed without a decision.) Re-applying this file resumes the real engine. The new
+--   columns can stay (they are inert), the trigger price_alerts_anchor_baseline can stay, and nothing here
+--   deletes data.
 
 do $precondition$
 begin

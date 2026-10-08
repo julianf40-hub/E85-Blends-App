@@ -22,8 +22,10 @@
 --      catalog-only on PostgreSQL 11+ (no table rewrite, no per-row backfill); existing rows read as
 --      'unknown' and keep their id, price, reported_at, created_at and reporter exactly.
 --   2. Adds a CHECK limiting the column to the four values above. It is added NOT VALID and then
---      VALIDATEd so the table scan holds only a SHARE UPDATE EXCLUSIVE lock (inserts keep flowing),
---      the same pattern 20260918000954 used.
+--      VALIDATEd, the same pattern 20260918000954 used. (VALIDATE alone takes only a SHARE UPDATE EXCLUSIVE
+--      lock, but this file runs in ONE transaction and ADD COLUMN takes ACCESS EXCLUSIVE first, so reads and
+--      writes of the table queue from the ADD COLUMN until the migration commits - the validation scan plus
+--      the index build in step 4. Both are short at this table size; apply it in a quiet minute.)
 --   3. Extends the clients' COLUMN-SCOPED INSERT grant with payment_type (and nothing else). Without
 --      this a new app that names the column is refused with "permission denied for column", while an
 --      old app that omits it keeps working (an omitted column needs no privilege; it takes the default).
@@ -31,9 +33,9 @@
 --      and the CHECK bounds the new column for every writer including the Data API.
 --   4. Adds one index for "latest report of a given payment type at a station" - the lookup the alert
 --      engine, the alert anchor and the app all make. The existing (station_id, reported_at desc,
---      created_at desc) index stays for "latest of any type". Plain CREATE INDEX holds a SHARE lock
---      (inserts wait, reads do not) for the build only, which is short at this table size; a migration
---      runs in a transaction so CONCURRENTLY is not available.
+--      created_at desc) index stays for "latest of any type". Plain CREATE INDEX holds a SHARE lock for
+--      the build, which is short at this table size; a migration runs in a transaction so CONCURRENTLY
+--      is not available.
 --
 -- WHAT THIS DOES NOT DO
 --   * No UPDATE/DELETE grant (reports stay immutable), no RLS change, no new policy, no backfill, no

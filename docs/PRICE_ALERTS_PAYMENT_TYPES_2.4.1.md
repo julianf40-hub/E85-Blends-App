@@ -126,7 +126,9 @@ Anything else, including a value this code has never seen, is not comparable (**
 2. A newer comparable report exists → skipped (`superseded`): late, back-dated and backlogged reports change nothing.
 3. `R` older than the 2-hour send-freshness window can never notify: a fall it would have qualified for is recorded as
    `stale_report` and the reference moves to it.
-4. By mode, with reference `B` (a reference older than 7 days is discarded and re-established **without** notifying):
+4. By mode, with reference `B` (a reference that no comparable report has refreshed for 7 days is discarded and
+   re-established **without** notifying. Every comparable report the engine decides moves the reference's timestamp
+   to that report, so while reports keep arriving `B` is a running high-water mark since the last notification):
    - **`price_drop`**: no `B` → established from `R` (no notification). `B − P ≥ minimum_change` → notify and set
      `B := P` (**rearm at the notified price**). A smaller drop keeps `B` (so 5¢ + 5¢ reaches a 10¢ alert). A rise or
      equal price moves `B` up to it (so a later fall from the new high counts).
@@ -171,9 +173,10 @@ Legacy alerts are evaluated by the same state machine over the unclassified stre
 old engine, all in the direction of fewer wrong or duplicate notifications: sub-threshold drops now add up (3¢ then 3¢
 satisfies a 5¢ alert), a late or back-dated report no longer notifies as if it were current, and two reports prepared
 before the first was sent cannot both pass the cooldown. A fall from the previous price that qualified before still
-qualifies, with two deliberate exceptions: a reference older than 7 days is re-established instead of compared
-against (the old engine would have compared with a price that old), and a report that is no longer the newest
-unclassified report when it is decided is skipped.
+qualifies, with two deliberate exceptions: a reference that no unclassified report has refreshed for 7 days is
+re-established instead of compared against (the old engine would have compared with a price that old), and a report
+that is no longer the newest unclassified report when it is decided is skipped. The **wording** of a legacy alert's
+notification is not changed at all (see §7).
 
 ### 5.5 Deliveries already queued
 
@@ -204,7 +207,11 @@ Copy comes from the pure `message.ts` and is shared by the APNs and FCM senders:
 | Price Drop, Cash | `E85 price dropped!` | `Cash price is now $2.99 at {Station}.` |
 | At or Below, Cash | `Your E85 target was reached.` | `Cash price is now $2.79 at {Station}.` |
 | At or Below, Credit | `Your E85 target was reached.` | `Credit price is now $2.89 at {Station}.` |
-| Legacy (`unknown`) | unchanged titles | `E85 price is now $3.09 at {Station}.` (the plain wording it always had) |
+| Legacy (`unknown`) | unchanged: `E85 price dropped` / `E85 price alert` | unchanged: `{Station} dropped to $3.09/gal.` / `{Station} is now $2.79/gal.` — character for character what the worker sent before |
+
+A legacy alert's wording is the previous implementation kept verbatim (`legacyMessageFor` in `message.ts`); `message.test.ts`
+compares it with a verbatim copy of the old function across 8 reasons × 12 prices × 7 station names × 9 non-method
+values (6,048 combinations), so "payloads and notifications for existing alerts do not change" is a tested claim, not a hope.
 
 The copy never says "verified", "confirmed" or "official" (these are community reports) and never mentions a baseline
 or reason the person did not see.
@@ -214,7 +221,8 @@ or reason the person did not see.
 byte-for-byte what it was. `type`, `station_id` and `observed_price` are untouched, so the iOS deep link
 (`station_id`) and any receiver that ignores unknown keys — the shipped iOS app and Android — are unaffected
 (`AppNotificationPayloadTests` pins this for iOS). The worker's lookup of the new column is fail-soft: if it errors,
-the notification is sent with the plain wording and no `payment_type`.
+the notification is sent with the plain (legacy) wording and no `payment_type`, and a `payment_type lookup failed`
+warning (an error code or name only — never the query or its parameters) is logged so the degradation is visible.
 
 ## 8. iOS
 
@@ -236,8 +244,16 @@ Select the price shown at the pump or on the sign.
   (`CommunityReportInputCheck`), before the local save, so nothing is saved or sent half-filled. A station that cannot
   be reported to the community (too little location information) is saved locally exactly as before and is not asked.
 - The compact layout is now scrollable (the selector makes it taller; the price field still auto-focuses).
-- Labels scale with Dynamic Type (buttons wrap into more rows instead of truncating), selection is shown by a check
-  mark, a thicker border and the selected accessibility trait (not colour alone), and each button has a VoiceOver hint.
+- Labels scale with Dynamic Type, and the option grid's minimum column width scales with it too (`@ScaledMetric`), so at
+  large text sizes the buttons stack into fewer columns instead of breaking a label ("Credit" mid-word). Selection is
+  shown by a check mark, a thicker border and the selected accessibility trait (not colour alone), each button has a
+  VoiceOver hint, and the "Choose Cash, Credit, or Same for Both." message is announced to VoiceOver when it appears.
+- The Fuel Log report prompt opens at full height: its Payment Type choice sits under the fill-up summary and would
+  otherwise start below the fold of a half-height sheet, so a tap on "Report Price" with nothing chosen would look like
+  a no-op.
+- Known limitation: choosing a payment type clears keyboard focus (the sheet's tap-to-dismiss-keyboard gesture also sees
+  the button tap), so in the compact post-navigation reporter, where the price field is focused on open, choosing the
+  type first means tapping the price field again.
 - **Two prices on one sign = two reports.** The smallest backward-compatible design: a report is one price with one
   payment type, exactly the existing row shape plus one column. A dual-price operation would need a new API shape
   and partial-failure handling for a case "Same for Both" and a second report already cover.
@@ -258,12 +274,19 @@ in from the other.
 |---|---|
 | Saved-station card | no saved price → Cash and Credit lines, each with its own age (stale in yellow); saved price primary → it stays primary and the community lines support it |
 | Nearby (live) card | "Community E85" with one line per method and a per-line stale note |
-| Pro map card and list row | headline is the first line (Cash, else Credit) labelled `Community · Cash`; other methods are supporting lines; VoiceOver speaks every method |
+| Classic embedded-map card (selected saved station) | typed reports: one "Community E85 {Cash/Credit} $x" line per method (or one "Community {method} $x · age" supporting line each under a saved price), each with its own age, stale in yellow; legacy-only: unchanged |
+| Pro map card and list row | headline is the first line (Cash, else Credit) labelled `Community · Cash`; other methods are supporting lines; the pin's VoiceOver label speaks every method when community is the headline (with a saved price as the headline, the community supporting lines are shown but — as before this change — not spoken in the pin label) |
 | Post-navigation reporter | "Current community prices" by method (read-only, never copied into the field) |
 | Nearby E85 widget + station screen | one slot: the **most recent typed** price (tie → Credit), labelled in the status line ("Cash · Reported today"); an unclassified price never takes the slot. The snapshot gains an optional `paymentType` string (old snapshots decode; an older widget ignores it) |
 | Station with only unclassified reports | **unchanged**: the single price, claiming no method |
 | Trip / route planning, calculators, At the Pump | use the station's own **saved** price (`lastKnownE85Price`) and never read community prices, so they are method-agnostic by design. The saved price has no payment type (SwiftData/CloudKit schema deliberately untouched) |
 | Community history | the app shows only the latest per method; there is no history screen |
+
+A method whose newest report is older than the station's 20 newest reports has no line (an old price is never promoted to a
+current one), which reads as "this method has not been reported recently", not as "this station only takes the other method".
+A Cash or Credit line that comes from a `same_for_both` report is labelled by the method it fills; when one such report is the
+newest for both, it is one "Cash & Credit" line. On the smallest widget sizes the longer labelled status ("Cash/Credit ·
+Check price · 14d ago") can clip its age; it is a Pro-only line and only appears for typed reports.
 
 ### 8.3 Price Alerts UI
 
@@ -307,6 +330,10 @@ the API are deployed** (see the order below).
 Every step is transactional or idempotent. **Do not start any step without explicit authorization**, and do not
 treat a green build as authorization.
 
+**Heads-up:** pushing this branch starts the Xcode Cloud **85Blends Internal** workflow (it watches `claude/*`), which builds
+this app and uploads an Internal TestFlight build. Do not install that build on a device that talks to production before
+migrations A and B and the API are deployed — a report sent with a payment type is rejected by the current backend (8.4).
+
 0. **Read-only checks first** (SQL editor, no writes): the current migration list matches the chain this phase replayed;
    `\d public.e85_price_reports` shows the column-scoped INSERT grant; the state of the cron jobs
    `85blends-price-alert-job-prepare` and `85blends-price-alerts-worker-invoke`. The project owner reported both **active**
@@ -321,9 +348,13 @@ treat a green build as authorization.
    that had a prior report; no delivery was created by the migration itself.
 3. **Deploy `price-alerts-api`.** Verify `set_alert` with and without `payment_type`, `list_alerts` fields, `400
    invalid_payment_type`.
-4. **Deploy `price-alerts-worker`.** Verify copy and the additive payload key with a dry run **before** the worker
-   invoker cron is activated. (Do not activate the cron, send APNs/FCM, or create test reports/alerts in production as
-   part of verification.)
+4. **Deploy `price-alerts-worker`.** The invoker cron is reported **active** (step 0), so the deployed worker is live within
+   a minute: there is no pre-activation dry run in production, and none is attempted here (no cron change, no APNs/FCM
+   send, no test reports or alerts). Deploying it before or after migration B is safe: for a legacy alert its wording is
+   byte-for-byte the old one, and the extra `payment_type` lookup is fail-soft (it logs `payment_type lookup failed` and
+   sends the legacy wording if the column is not there yet). Verify from the logs afterwards: no `payment_type lookup
+   failed` warnings, and — when one occurs naturally — a Cash/Credit notification with the new wording and the optional
+   `payment_type` key. If a dry run before activation is wanted, pausing the invoker cron first is the owner's decision.
 5. **iOS Internal build** (`EightyFiveBlends Internal`, Xcode Cloud "85Blends Internal"), then production only on the
    owner's explicit "prepare production release".
 6. **Android** update (below).
@@ -335,11 +366,27 @@ read of the new column is fail-soft. **Two orders are NOT safe and must not be u
 backend (8.4). Migration B before migration A refuses to run.
 
 **Rollback / fail-closed.**
-- Revert the iOS release (the new fields are additive; older apps keep working).
-- Worker: redeploy the previous version (it ignores the extra column).
-- API: redeploy the previous version (extra response fields were additive).
-- Engine: re-apply the previous `prepare_price_alert_deliveries` (`20260918001318`) and drop the trigger
-  `price_alerts_anchor_baseline`; the new columns can stay (they are inert without the new functions). Nothing deletes data.
+- iOS: revert the release (the new fields are additive; older apps keep working).
+- Worker: redeploy the previous version (it ignores the extra column; a Cash/Credit alert then gets the old wording).
+- API: redeploy the previous version (the extra response fields were additive; the previous API cannot set a payment type,
+  so alerts saved meanwhile keep the method they have).
+- Engine: **do not re-apply the previous `prepare_price_alert_deliveries` (`20260918001318`) once cash / credit /
+  same-for-both reports exist.** That engine compares a report with the previous report of any method — the false alert
+  this phase removes — so it is a rollback to the bug, not a fail-closed state. Pause instead, and fix forward by
+  re-applying migration B:
+  ```sql
+  create or replace function private.prepare_price_alert_deliveries(p_price_report_id uuid)
+  returns table(pending_count integer, skipped_count integer)
+  language sql
+  security definer
+  set search_path = ''
+  as $$ select 0, 0 $$;
+  ```
+  It decides and queues nothing (a report that arrives meanwhile is consumed without a decision), and `create or replace`
+  keeps the function's ACL. Scenario D19 runs exactly this statement, checks that nothing is queued and no alert state
+  moves, and that re-applying migration B restores the real engine. Pausing the two cron jobs instead keeps the job queue,
+  but a job older than the 2-hour send window can no longer notify when it is finally processed; either way nothing false is
+  sent. Only while NO typed report exists yet is the previous engine a safe fallback.
 - Reports: before anything depends on it, migration A's header lists the exact drops. After clients send `payment_type`,
   drop the column last.
 - Fail-closed behavior built in: an unrecognised payment value is not comparable (no notification), a corrupted alert
@@ -350,7 +397,7 @@ backend (8.4). Migration B before migration A refuses to run.
 
 | Area | Where | Run with |
 |---|---|---|
-| SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D17 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, and `list_alerts` returning both the legacy latest and the comparable latest), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
+| SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D18 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, `list_alerts` returning both the legacy latest and the comparable latest, and a `same_for_both` report driving a Price Drop alert of either method while never reaching a legacy one), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
 | Migration preservation (rows unchanged, no rewrite, idempotent re-apply, legacy fill, old-client insert, permission matrix) | `price_alert_payment_type_migration.test.sh` | same |
 | Concurrency (two sessions, row lock, cooldown reservation race) | `price_alert_payment_type_concurrency.test.sh` | same |
 | Edge Function pure modules (input rules, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping); the Deno entry points are pinned by source-text assertions — Deno itself was not available |
@@ -373,8 +420,9 @@ These are flagged, not silently decided beyond the conservative default noted.
    iOS alert whose owner has not edited it — will fire less and less. This is the price of never comparing across
    methods. Options: ship the Android update promptly; have the app nudge legacy alerts to choose a price; or (a
    product decision with a cost) let a legacy alert accept typed reports. Not done.
-2. **Reference horizon of 7 days** (the maximum back-dating window). An older reference is discarded and re-established
-   without notifying.
+2. **Reference horizon of 7 days** (the maximum back-dating window): a reference that no comparable report has refreshed
+   for 7 days is discarded and re-established without notifying. While reports keep arriving it behaves as a high-water mark
+   since the last notification, so a fall of at least the drop size from that high notifies however long ago the high was.
 3. **A cooldown-suppressed qualifying drop is not queued**; it fires on the next qualifying report.
 4. **One alert per station per installation** remains — a person cannot watch both Cash and Credit at one station.
 5. **A mistaken high report followed by the correct one still looks like a drop.** Community data is unverified; the
@@ -382,6 +430,18 @@ These are flagged, not silently decided beyond the conservative default noted.
 6. **Trip planning uses the saved price** (method-agnostic). Whether planning should prefer a Credit or Cash community
    price when no saved price exists is a product choice; it does not read community prices today.
 7. **Which price the widget shows** when both exist (newest typed, tie → Credit) is a policy, easy to change.
+8. **A reserved cooldown is not released if its delivery never goes out.** The cooldown and `last_notified_price` are
+   stamped when a delivery is queued (that is what closes the two-prepared-reports race). If the queued delivery is then
+   skipped at send time (the report is older than the 2-hour window, or the device was invalidated) or ends `dead`, the
+   alert stays quiet for up to its cooldown (6 hours) with nothing sent. The old engine stamped only after a send. With a
+   healthy worker the window between queueing and sending is about a minute; releasing the stamp on a terminal unsent
+   delivery would need a change to the claim path, which this phase deliberately leaves untouched.
+9. **`superseded` is decided on the report's `reported_at`, which the client supplies** (the INSERT policy allows up to
+   10 minutes in the future and 7 days back). A future-dated report makes honest reports dated before it `superseded` for
+   at most those 10 minutes. Reports already needed a valid price and passed the rate limiter, and a forged drop could always
+   have notified, so this adds no new abuse class, but it is a way to briefly mute an alert.
+10. **A payment method with no report among a station's 20 newest has no line** in the app, which reads as "not reported
+    recently" rather than "not accepted here".
 
 ## 13. Android follow-up (no Android code lives in this repository)
 
