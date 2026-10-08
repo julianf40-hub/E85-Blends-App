@@ -83,8 +83,18 @@ Requires A (it refuses to run without it) and the Phase 3 worker/claim migration
   `price_alert_reference_horizon` (7 days).
 - `private.evaluate_price_alert_v2(...)` — a **pure, immutable** decision function (unit-testable by direct call).
   The old `private.evaluate_price_alert` stays in place, unchanged and no longer called.
-- `private.prepare_price_alert_deliveries(uuid)` — replaced; same signature and ACL (postgres + service_role).
-  Alerts are processed `ORDER BY id FOR UPDATE`, so concurrent preparers serialize per alert.
+- `private.prepare_price_alert_deliveries(uuid)` — replaced; same signature and ACL (postgres + service_role). It first
+  takes a transaction-level **advisory lock on the station**, then processes the station's alerts `ORDER BY id FOR
+  UPDATE`, so concurrent preparers serialize per station and always lock alert rows in the same order (the every-minute job
+  processor prepares several reports in ONE transaction; without the station lock, an alert saved in between two of its
+  prepares could deadlock with a single-report call — found in review and reproduced as scenario PC5).
+- `private.mark_price_alert_delivery_sent(uuid, integer)` — replaced with its previous body plus **one guard**: the sent
+  price is written to the alert only while the alert still has the payment method the delivery was decided under (a
+  delivery decided before this migration counts as `unknown`). Without it, a Credit notification delivered just after the
+  person switched the alert to Cash would write a Credit price into the Cash alert. Signature, return value and ACL
+  are unchanged (`create or replace` keeps the grants; scenario G1 checks).
+- A partial index `price_alert_deliveries_alert_queued_idx (alert_id, created_at desc) where status in ('pending',
+  'processing','failed')` for the lookup below; the set is small because a delivery leaves it within minutes.
 - Trigger `price_alerts_anchor_baseline` (before insert, or update of `alert_mode`/`payment_type`): anchors the
   reference to the latest comparable report **within 7 days**, else leaves it NULL (nothing invented), and clears
   `last_notified_price` when the method or mode changes (a cash notification price is never compared to a credit one).
@@ -92,6 +102,9 @@ Requires A (it refuses to run without it) and the Phase 3 worker/claim migration
   report (the latest `unknown` report), so the first report after deployment behaves as it did. It runs only on the
   first application (a session setting decided before the columns exist), so re-applying never anchors an alert that
   is legitimately waiting for its first report.
+- Both files begin with `set lock_timeout = '3s'` (and end with `reset lock_timeout`): they run in one transaction and
+  their `ALTER TABLE`s take locks that queue every reader and writer of the table behind them, so a file that cannot get its
+  lock in 3 seconds fails and can simply be re-run, instead of stalling the table.
 - **Not changed:** `claim_price_alert_deliveries_v2` and its v1 wrapper. Their exact return shape is pinned by the
   existing `price_alert_cross_platform_delivery_safety.test.sql` and the deployed worker depends on it, so the worker
   reads `deliveries.payment_type` with one extra lookup by delivery id instead (fail-soft).
@@ -135,10 +148,15 @@ Anything else, including a value this code has never seen, is not comparable (**
    - **`at_or_below`**: crossing / first-met / changed-by-`minimum_change` rules as before, but over the comparable
      stream only. The threshold is a dollar amount for the alert's own price type.
    - **`any_change`**: unchanged semantics over the comparable stream (not offered in the UI).
-5. **Cooldown** (default 360 min) compares against `last_notified_at`, now stamped when a notification is
-   **reserved** (a pending delivery is queued), not only when it is later sent — closing the two-prepared-reports race.
-   A qualifying drop that the cooldown suppresses **keeps the alert armed**: it fires on the next qualifying
-   comparable report after the cooldown. Nothing is queued "for later".
+5. **Cooldown** (default 360 min) is measured from the alert's last **sent** notification (`last_notified_at` /
+   `last_notified_price`, written when a delivery is marked sent, as before) or from a **newer notification still queued**
+   for it under its current payment method — a delivery that is `pending`, being sent, or `failed` and awaiting a retry. That
+   is what closes the two-prepared-reports race (the second report sees the first's queued delivery) **without** holding the
+   cooldown for a notification that never goes out: a queued delivery that ends `dead`, `invalid_device` or `skipped` (stale,
+   device unusable) is no longer queued, so it neither mutes the alert nor pins `at_or_below`'s "already notified at this
+   price" memory. (An earlier draft stamped the alert when a delivery was queued; review showed a lost notification then
+   muted the alert for up to 6 hours — scenario D20.) A qualifying drop that the cooldown suppresses **keeps the alert
+   armed**: it fires on the next qualifying comparable report after the cooldown. Nothing is queued "for later".
 6. Idempotence: if a delivery already exists for `(alert, R)`, the alert is skipped, so replays converge.
 
 ### 5.3 Worked examples (all are executed by `price_alert_payment_type.test.sql`)
@@ -181,7 +199,9 @@ notification is not changed at all (see §7).
 ### 5.5 Deliveries already queued
 
 Rows already in `price_alert_deliveries` (pending, processing or sent) are **not** touched, re-evaluated or re-sent by
-either migration. New behavior applies to reports prepared after migration B.
+either migration. New behavior applies to reports prepared after migration B. A delivery the previous engine queued and has
+not yet sent counts as a queued notification of its (legacy) alert, so the first report after the migration does not
+produce a duplicate while it is still waiting to go out (scenario D22).
 
 ## 6. API (`price-alerts-api`) — written, not deployed
 
@@ -320,7 +340,7 @@ the API are deployed** (see the order below).
 
 | Client | Backend | Behavior |
 |---|---|---|
-| Released iOS / Android (no payment type) | new | Reports accepted, stored `unknown`. Alerts keep their legacy behavior (legacy stream). Notifications unchanged in wording for legacy alerts |
+| Released iOS / Android (no payment type) | new | Reports accepted, stored `unknown`. Alerts keep their legacy behavior (legacy stream). Notifications unchanged in wording for legacy alerts. An older app that re-saves an alert the 2.4.1 app made keeps its payment type and reference, but — as its request always did — resets `minimum_change` to the legacy 0.05 when it does not send one |
 | New iOS | new | Everything above |
 | New iOS | old (migrations not applied) | see 8.4 |
 | Released clients | old | unchanged |
@@ -339,16 +359,20 @@ migrations A and B and the API are deployed — a report sent with a payment typ
    `85blends-price-alert-job-prepare` and `85blends-price-alerts-worker-invoke`. The project owner reported both **active**
    (`PRICE_ALERTS_CLIENT_INTEGRATION_2.4.1.md`); this phase never touched production and did not re-verify it, so confirm
    — and treat migration B as acting on **live** alert traffic from its first minute. Also count the rows in
-   `private.price_alert_deliveries` with `status in ('pending','processing')` (they will be left alone).
+   `private.price_alert_deliveries` with `status in ('pending','processing')` (they will be left alone). **Apply B when the queue is drained:** wait until
+   `private.price_alert_jobs` has no `pending`, `processing` or `failed` rows (a queued job's report would be swallowed by the
+   one-time legacy fill, which anchors each alert on the latest report) and, ideally, no `pending` or `processing` deliveries.
+   A delivery the previous engine queued is still honored (it holds its alert's cooldown), but a drained queue makes the
+   switch-over unambiguous. Both migrations start with `set lock_timeout = '3s'`: if one reports a lock timeout, re-run it.
 1. **Migration A.** Effect: reports can carry a payment type; nothing else changes (the engine still compares as before).
    Verify: existing rows read `unknown`; `anon` can insert with and without the column; `anon` cannot update/delete.
 2. **Migration B.** Effect is **immediate**: `prepare_price_alert_deliveries` is called every minute by the job-prepare
    cron and by the worker, so the new engine decides the very next report. Existing alerts become legacy (`unknown`) and
    keep working on unclassified reports. Verify: alerts keep their rows; `baseline_price` is filled for legacy alerts
    that had a prior report; no delivery was created by the migration itself.
-3. **Deploy `price-alerts-api`.** Verify `set_alert` with and without `payment_type`, `list_alerts` fields, `400
+3. **Deploy `price-alerts-api`** (all of its files: `index.ts`, `alert-input.ts`, `values.ts`; a per-file upload path must include the helpers or the function will not boot). Verify `set_alert` with and without `payment_type`, `list_alerts` fields, `400
    invalid_payment_type`.
-4. **Deploy `price-alerts-worker`.** The invoker cron is reported **active** (step 0), so the deployed worker is live within
+4. **Deploy `price-alerts-worker`** (including `message.ts`). The invoker cron is reported **active** (step 0), so the deployed worker is live within
    a minute: there is no pre-activation dry run in production, and none is attempted here (no cron change, no APNs/FCM
    send, no test reports or alerts). Deploying it before or after migration B is safe: for a legacy alert its wording is
    byte-for-byte the old one, and the extra `payment_type` lookup is fail-soft (it logs `payment_type lookup failed` and
@@ -397,9 +421,9 @@ backend (8.4). Migration B before migration A refuses to run.
 
 | Area | Where | Run with |
 |---|---|---|
-| SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D18 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, `list_alerts` returning both the legacy latest and the comparable latest, and a `same_for_both` report driving a Price Drop alert of either method while never reaching a legacy one), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
+| SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D24 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, `list_alerts` returning both the legacy latest and the comparable latest, a `same_for_both` report driving a Price Drop alert of either method while never reaching a legacy one, the fail-closed pause, an unsent notification not holding the cooldown, the `mark_sent` guard, a pre-migration queued delivery, a notification queued under the other method, and the station advisory lock), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
 | Migration preservation (rows unchanged, no rewrite, idempotent re-apply, legacy fill, old-client insert, permission matrix) | `price_alert_payment_type_migration.test.sh` | same |
-| Concurrency (two sessions, row lock, cooldown reservation race) | `price_alert_payment_type_concurrency.test.sh` | same |
+| Concurrency (PC1 cooldown race, PC2 one report prepared twice, PC3 a burst through the real grants while the job processor runs, PC4 the `set_alert` upsert racing a prepare, PC5 the lock-order deadlock) | `price_alert_payment_type_concurrency.test.sh` | same |
 | Edge Function pure modules (input rules, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping) or `deno test`; the entry points are also pinned by source-text assertions |
 | The Edge Functions themselves, end to end, under Deno against a local Postgres: the API's `set_alert` / `list_alerts` / `delete_alert` over HTTP (A1–A9: an older client, the 2.4.1 app, edits that keep the method, `invalid_payment_type`, bounds, comparable-latest fields, re-anchoring, non-Pro, delete), and the worker preparing, claiming and "sending" five notifications with the push providers stubbed (3 APNs, 2 FCM: copy, additive `payment_type`, legacy payload unchanged, the delivery's recorded method) | `price_alert_api_payment_type.test.sh`, `price_alert_worker_message.test.sh` (+ `support/worker_with_recorded_fetch.ts`) | Deno 2.x, jq, curl, openssl, psql and a replayed scratch database; nothing leaves the machine (the wrapper refuses any URL but the providers') |
 | Swift (models, form, presets, service, wire contract, report rules, breakdown, presenter, widget model, notification payload) | `EightyFiveBlendsTests/*` | Xcode (`xcodebuild test`) |
@@ -433,19 +457,23 @@ These are flagged, not silently decided beyond the conservative default noted.
 6. **Trip planning uses the saved price** (method-agnostic). Whether planning should prefer a Credit or Cash community
    price when no saved price exists is a product choice; it does not read community prices today.
 7. **Which price the widget shows** when both exist (newest typed, tie → Credit) is a policy, easy to change.
-8. **A reserved cooldown is not released if its delivery never goes out.** The cooldown and `last_notified_price` are
-   stamped when a delivery is queued (that is what closes the two-prepared-reports race). If the queued delivery is then
-   skipped at send time (the report is older than the 2-hour window, or the device was invalidated) or ends `dead`, the
-   alert stays quiet for up to its cooldown (6 hours) with nothing sent. The old engine stamped only after a send. With a
-   healthy worker the window between queueing and sending is about a minute; releasing the stamp on a terminal unsent
-   delivery would need a change to the claim path, which this phase deliberately leaves untouched.
+8. **A notification SENT shortly before the person switches the alert's method still rate-limits the alert.** Switching
+   clears the notification *price* (a Credit price is never compared with a Cash one) but keeps the notification *time*, so the
+   first Cash notification can be held until the cooldown that the Credit one started has run out. A notification still *queued*
+   under the other method holds nothing (scenario D23).
 9. **`superseded` is decided on the report's `reported_at`, which the client supplies** (the INSERT policy allows up to
    10 minutes in the future and 7 days back). A future-dated report makes honest reports dated before it `superseded` for
    at most those 10 minutes. Reports already needed a valid price and passed the rate limiter, and a forged drop could always
    have notified, so this adds no new abuse class, but it is a way to briefly mute an alert.
 10. **A payment method with no report among a station's 20 newest has no line** in the app, which reads as "not reported
     recently" rather than "not accepted here".
-
+11. **An alert saved at the very instant a report is inserted can be anchored one report behind.** The anchor is read in a
+    `BEFORE INSERT` trigger and the report's job is only enqueued if an enabled alert is visible to the report's transaction;
+    a report that commits just before the alert does is in neither. The next report at the same price could then fire a drop from
+    the older reference. The window is one statement (sub-millisecond in practice; the review needed a deliberate 3 second pause
+    to hit it). Closing it would put a station lock in the public report-insert path, which is not worth it.
+12. **Fully tied reports are ordered by id.** Rows from one multi-row `INSERT` share `reported_at` and `created_at`, so which
+    is "newest" is arbitrary. The app posts one report at a time; only a batch writer can tie.
 ## 13. Android follow-up (no Android code lives in this repository)
 
 Everything is additive and optional, so the shipped Android app keeps working unchanged. To adopt it:
