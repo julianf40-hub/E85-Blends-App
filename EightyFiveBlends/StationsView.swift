@@ -2118,6 +2118,9 @@ struct StationsView: View {
     @ViewBuilder
     private func selectedMapStationCard(_ station: SavedStationMapItem) -> some View {
         let community = selectedMapStationCommunityPrice(for: station)
+        // 2.4.1 (Phase 3C) — the community's prices by payment method; EMPTY (the branches below are then the
+        // original ones, unchanged) when every report is unclassified.
+        let communityLines = selectedMapStationCommunityLines(for: station)
 
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -2130,10 +2133,28 @@ struct StationsView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.primaryGreen)
 
-                    if let community {
+                    if communityLines.isEmpty == false {
+                        ForEach(communityLines) { line in
+                            Text("Community \(line.summaryText)")
+                                .font(.caption)
+                                .foregroundStyle(line.isStale ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
+                        }
+                    } else if let community {
                         Text("Community \(community.price.currencyText) · \(community.daysAgoText)")
                             .font(.caption)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
+                    }
+                } else if communityLines.isEmpty == false {
+                    ForEach(communityLines) { line in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Community E85 \(line.labeledPriceText)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.primaryGreen)
+
+                            Text(line.captionText)
+                                .font(.caption)
+                                .foregroundStyle(line.isStale ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
+                        }
                     }
                 } else if let community {
                     Text("Community E85 \(community.price.currencyText)")
@@ -2163,6 +2184,13 @@ struct StationsView: View {
                 .stroke(AppTheme.Colors.borderColor, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    /// 2.4.1 (Phase 3C) — Cash / Credit lines for the selected saved station, each with its own age and staleness.
+    /// EMPTY when the station has no typed community price (the card then shows the single price it always did).
+    private func selectedMapStationCommunityLines(for mapItem: SavedStationMapItem) -> [CommunityPriceLinePresentation] {
+        guard let fuelStation = stations.first(where: { $0.persistentModelID == mapItem.id }) else { return [] }
+        return CommunityPriceLinePresenter.typedLines(from: communitySummary(for: fuelStation))
     }
 
     private func selectedMapStationCommunityPrice(for mapItem: SavedStationMapItem) -> (price: Double, daysAgoText: String)? {
@@ -4977,7 +5005,7 @@ private struct LiveStationRowCard: View {
                 ForEach(typedLines) { line in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
-                            Text(line.label.map { "\($0) \(line.priceText)" } ?? line.priceText)
+                            Text(line.labeledPriceText)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(AppTheme.Colors.primaryGreen)
 

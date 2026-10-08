@@ -209,7 +209,9 @@ struct FuelLogView: View {
                 reportAction: { submitCommunityPriceReport(for: context) },
                 cancelAction: { communityReportContext = nil }
             )
-            .presentationDetents([.medium, .large])
+            // Full height: the required Payment Type choice sits under the fill-up summary, and at the half-height
+            // detent it (and its "Choose ..." message) would start below the fold.
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .interactiveDismissDisabled(isSubmittingCommunityPrice)
             .onChange(of: reportPaymentType) { _, newValue in

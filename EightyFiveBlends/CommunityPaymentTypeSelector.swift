@@ -14,8 +14,9 @@
 //  ("`.unknown` is not an answer") live in CommunityPaymentTypeValidation; this file is only the control.
 //
 //  Selected state is carried by a check mark, a thicker border and the selected accessibility trait, never by colour
-//  alone. The three buttons sit in an adaptive grid, so at large Dynamic Type sizes they wrap onto more rows instead of
-//  truncating; every label scales with its text style.
+//  alone. The three buttons sit in an adaptive grid whose minimum column width grows with Dynamic Type, so at large
+//  text sizes they stack into fewer columns (more rows) instead of breaking a label; every label scales with its text
+//  style. A missing-choice message is announced to VoiceOver when it appears.
 //
 
 import SwiftUI
@@ -26,6 +27,9 @@ struct CommunityPaymentTypeSelector: View {
     var message: String?
     var isDisabled = false
 
+    /// Scales with Dynamic Type (a fixed width would break "Credit" or "Same for Both" at the accessibility sizes).
+    @ScaledMetric(relativeTo: .subheadline) private var minimumButtonWidth: CGFloat = 104
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(CommunityPaymentTypeValidation.sectionTitle)
@@ -33,7 +37,7 @@ struct CommunityPaymentTypeSelector: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .accessibilityAddTraits(.isHeader)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: minimumButtonWidth), spacing: 8)], spacing: 8) {
                 ForEach(CommunityPaymentType.reportChoices, id: \.self) { choice in
                     option(choice)
                 }
@@ -54,6 +58,11 @@ struct CommunityPaymentTypeSelector: View {
         .onChange(of: selection) { _, newValue in
             if newValue != nil {
                 AppHaptics.selection()
+            }
+        }
+        .onChange(of: message) { _, newValue in
+            if let newValue {
+                AccessibilityNotification.Announcement(newValue).post()
             }
         }
     }

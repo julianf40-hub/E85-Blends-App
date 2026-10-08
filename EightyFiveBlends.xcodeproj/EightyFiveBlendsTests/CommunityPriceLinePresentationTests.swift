@@ -127,6 +127,19 @@ struct CommunityPriceLinePresentationTests {
         #expect(line.accessibilityText == "Cash E85 price $2.99/gal, reported yesterday")
     }
 
+    @Test("The price is labelled with its method; an unclassified price stays bare and a same-for-both price names both")
+    func labeledPrice() throws {
+        let cash = try #require(lines([report(2.99, .cash, at: ago(hours: 1))]).first)
+        #expect(cash.labeledPriceText == "Cash $2.99/gal")
+
+        let both = try #require(lines([report(3.09, .sameForBoth, at: ago(hours: 1))]).first)
+        #expect(both.labeledPriceText == "Cash & Credit $3.09/gal")
+
+        let bare = try #require(lines([report(2.99, .cash, at: ago(days: 2)), report(3.19, .unknown, at: ago(hours: 1))]).last)
+        #expect(bare.isUnclassified)
+        #expect(bare.labeledPriceText == "$3.19/gal")
+    }
+
     @Test("A stale line says so to VoiceOver")
     func staleAccessibility() throws {
         let line = try #require(lines([report(3.19, .credit, at: ago(days: 21))]).first)

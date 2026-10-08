@@ -36,6 +36,11 @@ struct PriceAlertSheet: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: Field?
 
+    /// The option grids' minimum column widths grow with Dynamic Type, so a larger text size gives each option more
+    /// room (fewer columns, more rows) instead of breaking its label.
+    @ScaledMetric(relativeTo: .headline) private var paymentColumnMinimum: CGFloat = 150
+    @ScaledMetric(relativeTo: .headline) private var sensitivityColumnMinimum: CGFloat = 88
+
     /// The two text fields the sheet can show (the target price, and a Custom drop size).
     private enum Field: Hashable {
         case price
@@ -334,7 +339,7 @@ struct PriceAlertSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: PriceAlertPaymentCopy.sectionTitle)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: paymentColumnMinimum), spacing: 10)], spacing: 10) {
                 ForEach(PriceAlertPayment.choices, id: \.self) { payment in
                     paymentOption(payment)
                 }
@@ -410,7 +415,7 @@ struct PriceAlertSheet: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 10)], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: sensitivityColumnMinimum), spacing: 10)], spacing: 10) {
                 ForEach(PriceAlertSensitivity.allCases) { sensitivity in
                     sensitivityOption(sensitivity)
                 }

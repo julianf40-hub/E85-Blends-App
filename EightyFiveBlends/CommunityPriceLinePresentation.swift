@@ -48,6 +48,13 @@ nonisolated struct CommunityPriceLinePresentation: Identifiable, Equatable, Send
         kind == .unknown
     }
 
+    /// The price with its method in front when it has one: "Cash $2.99/gal", "Cash & Credit $3.09/gal"; a price that
+    /// does not say which it is stays bare ("$3.19/gal") and claims no method.
+    var labeledPriceText: String {
+        guard let label else { return priceText }
+        return "\(label) \(priceText)"
+    }
+
     /// Under the price: "Reported today", or "Payment type not specified · Reported today" for an unclassified one.
     var captionText: String {
         isUnclassified ? "\(CommunityPriceLinePresenter.unclassifiedLabel) · \(reportedText)" : reportedText
