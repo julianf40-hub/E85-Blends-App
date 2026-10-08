@@ -8,12 +8,12 @@
 // package_name, and fcm_token for push-device registration.
 
 import postgres from "npm:postgres@3.4.5";
+import { parseAlertInput } from "./alert-input.ts";
+import { asTrimmedString, asUuid } from "./values.ts";
 
 type JsonObject = Record<string, unknown>;
 type Sql = ReturnType<typeof postgres>;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ALLOWED_ALERT_MODES = new Set(["any_change", "price_drop", "at_or_below"]);
 const ALLOWED_RC_ENVIRONMENTS = new Set(["SANDBOX", "PRODUCTION"]);
 const ALLOWED_APNS_ENVIRONMENTS = new Set(["sandbox", "production"]);
 const ALLOWED_PLATFORMS = new Set(["ios", "android"]);
@@ -32,26 +32,6 @@ function asObject(value: unknown): JsonObject | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as JsonObject
     : null;
-}
-
-function asTrimmedString(value: unknown, maxLength = 4096): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > maxLength) return null;
-  return trimmed;
-}
-
-function asUuid(value: unknown): string | null {
-  const text = asTrimmedString(value, 64);
-  return text && UUID_RE.test(text) ? text.toLowerCase() : null;
-}
-
-function asFiniteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function asInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
 function platformFrom(value: unknown, fallback: "ios" | "android" = "ios"): "ios" | "android" | null {
@@ -345,38 +325,36 @@ async function setAlert(sql: Sql, body: JsonObject): Promise<Response> {
   if (!auth.ok) return auth.response;
   const pro = await resolveCurrentPro(sql, auth.installation);
   if (!pro.isPro) return json(403, { error: "pro_required" });
-  const stationId = asUuid(body.station_id);
-  const alertMode = asTrimmedString(body.alert_mode, 32) ?? "price_drop";
-  if (!stationId || !ALLOWED_ALERT_MODES.has(alertMode)) return json(400, { error: "invalid_alert" });
-  const threshold = body.threshold_price == null ? null : asFiniteNumber(body.threshold_price);
-  if (alertMode === "at_or_below") {
-    if (threshold == null || threshold < 1 || threshold > 8) return json(400, { error: "invalid_threshold_price" });
-  } else if (body.threshold_price != null) {
-    return json(400, { error: "threshold_only_valid_for_at_or_below" });
-  }
-  const minimumChange = body.minimum_change == null ? 0.05 : asFiniteNumber(body.minimum_change);
-  const cooldownMinutes = body.cooldown_minutes == null ? 360 : asInteger(body.cooldown_minutes);
-  if (minimumChange == null || minimumChange < 0.01 || minimumChange > 2 || cooldownMinutes == null || cooldownMinutes < 60 || cooldownMinutes > 10080) {
-    return json(400, { error: "invalid_alert_preferences" });
-  }
+  // Every rule about what an alert may look like (mode, payment method, threshold, sensitivity,
+  // cooldown) lives in alert-input.ts so it is unit-tested; nothing is re-decided here.
+  const parsed = parseAlertInput(body);
+  if (!parsed.ok) return json(parsed.status, { error: parsed.error });
+  const { stationId, alertMode, thresholdPrice, minimumChange, cooldownMinutes, paymentType } = parsed.value;
   const stationRows = await sql<{ id: string }[]>`select id from public.community_stations where id = ${stationId} limit 1`;
   if (stationRows.length === 0) return json(404, { error: "station_not_found" });
+  // payment_type: a request that names a method sets it; a request that does not (an older app, or a
+  // client that only changes the sensitivity) KEEPS the alert's current method, and a brand-new alert
+  // from such a client is stored as 'unknown' (a legacy alert) - a method is never invented. Changing
+  // the method or the mode re-anchors the alert's reference price inside the database (trigger
+  // price_alerts_anchor_baseline); a plain edit of the other fields does not.
   const rows = await sql<{
     id: string; station_id: string; alert_mode: string; threshold_price: string | null;
-    minimum_change: string; cooldown_minutes: number; enabled: boolean;
+    minimum_change: string; cooldown_minutes: number; enabled: boolean; payment_type: string;
   }[]>`
     insert into private.price_alerts (
-      installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled
+      installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled
     ) values (
-      ${auth.installation.id}, ${stationId}, ${alertMode}, ${threshold}, ${minimumChange}, ${cooldownMinutes}, true
+      ${auth.installation.id}, ${stationId}, ${alertMode}, ${thresholdPrice}, ${minimumChange}, ${cooldownMinutes},
+      coalesce(${paymentType}::text, 'unknown'), true
     )
     on conflict (installation_id, station_id) do update
     set alert_mode = excluded.alert_mode,
         threshold_price = excluded.threshold_price,
         minimum_change = excluded.minimum_change,
         cooldown_minutes = excluded.cooldown_minutes,
+        payment_type = coalesce(${paymentType}::text, private.price_alerts.payment_type),
         enabled = true
-    returning id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled
+    returning id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled, payment_type
   `;
   return json(200, { status: "saved", alert: rows[0] });
 }
@@ -397,18 +375,26 @@ async function deleteAlert(sql: Sql, body: JsonObject): Promise<Response> {
 async function listAlerts(sql: Sql, body: JsonObject): Promise<Response> {
   const auth = await loadAndAuthenticateInstallation(sql, body);
   if (!auth.ok) return auth.response;
+  // latest_price / latest_reported_at keep their original meaning (the newest report of ANY kind) so older
+  // clients are unaffected. The latest_comparable_* fields are the newest report the alert is actually judged
+  // on (its own payment method, or an explicit same_for_both), with the payment type of that report.
   const alerts = await sql<{
     id: string; station_id: string; alert_mode: string; threshold_price: string | null;
-    minimum_change: string; cooldown_minutes: number; enabled: boolean;
+    minimum_change: string; cooldown_minutes: number; enabled: boolean; payment_type: string;
     last_notified_price: string | null; last_notified_at: string | null;
     station_name: string; address: string | null; city: string | null; state: string | null;
     latest_price: string | null; latest_reported_at: string | null;
+    latest_comparable_price: string | null; latest_comparable_reported_at: string | null;
+    latest_comparable_payment_type: string | null;
   }[]>`
     select a.id, a.station_id, a.alert_mode, a.threshold_price,
-           a.minimum_change, a.cooldown_minutes, a.enabled,
+           a.minimum_change, a.cooldown_minutes, a.enabled, a.payment_type,
            a.last_notified_price, a.last_notified_at,
            s.name as station_name, s.address, s.city, s.state,
-           latest.price as latest_price, latest.reported_at as latest_reported_at
+           latest.price as latest_price, latest.reported_at as latest_reported_at,
+           comparable.price as latest_comparable_price,
+           comparable.reported_at as latest_comparable_reported_at,
+           comparable.payment_type as latest_comparable_payment_type
     from private.price_alerts a
     join public.community_stations s on s.id = a.station_id
     left join lateral (
@@ -418,6 +404,7 @@ async function listAlerts(sql: Sql, body: JsonObject): Promise<Response> {
       order by r.reported_at desc, r.created_at desc
       limit 1
     ) latest on true
+    left join lateral private.latest_comparable_price_report(a.station_id, a.payment_type) comparable on true
     where a.installation_id = ${auth.installation.id}
     order by s.name asc
   `;

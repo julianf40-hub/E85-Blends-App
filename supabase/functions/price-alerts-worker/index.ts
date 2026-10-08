@@ -8,6 +8,7 @@ import postgres from "npm:postgres@3.4.5";
 import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 import { isAuthorizedWorkerCall } from "./auth.ts";
 import { classifyFcmResponse } from "./fcm.ts";
+import { messageFor, payloadPaymentType } from "./message.ts";
 
 type Json = Record<string, unknown>;
 type Sql = ReturnType<typeof postgres>;
@@ -29,6 +30,9 @@ type Delivery = {
   previous_price: string | number | null;
   reason_code: string | null;
   attempt_count: number;
+  /** The alert's payment method when the delivery was decided. Read separately from the claim (see
+   *  paymentTypesFor) so the claim function's pinned shape never changes; absent on an older database. */
+  payment_type?: string | null;
 };
 
 type SendResult = { ok: boolean; status: number; reason: string; retryable: boolean; invalidate: boolean };
@@ -126,20 +130,6 @@ async function fcmAccessToken(config: FcmConfig): Promise<string> {
   return token;
 }
 
-function messageFor(delivery: Delivery): { title: string; body: string } {
-  const price = Number(delivery.observed_price);
-  const formatted = Number.isFinite(price) ? `$${price.toFixed(2)}/gal` : "a new price";
-  const name = delivery.station_name?.trim() || "An E85 station";
-  switch (delivery.reason_code) {
-    case "price_dropped": return { title: "E85 price dropped", body: `${name} dropped to ${formatted}.` };
-    case "threshold_crossed":
-    case "threshold_met":
-    case "threshold_price_changed": return { title: "E85 price alert", body: `${name} is now ${formatted}.` };
-    case "price_changed": return { title: "E85 price changed", body: `${name} is now ${formatted}.` };
-    default: return { title: "E85 price update", body: `${name} is now ${formatted}.` };
-  }
-}
-
 async function sendApns(delivery: Delivery, config: ApnsConfig): Promise<SendResult> {
   if (!delivery.apns_environment) {
     return { ok: false, status: 0, reason: "missing_apns_environment", retryable: false, invalidate: false };
@@ -147,11 +137,14 @@ async function sendApns(delivery: Delivery, config: ApnsConfig): Promise<SendRes
   const token = await apnsJwt(config);
   const host = delivery.apns_environment === "sandbox" ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com";
   const copy = messageFor(delivery);
+  const paymentType = payloadPaymentType(delivery.payment_type);
   const payload = {
     aps: { alert: copy, sound: "default" },
     type: "price_alert",
     station_id: delivery.station_id,
     observed_price: Number(delivery.observed_price),
+    // Additive: present only for a Cash or Credit alert; receivers that do not know it ignore it.
+    ...(paymentType ? { payment_type: paymentType } : {}),
   };
 
   const res = await fetch(`${host}/3/device/${encodeURIComponent(delivery.device_token)}`, {
@@ -197,6 +190,8 @@ async function sendFcm(delivery: Delivery, config: FcmConfig): Promise<SendResul
           type: "price_alert",
           station_id: delivery.station_id,
           observed_price: String(Number(delivery.observed_price)),
+          // Additive (FCM data values are strings): present only for a Cash or Credit alert.
+          ...(payloadPaymentType(delivery.payment_type) ? { payment_type: payloadPaymentType(delivery.payment_type) as string } : {}),
         },
         android: { priority: "HIGH" },
       },
@@ -232,6 +227,26 @@ async function prepareJobs(sql: Sql, limit: number): Promise<{ claimed: number; 
   return { claimed: jobs.length, prepared, failed };
 }
 
+/**
+ * The alert's payment method for each claimed delivery. A separate read by delivery id instead of a
+ * new column on the claim function, whose exact return shape is pinned by the database test suite
+ * because the deployed worker depends on it. If the column does not exist yet (the worker deployed
+ * before the migration) or the read fails, every delivery simply gets the plain, method-less copy.
+ */
+async function paymentTypesFor(sql: Sql, deliveryIds: string[]): Promise<Map<string, string | null>> {
+  const types = new Map<string, string | null>();
+  if (deliveryIds.length === 0) return types;
+  try {
+    const rows = await sql<{ id: string; payment_type: string | null }[]>`
+      select id, payment_type from private.price_alert_deliveries where id = any(${deliveryIds}::uuid[])
+    `;
+    for (const row of rows) types.set(row.id, row.payment_type);
+  } catch {
+    // legacy copy
+  }
+  return types;
+}
+
 async function sendDeliveries(
   sql: Sql,
   platform: Platform,
@@ -239,6 +254,8 @@ async function sendDeliveries(
   sender: (delivery: Delivery) => Promise<SendResult>,
 ): Promise<DeliverySummary> {
   const deliveries = await sql<Delivery[]>`select * from private.claim_price_alert_deliveries_v2(${limit}, ${platform})`;
+  const paymentTypes = await paymentTypesFor(sql, deliveries.map((delivery) => delivery.delivery_id));
+  for (const delivery of deliveries) delivery.payment_type = paymentTypes.get(delivery.delivery_id) ?? null;
   let sent = 0, retrying = 0, invalid = 0, dead = 0;
   for (const delivery of deliveries) {
     try {
