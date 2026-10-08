@@ -57,7 +57,9 @@ struct CommunityStation: Decodable, Identifiable, Sendable {
     }
 }
 
-struct CommunityPriceReport: Decodable, Identifiable, Sendable {
+/// 2.4.1 (Phase 3C): `nonisolated` so the pure per-method breakdown (CommunityPriceBreakdown) can read it off the
+/// main actor. A plain value type; nothing about how it is created or decoded changes.
+nonisolated struct CommunityPriceReport: Decodable, Identifiable, Sendable {
     let id: UUID?
     let stationID: UUID?
     let normalizedStationKey: String
@@ -66,6 +68,10 @@ struct CommunityPriceReport: Decodable, Identifiable, Sendable {
     let reporterID: String
     let notes: String?
     let createdAt: Date?
+    /// Which price this report is (cash / credit / same for both). `.unknown` for every report made before payment
+    /// types existed and for any older app's report: it is NEVER inferred. Decoded leniently - a missing, null or
+    /// unrecognised value reads as `.unknown` and does not throw.
+    let paymentType: CommunityPaymentType
 
     var reportSourceLabel: String {
         "Community reported"
@@ -79,7 +85,8 @@ struct CommunityPriceReport: Decodable, Identifiable, Sendable {
         reportedAt: Date,
         reporterID: String,
         notes: String?,
-        createdAt: Date?
+        createdAt: Date?,
+        paymentType: CommunityPaymentType = .unknown
     ) {
         self.id = id
         self.stationID = stationID
@@ -89,12 +96,14 @@ struct CommunityPriceReport: Decodable, Identifiable, Sendable {
         self.reporterID = reporterID
         self.notes = notes
         self.createdAt = createdAt
+        self.paymentType = paymentType
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case stationID = "station_id"
         case normalizedKey = "normalized_key"
+        case paymentType = "payment_type"
         case price
         case reportedAt = "reported_at"
         case reporterID = "reporter_id"
@@ -122,13 +131,37 @@ struct CommunityPriceReport: Decodable, Identifiable, Sendable {
             try container.decodeIfPresent(String.self, forKey: .note) ??
             container.decodeIfPresent(String.self, forKey: .notes)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+        paymentType = (try container.decodeIfPresent(CommunityPaymentType.self, forKey: .paymentType)) ?? .unknown
     }
 }
 
-struct CommunityPriceSummary: Decodable, Sendable {
+nonisolated struct CommunityPriceSummary: Decodable, Sendable {
     let normalizedStationKey: String
+    /// The newest report of ANY payment type - what this app has always called "the" community price, kept with
+    /// its original meaning (and the source of `communityStationID`). Anything that prints a price per payment
+    /// method uses `breakdown` instead.
     let latestReport: CommunityPriceReport?
     let reportCount: Int
+    /// The station's newest reports (any kind), newest first, as fetched. Empty for a summary built from a single
+    /// `latestReport`, in which case `breakdown` is built from that one report.
+    let recentReports: [CommunityPriceReport]
+
+    init(
+        normalizedStationKey: String,
+        latestReport: CommunityPriceReport?,
+        reportCount: Int,
+        recentReports: [CommunityPriceReport] = []
+    ) {
+        self.normalizedStationKey = normalizedStationKey
+        self.latestReport = latestReport
+        self.reportCount = reportCount
+        self.recentReports = recentReports
+    }
+
+    /// The per-method reading of this station's reports: the Cash price, the Credit price, an unclassified one.
+    var breakdown: CommunityPriceBreakdown {
+        CommunityPriceBreakdown(reports: recentReports.isEmpty ? (latestReport.map { [$0] } ?? []) : recentReports)
+    }
 
     var latestPrice: Double? {
         latestReport?.price

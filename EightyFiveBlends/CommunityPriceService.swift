@@ -33,6 +33,10 @@ enum CommunityPriceServiceError: LocalizedError {
 struct CommunityPriceService {
     private static let maximumNoteLength = 500
     private static let defaultTimeoutInterval: TimeInterval = 18
+    /// How many of a station's newest reports one fetch reads, so the app can find the newest CASH price and the
+    /// newest CREDIT price (and a legacy unclassified one) from a single request. A method whose latest report is
+    /// older than this many newer reports simply has no line (an old price is never promoted to the current one).
+    static let recentReportWindow = 20
 
     private let config: SupabaseConfig
     private let session: URLSession
@@ -40,12 +44,20 @@ struct CommunityPriceService {
     private let encoder: JSONEncoder
 
     init(session: URLSession = CommunityPriceService.defaultSession) throws {
+        let loadedConfig: SupabaseConfig
         do {
-            self.config = try SupabaseConfig.load()
+            loadedConfig = try SupabaseConfig.load()
         } catch {
             throw CommunityPriceServiceError.notConfigured
         }
+        self.init(config: loadedConfig, session: session)
+    }
 
+    /// The same service over an explicit configuration. Production uses `init(session:)`, which reads the app's
+    /// own; this exists so a test can point the real request-building code at a stub session without depending on
+    /// the host app's Info.plist (2.4.1 Phase 3C: the payment-type request shape is pinned by tests).
+    init(config: SupabaseConfig, session: URLSession) {
+        self.config = config
         self.session = session
 
         let decoder = JSONDecoder()
@@ -84,26 +96,53 @@ struct CommunityPriceService {
         let station = try await fetchCommunityStation(forNormalizedStationKey: trimmedKey)
         guard let stationID = station?.id else { return nil }
 
-        var components = try reportsEndpointComponents()
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,station_id,price,reported_at,anonymous_reporter_id,app_version,note,created_at"),
-            URLQueryItem(name: "station_id", value: "eq.\(stationID.uuidString)"),
-            URLQueryItem(name: "order", value: "reported_at.desc"),
-            URLQueryItem(name: "limit", value: "1")
-        ]
-
-        let reports: [CommunityPriceReport] = try await performRequest(
-            components: components,
-            method: "GET",
-            functionName: "fetchLatestPrice"
-        )
+        let reports = try await fetchRecentReports(stationID: stationID)
 
         guard reports.isEmpty == false else { return nil }
 
         return CommunityPriceSummary(
             normalizedStationKey: trimmedKey,
             latestReport: reports.first,
-            reportCount: reports.first == nil ? 0 : 1
+            reportCount: reports.first == nil ? 0 : 1,
+            recentReports: reports
+        )
+    }
+
+    /// The station's newest reports (any payment type), newest first.
+    ///
+    /// 2.4.1 (Phase 3C): `payment_type` is selected, and the newest few reports are read (not just one) so the
+    /// per-method prices can be told apart. note / app_version are not shown anywhere and are no longer read. The
+    /// first row is still "the newest report of any kind", so `latestReport` keeps its original meaning.
+    ///
+    /// A backend that has not had the payment-type migration applied yet answers this select with a 400 (the column
+    /// does not exist). Community prices must not disappear because of deployment order, so that one case reads
+    /// again WITHOUT the column: every report then reads as unclassified and the Stations screen shows its legacy
+    /// single price. Only a 400 does this; every other failure is reported as before. (Submitting a report does
+    /// not fall back — see submitPriceReport.)
+    private func fetchRecentReports(stationID: UUID) async throws -> [CommunityPriceReport] {
+        do {
+            return try await recentReports(stationID: stationID, includingPaymentType: true)
+        } catch let error as CommunityPriceServiceError {
+            guard case .requestFailed(let statusCode, _) = error, statusCode == 400 else { throw error }
+            return try await recentReports(stationID: stationID, includingPaymentType: false)
+        }
+    }
+
+    private func recentReports(stationID: UUID, includingPaymentType: Bool) async throws -> [CommunityPriceReport] {
+        var components = try reportsEndpointComponents()
+        let columns = includingPaymentType
+            ? "id,station_id,price,reported_at,payment_type,anonymous_reporter_id,created_at"
+            : "id,station_id,price,reported_at,anonymous_reporter_id,created_at"
+        components.queryItems = [
+            URLQueryItem(name: "select", value: columns),
+            URLQueryItem(name: "station_id", value: "eq.\(stationID.uuidString)"),
+            URLQueryItem(name: "order", value: "reported_at.desc,created_at.desc"),
+            URLQueryItem(name: "limit", value: String(Self.recentReportWindow))
+        ]
+        return try await performRequest(
+            components: components,
+            method: "GET",
+            functionName: "fetchLatestPrice"
         )
     }
 
@@ -237,7 +276,8 @@ struct CommunityPriceService {
         price: Double,
         reportedAt: Date = .now,
         notes: String? = nil,
-        appVersion: String? = nil
+        appVersion: String? = nil,
+        paymentType: CommunityPaymentType? = nil
     ) async throws -> CommunityPriceReport {
         let resolvedStationID: UUID
         if let stationID {
@@ -260,13 +300,18 @@ struct CommunityPriceService {
         }
 
         let limitedNotes = Self.limitedNote(from: notes)
+        // 2.4.1 (Phase 3C): sent only when the person said which price this is. `nil` (a caller that does not
+        // know) and `.unknown` are both OMITTED, so the request is byte-for-byte what an older app sends and the
+        // server stores `unknown`; a payment type is never guessed or defaulted here.
+        let sentPaymentType: CommunityPaymentType? = (paymentType?.isSpecified == true) ? paymentType : nil
         let payload = CommunityPriceReportPayload(
             stationID: resolvedStationID,
             price: roundedPrice(price),
             reportedAt: reportedAt,
             reporterID: Self.anonymousReporterID,
             note: limitedNotes,
-            appVersion: appVersion?.trimmingCharacters(in: .whitespacesAndNewlines)
+            appVersion: appVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+            paymentType: sentPaymentType
         )
 
         let data = try await performRequestData(
@@ -288,7 +333,8 @@ struct CommunityPriceService {
                 reportedAt: reportedAt,
                 reporterID: Self.anonymousReporterID,
                 notes: limitedNotes,
-                createdAt: nil
+                createdAt: nil,
+                paymentType: sentPaymentType ?? .unknown
             )
         }
 
@@ -661,6 +707,9 @@ private struct CommunityPriceReportPayload: Encodable {
     let reporterID: String
     let note: String?
     let appVersion: String?
+    /// 2.4.1 (Phase 3C): nil is omitted from the JSON (synthesized Encodable), exactly like `note` and
+    /// `appVersion`, so a request that names no payment type is identical to what an older app sends.
+    let paymentType: CommunityPaymentType?
 
     enum CodingKeys: String, CodingKey {
         case stationID = "station_id"
@@ -669,6 +718,7 @@ private struct CommunityPriceReportPayload: Encodable {
         case reporterID = "anonymous_reporter_id"
         case note
         case appVersion = "app_version"
+        case paymentType = "payment_type"
     }
 }
 
