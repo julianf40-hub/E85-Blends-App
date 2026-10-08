@@ -3,8 +3,9 @@
 //  EightyFiveBlends
 //
 //  85Blends 2.4.1 — Price Alerts UI (Phase 3B). The compact sheet a station's bell opens: the
-//  station, the alert it has (or doesn't), the two kinds of alert to choose from, a price for "At or
-//  Below", Save, the notification opt-in, and Turn Off. This file is the VIEW only — every decision
+//  station, the alert it has (or doesn't), the two kinds of alert to choose from, which price it
+//  watches (Cash or Credit), a drop size for "Price Drop" or a price for "At or Below", Save, the
+//  notification opt-in, and Turn Off. This file is the VIEW only — every decision
 //  (what is shown, what a tap does, what is allowed while something is in flight) lives in
 //  PriceAlertsStationModel, which is unit-tested; the views below read it and forward taps to it.
 //
@@ -17,7 +18,8 @@
 //    resolvingEntitlement  "Checking your subscription…" — never the Pro card, never Free messaging
 //    proRequired           the existing locked-feature card with its "Unlock 85Blends Pro" button
 //    loading / loadFailed  a spinner / a plain-words error with Try Again
-//    ready                 status, alert type, price, Save, notifications, Turn Off
+//    ready                 status, alert type, price to watch, drop size / target price, Save,
+//                          notifications, Turn Off
 //
 //  ACCESSIBILITY. Every state is carried by words and an icon, never by colour alone (the selected
 //  alert type has a check mark, its border is thicker and VoiceOver reads it as selected; errors
@@ -32,7 +34,13 @@ import UIKit
 struct PriceAlertSheet: View {
     @State private var model: PriceAlertsStationModel
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var isPriceFieldFocused: Bool
+    @FocusState private var focusedField: Field?
+
+    /// The two text fields the sheet can show (the target price, and a Custom drop size).
+    private enum Field: Hashable {
+        case price
+        case customChange
+    }
 
     init(target: PriceAlertStationTarget) {
         self.init(target: target, service: PriceAlertsService.shared)
@@ -64,7 +72,7 @@ struct PriceAlertSheet: View {
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") { isPriceFieldFocused = false }
+                    Button("Done") { focusedField = nil }
                 }
             }
         }
@@ -193,6 +201,10 @@ struct PriceAlertSheet: View {
         }
         statusCard
         kindSection
+        paymentSection
+        if model.form.showsSensitivity {
+            sensitivitySection
+        }
         if model.form.showsPriceField {
             priceSection
         }
@@ -239,6 +251,19 @@ struct PriceAlertSheet: View {
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    if let watch = model.currentWatch {
+                        Text(watch.paymentLine)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(watch.needsPaymentChoice ? AppTheme.Colors.stationYellow : AppTheme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let dropLine = watch.dropLine {
+                            Text(dropLine)
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -303,43 +328,175 @@ struct PriceAlertSheet: View {
         .accessibilityAddTraits(traits)
     }
 
+    // MARK: Which price
+
+    private var paymentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: PriceAlertPaymentCopy.sectionTitle)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
+                ForEach(PriceAlertPayment.choices, id: \.self) { payment in
+                    paymentOption(payment)
+                }
+            }
+
+            if let notice = model.legacyPaymentNotice {
+                Label(notice, systemImage: "info.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let hint = model.paymentHint {
+                Label(hint, systemImage: "info.circle")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(PriceAlertPaymentCopy.helpText)
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func paymentOption(_ payment: PriceAlertPayment) -> some View {
+        let isSelected = model.form.payment == payment
+        let traits: AccessibilityTraits = isSelected ? [.isSelected] : []
+        return Button {
+            guard isSelected == false else { return }
+            AppHaptics.selection()
+            model.select(payment: payment)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: payment == .cash ? "banknote" : "creditcard")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textSecondary)
+                    .accessibilityHidden(true)
+
+                Text(payment.title)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.textMuted)
+                    .accessibilityHidden(true)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(isSelected ? AppTheme.Colors.softGreenBackground : AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.border, lineWidth: isSelected ? 2 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isBusy)
+        .accessibilityLabel(payment.priceTitle)
+        .accessibilityAddTraits(traits)
+    }
+
+    // MARK: Drop size (Price Drop)
+
+    private var sensitivitySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Drop size")
+
+            Text("Notify me when the price falls by at least:")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 10)], spacing: 10) {
+                ForEach(PriceAlertSensitivity.allCases) { sensitivity in
+                    sensitivityOption(sensitivity)
+                }
+            }
+
+            if model.form.showsCustomChangeField {
+                amountBox(
+                    text: $model.form.customChangeText,
+                    field: .customChange,
+                    placeholder: "0.15",
+                    accessibilityLabel: "Custom drop size in dollars per gallon",
+                    accessibilityHint: PriceAlertMinimumChangeInput.emptyHint,
+                    hasProblem: model.changeFieldMessage != nil
+                )
+
+                if let message = model.changeFieldMessage {
+                    problemLabel(message)
+                } else if let hint = model.changeFieldHint {
+                    Text(hint)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func sensitivityOption(_ sensitivity: PriceAlertSensitivity) -> some View {
+        let isSelected = model.form.sensitivity == sensitivity
+        let traits: AccessibilityTraits = isSelected ? [.isSelected] : []
+        return Button {
+            guard isSelected == false else { return }
+            AppHaptics.selection()
+            model.select(sensitivity: sensitivity)
+        } label: {
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(AppTheme.Colors.primaryGreen)
+                            .accessibilityHidden(true)
+                    }
+                    Text(sensitivity.title)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                }
+                if let detail = sensitivity.detail {
+                    Text(detail)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryGreen)
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(isSelected ? AppTheme.Colors.softGreenBackground : AppTheme.Colors.surfaceElevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? AppTheme.Colors.primaryGreen : AppTheme.Colors.border, lineWidth: isSelected ? 2 : 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isBusy)
+        .accessibilityLabel(sensitivity.spokenTitle)
+        .accessibilityAddTraits(traits)
+    }
+
+    // MARK: Target price (At or Below)
+
     private var priceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionHeader(title: "Target price")
 
-            HStack(spacing: 4) {
-                Text("$")
-                    .font(.system(.title, design: .rounded).weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .accessibilityHidden(true)
-
-                TextField("0.00", text: $model.form.priceText)
-                    .keyboardType(.decimalPad)
-                    .font(.system(.title, design: .rounded).weight(.bold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .focused($isPriceFieldFocused)
-                    .disabled(model.isBusy)
-                    .accessibilityLabel("Target price in dollars per gallon")
-                    .accessibilityHint(PriceAlertPriceInput.emptyHint)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            // The whole drawn box focuses the field, not only the line of text inside it (the padding
-            // and the "$" would otherwise be dead space, and the line alone is under 44 pt tall).
-            .contentShape(Rectangle())
-            .onTapGesture { isPriceFieldFocused = true }
-            .background(AppTheme.Colors.surface)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(model.priceFieldMessage == nil ? AppTheme.Colors.border : AppTheme.Colors.warningRed, lineWidth: 1)
+            amountBox(
+                text: $model.form.priceText,
+                field: .price,
+                placeholder: "0.00",
+                accessibilityLabel: "Target price in dollars per gallon",
+                accessibilityHint: PriceAlertPriceInput.emptyHint,
+                hasProblem: model.priceFieldMessage != nil
             )
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
             if let message = model.priceFieldMessage {
-                Label(message, systemImage: "exclamationmark.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
-                    .fixedSize(horizontal: false, vertical: true)
+                problemLabel(message)
             } else if let hint = model.priceFieldHint {
                 Text(hint)
                     .font(.caption)
@@ -349,10 +506,55 @@ struct PriceAlertSheet: View {
         }
     }
 
+    /// A dollar amount box: a "$" and a decimal-pad field. The whole drawn box focuses the field, not only
+    /// the line of text inside it (the padding and the "$" would otherwise be dead space, and the line
+    /// alone is under 44 pt tall).
+    private func amountBox(
+        text: Binding<String>,
+        field: Field,
+        placeholder: String,
+        accessibilityLabel: String,
+        accessibilityHint: String,
+        hasProblem: Bool
+    ) -> some View {
+        HStack(spacing: 4) {
+            Text("$")
+                .font(.system(.title, design: .rounded).weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .accessibilityHidden(true)
+
+            TextField(placeholder, text: text)
+                .keyboardType(.decimalPad)
+                .font(.system(.title, design: .rounded).weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .focused($focusedField, equals: field)
+                .disabled(model.isBusy)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityHint(accessibilityHint)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+        .onTapGesture { focusedField = field }
+        .background(AppTheme.Colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(hasProblem ? AppTheme.Colors.warningRed : AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func problemLabel(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.circle.fill")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Color(red: 0.98, green: 0.54, blue: 0.54))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var saveSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
-                isPriceFieldFocused = false
+                focusedField = nil
                 Task { await model.save() }
             } label: {
                 HStack(spacing: 8) {
@@ -372,7 +574,7 @@ struct PriceAlertSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(model.canSave == false)
-            .accessibilityHint(saveAccessibilityHint)
+            .accessibilityHint(model.saveHint)
 
             if let failure = model.visibleSaveFailure {
                 failureText(failure)
@@ -399,18 +601,10 @@ struct PriceAlertSheet: View {
         }
     }
 
-    /// Why Save is unavailable, for VoiceOver: a dimmed button with no reason is a dead end.
-    private var saveAccessibilityHint: String {
-        if model.canSave || model.isBusy { return "" }
-        if let message = model.priceFieldMessage { return message }
-        if model.priceFieldHint != nil { return "Enter a target price first." }
-        return "There are no changes to save."
-    }
-
     private var turnOffSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(role: .destructive) {
-                isPriceFieldFocused = false
+                focusedField = nil
                 model.requestTurnOff()
             } label: {
                 HStack(spacing: 8) {

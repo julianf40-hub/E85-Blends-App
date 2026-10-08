@@ -26,6 +26,13 @@
 //     station. `nil` is refused with `stationNotEligibleForPriceAlerts`; it is never replaced by a
 //     name, coordinates, a canonical key, a hash or a generated UUID.
 //
+//  4. (Phase 3C) AN ALERT WATCHES ONE PRICE. `PriceAlertPayment` is `cash`, `credit` or `unknown`. A
+//     cash alert is judged only against cash prices (and prices reported as the same for both), a
+//     credit alert only against credit prices, and the server — not this file — decides. `unknown` is
+//     what an alert made before payment types existed reads as; this build never sends it and never
+//     turns it into cash or credit on its own. A response that carries no `payment_type` (a backend
+//     that has not been updated yet) reads as `unknown`, so the alert list still decodes.
+//
 //  Everything here is `nonisolated`: the app target defaults to MainActor isolation, and these are
 //  plain values used from async code and tests alike.
 //
@@ -220,6 +227,73 @@ nonisolated enum PriceAlertRule: Hashable, Sendable {
     }
 }
 
+// MARK: - Payment
+
+/// Which price an alert watches. The identifiers are the backend's (`price_alerts.payment_type`).
+nonisolated enum PriceAlertPayment: String, CaseIterable, Hashable, Sendable {
+    /// The price shown for paying cash.
+    case cash
+    /// The price shown for paying by card.
+    case credit
+    /// An alert made before payment types existed, or a value this build has never heard of. It is
+    /// compared only with reports that did not say which price they were. Never chosen, never sent.
+    case unknown
+
+    /// What a person may choose for an alert. `.unknown` is not a choice.
+    static let choices: [PriceAlertPayment] = [.cash, .credit]
+
+    /// The backend's identifier.
+    var wireValue: String { rawValue }
+
+    /// Reads the backend's identifier. A missing value, a different spelling and anything this build
+    /// does not know all read as `.unknown`.
+    init(wireValue: String?) {
+        guard let wireValue, let known = PriceAlertPayment(rawValue: wireValue) else {
+            self = .unknown
+            return
+        }
+        self = known
+    }
+
+    /// True for the two prices a person can choose.
+    var isSpecified: Bool {
+        self != .unknown
+    }
+
+    /// "Cash", "Credit", "Not set".
+    var title: String {
+        switch self {
+        case .cash: return "Cash"
+        case .credit: return "Credit"
+        case .unknown: return "Not set"
+        }
+    }
+
+    /// "Cash price", "Credit price" — what the alert watches, as a phrase.
+    var priceTitle: String {
+        switch self {
+        case .cash: return "Cash price"
+        case .credit: return "Credit price"
+        case .unknown: return "Payment type not set"
+        }
+    }
+}
+
+extension CommunityPaymentType {
+    /// Whether a community report of this type may be judged against an alert that watches `alertPayment` — the
+    /// same rule the server applies when it decides a notification (cash alert: cash and same_for_both; credit
+    /// alert: credit and same_for_both; a legacy alert: unknown only; nothing else, ever). The server is
+    /// authoritative; this exists so the app can say honestly which price an alert is watching.
+    func isComparable(to alertPayment: PriceAlertPayment) -> Bool {
+        switch (alertPayment, self) {
+        case (.cash, .cash), (.cash, .sameForBoth): return true
+        case (.credit, .credit), (.credit, .sameForBoth): return true
+        case (.unknown, .unknown): return true
+        default: return false
+        }
+    }
+}
+
 // MARK: - Preferences
 
 /// The two tunables every alert carries. Both are *replaced* on every save — the backend does not
@@ -228,9 +302,18 @@ nonisolated struct PriceAlertPreferences: Hashable, Sendable {
     var minimumChange: PriceAlertAmount
     var cooldownMinutes: Int
 
-    /// The backend's own defaults: a 5-cent move and a 6-hour cooldown.
+    /// The backend's own LEGACY defaults: a 5-cent move and a 6-hour cooldown. This is what a request
+    /// that says nothing gets, and what every alert made before 2.4.1 Phase 3C holds. It is not
+    /// changed, and nothing rewrites an existing alert to anything else.
     static let defaults = PriceAlertPreferences(
         minimumChange: PriceAlertAmount(thousandths: 50),
+        cooldownMinutes: 360
+    )
+
+    /// What a NEW alert starts with in this version of the app: the recommended 10-cent drop and the
+    /// same 6-hour cooldown. The app sends it explicitly, so the server's legacy default is untouched.
+    static let newAlertDefaults = PriceAlertPreferences(
+        minimumChange: PriceAlertAmount(thousandths: 100),
         cooldownMinutes: 360
     )
 
@@ -258,6 +341,10 @@ nonisolated struct PriceAlertDraft: Equatable, Sendable {
     let stationID: UUID
     let rule: PriceAlertRule
     let preferences: PriceAlertPreferences
+    /// The price the alert watches, or `nil` when the caller did not choose one. `nil` and `.unknown`
+    /// are both left OUT of the request: the server then keeps an existing alert's payment type, or
+    /// stores `unknown` for a new alert — exactly what it did before payment types existed.
+    let paymentType: PriceAlertPayment?
 
     /// - Parameter communityStationID: the backend's station UUID exactly as stored on a saved
     ///   station (`FuelStation.communityStationID`). `nil` throws
@@ -267,7 +354,8 @@ nonisolated struct PriceAlertDraft: Equatable, Sendable {
     init(
         communityStationID: UUID?,
         rule: PriceAlertRule,
-        preferences: PriceAlertPreferences = .defaults
+        preferences: PriceAlertPreferences = .defaults,
+        paymentType: PriceAlertPayment? = nil
     ) throws {
         guard let communityStationID else {
             throw PriceAlertsServiceError.stationNotEligibleForPriceAlerts
@@ -284,6 +372,7 @@ nonisolated struct PriceAlertDraft: Equatable, Sendable {
         self.stationID = communityStationID
         self.rule = rule
         self.preferences = preferences
+        self.paymentType = paymentType
     }
 }
 
@@ -301,6 +390,9 @@ nonisolated struct PriceAlert: Equatable, Sendable, Decodable {
     /// that sets it to `false` (see docs/PRICE_ALERTS_CLIENT_INTEGRATION_2.4.1.md §1.7), so this is
     /// informational; a client must never try to send it.
     let isEnabled: Bool
+    /// The price this alert watches. `.unknown` for an alert made before payment types existed and
+    /// for a response from a backend that does not send the field.
+    let paymentType: PriceAlertPayment
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -310,6 +402,42 @@ nonisolated struct PriceAlert: Equatable, Sendable, Decodable {
         case minimumChange = "minimum_change"
         case cooldownMinutes = "cooldown_minutes"
         case isEnabled = "enabled"
+        case paymentType = "payment_type"
+    }
+
+    init(
+        id: UUID,
+        stationID: UUID,
+        mode: PriceAlertMode,
+        thresholdPrice: PriceAlertAmount?,
+        minimumChange: PriceAlertAmount,
+        cooldownMinutes: Int,
+        isEnabled: Bool,
+        paymentType: PriceAlertPayment = .unknown
+    ) {
+        self.id = id
+        self.stationID = stationID
+        self.mode = mode
+        self.thresholdPrice = thresholdPrice
+        self.minimumChange = minimumChange
+        self.cooldownMinutes = cooldownMinutes
+        self.isEnabled = isEnabled
+        self.paymentType = paymentType
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        stationID = try container.decode(UUID.self, forKey: .stationID)
+        mode = try container.decode(PriceAlertMode.self, forKey: .mode)
+        thresholdPrice = try container.decodeIfPresent(PriceAlertAmount.self, forKey: .thresholdPrice)
+        minimumChange = try container.decode(PriceAlertAmount.self, forKey: .minimumChange)
+        cooldownMinutes = try container.decode(Int.self, forKey: .cooldownMinutes)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        // Lenient on purpose: an absent, null or unrecognised payment type is `.unknown`, never an error
+        // that would make the whole alert list undecodable.
+        let rawPayment = try? container.decodeIfPresent(String.self, forKey: .paymentType)
+        paymentType = PriceAlertPayment(wireValue: rawPayment)
     }
 
     /// `nil` when the mode is one this build does not understand.
@@ -336,8 +464,16 @@ nonisolated struct PriceAlertListing: Equatable, Sendable, Decodable {
     let station: PriceAlertStation
     let lastNotifiedPrice: PriceAlertAmount?
     let lastNotifiedAt: Date?
+    /// The newest report of ANY kind (cash, credit, either, unclassified) — what this field has always
+    /// meant. It is NOT necessarily the price the alert watches; see `latestComparablePrice`.
     let latestPrice: PriceAlertAmount?
     let latestReportedAt: Date?
+    /// The newest report this alert is actually judged against (its own price stream), when the backend
+    /// sends it. `nil` means there is none, OR the backend predates payment types and cannot say.
+    let latestComparablePrice: PriceAlertAmount?
+    let latestComparableReportedAt: Date?
+    /// The kind of that report: a credit alert can be judged against a report made as `same_for_both`.
+    let latestComparablePaymentType: CommunityPaymentType?
 
     private enum CodingKeys: String, CodingKey {
         case stationName = "station_name"
@@ -348,6 +484,9 @@ nonisolated struct PriceAlertListing: Equatable, Sendable, Decodable {
         case lastNotifiedAt = "last_notified_at"
         case latestPrice = "latest_price"
         case latestReportedAt = "latest_reported_at"
+        case latestComparablePrice = "latest_comparable_price"
+        case latestComparableReportedAt = "latest_comparable_reported_at"
+        case latestComparablePaymentType = "latest_comparable_payment_type"
     }
 
     init(from decoder: Decoder) throws {
@@ -364,6 +503,9 @@ nonisolated struct PriceAlertListing: Equatable, Sendable, Decodable {
         lastNotifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastNotifiedAt)
         latestPrice = try container.decodeIfPresent(PriceAlertAmount.self, forKey: .latestPrice)
         latestReportedAt = try container.decodeIfPresent(Date.self, forKey: .latestReportedAt)
+        latestComparablePrice = try container.decodeIfPresent(PriceAlertAmount.self, forKey: .latestComparablePrice)
+        latestComparableReportedAt = try container.decodeIfPresent(Date.self, forKey: .latestComparableReportedAt)
+        latestComparablePaymentType = try container.decodeIfPresent(CommunityPaymentType.self, forKey: .latestComparablePaymentType)
     }
 
     init(
@@ -372,7 +514,10 @@ nonisolated struct PriceAlertListing: Equatable, Sendable, Decodable {
         lastNotifiedPrice: PriceAlertAmount? = nil,
         lastNotifiedAt: Date? = nil,
         latestPrice: PriceAlertAmount? = nil,
-        latestReportedAt: Date? = nil
+        latestReportedAt: Date? = nil,
+        latestComparablePrice: PriceAlertAmount? = nil,
+        latestComparableReportedAt: Date? = nil,
+        latestComparablePaymentType: CommunityPaymentType? = nil
     ) {
         self.alert = alert
         self.station = station
@@ -380,6 +525,9 @@ nonisolated struct PriceAlertListing: Equatable, Sendable, Decodable {
         self.lastNotifiedAt = lastNotifiedAt
         self.latestPrice = latestPrice
         self.latestReportedAt = latestReportedAt
+        self.latestComparablePrice = latestComparablePrice
+        self.latestComparableReportedAt = latestComparableReportedAt
+        self.latestComparablePaymentType = latestComparablePaymentType
     }
 }
 

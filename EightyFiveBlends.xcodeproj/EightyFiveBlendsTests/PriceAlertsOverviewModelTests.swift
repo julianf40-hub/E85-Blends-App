@@ -32,10 +32,10 @@ struct PriceAlertsOverviewModelTests {
         #expect(stack.transport.requests.isEmpty)
     }
 
-    @Test("Alerts are listed with the station, what each watches for, and the latest community price")
+    @Test("Alerts are listed with the station, what each watches for, which price it watches, and that price's latest report")
     func list() async throws {
-        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .priceDrop)
-        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(2), rule: .atOrBelow(amount(3_499)))
+        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .priceDrop, paymentType: .credit)
+        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(2), rule: .atOrBelow(amount(3_499)), paymentType: .cash)
         let model = PriceAlertsOverviewModel(service: stack.relaunchedService())
         #expect(model.phase == .loading)
 
@@ -47,11 +47,14 @@ struct PriceAlertsOverviewModelTests {
         let drop = try #require(byStation[PriceAlertsStack.stationID(1)])
         let target = try #require(byStation[PriceAlertsStack.stationID(2)])
         #expect(drop.alertTitle == "Price Drop")
+        #expect(drop.watchText == "Credit price · 5¢ drop")
+        #expect(drop.needsPaymentChoice == false)
         #expect(target.alertTitle == "At or below $3.499")
+        #expect(target.watchText == "Cash price")
         #expect(target.target.name == "Corner Pump")
         #expect(target.target.locationLine == "1 Main St • Omaha, NE")
-        #expect(target.latestPriceText == "Latest community price $3.149")
-        #expect(target.accessibilityLabel == "Corner Pump, Alert: At or below $3.499, Latest community price $3.149")
+        #expect(target.latestPriceText == "Latest Cash price $3.149")
+        #expect(target.accessibilityLabel == "Corner Pump, Alert: At or below $3.499, Cash price, Latest Cash price $3.149")
         // A row opens the same sheet, keyed by the station's UUID.
         #expect(target.target.communityStationID == PriceAlertsStack.stationID(2))
     }
@@ -119,9 +122,11 @@ struct PriceAlertsOverviewModelTests {
         await sheet.load()
         sheet.select(.atOrBelow)
         sheet.form.priceText = "3.25"
+        sheet.select(payment: .credit)
         await sheet.save()
         #expect(overview.phase == .list)
         #expect(overview.rows.map(\.alertTitle) == ["At or below $3.25"])
+        #expect(overview.rows.map(\.watchText) == ["Credit price"])
 
         sheet.requestTurnOff()
         await sheet.confirmTurnOff()
@@ -130,7 +135,7 @@ struct PriceAlertsOverviewModelTests {
 
     @Test("Opened from the overview, the sheet shows the alert at once, without a spinner")
     func sheetOpenedFromTheOverview() async throws {
-        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .atOrBelow(amount(3_250)))
+        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .atOrBelow(amount(3_250)), paymentType: .cash)
         let service = stack.relaunchedService()
         let overview = PriceAlertsOverviewModel(service: service)
         await overview.load()
@@ -140,7 +145,7 @@ struct PriceAlertsOverviewModelTests {
 
         #expect(sheet.phase == .ready)
         #expect(sheet.currentSummary == .atOrBelow(amount(3_250)))
-        #expect(sheet.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(sheet.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .cash, sensitivity: .fiveCents))
     }
 
     @Test("Free users get the Pro phase, an unresolved entitlement gets 'checking', and neither loads anything")
@@ -182,5 +187,103 @@ struct PriceAlertsOverviewModelTests {
         #expect(stack.push.optInCount == 0)
         #expect(stack.push.refreshCount == 0)
         #expect(stack.transport.count(of: "register_device") == 0)
+    }
+}
+
+// MARK: - Which price each row shows (Phase 3C)
+
+struct PriceAlertsOverviewPaymentTests {
+    private let stack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
+
+    private func listing(
+        payment: String?,
+        latestPrice: String? = "3.149",
+        comparable: (price: String?, reportedAt: String?, paymentType: String?)? = nil,
+        minimumChange: String = "0.050",
+        mode: String = "price_drop",
+        threshold: String? = nil
+    ) throws -> PriceAlertListing {
+        let alert = BackendFixtures.alertObject(
+            stationID: PriceAlertsStack.stationID(1),
+            mode: mode,
+            threshold: threshold,
+            minimumChange: minimumChange,
+            paymentType: payment
+        )
+        return try BackendFixtures.decodeListing(BackendFixtures.listRow(alert: alert, latestPrice: latestPrice, latestComparable: comparable))
+    }
+
+    @Test("An alert made before payment types existed is listed as such — no Cash or Credit is claimed for it — and keeps its latest community price")
+    func legacyAlert() async throws {
+        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .priceDrop)
+        let model = PriceAlertsOverviewModel(service: stack.relaunchedService())
+        await model.load()
+
+        let row = try #require(model.rows.first)
+        #expect(row.needsPaymentChoice)
+        #expect(row.watchText == "Payment type not set · 5¢ drop")
+        #expect(row.latestPriceText == "Latest community price $3.149")
+        #expect(row.accessibilityLabel == "Corner Pump, Alert: Price Drop, Payment type not set. Notifies on a drop of 5¢ or more, Latest community price $3.149")
+        #expect(row.watchText.contains("Cash") == false)
+        #expect(row.watchText.contains("Credit") == false)
+    }
+
+    @Test("A Credit alert shows the newest Credit-comparable price — never the unfiltered latest, which may be Cash")
+    func creditAlert_showsItsOwnPrice() throws {
+        // The unfiltered latest report is a $2.99 cash price; the credit alert's own price is $3.19.
+        let credit = try listing(
+            payment: "credit",
+            latestPrice: "2.990",
+            comparable: (price: "3.190", reportedAt: "2026-10-05T08:00:00.000Z", paymentType: "credit")
+        )
+        #expect(PriceAlertsOverviewModel.Row(listing: credit).latestPriceText == "Latest Credit price $3.19")
+    }
+
+    @Test("A report made as 'same for both' is labelled as such on a Cash or Credit alert")
+    func sameForBothReport() throws {
+        for payment in ["cash", "credit"] {
+            let row = try listing(
+                payment: payment,
+                comparable: (price: "3.090", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: "same_for_both")
+            )
+            #expect(PriceAlertsOverviewModel.Row(listing: row).latestPriceText == "Latest price $3.09, reported as the same for cash and credit", "\\(payment)")
+        }
+    }
+
+    @Test("A Cash or Credit alert whose price has never been reported says so, instead of showing the other type's price")
+    func noComparablePrice_isSaidPlainly() throws {
+        let cash = try listing(payment: "cash", latestPrice: "3.190", comparable: (price: nil, reportedAt: nil, paymentType: nil))
+        #expect(PriceAlertsOverviewModel.Row(listing: cash).latestPriceText == "No Cash price reported yet")
+
+        // The same when the backend sent no comparable fields at all: nothing is borrowed from latest_price.
+        let credit = try listing(payment: "credit", latestPrice: "2.990", comparable: nil)
+        #expect(PriceAlertsOverviewModel.Row(listing: credit).latestPriceText == "No Credit price reported yet")
+    }
+
+    @Test("A legacy alert shows the comparable price with 'payment type not specified', or the old latest price, or nothing")
+    func legacyFallbacks() throws {
+        let withComparable = try listing(
+            payment: nil,
+            comparable: (price: "3.050", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: "unknown")
+        )
+        #expect(PriceAlertsOverviewModel.Row(listing: withComparable).latestPriceText == "Latest community price $3.05, payment type not specified")
+
+        let oldBackend = try listing(payment: nil, latestPrice: "3.149", comparable: nil)
+        #expect(PriceAlertsOverviewModel.Row(listing: oldBackend).latestPriceText == "Latest community price $3.149")
+
+        let nothing = try listing(payment: nil, latestPrice: nil, comparable: nil)
+        #expect(PriceAlertsOverviewModel.Row(listing: nothing).latestPriceText == nil)
+    }
+
+    @Test("Row text never contains anything technical")
+    func rowText_isSafeToShow() throws {
+        for payment in [nil, "cash", "credit", "unknown"] as [String?] {
+            let row = PriceAlertsOverviewModel.Row(listing: try listing(
+                payment: payment,
+                comparable: payment == nil ? nil : (price: "3.090", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: payment)
+            ))
+            assertSafeToShow(row.watchText)
+            if let text = row.latestPriceText { assertSafeToShow(text) }
+        }
     }
 }

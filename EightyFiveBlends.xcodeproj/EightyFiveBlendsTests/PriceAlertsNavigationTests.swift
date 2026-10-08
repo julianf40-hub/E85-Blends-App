@@ -65,6 +65,7 @@ struct PriceAlertsNavigationTests {
         let target = try #require(PriceAlertStationTarget(communityStationID: alert.stationID, name: "Corner Pump"))
         let model = PriceAlertsStationModel(target: target, service: stack.service)
         await model.load()
+        model.select(payment: .cash)
         await model.save()
 
         #expect(target.communityStationID == tappedStationID)

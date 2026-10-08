@@ -154,6 +154,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
     private(set) var thresholdPrice: PriceAlertAmount?
     private(set) var minimumChange: PriceAlertAmount?
     private(set) var cooldownMinutes: Int?
+    private(set) var paymentType: PriceAlertPayment?
 
     private init(action: Action, credential: PriceAlertsInstallationCredential) {
         self.action = action
@@ -199,9 +200,12 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         return request
     }
 
-    /// Sends the draft's FULL state: mode, threshold (only for `at_or_below`), minimum change and
-    /// cooldown. `set_alert` replaces all of them, so none may be left to the backend's defaults
-    /// unless the caller chose them. `enabled` is never sent — the backend has no such field.
+    /// Sends the draft's FULL state: mode, threshold (only for `at_or_below`), minimum change,
+    /// cooldown and — when the caller chose one — the payment type. `set_alert` replaces all but the
+    /// payment type, so none may be left to the backend's defaults unless the caller chose them. A
+    /// draft with no (or an `unknown`) payment type OMITS the field: the server then keeps an existing
+    /// alert's payment type, and stores `unknown` for a new one, as it did before payment types.
+    /// `enabled` is never sent — the backend has no such field.
     static func setAlert(
         credential: PriceAlertsInstallationCredential,
         draft: PriceAlertDraft
@@ -212,6 +216,9 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         request.thresholdPrice = draft.rule.thresholdPrice
         request.minimumChange = draft.preferences.minimumChange
         request.cooldownMinutes = draft.preferences.cooldownMinutes
+        if let paymentType = draft.paymentType, paymentType.isSpecified {
+            request.paymentType = paymentType
+        }
         return request
     }
 
@@ -259,6 +266,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         case thresholdPrice = "threshold_price"
         case minimumChange = "minimum_change"
         case cooldownMinutes = "cooldown_minutes"
+        case paymentType = "payment_type"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -280,6 +288,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         try container.encodeIfPresent(thresholdPrice, forKey: .thresholdPrice)
         try container.encodeIfPresent(minimumChange, forKey: .minimumChange)
         try container.encodeIfPresent(cooldownMinutes, forKey: .cooldownMinutes)
+        try container.encodeIfPresent(paymentType?.wireValue, forKey: .paymentType)
     }
 }
 

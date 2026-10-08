@@ -198,6 +198,15 @@ struct StationAlertsView: View {
                         .foregroundStyle(AppTheme.Colors.primaryGreen)
                         .multilineTextAlignment(.leading)
 
+                    // Which price the alert watches (and, for Price Drop, how big a drop). An alert made
+                    // before payment types existed says so, in the warning colour, and the sheet it opens
+                    // asks for a choice.
+                    Text(row.watchText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(row.needsPaymentChoice ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+
                     if let latestPriceText = row.latestPriceText {
                         Text(latestPriceText)
                             .font(.caption)

@@ -17,6 +17,10 @@
 //  the backend's own refusal of a save (`proRequiredByServer`) comes back as an ordinary, friendly
 //  save failure.
 //
+//  PAYMENT TYPE (Phase 3C). Every alert watches Cash or Credit, and there is no default: `form.payment`
+//  starts as nil for a new alert AND for an alert made before payment types existed, and Save stays off
+//  until it is chosen. The model never fills it in, and it never sends one the person did not pick.
+//
 //  THINGS THAT CANNOT HAPPEN (each has a test)
 //    - Two saves from one double tap: `isSaving` is set before the first suspension point, so the
 //      second call finds it set and returns.
@@ -90,8 +94,8 @@ final class PriceAlertsStationModel {
         notifications = PriceAlertsNotificationModel(service: service)
         // Opened from the overview, the list is already here: show it at once rather than a spinner.
         hasLoadedBefore = service.listState == .loaded
-        let existingRule = service.alerts.first { $0.alert.stationID == target.communityStationID }?.alert.rule
-        let seed = PriceAlertForm(seededFrom: existingRule)
+        let existingAlert = service.alerts.first { $0.alert.stationID == target.communityStationID }?.alert
+        let seed = PriceAlertForm(seededFrom: existingAlert)
         form = seed
         seededForm = seed
     }
@@ -138,12 +142,24 @@ final class PriceAlertsStationModel {
         existingListing?.alert.rule
     }
 
+    /// Which price the existing alert watches and how big a drop it waits for, in words. `nil` if none.
+    var currentWatch: PriceAlertWatch? {
+        existingListing.map { PriceAlertWatch(alert: $0.alert) }
+    }
+
     var isBusy: Bool {
         isSaving || isTurningOff
     }
 
     var canSave: Bool {
-        phase == .ready && isBusy == false && form.canSave(existingRule: existingRule)
+        phase == .ready && isBusy == false && form.canSave(existing: existingListing?.alert)
+    }
+
+    /// Why Save is unavailable right now, or `nil` if it is (or the sheet is busy / not ready, where there
+    /// is nothing to say). Used for the hint a screen reader speaks on a dimmed Save button.
+    var saveBlocker: PriceAlertForm.SaveBlocker? {
+        guard phase == .ready, isBusy == false else { return nil }
+        return form.saveBlocker(existing: existingListing?.alert)
     }
 
     var saveButtonTitle: String {
@@ -162,10 +178,57 @@ final class PriceAlertsStationModel {
         form.showsPriceField ? form.priceMessage : nil
     }
 
-    /// How often the alert being configured can fire, from its own preferences.
+    /// Why Save is unavailable, in a sentence, for a screen reader: a dimmed button with no reason is a dead
+    /// end. Empty when Save is available or the sheet is busy.
+    var saveHint: String {
+        if canSave || isBusy { return "" }
+        switch saveBlocker {
+        case .choosePayment?:
+            return "Choose Cash or Credit first."
+        case .needsPrice?:
+            return "Enter a target price first."
+        case .invalidPrice?:
+            return priceFieldMessage ?? "Check the target price."
+        case .needsChangeAmount?:
+            return "Enter a custom drop size first."
+        case .invalidChangeAmount?:
+            return changeFieldMessage ?? "Check the custom drop size."
+        case .noChanges?, nil:
+            return "There are no changes to save."
+        }
+    }
+
+    /// Guidance under the Cash / Credit choice while nothing is chosen — not an error. `nil` once chosen.
+    var paymentHint: String? {
+        form.payment == nil ? PriceAlertPaymentCopy.chooseHint : nil
+    }
+
+    /// Shown for an alert made before payment types existed, until a price is chosen for it: it has no
+    /// payment type, so it is only compared with reports that did not say which price they were.
+    var legacyPaymentNotice: String? {
+        guard form.payment == nil, let watch = currentWatch, watch.needsPaymentChoice else { return nil }
+        return PriceAlertPaymentCopy.legacyAlertNotice
+    }
+
+    /// Guidance under an empty Custom drop size — not an error.
+    var changeFieldHint: String? {
+        guard form.showsCustomChangeField, form.changeResolution == .needsAmount else { return nil }
+        return PriceAlertMinimumChangeInput.emptyHint
+    }
+
+    /// Why a typed Custom drop size is wrong, shown before anything is saved.
+    var changeFieldMessage: String? {
+        form.changeMessage
+    }
+
+    /// How often the alert being configured can fire — from the choices on the form (the price it
+    /// watches and, for Price Drop, the drop size) and the alert's own cooldown.
     var deliveryNote: String {
-        let preferences = existingListing?.alert.preferences ?? .defaults
-        return PriceAlertDeliveryNote.text(for: form.kind, preferences: preferences)
+        var preferences = existingListing?.alert.preferences ?? .newAlertDefaults
+        if form.showsSensitivity, let minimumChange = form.minimumChange {
+            preferences.minimumChange = minimumChange
+        }
+        return PriceAlertDeliveryNote.text(for: form.kind, payment: form.payment, preferences: preferences)
     }
 
     /// Whether the form still holds exactly what it was last seeded with (nothing edited since).
@@ -212,7 +275,7 @@ final class PriceAlertsStationModel {
         // A load that started before a save or turn-off began must not rewrite the form that change
         // just seeded; nor may it overwrite something the person has typed since.
         if generation == operationGeneration, form == seededForm {
-            seedForm(from: existingRule)
+            seedForm(from: existingListing?.alert)
         }
     }
 
@@ -222,6 +285,16 @@ final class PriceAlertsStationModel {
         form.select(kind)
     }
 
+    /// Picks the price this alert watches.
+    func select(payment: PriceAlertPayment) {
+        form.select(payment: payment)
+    }
+
+    /// Picks the drop size of a Price Drop alert.
+    func select(sensitivity: PriceAlertSensitivity) {
+        form.select(sensitivity: sensitivity)
+    }
+
     // MARK: Saving
 
     /// Creates the alert, or — if the station already has one — updates it, sending its full state.
@@ -229,7 +302,13 @@ final class PriceAlertsStationModel {
     /// else is in progress.
     func save() async {
         guard phase == .ready, isBusy == false else { return }
-        guard let rule = form.rule, form.isUnchanged(from: existingRule) == false else { return }
+        let existing = existingListing?.alert
+        // Every save names the price it watches: a payment type nobody chose is never sent.
+        guard let rule = form.rule,
+              let payment = form.payment, payment.isSpecified,
+              let preferences = form.preferences(existing: existing),
+              form.isUnchanged(from: existing) == false
+        else { return }
 
         isSaving = true
         saveFailure = nil
@@ -239,22 +318,22 @@ final class PriceAlertsStationModel {
         defer { isSaving = false }
 
         let sentForm = form
-        let existing = existingListing?.alert
         do {
             let saved: PriceAlert
             if let existing {
-                saved = try await service.updateAlert(existing, rule: rule, preferences: nil)
+                saved = try await service.updateAlert(existing, rule: rule, preferences: preferences, paymentType: payment)
             } else {
                 saved = try await service.createAlert(
                     communityStationID: target.communityStationID,
                     rule: rule,
-                    preferences: .defaults
+                    preferences: preferences,
+                    paymentType: payment
                 )
             }
             // Seeded from the server's own answer to this save, not from the list: if the refresh the
             // service makes afterwards failed, the list can still be the old one, and reading it
             // would put the old alert back in the form.
-            seedForm(from: saved.rule)
+            seedForm(from: saved)
             announce(existing == nil ? "Price Alert created." : "Price Alert updated.", isError: false)
         } catch {
             let message = PriceAlertsUserMessage(error: PriceAlertsServiceError.from(error))
@@ -300,9 +379,9 @@ final class PriceAlertsStationModel {
 
     // MARK: Internals
 
-    /// Re-seeds the form from the rule of the alert the server holds (`nil`: none, as after a turn-off).
-    private func seedForm(from rule: PriceAlertRule?) {
-        let seed = PriceAlertForm(seededFrom: rule)
+    /// Re-seeds the form from the alert the server holds (`nil`: none, as after a turn-off).
+    private func seedForm(from alert: PriceAlert?) {
+        let seed = PriceAlertForm(seededFrom: alert)
         form = seed
         seededForm = seed
         saveFailure = nil

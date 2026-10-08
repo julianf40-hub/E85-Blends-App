@@ -57,14 +57,21 @@ extension PriceAlertsStack {
     }
 
     /// Puts an alert on the simulated server by going through the real service, then returns a model
-    /// over a relaunched service — one that has not loaded anything yet.
+    /// over a relaunched service — one that has not loaded anything yet. The alert watches `paymentType`
+    /// (Cash unless a test says otherwise; pass `nil` for an alert made before payment types existed).
     func relaunchedStationModel(
         seed: UInt8 = 1,
         existing rule: PriceAlertRule?,
-        preferences: PriceAlertPreferences = .defaults
+        preferences: PriceAlertPreferences = .defaults,
+        paymentType: PriceAlertPayment? = .cash
     ) async throws -> PriceAlertsStationModel {
         if let rule {
-            _ = try await service.createAlert(communityStationID: Self.stationID(seed), rule: rule, preferences: preferences)
+            _ = try await service.createAlert(
+                communityStationID: Self.stationID(seed),
+                rule: rule,
+                preferences: preferences,
+                paymentType: paymentType
+            )
         }
         return stationModel(seed: seed, service: relaunchedService())
     }

@@ -2,11 +2,13 @@
 //  PriceAlertsStationModelTests.swift
 //  EightyFiveBlendsTests
 //
-//  Price Alerts UI (Phase 3B) — the state machine behind the Price Alert sheet
+//  Price Alerts UI (Phase 3B, extended in Phase 3C) — the state machine behind the Price Alert sheet
 //  (PriceAlertsStationModel.swift): what it shows while loading, for Free / Pro / still-checking users
 //  and for every kind of alert the server may hold; that saving cannot be doubled, never loses what
 //  was typed when it fails, and is seeded from the server's own answer; that turning an alert off
-//  asks first, deletes, and never touches the device's push registration.
+//  asks first, deletes, and never touches the device's push registration. Phase 3C adds: every save
+//  names the price it watches (Cash or Credit — never defaulted, never guessed for a legacy alert) and,
+//  for Price Drop, how big a drop it waits for (new alerts 10¢, existing alerts keep what they hold).
 //
 //  Everything runs through the REAL PriceAlertsService over the Phase 3A fakes: the transport
 //  simulates price-alerts-api as documented, so these tests read as behavior (a Pro-gated upsert, a
@@ -62,7 +64,7 @@ struct PriceAlertsStationModelPhaseTests {
 
         #expect(model.phase == .ready)
         #expect(model.currentSummary == .priceDrop)
-        #expect(model.form == PriceAlertForm(kind: .priceDrop, priceText: ""))
+        #expect(model.form == PriceAlertForm(kind: .priceDrop, priceText: "", payment: .cash, sensitivity: .fiveCents))
         #expect(model.saveButtonTitle == "Update Alert")
         #expect(model.canSave == false)
     }
@@ -75,7 +77,7 @@ struct PriceAlertsStationModelPhaseTests {
 
         #expect(model.currentSummary == .atOrBelow(amount(3_499)))
         #expect(model.currentSummary?.title == "At or below $3.499")
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.499"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.499", payment: .cash, sensitivity: .fiveCents))
         #expect(model.canSave == false)
     }
 
@@ -91,8 +93,11 @@ struct PriceAlertsStationModelPhaseTests {
         #expect(model.currentSummary == .unrecognized)
         #expect(model.currentSummary?.title == "Custom alert")
         #expect(model.existingRule == nil)
-        #expect(model.form == PriceAlertForm())
-        // Saving a chosen type replaces it — the one alert per station.
+        // Nothing of the unreadable alert is guessed: its drop size is read (5¢), its payment type is not set.
+        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents))
+        // Saving a chosen type replaces it — the one alert per station — once a price is chosen for it.
+        #expect(model.canSave == false)
+        model.select(payment: .cash)
         #expect(model.canSave)
         await model.save()
         #expect(model.currentSummary == .priceDrop)
@@ -109,7 +114,7 @@ struct PriceAlertsStationModelPhaseTests {
 
         #expect(model.currentSummary == .anyChange)
         #expect(model.currentSummary?.title == "Any price change")
-        #expect(model.form == PriceAlertForm())
+        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents))
         #expect(PriceAlertKind.allCases.contains { $0.title.lowercased().contains("any") } == false)
     }
 
@@ -145,7 +150,7 @@ struct PriceAlertsStationModelPhaseTests {
 
         await model.load()
         #expect(model.phase == .ready)
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .cash, sensitivity: .fiveCents))
     }
 
     @Test("An offline load says so")
@@ -195,6 +200,9 @@ struct PriceAlertsStationModelProTests {
 
         #expect(model.entitlement == .active)
         #expect(model.phase == .ready)
+        // A new alert can be saved once a price (Cash or Credit) is chosen — not before.
+        #expect(model.canSave == false)
+        model.select(payment: .cash)
         #expect(model.canSave)
     }
 
@@ -260,6 +268,7 @@ struct PriceAlertsStationModelProTests {
         await model.load()
 
         #expect(model.phase == .ready)
+        model.select(payment: .credit)
         #expect(model.canSave)
     }
 
@@ -290,12 +299,14 @@ struct PriceAlertsStationModelProTests {
 struct PriceAlertsStationModelSaveTests {
     private let stack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
 
-    @Test("Creating an At or Below alert sends exactly that rule with the default preferences, then shows it")
+    @Test("Creating an At or Below alert sends exactly that rule, the chosen price type and the new-alert defaults, then shows it")
     func create_atOrBelow() async throws {
         let model = stack.stationModel()
         await model.load()
         model.select(.atOrBelow)
         model.form.priceText = "3.25"
+        #expect(model.canSave == false, "no price type chosen yet")
+        model.select(payment: .credit)
         #expect(model.canSave)
 
         await model.save()
@@ -304,11 +315,13 @@ struct PriceAlertsStationModelSaveTests {
         #expect(request.json["station_id"] as? String == stationOneID.uuidString.lowercased())
         #expect(request.json["alert_mode"] as? String == "at_or_below")
         #expect(request.json["threshold_price"] as? Double == 3.25)
-        #expect(request.json["minimum_change"] as? Double == 0.05)
+        #expect(request.json["payment_type"] as? String == "credit")
+        #expect(request.json["minimum_change"] as? Double == 0.1)
         #expect(request.json["cooldown_minutes"] as? Int == 360)
         #expect(model.hasExistingAlert)
         #expect(model.currentSummary == .atOrBelow(amount(3_250)))
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.currentWatch?.payment == .credit)
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .credit, sensitivity: .tenCents))
         #expect(model.isSaving == false)
         #expect(model.saveButtonTitle == "Update Alert")
         #expect(model.canSave == false)
@@ -316,17 +329,165 @@ struct PriceAlertsStationModelSaveTests {
         #expect(model.announcement?.text == "Price Alert created.")
     }
 
-    @Test("Creating a Price Drop alert sends no threshold")
+    @Test("Creating a Price Drop alert sends no threshold, the chosen price type and the recommended 10¢")
     func create_priceDrop() async throws {
         let model = stack.stationModel()
         await model.load()
+        model.select(payment: .cash)
 
         await model.save()
 
         let request = try #require(stack.transport.lastRequest("set_alert"))
         #expect(request.json["alert_mode"] as? String == "price_drop")
         #expect(request.json["threshold_price"] as? Double == nil)
+        #expect(request.json["payment_type"] as? String == "cash")
+        #expect(request.json["minimum_change"] as? Double == 0.1)
         #expect(model.currentSummary == .priceDrop)
+        #expect(model.currentWatch?.dropLine == "Notifies on a drop of 10¢ or more")
+    }
+
+    @Test("Changing the price an existing alert watches reaches the server — Cash to Credit, and a legacy alert to a chosen price")
+    func changingThePaymentType_isSent() async throws {
+        // Cash → Credit on an alert that already watches Cash.
+        let model = try await stack.relaunchedStationModel(existing: .priceDrop, preferences: .newAlertDefaults, paymentType: .cash)
+        await model.load()
+        model.select(payment: .credit)
+        #expect(model.canSave)
+
+        await model.save()
+
+        let request = try #require(stack.transport.lastRequest("set_alert"))
+        #expect(request.json["payment_type"] as? String == "credit")
+        #expect(model.currentWatch?.payment == .credit)
+        #expect(model.form.payment == .credit)
+        let stored = stack.transport.alerts.values.flatMap { $0.values }
+        #expect(stored.count == 1)
+        #expect(stored.first?["payment_type"] as? String == "credit", "the server now holds the new choice")
+
+        // A legacy alert (made before payment types existed) is moved to a chosen price by the same path, and its
+        // 5¢ drop size is carried, not reset.
+        let legacyStack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
+        let legacyModel = try await legacyStack.relaunchedStationModel(existing: .priceDrop, paymentType: nil)
+        await legacyModel.load()
+        #expect(legacyModel.currentWatch?.needsPaymentChoice == true)
+        legacyModel.select(payment: .cash)
+        await legacyModel.save()
+
+        let legacyRequest = try #require(legacyStack.transport.lastRequest("set_alert"))
+        #expect(legacyRequest.json["payment_type"] as? String == "cash")
+        #expect(legacyRequest.json["minimum_change"] as? Double == 0.05)
+        #expect(legacyModel.currentWatch?.payment == .cash)
+        #expect(legacyModel.currentWatch?.needsPaymentChoice == false)
+    }
+
+    @Test("The sentence under the form follows what is chosen: the price type and the drop size, live")
+    func deliveryNote_followsTheForm() async {
+        let model = stack.stationModel()
+        await model.load()
+        #expect(model.deliveryNote.contains("the price falls by 10¢"), "a new alert starts at 10¢ with no price type named")
+
+        model.select(payment: .credit)
+        #expect(model.deliveryNote.contains("the Credit price falls by 10¢ or more"))
+
+        model.select(sensitivity: .twentyCents)
+        #expect(model.deliveryNote.contains("falls by 20¢ or more"))
+        model.select(sensitivity: .fiveCents)
+        #expect(model.deliveryNote.contains("falls by 5¢ or more"))
+
+        model.select(sensitivity: .custom)
+        model.form.customChangeText = "0.15"
+        #expect(model.deliveryNote.contains("falls by 15¢ or more"))
+        model.form.customChangeText = "banana"
+        #expect(model.deliveryNote.contains("falls by"), "an invalid custom amount leaves the last valid wording, not a crash")
+
+        model.select(.atOrBelow)
+        model.select(payment: .cash)
+        #expect(model.deliveryNote.contains("the Cash price reaches your target"))
+        #expect(model.deliveryNote.contains("aren't instant"))
+    }
+
+    @Test("A legacy alert explains why it asks for a choice — until one is made; other alerts never show that note")
+    func legacyNotice_goesAwayOnceChosen() async throws {
+        let legacyModel = try await stack.relaunchedStationModel(existing: .priceDrop, paymentType: nil)
+        await legacyModel.load()
+        #expect(legacyModel.legacyPaymentNotice == PriceAlertPaymentCopy.legacyAlertNotice)
+        #expect(legacyModel.paymentHint == PriceAlertPaymentCopy.chooseHint)
+        #expect(legacyModel.canSave == false)
+
+        legacyModel.select(payment: .credit)
+        #expect(legacyModel.legacyPaymentNotice == nil)
+        #expect(legacyModel.paymentHint == nil)
+        #expect(legacyModel.canSave)
+
+        let typedStack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
+        let typedModel = try await typedStack.relaunchedStationModel(existing: .priceDrop, paymentType: .cash)
+        await typedModel.load()
+        #expect(typedModel.legacyPaymentNotice == nil)
+        #expect(typedModel.paymentHint == nil)
+
+        let newModel = stack.stationModel(seed: 2)
+        await newModel.load()
+        #expect(newModel.legacyPaymentNotice == nil, "a brand-new alert is not a legacy one")
+        #expect(newModel.paymentHint == PriceAlertPaymentCopy.chooseHint)
+    }
+
+    @Test("Without a chosen price type nothing is sent — Save does nothing, and no payment type is ever invented")
+    func noPaymentChosen_sendsNothing() async {
+        let model = stack.stationModel()
+        await model.load()
+        #expect(model.saveBlocker == .choosePayment)
+        #expect(model.saveHint == "Choose Cash or Credit first.")
+        #expect(model.paymentHint == PriceAlertPaymentCopy.chooseHint)
+
+        await model.save()
+
+        #expect(stack.transport.count(of: "set_alert") == 0)
+        #expect(model.hasExistingAlert == false)
+        #expect(model.announcement == nil)
+    }
+
+    @Test("Each drop size reaches the server exactly: 5¢, 10¢, 20¢, and a Custom amount to the thousandth")
+    func dropSizes_reachTheServer() async throws {
+        let cases: [(PriceAlertSensitivity, String, Double)] = [
+            (.fiveCents, "", 0.05), (.tenCents, "", 0.1), (.twentyCents, "", 0.2), (.custom, "0.15", 0.15), (.custom, "0.075", 0.075), (.custom, "2", 2.0),
+        ]
+        for (index, (sensitivity, custom, expected)) in cases.enumerated() {
+            let seed = UInt8(10 + index)
+            let model = PriceAlertsStationModel(target: PriceAlertsStack.target(seed), service: stack.service)
+            await model.load()
+            model.select(payment: .credit)
+            model.select(sensitivity: sensitivity)
+            model.form.customChangeText = custom
+
+            await model.save()
+
+            let request = try #require(stack.transport.lastRequest("set_alert"))
+            #expect(request.json["minimum_change"] as? Double == expected, "\(sensitivity) \(custom)")
+        }
+    }
+
+    @Test("A Custom amount outside 0.01–2.00, or malformed, blocks Save and sends nothing")
+    func customDropSize_invalid_isNotSent() async {
+        let model = stack.stationModel()
+        await model.load()
+        model.select(payment: .cash)
+        model.select(sensitivity: .custom)
+        #expect(model.changeFieldHint == PriceAlertMinimumChangeInput.emptyHint)
+        #expect(model.canSave == false)
+        #expect(model.saveHint == "Enter a custom drop size first.")
+
+        for text in ["0", "0.009", "2.001", "-1", "abc", "0.1234"] {
+            model.form.customChangeText = text
+            #expect(model.canSave == false, "\(text)")
+            #expect(model.changeFieldMessage != nil, "\(text)")
+            #expect(model.changeFieldHint == nil, "\(text)")
+            await model.save()
+        }
+        #expect(stack.transport.requests.isEmpty)
+
+        model.form.customChangeText = "0.01"
+        #expect(model.canSave)
+        #expect(model.changeFieldMessage == nil)
     }
 
     @Test("Updating sends the alert's FULL state: the preferences it already had are carried forward")
@@ -344,6 +505,8 @@ struct PriceAlertsStationModelSaveTests {
         #expect(request.json["threshold_price"] as? Double == 2.99)
         #expect(request.json["minimum_change"] as? Double == 0.1)
         #expect(request.json["cooldown_minutes"] as? Int == 720)
+        // The price type it already watched is carried forward, not reset.
+        #expect(request.json["payment_type"] as? String == "cash")
         #expect(model.currentSummary == .atOrBelow(amount(2_990)))
         #expect(model.announcement?.text == "Price Alert updated.")
         // The sentence under the form reads the alert's own limits.
@@ -362,15 +525,19 @@ struct PriceAlertsStationModelSaveTests {
         let request = try #require(stack.transport.lastRequest("set_alert"))
         #expect(request.json["alert_mode"] as? String == "price_drop")
         #expect(request.json["threshold_price"] as? Double == nil)
+        // The alert's own 5¢ and Cash price type are kept — switching kinds does not move it to 10¢.
+        #expect(request.json["minimum_change"] as? Double == 0.05)
+        #expect(request.json["payment_type"] as? String == "cash")
         #expect(model.currentSummary == .priceDrop)
         // Re-seeded from the server's alert, which has no price.
-        #expect(model.form == PriceAlertForm(kind: .priceDrop, priceText: ""))
+        #expect(model.form == PriceAlertForm(kind: .priceDrop, priceText: "", payment: .cash, sensitivity: .fiveCents))
     }
 
     @Test("A double tap cannot save twice")
     func duplicateSubmit_isPrevented() async {
         let model = stack.stationModel()
         await model.load()
+        model.select(payment: .cash)
         let gate = AsyncGate()
         stack.transport.beforeResponding = { request in
             if request.action == "set_alert" { await gate.parkFirstCaller() }
@@ -398,6 +565,7 @@ struct PriceAlertsStationModelSaveTests {
         let model = stack.stationModel()
         await model.load()
         model.select(.atOrBelow)
+        model.select(payment: .cash)
 
         model.form.priceText = ""
         #expect(model.priceFieldHint == PriceAlertPriceInput.emptyHint)
@@ -421,12 +589,14 @@ struct PriceAlertsStationModelSaveTests {
         await model.load()
         model.select(.atOrBelow)
         model.form.priceText = "3.25"
+        model.select(payment: .credit)
+        model.select(sensitivity: .twentyCents)
         stack.transport.enqueue("set_alert", .error(status: 500, code: "internal_error"))
 
         await model.save()
 
         #expect(model.visibleSaveFailure == .busy)
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .credit, sensitivity: .twentyCents))
         #expect(model.isSaving == false)
         #expect(model.hasExistingAlert == false)
         #expect(model.announcement?.isError == true)
@@ -450,6 +620,7 @@ struct PriceAlertsStationModelSaveTests {
         await model.load()
         model.select(.atOrBelow)
         model.form.priceText = "3.25"
+        model.select(payment: .cash)
 
         await model.save()
 
@@ -458,7 +629,7 @@ struct PriceAlertsStationModelSaveTests {
         #expect(failure.isRetryable)
         assertSafeToShow(failure.headline)
         assertSafeToShow(failure.body)
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .cash))
         #expect(model.phase == .ready)
         // One refresh of the server's link and one retry, then the server's word is final.
         #expect(stack.transport.count(of: "set_alert") == 2)
@@ -469,6 +640,7 @@ struct PriceAlertsStationModelSaveTests {
         stack.transport.knownStationIDs = []
         let model = stack.stationModel()
         await model.load()
+        model.select(payment: .cash)
 
         await model.save()
 
@@ -481,6 +653,7 @@ struct PriceAlertsStationModelSaveTests {
         await model.load()
         model.select(.atOrBelow)
         model.form.priceText = "3.25"
+        model.select(payment: .cash)
         stack.transport.enqueue("bootstrap", .failure(URLError(.notConnectedToInternet)))
 
         await model.save()
@@ -513,7 +686,7 @@ struct PriceAlertsStationModelSaveTests {
         await save.value
 
         #expect(model.currentSummary == .atOrBelow(amount(3_250)))
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .cash, sensitivity: .fiveCents))
         #expect(model.phase == .ready)
     }
 
@@ -567,7 +740,7 @@ struct PriceAlertsStationModelSaveTests {
 
         await model.save()
 
-        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25"))
+        #expect(model.form == PriceAlertForm(kind: .atOrBelow, priceText: "3.25", payment: .cash, sensitivity: .fiveCents))
         #expect(model.currentSummary == .priceDrop)               // honest: the list is stale…
         #expect(model.refreshWarning == .busy)                    // …and the sheet says so
         #expect(model.visibleSaveFailure == nil)
@@ -581,6 +754,7 @@ struct PriceAlertsStationModelSaveTests {
     func announcements() async {
         let model = stack.stationModel()
         await model.load()
+        model.select(payment: .cash)
         var seen: [Int] = []
 
         await model.save()

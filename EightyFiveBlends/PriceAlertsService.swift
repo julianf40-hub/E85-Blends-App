@@ -36,6 +36,10 @@
 //  - ONE ALERT PER STATION. The server keeps one alert per installation per station and `set_alert`
 //    replaces it, so `createAlert` for a station that already has one replaces it, and a change is
 //    always sent as the alert's FULL state (`updateAlert` carries unchanged fields forward).
+//  - PAYMENT TYPE (Phase 3C). An alert watches the cash price or the credit price. `createAlert` and
+//    `updateAlert` take it as an optional `paymentType`; `updateAlert` carries the alert's current one
+//    forward when none is given, and an alert whose payment type is still `unknown` (made before
+//    payment types existed) stays `unknown` until someone chooses — nothing here picks one for them.
 //  - THE SERVER IS AUTHORITATIVE. After every successful change the list is re-read from the server
 //    rather than patched locally.
 //  - ORDERING. Operations that touch the alert list run one at a time, in the order they were
@@ -159,19 +163,27 @@ final class PriceAlertsService {
     func createAlert(
         communityStationID: UUID?,
         rule: PriceAlertRule,
-        preferences: PriceAlertPreferences = .defaults
+        preferences: PriceAlertPreferences = .defaults,
+        paymentType: PriceAlertPayment? = nil
     ) async throws -> PriceAlert {
-        let draft = try PriceAlertDraft(communityStationID: communityStationID, rule: rule, preferences: preferences)
+        let draft = try PriceAlertDraft(
+            communityStationID: communityStationID,
+            rule: rule,
+            preferences: preferences,
+            paymentType: paymentType
+        )
         return try await save(draft)
     }
 
     /// Changes an existing alert. Whatever is not passed keeps its current value — the backend would
-    /// otherwise reset it to a default, because `set_alert` replaces the whole alert.
+    /// otherwise reset it to a default, because `set_alert` replaces the whole alert. That includes the
+    /// payment type: it is sent as the existing alert's own unless a new one is given.
     @discardableResult
     func updateAlert(
         _ existing: PriceAlert,
         rule: PriceAlertRule? = nil,
-        preferences: PriceAlertPreferences? = nil
+        preferences: PriceAlertPreferences? = nil,
+        paymentType: PriceAlertPayment? = nil
     ) async throws -> PriceAlert {
         guard let resolvedRule = rule ?? existing.rule else {
             throw PriceAlertsServiceError.invalidAlert(.unsupportedMode)
@@ -179,7 +191,8 @@ final class PriceAlertsService {
         let draft = try PriceAlertDraft(
             communityStationID: existing.stationID,
             rule: resolvedRule,
-            preferences: preferences ?? existing.preferences
+            preferences: preferences ?? existing.preferences,
+            paymentType: paymentType ?? existing.paymentType
         )
         return try await save(draft)
     }

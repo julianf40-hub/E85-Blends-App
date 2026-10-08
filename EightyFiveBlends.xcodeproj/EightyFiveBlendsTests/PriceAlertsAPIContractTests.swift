@@ -240,6 +240,67 @@ struct PriceAlertsRequestContractTests {
         ])).isEmpty)
     }
 
+    @Test("A chosen payment type goes on the wire as the backend's identifier, with the rest of the full state")
+    func setAlert_sendsThePaymentType() async throws {
+        for (payment, wire) in [(PriceAlertPayment.cash, "cash"), (.credit, "credit")] {
+            transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station, minimumChange: "0.100", paymentType: wire))))
+            let draft = try PriceAlertDraft(
+                communityStationID: station,
+                rule: .priceDrop,
+                preferences: PriceAlertPreferences.newAlertDefaults,
+                paymentType: payment
+            )
+
+            let saved = try await client.saveAlert(credential: credential, draft: draft)
+
+            #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+                "station_id": wireStation,
+                "alert_mode": "price_drop",
+                "minimum_change": 0.1,
+                "cooldown_minutes": 360,
+                "payment_type": wire,
+            ])).isEmpty, "\(wire)")
+            #expect(saved.paymentType == payment)
+        }
+    }
+
+    @Test("With no payment type — or `unknown`, which is never a choice — the field is OMITTED, exactly as before payment types existed")
+    func setAlert_omitsAnAbsentPaymentType() async throws {
+        for payment in [nil, PriceAlertPayment.unknown] as [PriceAlertPayment?] {
+            transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station))))
+            let draft = try PriceAlertDraft(communityStationID: station, rule: .priceDrop, paymentType: payment)
+
+            _ = try await client.saveAlert(credential: credential, draft: draft)
+
+            #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+                "station_id": wireStation,
+                "alert_mode": "price_drop",
+                "minimum_change": 0.05,
+                "cooldown_minutes": 360,
+            ])).isEmpty)
+            let text = try #require(transport.lastRequest("set_alert")).bodyText
+            #expect(text.contains("payment_type") == false)
+            #expect(text.contains("unknown") == false)
+        }
+    }
+
+    @Test("The drop-size presets reach the wire as exact JSON numbers")
+    func setAlert_dropSizes() async throws {
+        let cases: [(Int, String)] = [(50, "0.05"), (100, "0.1"), (200, "0.2"), (150, "0.15"), (75, "0.075"), (10, "0.01"), (2_000, "2")]
+        for (thousandths, text) in cases {
+            transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station))))
+            let draft = try PriceAlertDraft(
+                communityStationID: station,
+                rule: .priceDrop,
+                preferences: PriceAlertPreferences(minimumChange: amount(thousandths), cooldownMinutes: 360),
+                paymentType: .cash
+            )
+            _ = try await client.saveAlert(credential: credential, draft: draft)
+            let body = try #require(transport.lastRequest("set_alert")).bodyText
+            #expect(body.contains("\"minimum_change\":\(text),") || body.contains("\"minimum_change\":\(text)}"), "\(thousandths) → \(body)")
+        }
+    }
+
     @Test("No rule ever puts `enabled` on the wire — the backend has no such input")
     func setAlert_neverSendsEnabled() async throws {
         let rules: [PriceAlertRule] = [.anyChange, .priceDrop, .atOrBelow(amount(3_250))]
@@ -468,6 +529,7 @@ struct PriceAlertsErrorContractTests {
         ("invalid_threshold_price", 400, .invalidThresholdPrice),
         ("threshold_only_valid_for_at_or_below", 400, .thresholdOnlyValidForAtOrBelow),
         ("invalid_alert_preferences", 400, .invalidAlertPreferences),
+        ("invalid_payment_type", 400, .invalidPaymentType),
         ("invalid_station_id", 400, .invalidStationID),
         ("invalid_device_registration", 400, .invalidDeviceRegistration),
         ("invalid_device_token", 400, .invalidDeviceToken),
@@ -697,8 +759,11 @@ struct PriceAlertsModelTests {
 
     @Test("Defaults and ranges are the backend's: 0.05 / 360 minutes; threshold 1–8; change 0.01–2; cooldown 60–10080")
     func backendRanges() {
+        // The LEGACY defaults are unchanged; a new alert's 10¢ is the app's own explicit choice on top of them.
         #expect(PriceAlertPreferences.defaults.minimumChange == amount(50))
         #expect(PriceAlertPreferences.defaults.cooldownMinutes == 360)
+        #expect(PriceAlertPreferences.newAlertDefaults.minimumChange == amount(100))
+        #expect(PriceAlertPreferences.newAlertDefaults.cooldownMinutes == 360)
         #expect(PriceAlertRule.thresholdRange == amount(1_000)...amount(8_000))
         #expect(PriceAlertPreferences.minimumChangeRange == amount(10)...amount(2_000))
         #expect(PriceAlertPreferences.cooldownMinutesRange == 60...10_080)

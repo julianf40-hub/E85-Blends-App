@@ -27,14 +27,16 @@ protocol PriceAlertsServing: AnyObject {
     func createAlert(
         communityStationID: UUID?,
         rule: PriceAlertRule,
-        preferences: PriceAlertPreferences
+        preferences: PriceAlertPreferences,
+        paymentType: PriceAlertPayment?
     ) async throws -> PriceAlert
 
     @discardableResult
     func updateAlert(
         _ existing: PriceAlert,
         rule: PriceAlertRule?,
-        preferences: PriceAlertPreferences?
+        preferences: PriceAlertPreferences?,
+        paymentType: PriceAlertPayment?
     ) async throws -> PriceAlert
 
     func deleteAlert(communityStationID: UUID?) async throws

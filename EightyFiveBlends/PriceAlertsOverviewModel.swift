@@ -34,22 +34,55 @@ final class PriceAlertsOverviewModel {
         let id: UUID
         let target: PriceAlertStationTarget
         let alertTitle: String
+        /// Which price the alert watches and how big a drop it waits for: "Credit price · 10¢ drop".
+        let watchText: String
+        /// True for an alert made before payment types existed: it has no price chosen yet.
+        let needsPaymentChoice: Bool
         let latestPriceText: String?
+        private let watchSpokenText: String
 
         init(listing: PriceAlertListing) {
             let target = PriceAlertStationTarget(listing: listing)
             self.target = target
             id = target.communityStationID
             alertTitle = PriceAlertSummary(alert: listing.alert).title
-            latestPriceText = listing.latestPrice.map {
-                "Latest community price \(PriceAlertPriceInput.displayText(for: $0))"
-            }
+            let watch = PriceAlertWatch(alert: listing.alert)
+            watchText = watch.shortText
+            watchSpokenText = watch.spokenText
+            needsPaymentChoice = watch.needsPaymentChoice
+            latestPriceText = Self.latestPriceText(for: listing)
         }
 
         var accessibilityLabel: String {
-            var parts = [target.name, "Alert: \(alertTitle)"]
+            var parts = [target.name, "Alert: \(alertTitle)", watchSpokenText]
             if let latestPriceText { parts.append(latestPriceText) }
             return parts.joined(separator: ", ")
+        }
+
+        /// The newest price the alert is actually judged against — NEVER the other payment type's price.
+        /// - An alert that watches Cash or Credit shows only its own price stream, and says so when that
+        ///   stream has no report yet (it does not fall back to the unfiltered latest price, which may be
+        ///   the other method's).
+        /// - An alert made before payment types existed keeps showing the latest community price, as it
+        ///   always did, without claiming a method for it.
+        static func latestPriceText(for listing: PriceAlertListing) -> String? {
+            let payment = listing.alert.paymentType
+            if payment.isSpecified {
+                guard let price = listing.latestComparablePrice else {
+                    return "No \(payment.title) price reported yet"
+                }
+                let amount = PriceAlertPriceInput.displayText(for: price)
+                if listing.latestComparablePaymentType == .sameForBoth {
+                    return "Latest price \(amount), reported as the same for cash and credit"
+                }
+                return "Latest \(payment.title) price \(amount)"
+            }
+            if let comparable = listing.latestComparablePrice {
+                return "Latest community price \(PriceAlertPriceInput.displayText(for: comparable)), payment type not specified"
+            }
+            return listing.latestPrice.map {
+                "Latest community price \(PriceAlertPriceInput.displayText(for: $0))"
+            }
         }
     }
 

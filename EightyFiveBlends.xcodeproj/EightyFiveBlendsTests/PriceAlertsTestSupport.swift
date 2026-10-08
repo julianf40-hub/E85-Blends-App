@@ -73,7 +73,8 @@ enum BackendFixtures {
         data(["error": code])
     }
 
-    /// The core alert object, as `set_alert` returns it.
+    /// The core alert object, as `set_alert` returns it. `paymentType: nil` leaves `payment_type` OUT, the
+    /// shape of a backend that predates payment types; the simulated server below always sends it.
     static func alertObject(
         id: UUID = UUID(),
         stationID: UUID,
@@ -81,9 +82,10 @@ enum BackendFixtures {
         threshold: String? = nil,
         minimumChange: String = "0.050",
         cooldownMinutes: Int = 360,
-        enabled: Bool = true
+        enabled: Bool = true,
+        paymentType: String? = nil
     ) -> [String: Any] {
-        [
+        var object: [String: Any] = [
             "id": id.uuidString.lowercased(),
             "station_id": stationID.uuidString.lowercased(),
             "alert_mode": mode,
@@ -92,6 +94,10 @@ enum BackendFixtures {
             "cooldown_minutes": cooldownMinutes,
             "enabled": enabled,
         ]
+        if let paymentType {
+            object["payment_type"] = paymentType
+        }
+        return object
     }
 
     static func saved(_ alert: [String: Any]) -> Data {
@@ -108,7 +114,8 @@ enum BackendFixtures {
         lastNotifiedPrice: String? = nil,
         lastNotifiedAt: String? = nil,
         latestPrice: String? = "3.149",
-        latestReportedAt: String? = "2026-10-06T08:00:00.000Z"
+        latestReportedAt: String? = "2026-10-06T08:00:00.000Z",
+        latestComparable: (price: String?, reportedAt: String?, paymentType: String?)? = nil
     ) -> [String: Any] {
         var row = alert
         row["station_name"] = stationName
@@ -119,6 +126,12 @@ enum BackendFixtures {
         row["last_notified_at"] = orNull(lastNotifiedAt)
         row["latest_price"] = orNull(latestPrice)
         row["latest_reported_at"] = orNull(latestReportedAt)
+        // Phase 3C: present only when the backend sends them (`nil` models a backend that does not).
+        if let latestComparable {
+            row["latest_comparable_price"] = orNull(latestComparable.price)
+            row["latest_comparable_reported_at"] = orNull(latestComparable.reportedAt)
+            row["latest_comparable_payment_type"] = orNull(latestComparable.paymentType)
+        }
         return row
     }
 
@@ -266,12 +279,23 @@ final class FakePriceAlertsTransport: PriceAlertsAPITransport, @unchecked Sendab
             let threshold = (request.json["threshold_price"] as? Double).map { String(format: "%.3f", $0) }
             let minimum = (request.json["minimum_change"] as? Double).map { String(format: "%.3f", $0) } ?? "0.050"
             let cooldown = request.json["cooldown_minutes"] as? Int ?? 360
+            // payment_type: cash | credit | absent. Anything else is refused, as the real function does; an
+            // absent field keeps the alert's current one, or stores `unknown` for a new alert.
+            var payment = (alerts[id]?[station]?["payment_type"] as? String) ?? "unknown"
+            if let requested = request.json["payment_type"], (requested is NSNull) == false {
+                guard let text = requested as? String, text == "cash" || text == "credit" else {
+                    return reply(400, BackendFixtures.error("invalid_payment_type"))
+                }
+                payment = text
+            }
             let alert = BackendFixtures.alertObject(
+                id: (alerts[id]?[station]?["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID(),
                 stationID: UUID(uuidString: station) ?? UUID(),
                 mode: request.json["alert_mode"] as? String ?? "price_drop",
                 threshold: threshold,
                 minimumChange: minimum,
-                cooldownMinutes: cooldown
+                cooldownMinutes: cooldown,
+                paymentType: payment
             )
             alerts[id, default: [:]][station] = alert
             return reply(BackendFixtures.saved(alert))
@@ -282,8 +306,16 @@ final class FakePriceAlertsTransport: PriceAlertsAPITransport, @unchecked Sendab
             return reply(BackendFixtures.deleted(changed: removed))
 
         case "list_alerts":
+            // An alert that watches Cash or Credit comes back with the newest report of its own price type
+            // (the fake's latest report is always one); a legacy alert comes back without the comparable
+            // fields, the shape every Phase 3B test was written against.
             let rows = (alerts[id] ?? [:]).values
-                .map { BackendFixtures.listRow(alert: $0) }
+                .map { alert -> [String: Any] in
+                    let payment = alert["payment_type"] as? String ?? "unknown"
+                    let comparable: (price: String?, reportedAt: String?, paymentType: String?)? =
+                        payment == "unknown" ? nil : (price: "3.149", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: payment)
+                    return BackendFixtures.listRow(alert: alert, latestComparable: comparable)
+                }
                 .sorted { ($0["station_id"] as? String ?? "") < ($1["station_id"] as? String ?? "") }
             return reply(BackendFixtures.list(rows))
 

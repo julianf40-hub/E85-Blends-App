@@ -73,6 +73,8 @@ nonisolated enum PriceAlertsAPIErrorCode: Equatable, Sendable {
     case invalidThresholdPrice
     case thresholdOnlyValidForAtOrBelow
     case invalidAlertPreferences
+    /// 400 — `set_alert` named a payment type other than `cash` or `credit`.
+    case invalidPaymentType
     case invalidStationID
     case invalidDeviceRegistration
     case invalidDeviceToken
@@ -102,6 +104,7 @@ nonisolated enum PriceAlertsAPIErrorCode: Equatable, Sendable {
         case "invalid_threshold_price": self = .invalidThresholdPrice
         case "threshold_only_valid_for_at_or_below": self = .thresholdOnlyValidForAtOrBelow
         case "invalid_alert_preferences": self = .invalidAlertPreferences
+        case "invalid_payment_type": self = .invalidPaymentType
         case "invalid_station_id": self = .invalidStationID
         case "invalid_device_registration": self = .invalidDeviceRegistration
         case "invalid_device_token": self = .invalidDeviceToken

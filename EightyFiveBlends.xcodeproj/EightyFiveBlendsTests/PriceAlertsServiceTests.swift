@@ -526,3 +526,168 @@ struct PriceAlertsOrchestrationTests {
         #expect(service.alerts.count == 2)
     }
 }
+
+// MARK: - Payment type and drop size (Phase 3C)
+
+struct PriceAlertsServicePaymentTests {
+    private let stack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
+    private var service: PriceAlertsService { stack.service }
+    private var transport: FakePriceAlertsTransport { stack.transport }
+
+    @Test("A chosen payment type is saved, listed and read back — a Cash alert and a Credit alert side by side")
+    func paymentType_roundTrips() async throws {
+        let cash = try await service.createAlert(
+            communityStationID: stationOne, rule: .priceDrop,
+            preferences: PriceAlertPreferences.newAlertDefaults, paymentType: .cash
+        )
+        let credit = try await service.createAlert(
+            communityStationID: stationTwo, rule: .atOrBelow(amount(2_890)),
+            preferences: PriceAlertPreferences.newAlertDefaults, paymentType: .credit
+        )
+        #expect(cash.paymentType == .cash)
+        #expect(credit.paymentType == .credit)
+
+        // A relaunched app reads them back from the server.
+        let relaunched = stack.relaunchedService()
+        await relaunched.refreshAlerts()
+        let byStation = Dictionary(uniqueKeysWithValues: relaunched.alerts.map { ($0.alert.stationID, $0.alert) })
+        #expect(byStation[stationOne]?.paymentType == .cash)
+        #expect(byStation[stationOne]?.minimumChange == amount(100))
+        #expect(byStation[stationTwo]?.paymentType == .credit)
+        #expect(byStation[stationTwo]?.rule == .atOrBelow(amount(2_890)))
+    }
+
+    @Test("Editing only the target price keeps the payment type, the drop size and the cooldown")
+    func editTarget_preservesPaymentAndDropSize() async throws {
+        let original = try await service.createAlert(
+            communityStationID: stationOne, rule: .atOrBelow(amount(2_890)),
+            preferences: PriceAlertPreferences(minimumChange: amount(150), cooldownMinutes: 720), paymentType: .credit
+        )
+
+        let updated = try await service.updateAlert(original, rule: .atOrBelow(amount(2_790)))
+
+        let request = try #require(transport.lastRequest("set_alert"))
+        #expect(request.json["payment_type"] as? String == "credit")
+        #expect(request.json["minimum_change"] as? Double == 0.15)
+        #expect(request.json["cooldown_minutes"] as? Int == 720)
+        #expect(request.json["threshold_price"] as? Double == 2.79)
+        #expect(updated.paymentType == .credit)
+        #expect(updated.minimumChange == amount(150))
+        #expect(updated.id == original.id, "an update replaces the one alert, it does not create another")
+        #expect(service.alerts.count == 1)
+    }
+
+    @Test("Editing only the drop size keeps the payment type and the rule")
+    func editDropSize_preservesPaymentAndRule() async throws {
+        let original = try await service.createAlert(
+            communityStationID: stationOne, rule: .priceDrop,
+            preferences: PriceAlertPreferences.newAlertDefaults, paymentType: .cash
+        )
+
+        let updated = try await service.updateAlert(
+            original, preferences: PriceAlertPreferences(minimumChange: amount(200), cooldownMinutes: 360)
+        )
+
+        let request = try #require(transport.lastRequest("set_alert"))
+        #expect(request.json["payment_type"] as? String == "cash")
+        #expect(request.json["alert_mode"] as? String == "price_drop")
+        #expect(request.json["minimum_change"] as? Double == 0.2)
+        #expect(updated.paymentType == .cash)
+        #expect(updated.rule == .priceDrop)
+    }
+
+    @Test("Changing only the payment type keeps the rule, the price, the drop size and the cooldown")
+    func editPayment_preservesTheRest() async throws {
+        let original = try await service.createAlert(
+            communityStationID: stationOne, rule: .atOrBelow(amount(2_890)),
+            preferences: PriceAlertPreferences(minimumChange: amount(75), cooldownMinutes: 1_440), paymentType: .cash
+        )
+
+        let updated = try await service.updateAlert(original, paymentType: .credit)
+
+        let request = try #require(transport.lastRequest("set_alert"))
+        #expect(request.json["payment_type"] as? String == "credit")
+        #expect(request.json["threshold_price"] as? Double == 2.89)
+        #expect(request.json["minimum_change"] as? Double == 0.075)
+        #expect(request.json["cooldown_minutes"] as? Int == 1_440)
+        #expect(updated.paymentType == .credit)
+        #expect(updated.rule == .atOrBelow(amount(2_890)))
+    }
+
+    @Test("A caller that names no payment type changes nothing about it: a legacy alert stays unknown, a typed one stays typed")
+    func noPaymentNamed_changesNothing() async throws {
+        // Older callers (and tests) create without one: the server records `unknown`; nothing is invented.
+        let legacy = try await service.createAlert(communityStationID: stationOne, rule: .priceDrop)
+        #expect(transport.lastRequest("set_alert")?.json["payment_type"] == nil)
+        #expect(legacy.paymentType == .unknown)
+
+        _ = try await service.updateAlert(legacy, rule: .atOrBelow(amount(3_000)))
+        #expect(transport.lastRequest("set_alert")?.json["payment_type"] == nil, "an `unknown` alert is never sent as one")
+        #expect(service.alerts.first?.alert.paymentType == .unknown)
+
+        // …and once someone chooses, later edits that name nothing keep the choice.
+        let chosen = try await service.updateAlert(legacy, paymentType: .credit)
+        #expect(chosen.paymentType == .credit)
+        _ = try await service.updateAlert(chosen, rule: .priceDrop)
+        #expect(transport.lastRequest("set_alert")?.json["payment_type"] as? String == "credit")
+        #expect(service.alerts.first?.alert.paymentType == .credit)
+    }
+
+    @Test("`unknown` passed explicitly is treated as 'not chosen' and is never put on the wire")
+    func explicitUnknown_isNotSent() async throws {
+        let saved = try await service.createAlert(communityStationID: stationOne, rule: .priceDrop, paymentType: .unknown)
+
+        #expect(transport.lastRequest("set_alert")?.json["payment_type"] == nil)
+        #expect(saved.paymentType == .unknown)
+    }
+
+    @Test("The server refusing a payment type is explained plainly and nothing is changed")
+    func invalidPaymentType_isExplained() async throws {
+        transport.enqueue("set_alert", .error(status: 400, code: "invalid_payment_type"))
+
+        do {
+            _ = try await service.createAlert(communityStationID: stationOne, rule: .priceDrop, paymentType: .cash)
+            Issue.record("expected the save to fail")
+        } catch {
+            let message = PriceAlertsUserMessage(error: PriceAlertsServiceError.from(error))
+            #expect(message.headline == "Choose Cash or Credit")
+            #expect(message.isRetryable == false)
+            assertSafeToShow(message.headline)
+            assertSafeToShow(message.body)
+        }
+        #expect(service.alerts.isEmpty)
+    }
+
+    @Test("A Pro lapse keeps the payment type and the drop size untouched; renewal resumes it")
+    func lapse_preservesPaymentAndDropSize() async throws {
+        _ = try await service.createAlert(
+            communityStationID: stationOne, rule: .priceDrop,
+            preferences: PriceAlertPreferences(minimumChange: amount(200), cooldownMinutes: 360), paymentType: .credit
+        )
+        let sent = transport.count(of: "set_alert")
+
+        stack.entitlement.entitlement = .inactive
+        await service.refreshAlerts()
+
+        #expect(service.alerts.first?.alert.paymentType == .credit)
+        #expect(service.alerts.first?.alert.minimumChange == amount(200))
+        #expect(transport.count(of: "set_alert") == sent)
+        #expect(transport.count(of: "delete_alert") == 0)
+
+        stack.entitlement.entitlement = .active
+        await service.refreshAlerts()
+        #expect(service.alerts.first?.alert.paymentType == .credit)
+        #expect(transport.alerts.values.flatMap { $0.values }.count == 1)
+    }
+
+    @Test("Turning an alert off is unchanged by payment type: it deletes the one alert for the station")
+    func delete_isUnchanged() async throws {
+        _ = try await service.createAlert(communityStationID: stationOne, rule: .priceDrop, paymentType: .cash)
+        _ = try await service.createAlert(communityStationID: stationTwo, rule: .priceDrop, paymentType: .credit)
+
+        try await service.deleteAlert(communityStationID: stationOne)
+
+        #expect(service.alerts.map(\.alert.stationID) == [stationTwo])
+        #expect(service.alerts.first?.alert.paymentType == .credit)
+    }
+}

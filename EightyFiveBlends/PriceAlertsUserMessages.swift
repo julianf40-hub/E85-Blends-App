@@ -190,6 +190,12 @@ nonisolated struct PriceAlertsUserMessage: Equatable, Sendable {
                 return PriceAlertsUserMessage(error: .proRequiredByServer)
             case .stationNotFound:
                 return PriceAlertsUserMessage(error: .stationNotFound)
+            case .invalidPaymentType:
+                return PriceAlertsUserMessage(
+                    headline: "Choose Cash or Credit",
+                    body: "Choose which price this alert should watch, then try again.",
+                    isRetryable: false
+                )
             default:
                 return generic
             }

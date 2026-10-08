@@ -23,6 +23,9 @@
 //      so this file and the server cannot drift apart.
 //    - The empty field is neither valid nor an error: it is "not entered yet".
 //
+//  The same parser reads the "Custom" drop size of a Price Drop alert (Phase 3C), with that field's own
+//  bounds (`PriceAlertPreferences.minimumChangeRange`) — see PriceAlertMinimumChangeInput.
+//
 
 import Foundation
 
@@ -49,6 +52,11 @@ nonisolated enum PriceAlertPriceInput {
     private static let maximumWholeDigits = 9
 
     static func parse(_ rawText: String) -> Result {
+        parse(rawText, within: PriceAlertRule.thresholdRange)
+    }
+
+    /// The same rules with caller-supplied inclusive bounds (still integer thousandths).
+    static func parse(_ rawText: String, within bounds: ClosedRange<PriceAlertAmount>) -> Result {
         var text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {
             return .empty
@@ -95,10 +103,10 @@ nonisolated enum PriceAlertPriceInput {
         }
 
         let amount = PriceAlertAmount(thousandths: whole * 1000 + fraction)
-        if amount < PriceAlertRule.thresholdRange.lowerBound {
+        if amount < bounds.lowerBound {
             return .invalid(.belowMinimum)
         }
-        if amount > PriceAlertRule.thresholdRange.upperBound {
+        if amount > bounds.upperBound {
             return .invalid(.aboveMaximum)
         }
         return .valid(amount)
