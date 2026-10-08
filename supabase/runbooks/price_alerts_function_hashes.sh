@@ -12,17 +12,24 @@
 # Usage:
 #   price_alerts_function_hashes.sh                       print sha256 of every deployable file in the working tree
 #   price_alerts_function_hashes.sh --rev <git-rev>       the same, for a git revision (default: the working tree)
-#   price_alerts_function_hashes.sh [--rev <rev>] --against <dir>
+#   price_alerts_function_hashes.sh --rev <git-rev> --against <dir>
 #                                                         compare with downloaded sources: <dir>/price-alerts-api/*.ts etc.
 #                                                         Exit 0 only if every file matches and the deployed copy has no extra file.
 #
-# How to get <dir> (read-only; needs the owner's authorization and a Supabase login):
-#   supabase functions download price-alerts-api    --project-ref <ref> --use-api     (then the same for price-alerts-worker)
+# TWO GUARDS, because both mistakes make a comparison pass for the wrong reason:
+#   * --against REQUIRES --rev. A comparison is always "the deployed files vs a RECORDED commit", never vs the working tree: a
+#     download that lands in the working tree overwrites it with the deployed code, and the working tree would then match itself.
+#   * --against must be a directory OUTSIDE this repository, for the same reason. Download into an empty scratch directory.
+#
+# How to get <dir> (read-only; needs the owner's authorization and a Supabase login). Run it from an EMPTY scratch directory, not
+# from the repository (the CLI writes to ./supabase/functions/<name> of where it runs):
+#   mkdir /tmp/deployed && cd /tmp/deployed && supabase functions download price-alerts-api --project-ref <ref> --use-api
+#   (then the same for price-alerts-worker)       -> /tmp/deployed/supabase/functions/<name>/ ; use that functions/ directory as <dir>
 # or the equivalent read of the function's files in the dashboard / MCP get_edge_function. Put each function's files under
 # <dir>/<function-name>/ . A "deno.json" the platform adds is compared like any other file.
 #
 # BEFORE a deploy:  --rev <the revision the previous deploy came from> --against <downloaded>   => must be all MATCH
-# AFTER  a deploy:  (working tree or the shipped revision) --against <downloaded again>          => must be all MATCH
+# AFTER  a deploy:  --rev <the commit being shipped, recorded before the deploy> --against <downloaded again>   => must be all MATCH
 set -euo pipefail
 
 REV=""
@@ -37,7 +44,19 @@ while [ $# -gt 0 ]; do
 done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/../.." && pwd)"
+REPO="$(cd "$HERE/../.." && pwd -P)"
+
+if [ -n "$AGAINST" ]; then
+  [ -n "$REV" ] || { echo "--against needs --rev <commit>: compare the downloaded files with a RECORDED commit, never with the working tree (a download can overwrite the working tree, and it would then match itself)" >&2; exit 2; }
+  [ -d "$AGAINST" ] || { echo "--against: not a directory: $AGAINST" >&2; exit 2; }
+  against_real="$(cd "$AGAINST" && pwd -P)"
+  case "$against_real/" in
+    "$REPO"/*) echo "REFUSING: $AGAINST is inside the repository. Download the deployed sources into an empty scratch directory outside it" >&2; exit 2 ;;
+  esac
+fi
+if [ -n "$REV" ]; then
+  git -C "$REPO" rev-parse --verify --quiet "${REV}^{commit}" >/dev/null || { echo "--rev: not a commit in this repository: $REV" >&2; exit 2; }
+fi
 
 # The files each function is deployed from: its entry point and every module it imports (tests and notes are not deployed).
 declare -A FILES=(

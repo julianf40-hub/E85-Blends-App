@@ -51,6 +51,16 @@ from (
   select 17, 'A.rows_and_types',
          (select count(*)::text || ' rows; typed (not unknown): ' || count(*) filter (where payment_type <> 'unknown')::text from public.e85_price_reports),
          'rows equals the preflight count (plus reports that arrived since); typed = 0 until a client sends payment_type'
+  union all
+  select 18, 'A.gap_exposure_deliveries',
+         -- to_jsonb(): the deliveries' payment_type column exists only after B, and this file must run on an A-only database too
+         (select count(*)::text
+          from private.price_alert_deliveries d
+          join public.e85_price_reports r on r.id = d.price_report_id
+          where to_jsonb(d) ->> 'payment_type' is null          -- decided by the PREVIOUS engine (it records no price type)
+            and r.payment_type <> 'unknown'                     -- for a Cash / Credit / Same-for-Both report
+            and d.status in ('pending', 'processing', 'sent', 'failed', 'dead')),
+         '0. Non-zero = in the gap between A and B the previous engine decided a typed report for a legacy alert (a false alert). B cannot repair it: cancel any that are still pending (section 9, C4) and tell the owner'
 
   -- ---- after migration B: the alert tables and the engine ----------------------------------------------------------------
   union all
@@ -112,6 +122,12 @@ from (
          coalesce((select md5(prosrc) from pg_proc where oid = to_regprocedure('private.mark_price_alert_delivery_sent(uuid,integer)')), '(missing)'),
          'DIFFERENT from the preflight value'
   union all
+  select 44, 'B.engine_is_the_real_one',
+         coalesce((select case when p.prosrc ilike '%evaluate_price_alert_v2%' then 'yes'
+                               else 'NO - not the payment-aware engine (expected before B; after B it means the pause no-op or a failed B)' end
+                   from pg_proc p where p.oid = to_regprocedure('private.prepare_price_alert_deliveries(uuid)')), '(function missing)'),
+         'yes after B. RECORD B.prepare_md5 (above) NOW as the engine you expect to find after any later pause and resume: the no-op also differs from the preflight value'
+  union all
   select 41, 'B.deliveries_untouched',
          (select count(*) filter (where to_jsonb(d) ->> 'payment_type' is not null)::text || ' typed of ' || count(*)::text
           from private.price_alert_deliveries d),
@@ -130,7 +146,8 @@ from (
   -- ---- unchanged by either migration ------------------------------------------------------------------------------------
   union all
   select 60, 'cron.jobs_unchanged',
-         coalesce((select string_agg(jobname || ' [' || schedule || '] ' || case when active then 'active' else 'inactive' end, '; ' order by jobname)
+         coalesce((select string_agg(coalesce(jobname, '(unnamed #' || jobid::text || ')') || ' [' || schedule || '] ' || case when active then 'active' else 'inactive' end, '; '
+                                     order by coalesce(jobname, jobid::text))
                    from cron.job), '(none)'),
          'exactly the preflight list: neither migration touches a cron job'
 ) checks

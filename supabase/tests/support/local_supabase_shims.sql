@@ -10,7 +10,7 @@
 --   * cron.job / cron.schedule / cron.alter_job / cron.job_run_details - enough for the migrations
 --     (job name uniqueness, active flag, schedule, command). Nothing ever runs on a schedule here.
 --   * net.http_post - RECORDS the request in net.sent_requests and returns an id. It never sends
---     anything, so no test can reach a network.
+--     anything, so no test can reach a network. net._http_response exists (empty) like the real pg_net's.
 --   * vault.secrets / vault.decrypted_secrets - a plain table and view.
 
 do $$
@@ -154,6 +154,19 @@ create table if not exists net.sent_requests (
   body                 jsonb,
   timeout_milliseconds integer,
   created_at           timestamptz not null default now()
+);
+
+-- The real pg_net keeps the response of every request it made in net._http_response (the scheduler's "did the worker answer
+-- 2xx" evidence). Empty here: nothing is ever sent. The read-only observation query in supabase/runbooks reads its status codes.
+create table if not exists net._http_response (
+  id           bigint,
+  status_code  integer,
+  content_type text,
+  headers      jsonb,
+  content      text,
+  timed_out    boolean,
+  error_msg    text,
+  created      timestamptz not null default now()
 );
 
 create or replace function net.http_post(

@@ -166,7 +166,8 @@ from (
   -- ---- E. the scheduler ---------------------------------------------------------------------------------------------
   union all
   select 70, 'cron.jobs',
-         coalesce((select string_agg(jobname || ' [' || schedule || '] ' || case when active then 'active' else 'inactive' end, '; ' order by jobname)
+         coalesce((select string_agg(coalesce(jobname, '(unnamed #' || jobid::text || ')') || ' [' || schedule || '] ' || case when active then 'active' else 'inactive' end, '; '
+                                     order by coalesce(jobname, jobid::text))
                    from cron.job), '(none)'),
          'both 85blends-price-alert-job-prepare and 85blends-price-alerts-worker-invoke ACTIVE (owner-reported); record the others'
   union all
@@ -197,7 +198,7 @@ from (
   union all
   select 82, 'functions.engine_v2_exists',
          coalesce((select 'yes' from pg_proc where oid = to_regprocedure('private.evaluate_price_alert_v2(text,numeric,numeric,integer,numeric,numeric,interval,numeric,timestamptz,timestamptz,boolean)')), 'no'),
-         'no before migration B'
+         'no before migration B. If "yes": STOP - B (or part of it) is already there. Compare migrations.phase3c_already_applied, reports.payment_type_column_exists and functions.prepare_md5 before anything else; B''s one-time fill only runs while the alert columns are missing, so re-running B would not complete a half-applied state'
   union all
   select 83, 'functions.claim_v2_exists',
          coalesce((select 'yes' from pg_proc where oid = to_regprocedure('private.claim_price_alert_deliveries_v2(integer,text)')), 'no'),

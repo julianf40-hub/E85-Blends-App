@@ -25,19 +25,23 @@
 #   M3  A+B with a CASH/CREDIT alert and the PREVIOUS worker (the "B succeeded but the worker deploy did not" case): the
 #       notification is still sent, for the right price, in the old wording without the price type; the new worker names it.
 #   T1  Between A and B (A only): a typed report CAN make the previous engine alert a legacy alert (Credit 3.19 -> Cash 2.99
-#       reads as a 20c drop). After B the same reports queue nothing. => apply B right after A; ship no typed-report client first.
+#       reads as a 20c drop), and the read-only verification query can SEE that exposure. After B the same reports queue
+#       nothing. => apply B right after A; ship no typed-report client first.
 #   T2  A notification queued by the previous engine before B is left alone by B and is delivered by the new worker in the
 #       old wording; the next report inside the cooldown does not queue a duplicate.
 #   T3  A report whose job is still QUEUED when B is applied is judged against itself and its drop is lost; the same report
 #       processed first (the drained-queue procedure) alerts. => drain the queue before B.
 #   T4  B that fails (a lock it cannot get, or an error at its very end) leaves NOTHING behind: no column, the same function
 #       bodies, and the previous API still works. A second attempt then succeeds.
+#   T4b A that cannot get its lock (a long-running reader of the reports table) gives up after 3 s and leaves nothing behind - and
+#       a read issued while A is waiting QUEUES behind A's pending lock request (the stall a lock_timeout bounds but does not remove).
 #   T5  A report submitted while B is running WAITS for B and then succeeds; its job is queued and decided by the new engine.
-#   T6  The INCIDENT DRILL: the exact statements of docs/PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md section 9, run in order on an
-#       A+B database with live-looking data - pause new decisions (the no-op engine), cancel what is queued but unsent, pause the
-#       two Price Alerts cron jobs, resume (re-apply B, re-activate the jobs) - proving that every alert row keeps its
-#       configuration, only the two Price Alerts jobs are touched, nothing queued is lost or re-sent, and the real engine is
-#       back byte for byte.
+#   T6  The INCIDENT DRILL: the exact statements of docs/PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md section 9, run in the order the
+#       plan gives on an A+B database with live-looking data - pause new decisions (the no-op engine), pause the two Price Alerts
+#       cron jobs, cancel what is queued but unsent (and finalize its jobs), resume (re-run B, re-activate the jobs) - proving that
+#       every alert row keeps its configuration, only the two Price Alerts jobs are touched, nothing queued is lost or re-sent, the
+#       real engine is back byte for byte, and that the runbook queries TELL the no-op from the real engine (the other rows stay
+#       green with the no-op installed).
 #   T7  How long A holds its lock on the reports table as the table grows (informational; set ROLLOUT_MEASURE_A_ROWS=0 to skip).
 #
 # Usage: price_alert_rollout_compat.test.sh        Environment: PGHOST/PGPORT/PGUSER (a LOCAL Postgres), DENO, OLD_REV,
@@ -75,11 +79,16 @@ fail() { echo "FAILED: $*" >&2; exit 1; }
 expect() { [ "$2" = "$3" ] || fail "$1: expected '$3', got '$2'"; }
 now_ms() { date +%s%3N; }
 q() { psql -X -q -At -v ON_ERROR_STOP=1 -d "$1" -c "$2"; }       # q <db> <sql>
+RUNBOOKS="$REPO/supabase/runbooks"
+# The value column of one row of a READ-ONLY runbook query (the very files an operator would run), on a local database.
+runbook_row() { # <db label> <runbook file> <row name>
+  psql -X -At -F '|' -v ON_ERROR_STOP=1 -d "$(db "$1")" -f "$RUNBOOKS/$2" | awk -F'|' -v k="$3" '$1 == k { print $2 }'
+}
 
 stop_server() { if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=""; fi; }
 cleanup() {
   stop_server
-  for db in pre a ab t1 t2 t3 t3c t4 t5 t7 big; do dropdb --if-exists "${DB_PREFIX}_$db" >/dev/null 2>&1 || true; done
+  for db in pre a ab t1 t2 t3 t3c t4 t4a t5 t7 big; do dropdb --if-exists "${DB_PREFIX}_$db" >/dev/null 2>&1 || true; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -295,8 +304,13 @@ t1_sequence() { # <db label> <tag>  -> pending deliveries created by the sequenc
 }
 build t1 a
 expect "T1 A only: the previous engine queues a notification for the credit->cash 'drop' (the false alert)" "$(t1_sequence t1 a-only)" "1"
+# ...and the read-only verification query an operator runs after A can SEE that exposure (it must also run on an A-only database)
+expect "T1 the verification query reports the exposure of the gap" "$(runbook_row t1 price_alerts_3c_verify_after_readonly.sql A.gap_exposure_deliveries)" "1"
+expect "T1 ...and says the engine is not the payment-aware one yet" "$(runbook_row t1 price_alerts_3c_verify_after_readonly.sql B.engine_is_the_real_one | cut -c1-2)" "NO"
 dropdb --if-exists "$(db t1)"; build t1 ab
 expect "T1 A+B: the same reports queue nothing for a legacy alert" "$(t1_sequence t1 ab)" "0"
+expect "T1 A+B: no exposure, and the engine is the real one" \
+  "$(runbook_row t1 price_alerts_3c_verify_after_readonly.sql A.gap_exposure_deliveries) $(runbook_row t1 price_alerts_3c_verify_after_readonly.sql B.engine_is_the_real_one)" "0 yes"
 echo "   ok"
 
 # ======================================================================================================================
@@ -408,6 +422,36 @@ expect "T4 ...and the saved alert stayed a legacy one" "$(q "$(db t4)" "select p
 echo "   ok"
 
 # ======================================================================================================================
+echo "== T4b: an A that cannot get its lock gives up after 3 s, leaves nothing behind - and everything that arrives meanwhile queues behind it"
+build t4a pre
+A_COLUMN_BEFORE="$(has_column t4a public e85_price_reports payment_type)"
+expect "T4b before: no payment_type column" "$A_COLUMN_BEFORE" "0"
+# a long-running reader of the reports table (an open transaction that has read it) holds a lock that A's ALTER TABLE must wait for
+( psql -X -q -At -d "$(db t4a)" -c "begin; select count(*) from public.e85_price_reports; select pg_sleep(7); commit;" >"$TMP/t4a-holder.out" 2>&1 ) &
+HOLDER=$!
+sleep 1
+A_START=$(now_ms)
+( set +e; psql -X -q -v ON_ERROR_STOP=1 --single-transaction -d "$(db t4a)" -f "$A" >"$TMP/t4a-a.out" 2>&1; echo $? >"$TMP/t4a-a.rc" ) &
+A_PID=$!
+sleep 1
+# an ordinary READ of the table, issued while A is waiting for its lock: it queues behind A's pending request
+R_START=$(now_ms)
+psql -X -q -At -d "$(db t4a)" -c "select count(*) from public.e85_price_reports" >/dev/null
+R_WAIT=$(( $(now_ms) - R_START ))
+wait "$A_PID"
+A_ELAPSED=$(( $(now_ms) - A_START ))
+wait "$HOLDER"
+[ "$(cat "$TMP/t4a-a.rc")" != "0" ] || fail "T4b A should have failed while another session was reading the reports table in an open transaction"
+grep -qi "lock timeout" "$TMP/t4a-a.out" || fail "T4b A should fail on its lock_timeout: $(cat "$TMP/t4a-a.out")"
+[ "$A_ELAPSED" -lt 6000 ] || fail "T4b A should give up after about 3 seconds (${A_ELAPSED} ms)"
+[ "$R_WAIT" -ge 800 ] || fail "T4b a read issued while A was waiting should have queued behind A's pending lock request (${R_WAIT} ms)"
+expect "T4b after the lock timeout: nothing changed" "$(has_column t4a public e85_price_reports payment_type)" "$A_COLUMN_BEFORE"
+echo "   A gave up after ${A_ELAPSED} ms; a read issued while it waited was held for ${R_WAIT} ms (queued behind A's pending request)"
+apply_a t4a
+expect "T4b a second attempt applies A" "$(has_column t4a public e85_price_reports payment_type)" "1"
+echo "   ok"
+
+# ======================================================================================================================
 echo "== T5: a report submitted while B is running waits for B, then succeeds and is decided by the new engine"
 build t5 a
 pro_fixture t5 t5
@@ -450,10 +494,10 @@ expect "T5 the new engine decided it (a legacy alert: the drop from the unclassi
 echo "   ok"
 
 # ======================================================================================================================
-echo "== T6: the incident drill (pause decisions, cancel the queue, pause the two jobs, resume) on an A+B database"
+echo "== T6: the incident drill (pause decisions, pause the two jobs, cancel the queue, resume) on an A+B database"
 build t7 ab
 D="$(db t7)"
-m=t7
+m="t7"
 q "$D" "
   insert into public.community_stations (name, normalized_key) values ('T6 Station', '$m-s');
   insert into private.revenuecat_customers (original_app_user_id, environment, entitlement_id, pro_is_active) values ('\$RCAnonymousID:$m', 'SANDBOX', 'pro', true);
@@ -474,17 +518,23 @@ t7_process() { q "$D" "select claimed_count || '/' || prepared_count || '/' || f
 alert_config() { q "$D" "select md5(string_agg(concat_ws('|', id, installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled), ';' order by id)) from private.price_alerts"; }
 other_jobs() { q "$D" "select string_agg(jobname || ':' || active::text, ',' order by jobname) from cron.job where jobname not in ('85blends-price-alert-job-prepare', '85blends-price-alerts-worker-invoke')"; }
 price_jobs() { q "$D" "select string_agg(jobname || ':' || active::text, ',' order by jobname) from cron.job where jobname in ('85blends-price-alert-job-prepare', '85blends-price-alerts-worker-invoke')"; }
+engine_flag() { runbook_row t7 price_alerts_3c_observe_readonly.sql MUST_BE_YES.engine_is_the_real_one | cut -c1-3; }
 
 # the worker's invoke job is created inactive locally (the owner activated it in production): make the drill start from "both active"
 q "$D" "select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alerts-worker-invoke'), active := true)" >/dev/null
 expect "T6 start: both Price Alerts jobs are active" "$(price_jobs)" "85blends-price-alert-job-prepare:true,85blends-price-alerts-worker-invoke:true"
 OTHERS_BEFORE="$(other_jobs)"
 CONFIG_BEFORE="$(alert_config)"
-ENGINE_REAL="$(body_md5 t7 'private.prepare_price_alert_deliveries(uuid)')"
+ENGINE_REAL="$(body_md5 t7 'private.prepare_price_alert_deliveries(uuid)')"          # what section 7 step 4 tells the operator to RECORD
+expect "T6 start: the observation query says the engine is the real one" "$(engine_flag)" "yes"
+expect "T6 start: ...and so does the verification query" "$(runbook_row t7 price_alerts_3c_verify_after_readonly.sql B.engine_is_the_real_one)" "yes"
+expect "T6 start: ...its md5 is the one the observation query reports" "$(runbook_row t7 price_alerts_3c_observe_readonly.sql functions.prepare_md5)" "$ENGINE_REAL"
 
 t7_report 3.08 '30 minutes'
 t7_process >/dev/null
 expect "T6 normal operation: the engine queues the notification" "$(q "$D" "select count(*) from private.price_alert_deliveries where status = 'pending'")" "1"
+FIRST_REPORT="$(q "$D" "select price_report_id from private.price_alert_deliveries where status = 'pending'")"
+JOB_BEFORE_C4="$(q "$D" "select status from private.price_alert_jobs where price_report_id = '$FIRST_REPORT'")"
 
 # ---- C1: pause new decisions (the documented no-op engine) ---------------------------------------------------------------
 q "$D" "create or replace function private.prepare_price_alert_deliveries(p_price_report_id uuid)
@@ -494,38 +544,48 @@ q "$D" "create or replace function private.prepare_price_alert_deliveries(p_pric
         set search_path = ''
         as \$\$ select 0, 0 \$\$;" >/dev/null
 expect "T6 C1: the engine is now the no-op" "$([ "$(body_md5 t7 'private.prepare_price_alert_deliveries(uuid)')" != "$ENGINE_REAL" ] && echo different || echo SAME)" "different"
+expect "T6 C1: the observation query says so (every other row would stay green)" "$(engine_flag)" "NO "
+expect "T6 C1: ...and so does the verification query" "$(runbook_row t7 price_alerts_3c_verify_after_readonly.sql B.engine_is_the_real_one | cut -c1-3)" "NO "
 t7_report 2.90 '20 minutes'
 expect "T6 C1: a qualifying report arrives: processed without error, nothing decided" "$(t7_process)" "1/1/0"
 expect "T6 C1: ...no new delivery was queued" "$(q "$D" "select count(*) from private.price_alert_deliveries")" "1"
 expect "T6 C1: ...the queued one is untouched, still pending" "$(q "$D" "select status from private.price_alert_deliveries")" "pending"
 expect "T6 C1: every alert keeps its configuration" "$(alert_config)" "$CONFIG_BEFORE"
 
-# ---- C4: cancel what is queued but not yet sent (the rows are kept as the audit trail) -------------------------------------
-q "$D" "update private.price_alert_deliveries
-        set status = 'skipped', reason_code = 'paused_by_operator'
-        where status in ('pending', 'failed')
-          and created_at >= now() - interval '1 hour';" >/dev/null
-expect "T6 C4: the queued delivery is cancelled, not deleted" "$(q "$D" "select status || ':' || reason_code from private.price_alert_deliveries")" "skipped:paused_by_operator"
-expect "T6 C4: the worker's claim finds nothing to send" "$(q "$D" "select count(*) from private.claim_price_alert_deliveries_v2(10, 'ios')")" "0"
-q "$D" "select private.mark_price_alert_delivery_sent(id, 200) from private.price_alert_deliveries" >/dev/null
-expect "T6 C4: a late completion of an in-flight send cannot resurrect it (the delivery is still skipped)" "$(q "$D" "select status from private.price_alert_deliveries")" "skipped"
-
-# ---- C2 + C3: pause the two Price Alerts jobs, and ONLY those -------------------------------------------------------------
+# ---- C2 + C3: pause the two Price Alerts jobs, and ONLY those (before cancelling, so that nothing is claimed meanwhile) -------
 q "$D" "select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alerts-worker-invoke'), active := false);
         select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alert-job-prepare'), active := false);" >/dev/null
 expect "T6 C2/C3: the two Price Alerts jobs are paused" "$(price_jobs)" "85blends-price-alert-job-prepare:false,85blends-price-alerts-worker-invoke:false"
 expect "T6 C2/C3: no other cron job was touched" "$(other_jobs)" "$OTHERS_BEFORE"
 
-# ---- resume: re-apply B (the real engine returns), re-activate the two jobs ------------------------------------------------
+# ---- C4: cancel what is queued but not yet sent (the rows are kept as the audit trail; the decision reason is kept) --------------
+expect "T6 C4 precondition: nothing is being sent right now (the operator waits for this before cancelling)" \
+  "$(q "$D" "select count(*) from private.price_alert_deliveries where status = 'processing'")" "0"
+q "$D" "update private.price_alert_deliveries
+        set status = 'skipped', last_error_code = 'paused_by_operator', locked_at = null
+        where status in ('pending', 'failed')
+          and created_at >= now() - interval '1 hour';" >/dev/null
+q "$D" "select private.finalize_price_alert_job(r.price_report_id)
+        from (select distinct price_report_id from private.price_alert_deliveries where last_error_code = 'paused_by_operator') r;" >/dev/null
+expect "T6 C4: the queued delivery is cancelled, not deleted - and it keeps the reason it was decided for" \
+  "$(q "$D" "select status || ':' || last_error_code || ':' || reason_code from private.price_alert_deliveries")" "skipped:paused_by_operator:price_dropped"
+expect "T6 C4: the job that owned it is finalized (it does not linger in processing)" "$(q "$D" "select status from private.price_alert_jobs where price_report_id = '$FIRST_REPORT'")" "completed"
+echo "   (that job was '$JOB_BEFORE_C4' before the tidy-up)"
+expect "T6 C4: the worker's claim finds nothing to send" "$(q "$D" "select count(*) from private.claim_price_alert_deliveries_v2(10, 'ios')")" "0"
+q "$D" "select private.mark_price_alert_delivery_sent(id, 200) from private.price_alert_deliveries" >/dev/null
+expect "T6 C4: a late completion of an in-flight send cannot resurrect it (the delivery is still skipped)" "$(q "$D" "select status from private.price_alert_deliveries")" "skipped"
+
+# ---- resume: re-run B (the real engine returns), check it, re-activate the two jobs ------------------------------------------------
 apply_b t7
 expect "T6 resume: the real engine is back, byte for byte" "$(body_md5 t7 'private.prepare_price_alert_deliveries(uuid)')" "$ENGINE_REAL"
+expect "T6 resume: the observation query says so before anything is re-activated" "$(engine_flag)" "yes"
 q "$D" "select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alert-job-prepare'), active := true);
         select cron.alter_job((select jobid from cron.job where jobname = '85blends-price-alerts-worker-invoke'), active := true);" >/dev/null
 expect "T6 resume: both Price Alerts jobs are active again" "$(price_jobs)" "85blends-price-alert-job-prepare:true,85blends-price-alerts-worker-invoke:true"
 expect "T6 resume: no other cron job was touched" "$(other_jobs)" "$OTHERS_BEFORE"
 expect "T6 resume: every alert still has the configuration it had" "$(alert_config)" "$CONFIG_BEFORE"
 expect "T6 resume: the cancelled notification is still cancelled (nothing is re-sent after recovery)" \
-  "$(q "$D" "select count(*) from private.price_alert_deliveries where status = 'skipped' and reason_code = 'paused_by_operator'")" "1"
+  "$(q "$D" "select count(*) from private.price_alert_deliveries where status = 'skipped' and last_error_code = 'paused_by_operator'")" "1"
 t7_report 2.80 '5 minutes'
 expect "T6 resume: the next qualifying report is processed normally" "$(t7_process)" "1/1/0"
 expect "T6 resume: ...and queues exactly one new notification (for that report only)" \
@@ -552,4 +612,4 @@ if [ "$MEASURE_ROWS" -gt 0 ]; then
   [ "$A_MS" -lt 120000 ] || fail "T7 A took far too long (${A_MS} ms) on ${MEASURE_ROWS} rows"
 fi
 
-echo "ALL PRICE ALERT ROLLOUT COMPATIBILITY SCENARIOS PASSED (M1-M3, T1-T7)"
+echo "ALL PRICE ALERT ROLLOUT COMPATIBILITY SCENARIOS PASSED (M1-M3, T1-T7, T4b)"
