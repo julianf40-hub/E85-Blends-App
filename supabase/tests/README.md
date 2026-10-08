@@ -26,8 +26,9 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
 - `price_alert_payment_type.test.sql` — 2.4.1 Phase 3C: cash/credit/same-for-both report storage and
   grants, the comparable-stream rules, the pure `evaluate_price_alert_v2` decision function, and the
   `prepare_price_alert_deliveries` scenarios (cross-payment isolation, cumulative drops, cooldown and rearm,
-  out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring, `same_for_both` price drops, and the
-  documented fail-closed pause) — see the file header for the scenario index. Run it on a database with the FULL chain applied.
+  out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring, `same_for_both` price drops, the
+  documented fail-closed pause, a notification that ends unsent not holding the cooldown, the `mark_sent` guard, and the
+  station advisory lock) — see the file header for the scenario index. Run it on a database with the FULL chain applied.
 - `price_alert_payment_type_migration.test.sh` — Phase 3C migrations A and B applied to "production-shaped"
   legacy data: nothing rewritten or backfilled, every report/alert/delivery preserved, no retroactive send, cron and
   Vault untouched, old and new clients both able to insert, idempotent re-apply. It builds its own scratch database.
@@ -41,8 +42,9 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   fire (iOS credit / legacy / cash at-or-below, Android credit / legacy) and the script checks exactly what would have been
   sent — copy, the additive `payment_type`, the legacy payload unchanged, the delivery rows' method. Needs deno, curl, jq,
   openssl (throwaway keys), psql and a FRESH replayed database (the worker claims every pending delivery it finds).
-- `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks: the cooldown reservation race,
-  the same report prepared twice at once, a concurrent burst through the real grants, and `set_alert` racing a prepare.
+- `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks (PC1-PC5): the cooldown race, the same
+  report prepared twice at once, a concurrent burst through the real grants, `set_alert` racing a prepare, and the lock-order
+  deadlock between the job processor's multi-job transaction, a newly saved alert and a single prepare.
 - `support/` — `local_supabase_shims.sql` (stand-ins for the Supabase roles, `auth`/`vault`/`cron`/`net` that a plain
   Postgres lacks) and `replay_migrations.sh <database> [--before <version>]` (replays the migration chain onto a scratch
   database). Local use only.

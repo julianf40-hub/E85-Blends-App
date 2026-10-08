@@ -26,6 +26,10 @@
 --     refreshed for 7 days: it is re-established instead); and two reports prepared before the first was
 --     sent cannot both pass the cooldown.
 --   * Deliveries already queued or prepared are NOT touched, re-evaluated or re-sent.
+--   * Apply it when the job queue is drained (no pending, processing or failed row in private.price_alert_jobs):
+--     the one-time fill below anchors each legacy alert on the latest report, so a report whose job is still
+--     queued would be judged against itself. A delivery the previous engine queued and has not sent yet still
+--     holds its alert's cooldown under the new rules, so the switch-over produces no duplicate.
 --   * Nothing here sends anything, schedules anything, or changes the cron jobs.
 --   * Locks: this file runs in ONE transaction, so the ALTER TABLEs below hold ACCESS EXCLUSIVE locks on
 --     private.price_alerts and private.price_alert_deliveries until it commits, and the constraint validation
@@ -52,10 +56,13 @@
 --                    arriving the reference is a running high-water mark since the last notification).
 --     at_or_below  : the previous comparable price (used to detect a crossing).
 --     any_change   : the previous comparable price.
---   Cooldown is checked against last_notified_at, which is now stamped when a notification is RESERVED
---   (a pending delivery is queued), not only when it is later sent. A qualifying drop that the cooldown
---   suppresses keeps the alert armed: it fires on the next qualifying comparable report after the cooldown;
---   nothing is queued for later.
+--   Cooldown is measured from the alert's last SENT notification (last_notified_at / last_notified_price, as
+--   before) or from a newer notification that is still QUEUED for it under its current payment method (a
+--   delivery that is pending, being sent, or failed and awaiting a retry). That closes the race in which two
+--   reports are prepared before the first is sent, WITHOUT holding the cooldown for a notification that never
+--   goes out: a queued delivery that ends dead, invalid_device or skipped (stale, device unusable) is no longer
+--   queued, so it no longer mutes the alert. A qualifying drop that the cooldown suppresses keeps the alert
+--   armed: it fires on the next qualifying comparable report after the cooldown; nothing is queued for later.
 --
 -- CHANGES (all idempotent; safe to re-run)
 --   1. private.price_alerts gains payment_type (cash|credit|unknown, default unknown), baseline_price and
@@ -64,7 +71,13 @@
 --      has_newer_comparable_price_report / price_alert_reference_horizon.
 --   3. private.evaluate_price_alert_v2: the pure decision function. The old private.evaluate_price_alert is
 --      left in place, unchanged and no longer called.
---   4. private.prepare_price_alert_deliveries: replaced, same signature and ACL.
+--   4. private.prepare_price_alert_deliveries: replaced, same signature and ACL. It first takes a transaction-level
+--      advisory lock on the station, so every preparer of a station locks that station's alert rows in the same
+--      order (no lock-order deadlock with a multi-job transaction when an alert is created in between).
+--   4b. private.mark_price_alert_delivery_sent: replaced with the same body plus one guard - it records the sent
+--       price on the alert only while the alert still has the payment method the delivery was decided under, so an
+--       in-flight Credit notification delivered after the person switched the alert to Cash cannot write a Credit
+--       price into a Cash alert. Signature, return value, ACL and every other effect are unchanged.
 --   5. A trigger anchors the reference when an alert is configured (INSERT, or a change of mode or payment
 --      type): the latest comparable price within the horizon, else NULL.
 --   NOT CHANGED: private.claim_price_alert_deliveries_v2 and its v1 wrapper (their exact return shape is
@@ -83,6 +96,10 @@
 --   no-op is installed are consumed without a decision.) Re-applying this file resumes the real engine. The new
 --   columns can stay (they are inert), the trigger price_alerts_anchor_baseline can stay, and nothing here
 --   deletes data.
+
+-- Give up after 3 seconds instead of queueing every reader and writer of a table behind a lock this file cannot get
+-- (it runs in one transaction; see the lock note above). Re-run it when the table is quiet.
+set lock_timeout = '3s';
 
 do $precondition$
 begin
@@ -154,6 +171,13 @@ $constraints$;
 alter table private.price_alerts validate constraint price_alerts_payment_type_check;
 alter table private.price_alerts validate constraint price_alerts_baseline_check;
 alter table private.price_alert_deliveries validate constraint price_alert_deliveries_payment_type_check;
+
+-- "Is a notification still queued for this alert?" (pending, being sent, or failed and awaiting a retry): the lookup
+-- prepare_price_alert_deliveries makes to measure the cooldown. A delivery leaves this set within minutes, so the
+-- partial index stays tiny.
+create index if not exists price_alert_deliveries_alert_queued_idx
+  on private.price_alert_deliveries (alert_id, created_at desc)
+  where status in ('pending', 'processing', 'failed');
 
 comment on column private.price_alerts.payment_type is
   '85Blends 2.4.1 payment method this alert watches: cash, credit, or unknown (a legacy alert that predates payment types - never guessed; it only ever sees unknown reports).';
@@ -421,7 +445,10 @@ declare
   v_status text;
   v_reason text;
   v_inserted_status text;
-  v_queued integer;
+  v_live_at timestamptz;
+  v_live_price numeric;
+  v_last_at timestamptz;
+  v_last_price numeric;
 begin
   select r.station_id, r.price, r.reported_at, r.created_at, r.payment_type
   into v_station_id, v_observed_price, v_reported_at, v_created_at, v_report_payment_type
@@ -433,6 +460,12 @@ begin
   end if;
 
   v_report_is_stale := v_reported_at < now() - v_send_freshness;
+
+  -- One cheap station-level lock, taken before any alert row: every preparer of this station queues here first,
+  -- so alert rows are never locked in an order that depends on which alerts existed at the time (a multi-job
+  -- transaction that already holds one station's alert rows must not deadlock with a single-report call when an
+  -- alert with a lower id is created in between). Released at commit; a call for another station never waits.
+  perform pg_advisory_xact_lock(hashtextextended('price-alert-station:' || v_station_id::text, 0));
 
   for v_alert in
     select a.id, a.installation_id, a.alert_mode, a.threshold_price, a.minimum_change, a.cooldown_minutes,
@@ -480,6 +513,27 @@ begin
         else greatest(v_reported_at - v_alert.baseline_at, interval '0')
       end;
 
+      -- What the alert last notified: its last SENT notification, or a newer one still queued for it under its
+      -- current payment method (decided before this migration = a legacy 'unknown' delivery). A delivery that ended
+      -- dead / invalid_device / skipped is not queued and holds nothing, so a notification that never went out
+      -- cannot mute the alert (nor, for at_or_below, pin its "already notified at this price" memory).
+      select d.created_at, d.observed_price
+      into v_live_at, v_live_price
+      from private.price_alert_deliveries d
+      where d.alert_id = v_alert.id
+        and d.status in ('pending', 'processing', 'failed')
+        and coalesce(d.payment_type, 'unknown') = v_alert.payment_type
+      order by d.created_at desc
+      limit 1;
+
+      if v_live_at is not null and (v_alert.last_notified_at is null or v_live_at >= v_alert.last_notified_at) then
+        v_last_at := v_live_at;
+        v_last_price := v_live_price;
+      else
+        v_last_at := v_alert.last_notified_at;
+        v_last_price := v_alert.last_notified_price;
+      end if;
+
       select e.should_notify, e.reason_code, e.new_baseline_price
       into v_decision
       from private.evaluate_price_alert_v2(
@@ -490,8 +544,8 @@ begin
         v_observed_price,
         v_alert.baseline_price,
         v_age,
-        v_alert.last_notified_price,
-        v_alert.last_notified_at,
+        v_last_price,
+        v_last_at,
         now(),
         not v_report_is_stale
       ) e;
@@ -507,8 +561,6 @@ begin
         v_status := 'pending';
       end if;
     end if;
-
-    v_queued := 0;
 
     for v_device in
       select d.id
@@ -532,20 +584,10 @@ begin
 
       if v_inserted_status = 'pending' then
         v_pending := v_pending + 1;
-        v_queued := v_queued + 1;
       elsif v_inserted_status = 'skipped' then
         v_skipped := v_skipped + 1;
       end if;
     end loop;
-
-    -- Reserve the notification now, so a second report processed before the worker has sent this one
-    -- meets the cooldown. (mark_price_alert_delivery_sent still records the actual send.)
-    if v_queued > 0 then
-      update private.price_alerts
-      set last_notified_price = v_observed_price,
-          last_notified_at = now()
-      where id = v_alert.id;
-    end if;
   end loop;
 
   return query select v_pending, v_skipped;
@@ -554,6 +596,69 @@ $$;
 
 revoke execute on function private.prepare_price_alert_deliveries(uuid) from public, anon, authenticated;
 grant execute on function private.prepare_price_alert_deliveries(uuid) to postgres, service_role;
+
+-- ------------------------------------------------------------------------------------------------
+-- 4b. mark_price_alert_delivery_sent: the body of 20260918000854 plus ONE guard (marked below).
+--     Signature, return value, ACL (CREATE OR REPLACE keeps it) and every other effect are unchanged.
+-- ------------------------------------------------------------------------------------------------
+
+create or replace function private.mark_price_alert_delivery_sent(
+  p_delivery_id uuid,
+  p_provider_status integer default 200
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_delivery private.price_alert_deliveries%rowtype;
+begin
+  select * into v_delivery
+  from private.price_alert_deliveries
+  where id = p_delivery_id
+  for update;
+
+  if v_delivery.id is null then
+    return false;
+  end if;
+
+  if v_delivery.status = 'sent' then
+    return true;
+  end if;
+
+  if v_delivery.status <> 'processing' then
+    return false;
+  end if;
+
+  update private.price_alert_deliveries
+  set status = 'sent',
+      provider_status = p_provider_status,
+      sent_at = now(),
+      locked_at = null,
+      last_error_code = null
+  where id = p_delivery_id;
+
+  update private.price_alert_push_devices
+  set last_success_at = now(),
+      last_failure_at = null,
+      failure_count = 0
+  where id = v_delivery.push_device_id;
+
+  -- THE GUARD (Phase 3C): record the sent price on the alert only while the alert still has the payment method this
+  -- delivery was decided under (a delivery decided before payment methods existed counts as 'unknown'). Switching an
+  -- alert from Credit to Cash clears its notification memory; without the guard a Credit notification that is
+  -- delivered a moment later would write a Credit price back into the Cash alert.
+  update private.price_alerts
+  set last_notified_price = v_delivery.observed_price,
+      last_notified_at = now()
+  where id = v_delivery.alert_id
+    and payment_type = coalesce(v_delivery.payment_type, 'unknown');
+
+  perform private.finalize_price_alert_job(v_delivery.price_report_id);
+  return true;
+end;
+$$;
 
 -- ------------------------------------------------------------------------------------------------
 -- 5. Anchor the reference when an alert is configured.
@@ -649,7 +754,9 @@ comment on function private.evaluate_price_alert_v2(
   text, numeric, numeric, integer, numeric, numeric, interval, numeric, timestamptz, timestamptz, boolean
 ) is '85Blends 2.4.1 payment-aware pure decision function: given an alert, one COMPARABLE observed price and the alert reference, returns whether to notify, why, and the reference to store afterwards. Supersedes private.evaluate_price_alert, which is kept unchanged and is no longer called.';
 comment on function private.prepare_price_alert_deliveries(uuid) is
-  '85Blends 2.4.1 payment-aware delivery preparation. One locked decision per alert: only comparable (same payment method, or explicit same_for_both) and newest-comparable reports can notify; the reference and the cooldown are advanced here; one ledger row per active device. Performs no network I/O.';
+  '85Blends 2.4.1 payment-aware delivery preparation. One locked decision per alert (station-level advisory lock first): only comparable (same payment method, or explicit same_for_both) and newest-comparable reports can notify; the reference is advanced here; the cooldown is measured from the last sent notification or one still queued; one ledger row per active device. Performs no network I/O.';
 comment on function private.evaluate_price_alert(
   text, numeric, numeric, integer, numeric, numeric, numeric, timestamptz, timestamptz
 ) is '85Blends 2.4.0 original decision function. DEPRECATED by 20261007130000: no longer called; use private.evaluate_price_alert_v2.';
+
+reset lock_timeout;

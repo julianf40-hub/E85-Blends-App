@@ -49,6 +49,10 @@
 --   alter table public.e85_price_reports drop column if exists payment_type;
 --   Once migration B or any client depends on the column, drop it only after reverting those first.
 
+-- Give up after 3 seconds instead of queueing every reader and writer of the table behind a lock this file cannot get
+-- (it runs in one transaction; see the lock note above). Re-run it when the table is quiet.
+set lock_timeout = '3s';
+
 alter table public.e85_price_reports
   add column if not exists payment_type text not null default 'unknown';
 
@@ -76,3 +80,5 @@ create index if not exists e85_price_reports_station_payment_latest_idx
 
 comment on column public.e85_price_reports.payment_type is
   '85Blends 2.4.1 payment method this price applies to: cash, credit, same_for_both (one price for both, explicit - never inferred) or unknown (legacy / unspecified - nothing is guessed). Omitted by older clients, which therefore store unknown.';
+
+reset lock_timeout;

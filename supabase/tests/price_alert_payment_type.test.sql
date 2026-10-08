@@ -38,6 +38,11 @@
 --       legacy (unknown) alert.
 --   D19 the documented fail-closed PAUSE (rollout doc, "Rollback / fail-closed"): a no-op prepare decides nothing and
 --       queues nothing, keeps its ACL, and re-applying migration B puts the real engine back.
+--   D20 a queued notification that ends UNSENT (dead) does not hold the cooldown, for price_drop and for at_or_below.
+--   D21 a notification delivered after the person switched the alert's payment method does not write its price into the
+--       alert.  D22 a notification queued BEFORE migration B (no payment_type) still holds a legacy alert's cooldown.
+--   D23 a notification queued under the OTHER payment method does not hold the new method's cooldown.
+--   D24 prepare takes the station-level advisory lock (the lock-order guard; the race itself is PC5 in the concurrency script).
 --   G1  grants/ACL of the new internals and index/plan sanity; migration re-apply is a no-op.
 
 begin;
@@ -156,6 +161,32 @@ $$;
 
 create function pg_temp.baseline(p_alert uuid) returns numeric language sql as $$
   select baseline_price from private.price_alerts where id = p_alert
+$$;
+
+-- The worker delivers every notification queued for an alert (claim -> processing -> the real mark_sent, which stamps the
+-- alert's notification memory), and then the clock moves p_ago past the send (the stamp is back-dated). This is how a
+-- scenario lets a cooldown run out: a queued, not-yet-sent delivery holds the cooldown, a sent one is measured from its send.
+create function pg_temp.deliver(p_alert uuid, p_ago interval) returns void language plpgsql as $$
+declare d record;
+begin
+  for d in select id from private.price_alert_deliveries where alert_id = p_alert and status = 'pending' loop
+    update private.price_alert_deliveries set status = 'processing', attempt_count = attempt_count + 1, locked_at = now() where id = d.id;
+    perform private.mark_price_alert_delivery_sent(d.id, 200);
+  end loop;
+  update private.price_alerts set last_notified_at = now() - p_ago where id = p_alert and last_notified_at is not null;
+end;
+$$;
+
+-- The worker gives up on every notification queued for an alert: the fifth attempt is in flight and fails, so the
+-- delivery ends 'dead' and nothing is ever sent (an APNs / FCM outage, a provider that is not configured, ...).
+create function pg_temp.give_up(p_alert uuid) returns void language plpgsql as $$
+declare d record;
+begin
+  for d in select id from private.price_alert_deliveries where alert_id = p_alert and status = 'pending' loop
+    update private.price_alert_deliveries set status = 'processing', attempt_count = 5, locked_at = now() where id = d.id;
+    perform private.mark_price_alert_delivery_failed(d.id, 503, 'ServiceUnavailable', true, false, 5);
+  end loop;
+end;
 $$;
 
 -- Decision-function shorthand: (mode, threshold, min, cooldown, observed, baseline, age, last_price, last_at, can_notify)
@@ -394,8 +425,8 @@ begin
   perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.09, 'D1k ...and the reference rearms at the notified price');
   perform pg_temp.expect((select payment_type from private.price_alert_deliveries where alert_id = v_alert and price_report_id = v_c309) = 'credit',
                          'D1l the delivery records the alert''s method for the notification text');
-  perform pg_temp.expect((select last_notified_price = 3.09 and last_notified_at is not null from private.price_alerts where id = v_alert),
-                         'D1m the notification is reserved (cooldown stamped) at prepare time');
+  perform pg_temp.expect((select last_notified_price is null and last_notified_at is null from private.price_alerts where id = v_alert),
+                         'D1m the alert row is NOT stamped at prepare time: only a SENT notification stamps it (the queued delivery is the reservation)');
   perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert and status = 'pending') = 1,
                          'D1n exactly one pending delivery in total');
 end;
@@ -651,8 +682,9 @@ begin
   perform pg_temp.expect(pg_temp.prep(r2) = '0/1' and pg_temp.verdict(v_alert, r2) = 'skipped:cooldown',
                          'D7b a second drop prepared before the first is SENT is held by the cooldown (race closed)');
   perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.25, 'D7c the suppressed drop leaves the alert armed at the notified price');
-  -- the cooldown ends (simulated); the next qualifying comparable report fires from the armed reference
-  update private.price_alerts set last_notified_at = now() - interval '361 minutes' where id = v_alert;
+  -- the worker sends r1, and the cooldown then runs out (simulated); the next qualifying comparable report fires from the armed reference
+  perform pg_temp.deliver(v_alert, interval '361 minutes');
+  perform pg_temp.expect((select last_notified_price = 3.25 from private.price_alerts where id = v_alert), 'D7c2 sending r1 stamps the alert with the notified price');
   r3 := pg_temp.report('d7', 'credit', 3.09, interval '30 minutes');
   perform pg_temp.expect(pg_temp.prep(r3) = '1/0' and pg_temp.verdict(v_alert, r3) = 'pending:price_dropped',
                          'D7d after the cooldown the next qualifying report fires (16c below the armed 3.25)');
@@ -678,7 +710,7 @@ begin
   r3 := pg_temp.report('d8', 'cash', 3.19, interval '80 minutes');              -- 10c below the high: alert
   perform pg_temp.expect(pg_temp.prep(r3) = '1/0' and pg_temp.verdict(v_alert, r3) = 'pending:price_dropped',
                          'D8c the cumulative fall from the new high alerts');
-  update private.price_alerts set last_notified_at = now() - interval '2 hours' where id = v_alert;
+  perform pg_temp.deliver(v_alert, interval '2 hours');
   r4 := pg_temp.report('d8', 'cash', 3.10, interval '70 minutes');              -- only 9c below the rearmed 3.19
   perform pg_temp.expect(pg_temp.prep(r4) = '0/1' and pg_temp.baseline(v_alert) = 3.19, 'D8d after firing, 9c is not enough from the rearmed reference');
 end;
@@ -795,7 +827,8 @@ begin
   v_alert := pg_temp.mk_alert('d11b', 'credit', 'price_drop', null, 0.100);
   r1 := pg_temp.report('d11b', 'credit', 3.00, interval '30 minutes');
   perform pg_temp.expect(pg_temp.prep(r1) = '2/0', 'D11c two active devices: two pending rows from ONE decision');
-  perform pg_temp.expect((select count(*) from private.price_alerts where id = v_alert and last_notified_price = 3.00) = 1, 'D11d ...one reservation');
+  perform pg_temp.expect((select count(distinct price_report_id) from private.price_alert_deliveries where alert_id = v_alert and status = 'pending') = 1,
+                         'D11d ...both rows belong to that one decision (one reservation: the queued rows hold the cooldown)');
 end;
 $$;
 
@@ -810,7 +843,8 @@ begin
   v_alert := pg_temp.mk_alert('d11c', 'credit', 'price_drop', null, 0.100);
   r1 := pg_temp.report('d11c', 'credit', 3.00, interval '30 minutes');
   perform pg_temp.expect(pg_temp.prep(r1) = '0/0' and pg_temp.baseline(v_alert) = 3.00, 'D11e no device: nothing queued, reference consumed');
-  perform pg_temp.expect((select last_notified_at is null from private.price_alerts where id = v_alert), 'D11f ...and no notification is reserved');
+  perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert) = 0
+                         and (select last_notified_at is null from private.price_alerts where id = v_alert), 'D11f ...and no notification is queued, so nothing holds the cooldown');
 end;
 $$;
 
@@ -831,7 +865,7 @@ begin
   select last_notified_at into v_stamp from private.price_alerts where id = v_alert;
   perform pg_temp.expect(pg_temp.prep(r1) = '0/0', 'D12b a second run decides nothing');
   perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert) = 1, 'D12c ...and adds no rows');
-  perform pg_temp.expect((select baseline_price = 3.00 and last_notified_at = v_stamp from private.price_alerts where id = v_alert),
+  perform pg_temp.expect((select baseline_price = 3.00 and last_notified_at is not distinct from v_stamp from private.price_alerts where id = v_alert),
                          'D12d ...and moves no state');
 end;
 $$;
@@ -869,11 +903,12 @@ begin
   r2 := pg_temp.report('d12c', 'credit', 3.10, interval '30 minutes');
   perform pg_temp.expect(pg_temp.prep(r2) = '0/1' and pg_temp.verdict(v_alert, r2) = 'skipped:cooldown', 'D12h the second drop is held by the cooldown');
   perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.30, 'D12i ...leaving the alert armed at 3.30');
-  update private.price_alerts set last_notified_at = now() - interval '2 hours' where id = v_alert;   -- the cooldown (60 min) has passed
+  perform pg_temp.deliver(v_alert, interval '2 hours');   -- r1 is sent and the cooldown (60 min) has passed
   perform pg_temp.expect(pg_temp.prep(r2) = '0/0', 'D12j re-preparing that report later decides nothing');
   perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.30, 'D12k ...and does not consume the armed reference');
-  perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert and status = 'pending') = 1,
-                         'D12l ...and queues nothing new');
+  perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert) = 2
+                         and (select count(*) from private.price_alert_deliveries where alert_id = v_alert and status = 'pending') = 0,
+                         'D12l ...and queues nothing new (r1 sent, r2 skipped: still exactly two rows)');
 end;
 $$;
 
@@ -1142,6 +1177,143 @@ end;
 $$;
 
 -- ==================================================================================================
+-- D20: a queued notification that ends UNSENT does not hold the cooldown (price_drop and at_or_below)
+-- ==================================================================================================
+select pg_temp.mk_world('d20');
+do $$
+declare
+  v_alert uuid;
+  r1 uuid; r2 uuid;
+begin
+  perform pg_temp.report('d20', 'credit', 3.50, interval '110 minutes', 'd20-reporter');
+  v_alert := pg_temp.mk_alert('d20', 'credit', 'price_drop', null, 0.100, 360);
+  r1 := pg_temp.report('d20', 'credit', 3.30, interval '30 minutes', 'd20-reporter');
+  perform pg_temp.expect(pg_temp.prep(r1) = '1/0', 'D20a the first drop queues a notification');
+  perform pg_temp.give_up(v_alert);
+  perform pg_temp.expect((select status from private.price_alert_deliveries where alert_id = v_alert and price_report_id = r1) = 'dead',
+                         'D20b ...the worker gives up on it: it ends dead and nothing was sent');
+  perform pg_temp.expect((select last_notified_at is null and last_notified_price is null from private.price_alerts where id = v_alert),
+                         'D20c ...so nothing is stamped on the alert');
+  r2 := pg_temp.report('d20', 'credit', 3.10, interval '5 minutes', 'd20-reporter');
+  perform pg_temp.expect(pg_temp.prep(r2) = '1/0' and pg_temp.verdict(v_alert, r2) = 'pending:price_dropped',
+                         'D20d the next qualifying drop fires: a notification that never went out does not mute the alert for 6 hours');
+end;
+$$;
+
+select pg_temp.mk_world('d20b');
+do $$
+declare
+  v_alert uuid;
+  q1 uuid; q2 uuid;
+begin
+  perform pg_temp.report('d20b', 'cash', 3.10, interval '110 minutes', 'd20b-reporter');
+  v_alert := pg_temp.mk_alert('d20b', 'cash', 'at_or_below', 2.89, 0.100, 60);
+  q1 := pg_temp.report('d20b', 'cash', 2.85, interval '90 minutes', 'd20b-reporter');
+  perform pg_temp.expect(pg_temp.prep(q1) = '1/0' and pg_temp.verdict(v_alert, q1) = 'pending:threshold_crossed', 'D20e target reached: queued');
+  perform pg_temp.give_up(v_alert);
+  q2 := pg_temp.report('d20b', 'cash', 2.85, interval '1 minute', 'd20b-reporter');          -- the same price, long after the 60 minute cooldown
+  perform pg_temp.expect(pg_temp.prep(q2) = '1/0' and pg_temp.verdict(v_alert, q2) = 'pending:threshold_met',
+                         'D20f ...the lost notification does not pin "already notified at 2.85": the same price notifies');
+end;
+$$;
+
+-- ==================================================================================================
+-- D21: a notification delivered after the alert's payment method was switched must not write its price into the alert
+-- ==================================================================================================
+select pg_temp.mk_world('d21');
+do $$
+declare
+  v_alert uuid;
+  k1 uuid; c1 uuid;
+begin
+  perform pg_temp.report('d21', 'cash', 2.80, interval '115 minutes', 'd21-reporter');
+  perform pg_temp.report('d21', 'credit', 3.10, interval '110 minutes', 'd21-reporter');
+  v_alert := pg_temp.mk_alert('d21', 'credit', 'at_or_below', 2.89, 0.100, 60);
+  k1 := pg_temp.report('d21', 'credit', 2.85, interval '30 minutes', 'd21-reporter');
+  perform pg_temp.expect(pg_temp.prep(k1) = '1/0' and pg_temp.verdict(v_alert, k1) = 'pending:threshold_crossed', 'D21a a Credit notification is queued');
+  update private.price_alerts set payment_type = 'cash' where id = v_alert;                -- the person switches the alert to CASH
+  perform pg_temp.expect((select last_notified_price is null and payment_type = 'cash' from private.price_alerts where id = v_alert),
+                         'D21b ...which clears the notification memory');
+  perform pg_temp.deliver(v_alert, interval '2 hours');                                    -- the in-flight Credit notification is delivered now
+  perform pg_temp.expect((select status from private.price_alert_deliveries where alert_id = v_alert and price_report_id = k1) = 'sent',
+                         'D21c ...and it is still sent (it was decided under Credit)');
+  perform pg_temp.expect((select last_notified_price is null from private.price_alerts where id = v_alert),
+                         'D21d ...but its Credit price is NOT written into the Cash alert');
+  c1 := pg_temp.report('d21', 'cash', 2.84, interval '1 minute', 'd21-reporter');
+  perform pg_temp.expect(pg_temp.prep(c1) = '1/0' and pg_temp.verdict(v_alert, c1) = 'pending:threshold_met',
+                         'D21e the first Cash report is judged like a never-notified Cash alert, not against a Credit price');
+end;
+$$;
+
+-- ==================================================================================================
+-- D22: a notification queued BEFORE migration B (no payment_type) still holds a legacy alert's cooldown
+-- ==================================================================================================
+select pg_temp.mk_world('d22');
+do $$
+declare
+  v_alert uuid;
+  r0 uuid; r1 uuid;
+begin
+  perform pg_temp.report('d22', 'unknown', 3.50, interval '110 minutes', 'd22-reporter');
+  v_alert := pg_temp.mk_alert('d22', 'unknown', 'price_drop', null, 0.100, 360);
+  r0 := pg_temp.report('d22', 'unknown', 3.30, interval '20 minutes', 'd22-reporter');
+  -- what the previous engine left behind: a pending delivery with no payment_type
+  insert into private.price_alert_deliveries (alert_id, price_report_id, push_device_id, observed_price, previous_price, status, reason_code, payment_type)
+  select v_alert, r0, d.id, 3.30, 3.50, 'pending', 'price_dropped', null
+  from private.price_alert_push_devices d join private.price_alerts a on a.installation_id = d.installation_id where a.id = v_alert;
+  r1 := pg_temp.report('d22', 'unknown', 3.10, interval '5 minutes', 'd22-reporter');
+  perform pg_temp.expect(pg_temp.prep(r1) = '0/1' and pg_temp.verdict(v_alert, r1) = 'skipped:cooldown',
+                         'D22 the unsent notification queued by the previous engine holds the legacy alert''s cooldown (no duplicate right after the migration)');
+end;
+$$;
+
+-- ==================================================================================================
+-- D23: a notification queued under the OTHER payment method does not hold the new method's cooldown
+-- ==================================================================================================
+select pg_temp.mk_world('d23');
+do $$
+declare
+  v_alert uuid;
+  r1 uuid; r2 uuid;
+begin
+  perform pg_temp.report('d23', 'credit', 3.50, interval '115 minutes', 'd23-reporter');
+  perform pg_temp.report('d23', 'cash', 3.40, interval '114 minutes', 'd23-reporter');
+  v_alert := pg_temp.mk_alert('d23', 'credit', 'price_drop', null, 0.100, 360);
+  r1 := pg_temp.report('d23', 'credit', 3.30, interval '100 minutes', 'd23-reporter');
+  perform pg_temp.expect(pg_temp.prep(r1) = '1/0', 'D23a a Credit notification is queued and not yet sent');
+  update private.price_alerts set payment_type = 'cash' where id = v_alert;                -- the person switches to Cash
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.40, 'D23b ...the reference moves to the Cash price');
+  r2 := pg_temp.report('d23', 'cash', 3.25, interval '30 minutes', 'd23-reporter');         -- 15c below the Cash reference
+  perform pg_temp.expect(pg_temp.prep(r2) = '1/0' and pg_temp.verdict(v_alert, r2) = 'pending:price_dropped',
+                         'D23c the queued Credit notification does not hold the Cash alert''s cooldown');
+end;
+$$;
+
+-- ==================================================================================================
+-- D24: prepare takes the station-level advisory lock (the guard against the lock-order deadlock; PC5 races it)
+-- ==================================================================================================
+select pg_temp.mk_world('d24');
+do $$
+declare
+  v_alert uuid;
+  r1 uuid;
+  v_key bigint;
+begin
+  perform pg_temp.report('d24', 'credit', 3.50, interval '110 minutes', 'd24-reporter');
+  v_alert := pg_temp.mk_alert('d24', 'credit', 'price_drop', null, 0.100);
+  r1 := pg_temp.report('d24', 'credit', 3.40, interval '30 minutes', 'd24-reporter');
+  v_key := hashtextextended('price-alert-station:' || (select station_id::text from t_world where label = 'd24'), 0);
+  perform pg_temp.expect(not exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()
+                                     and classid::bigint = ((v_key >> 32) & 4294967295) and objid::bigint = (v_key & 4294967295)),
+                         'D24a before the call, this session holds no lock on the station');
+  perform pg_temp.prep(r1);
+  perform pg_temp.expect(exists (select 1 from pg_locks where locktype = 'advisory' and pid = pg_backend_pid() and objsubid = 1
+                                 and classid::bigint = ((v_key >> 32) & 4294967295) and objid::bigint = (v_key & 4294967295)),
+                         'D24b ...and prepare holds it (transaction level) until commit');
+end;
+$$;
+
+-- ==================================================================================================
 -- G1: grants / ACL of the new internals, the index, re-apply
 -- ==================================================================================================
 do $$
@@ -1164,6 +1336,19 @@ begin
   end loop;
   perform pg_temp.expect(has_function_privilege('service_role', 'private.prepare_price_alert_deliveries(uuid)', 'execute'),
                          'G1 prepare keeps its service_role grant');
+  perform pg_temp.expect(not has_function_privilege('anon', 'private.mark_price_alert_delivery_sent(uuid,integer)', 'execute')
+                         and not has_function_privilege('authenticated', 'private.mark_price_alert_delivery_sent(uuid,integer)', 'execute')
+                         and not has_function_privilege('public', 'private.mark_price_alert_delivery_sent(uuid,integer)', 'execute')
+                         and has_function_privilege('service_role', 'private.mark_price_alert_delivery_sent(uuid,integer)', 'execute')
+                         and has_function_privilege('postgres', 'private.mark_price_alert_delivery_sent(uuid,integer)', 'execute'),
+                         'G1 mark_sent keeps exactly its ACL (postgres + service_role) after being replaced');
+  perform pg_temp.expect((select prosecdef and coalesce(proconfig, '{}') @> array['search_path=""'] from pg_proc
+                          where oid = 'private.mark_price_alert_delivery_sent(uuid,integer)'::regprocedure),
+                         'G1 ...and stays SECURITY DEFINER with an empty search_path');
+  perform pg_temp.expect(exists (select 1 from pg_indexes where schemaname = 'private' and tablename = 'price_alert_deliveries'
+                                 and indexname = 'price_alert_deliveries_alert_queued_idx'
+                                 and indexdef like '%(alert_id, created_at DESC)%' and indexdef like '%pending%processing%failed%'),
+                         'G1 the queued-deliveries partial index exists');
   perform pg_temp.expect((select prosecdef from pg_proc where oid = 'private.prepare_price_alert_deliveries(uuid)'::regprocedure),
                          'G1 prepare stays SECURITY DEFINER');
   perform pg_temp.expect((select coalesce(p.proconfig, '{}') @> array['search_path=""'] from pg_proc p
@@ -1262,4 +1447,4 @@ $$;
 
 rollback;
 
-\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D19, G1)
+\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D24, G1)

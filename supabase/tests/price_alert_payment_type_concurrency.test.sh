@@ -9,10 +9,10 @@
 # nothing: pg_net is a recording stand-in locally and the worker is never started.
 #
 # What it proves (each needs more than one session):
-#   PC1  the cooldown race is closed. Report R1 is prepared (and its notification reserved) by one
-#        session that has NOT committed yet; a newer qualifying report R2 is then prepared by a second
-#        session. The second session WAITS for the first (row lock on the alert), then meets the cooldown:
-#        exactly ONE pending delivery results, never two.
+#   PC1  the cooldown race is closed. Report R1 is prepared (its notification queued) by one session that
+#        has NOT committed yet; a newer qualifying report R2 is then prepared by a second session. The
+#        second session WAITS for the first (station lock, then the alert row), sees the queued delivery,
+#        and meets the cooldown: exactly ONE pending delivery results, never two.
 #   PC2  the same report prepared by two sessions at once (the cron job and the worker can both do it)
 #        decides once: one set of rows, one reservation.
 #   PC3  a burst of typed reports from many concurrent clients (through the real RLS/grant path) while the
@@ -20,7 +20,12 @@
 #        stored, and at most ONE pending delivery for the alert inside its cooldown.
 #   PC4  the set_alert upsert (exactly as price-alerts-api runs it) racing a prepare on the same alert:
 #        the upsert waits, neither deadlocks, and the final state is coherent (new sensitivity, same method,
-#        the reservation intact).
+#        the queued delivery intact).
+#   PC5  the lock-order deadlock found in review: the every-minute job processor prepares several reports in
+#        ONE transaction, so it holds a station's alert rows between two prepares; if a person saves a new
+#        alert (a lower id) in that gap and the worker prepares a report of the same station, the two used to
+#        lock the alert rows in opposite orders and deadlock. The station-level advisory lock taken first by
+#        prepare_price_alert_deliveries serializes them: nothing fails, nothing is lost.
 set -euo pipefail
 
 M="ptc$$"                          # unique marker for every row this script creates
@@ -39,7 +44,10 @@ now_ms() { date +%s%3N; }
 cleanup() {
   "${PSQL[@]}" -c "
     delete from public.e85_price_reports where anonymous_reporter_id like '$M-%';
-    delete from private.price_alert_installations where installation_secret_hash = md5('$M-i') || md5('$M-i2');
+    drop trigger if exists ${M}_slow on private.price_alert_deliveries;
+    drop function if exists public.${M}_slow();
+    drop sequence if exists public.${M}_seq;
+    delete from private.price_alert_installations where installation_secret_hash in (md5('$M-i') || md5('$M-i2'), md5('$M-i3') || md5('$M-i4'));
     delete from private.revenuecat_customers where original_app_user_id = '\$RCAnonymousID:$M';
     delete from public.community_stations where normalized_key like '$M-%';" >/dev/null 2>&1 || true
   rm -rf "$TMP"
@@ -82,7 +90,7 @@ reset_alert() { # back to a quiet, armed state
 pending_count() { sql "select count(*) from private.price_alert_deliveries where alert_id = '$ALERT' and status = 'pending'"; }
 
 # ======================================================================================================
-echo "== PC1: the cooldown race is closed (reservation at prepare + row lock on the alert)"
+echo "== PC1: the cooldown race is closed (the queued delivery holds the cooldown; the station lock serializes the two)"
 R1="$(mk_report 3.30 '30 minutes' r1)"            # 20c below the 3.50 reference: qualifies
 ( "${PSQL[@]}" -c "begin; select pending_count from private.prepare_price_alert_deliveries('$R1'); select pg_sleep(4); commit;" >"$TMP/pc1a.out" 2>&1 ) &
 A_PID=$!
@@ -184,8 +192,46 @@ grep -qi error "$TMP/pc4a.out" && fail "PC4 the prepare session errored: $(cat "
 echo "   upsert waited ${ELAPSED} ms and returned $UP"
 [ "$ELAPSED" -ge 1000 ] || fail "PC4 the upsert did not wait for the prepare's row lock (${ELAPSED} ms)"
 [ "$UP" = "0.200:credit" ] || fail "PC4 the upsert must keep the method and set the sensitivity (got $UP)"
-[ "$(sql "select last_notified_price from private.price_alerts where id = '$ALERT'")" = "3.250" ] \
-  || fail "PC4 the prepare's reservation must survive the upsert"
+[ "$(sql "select observed_price from private.price_alert_deliveries where alert_id = '$ALERT' and status = 'pending'")" = "3.250" ] \
+  || fail "PC4 the prepare's queued delivery must survive the upsert"
 [ "$(pending_count)" = "1" ] || fail "PC4 the prepared delivery must still be pending"
 
-echo "ALL PAYMENT-TYPE CONCURRENCY SCENARIOS PASSED (PC1-PC4)"
+# ======================================================================================================
+echo "== PC5: a multi-job transaction, a new lower-id alert and a single prepare do not deadlock"
+reset_alert
+sql "update private.price_alert_jobs set status = 'completed' where status in ('pending', 'failed', 'processing');" >/dev/null   # a quiet queue: only this test's jobs
+mk_report 3.46 '100 minutes' p5a >/dev/null
+mk_report 3.45 '30 minutes' p5b >/dev/null
+mk_report 3.44 '20 minutes' p5c >/dev/null
+R5="$(mk_report 3.43 '10 minutes' p5d)"
+[ "$(sql "select count(*) from private.price_alert_jobs where status = 'pending'")" = "4" ] || fail "PC5 expected exactly four pending jobs"
+# Test-only stand-in for "other jobs in the same 50-job batch run between two prepares of this station": the job
+# processor's session (application_name ${M}cron) sleeps 4 s once, inside its first prepare, while holding the alert rows.
+sql "create sequence public.${M}_seq;
+     create function public.${M}_slow() returns trigger language plpgsql as \$f\$
+     begin
+       if current_setting('application_name') = '${M}cron' and nextval('public.${M}_seq') = 1 then perform pg_sleep(4); end if;
+       return new;
+     end \$f\$;
+     create trigger ${M}_slow before insert on private.price_alert_deliveries for each row execute function public.${M}_slow();" >/dev/null
+sql "insert into private.price_alert_installations (client_installation_id, installation_secret_hash)
+       values (gen_random_uuid(), md5('$M-i3') || md5('$M-i4'))" >/dev/null
+INST3="$(sql "select id from private.price_alert_installations where installation_secret_hash = md5('$M-i3') || md5('$M-i4')")"
+( PGAPPNAME="${M}cron" "${PSQL[@]}" -c "select claimed_count || '/' || prepared_count || '/' || failed_count from private.process_price_alert_jobs(50)" >"$TMP/pc5cron.out" 2>&1 ) &
+CRON_PID=$!
+sleep 1.5
+# during the pause a person saves an alert whose id sorts BEFORE the existing one, then the worker prepares a report of the station
+sql "insert into private.price_alerts (id, installation_id, station_id, alert_mode, minimum_change, cooldown_minutes, payment_type)
+       values ('00000000-0000-4000-8000-0000000000c5', '$INST3', '$STATION', 'price_drop', 0.100, 360, 'credit')" >/dev/null
+START=$(now_ms)
+W_OUT="$("${PSQL[@]}" -c "select pending_count || '/' || skipped_count from private.prepare_price_alert_deliveries('$R5')" 2>&1 || true)"
+ELAPSED=$(( $(now_ms) - START ))
+wait "$CRON_PID"
+echo "   worker prepare waited ${ELAPSED} ms and returned: $W_OUT; job processor returned: $(cat "$TMP/pc5cron.out")"
+! grep -qi "deadlock" "$TMP/pc5cron.out" || fail "PC5 the job processor hit a deadlock: $(cat "$TMP/pc5cron.out")"
+! echo "$W_OUT" | grep -qi "error\|deadlock" || fail "PC5 the worker's prepare failed: $W_OUT"
+[ "$ELAPSED" -ge 1000 ] || fail "PC5 the worker's prepare did not wait for the job processor's transaction (${ELAPSED} ms): the station lock is not taken"
+[ "$(cat "$TMP/pc5cron.out")" = "4/4/0" ] || fail "PC5 the job processor should claim, prepare and fail 4/4/0, got $(cat "$TMP/pc5cron.out")"
+[ "$(sql "select count(*) from private.price_alert_jobs where status = 'failed'")" = "0" ] || fail "PC5 a job was marked failed"
+
+echo "ALL PAYMENT-TYPE CONCURRENCY SCENARIOS PASSED (PC1-PC5)"
