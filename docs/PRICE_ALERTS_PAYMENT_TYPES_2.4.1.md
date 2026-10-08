@@ -481,9 +481,11 @@ migrations A and B and the API are deployed — a report sent with a payment typ
    — and treat migration B as acting on **live** alert traffic from its first minute. Also count the rows in
    `private.price_alert_deliveries` with `status in ('pending','processing')` (they will be left alone). **Apply B when the queue is drained:** wait until
    `private.price_alert_jobs` has no `pending`, `processing` or `failed` rows (a queued job's report would be swallowed by the
-   one-time legacy fill, which anchors each alert on the latest report) and, ideally, no `pending` or `processing` deliveries.
-   A delivery the previous engine queued is still honored (it holds its alert's cooldown), but a drained queue makes the
-   switch-over unambiguous. Both migrations start with `set lock_timeout = '3s'`: if one reports a lock timeout, re-run it.
+   one-time legacy fill, which anchors each alert on the latest report) **and `private.price_alert_deliveries` has no `pending`,
+   `processing` or `failed` rows** — a hard gate, re-checked within a minute of the push, because a send finishing while B runs can
+   deadlock with it and be retried as a duplicate push (readiness document, section 6). Deliveries the previous engine queued and that are
+   already `sent` are untouched. Both migrations start with `set lock_timeout = '3s'`: if one reports a lock timeout, nothing changed;
+   re-run it in a quieter minute.
 1. **Migration A.** Effect: reports can carry a payment type; nothing else changes (the engine still compares as before).
    Verify: existing rows read `unknown`; `anon` can insert with and without the column; `anon` cannot update/delete.
 2. **Migration B.** Effect is **immediate**: `prepare_price_alert_deliveries` is called every minute by the job-prepare

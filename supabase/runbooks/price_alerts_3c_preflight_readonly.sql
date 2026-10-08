@@ -157,7 +157,7 @@ from (
   union all
   select 60, 'deliveries.queued_now',
          (select count(*)::text from private.price_alert_deliveries where status in ('pending', 'processing', 'failed')),
-         'ideally 0 before migration B (a queued delivery still holds its alert''s cooldown, so it is safe, just less tidy)'
+         '0 before migration B - a HARD gate, re-checked within a minute of the push: a send finishing while B runs can deadlock with it (B locks the alert table, then the delivery table; marking a send does the reverse) and a retried send is a duplicate push'
   union all
   select 61, 'deliveries.sent_last_24h',
          (select count(*)::text from private.price_alert_deliveries where status = 'sent' and sent_at > now() - interval '24 hours'),
