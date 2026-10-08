@@ -291,8 +291,36 @@ struct PriceAlertFormTests {
         // alert's own rule so that saving it does not silently turn it into a Price Drop.
         let any = try serverAlert(mode: "any_change", minimumChange: "0.200", payment: "cash")
         #expect(PriceAlertForm(seededFrom: any) == PriceAlertForm(kind: .priceDrop, priceText: "", payment: .cash, sensitivity: .twentyCents, carriedRule: .anyChange))
+        // A mode this build cannot read has nothing to carry: it is flagged, so no kind looks selected and a save waits for one.
         let future = try serverAlert(mode: "percent_drop", payment: "credit")
-        #expect(PriceAlertForm(seededFrom: future).kind == .priceDrop)
+        let unreadable = PriceAlertForm(seededFrom: future)
+        #expect(unreadable.kind == .priceDrop)
+        #expect(unreadable.unreadableRule)
+        #expect(unreadable.carriedRule == nil)
+        #expect(unreadable.selectedKind == nil)
+        #expect(unreadable.showsSensitivity == false)
+        #expect(unreadable.showsPriceField == false)
+        #expect(unreadable.resolution == .needsKind)
+        #expect(unreadable.rule == nil)
+        #expect(unreadable.saveBlocker(existing: future) == .chooseKind)
+        #expect(unreadable.canSave(existing: future) == false)
+    }
+
+    @Test("Picking a kind is the decision to replace an alert whose rule this build cannot read")
+    func unreadableRule_isReplacedOnlyByAChosenKind() throws {
+        let future = try serverAlert(mode: "percent_drop", minimumChange: "0.200", payment: "credit")
+        var form = PriceAlertForm(seededFrom: future)
+        #expect(form.saveBlocker(existing: future) == .chooseKind)
+        // With nothing chosen for the price either, the price type is the first thing asked for.
+        #expect(PriceAlertForm(seededFrom: try serverAlert(mode: "percent_drop", payment: nil)).saveBlocker(existing: nil) == .choosePayment)
+
+        form.select(.priceDrop)
+
+        #expect(form.unreadableRule == false)
+        #expect(form.selectedKind == .priceDrop)
+        #expect(form.rule == .priceDrop)
+        #expect(form.saveBlocker(existing: future) == nil)
+        #expect(form.preferences(existing: future)?.minimumChange == PriceAlertAmount(thousandths: 200), "the alert's own drop size is the starting choice")
     }
 
     @Test("An alert made before payment types existed seeds the form with NO payment chosen — nothing is guessed")

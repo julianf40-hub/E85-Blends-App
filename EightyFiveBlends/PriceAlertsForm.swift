@@ -27,6 +27,9 @@
 //      never creates it) has no card to select. Choosing Cash or Credit for it must change the price it watches and
 //      nothing else, so the form carries the alert's rule (`carriedRule`) until the person picks a kind on purpose.
 //      Seeing "Price Drop" selected and saving would have replaced it without anyone noticing.
+//    - A RULE THIS BUILD CANNOT READ IS NOT REWRITTEN EITHER. An alert in a mode this build has never heard of cannot be
+//      sent back "as it was", and the Price Drop card must not look selected for it: no kind is shown as selected
+//      (`unreadableRule`) and Save waits until the person picks one, which is their decision to replace it.
 //    - THE WORDS FOR THE MIGRATION live in PriceAlertsPaymentMigration.swift, and everything about whether to show them
 //      is read from the alert the server holds (PriceAlertWatch.needsPaymentChoice), never from a local flag.
 //
@@ -79,6 +82,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     enum Resolution: Equatable, Sendable {
         /// A complete alert, ready to send.
         case rule(PriceAlertRule)
+        /// The alert's own rule cannot be read by this build and no kind has been picked to replace it.
+        case needsKind
         /// At or Below with nothing typed yet.
         case needsPrice
         case invalid(PriceAlertPriceInput.Problem)
@@ -95,6 +100,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     /// The first thing standing between the form and a save — what a dimmed Save button should say.
     enum SaveBlocker: Equatable, Sendable {
         case choosePayment
+        /// The alert's rule cannot be read by this build: picking an alert type is the person's decision to replace it.
+        case chooseKind
         case needsPrice
         case invalidPrice(PriceAlertPriceInput.Problem)
         case needsChangeAmount
@@ -114,6 +121,10 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     /// While it is set, `kind` is only a placeholder: no kind is shown as selected and the rule a save would send is
     /// this one. Picking a kind (`select(_ kind:)`) is the person's decision to replace it, and clears it.
     var carriedRule: PriceAlertRule?
+    /// True for an alert whose rule this build cannot read (a mode it has never heard of, or a target without a price).
+    /// Nothing can be sent back unchanged, so — unlike `carriedRule` — no rule is kept: no kind is shown as selected and
+    /// Save waits until the person picks one (`select(_ kind:)` clears this), which is their decision to replace it.
+    var unreadableRule: Bool
 
     init(
         kind: PriceAlertKind = .priceDrop,
@@ -121,7 +132,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
         payment: PriceAlertPayment? = nil,
         sensitivity: PriceAlertSensitivity = .recommended,
         customChangeText: String = "",
-        carriedRule: PriceAlertRule? = nil
+        carriedRule: PriceAlertRule? = nil,
+        unreadableRule: Bool = false
     ) {
         self.kind = kind
         self.priceText = priceText
@@ -129,13 +141,15 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
         self.sensitivity = sensitivity
         self.customChangeText = customChangeText
         self.carriedRule = carriedRule
+        self.unreadableRule = unreadableRule
     }
 
     /// Seeds the form from the alert the server holds (`nil`: there is none — a fresh form, with the new-alert
-    /// drop size and no price chosen). A rule this build does not offer (`any_change`) or cannot read (an
-    /// unknown or malformed mode) starts the kind at its default rather than pretending to edit it. A payment
-    /// type of `unknown` (an alert made before payment types existed) starts as NOT CHOSEN. The drop size is
-    /// read from the alert, so a legacy 5¢ alert shows as 5¢ and an unusual amount as Custom.
+    /// drop size and no price chosen). A rule this build does not offer (`any_change`) is CARRIED; one it cannot read
+    /// (an unknown or malformed mode) is flagged `unreadableRule`, so no kind looks selected and Save waits for the
+    /// person to pick one — neither is rewritten by a choice of price type. A payment type of `unknown` (an alert made
+    /// before payment types existed) starts as NOT CHOSEN. The drop size is read from the alert, so a legacy 5¢ alert
+    /// shows as 5¢ and an unusual amount as Custom.
     init(seededFrom alert: PriceAlert?) {
         guard let alert else {
             self.init()
@@ -144,6 +158,7 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
         var kind = PriceAlertKind.priceDrop
         var priceText = ""
         var carriedRule: PriceAlertRule?
+        var unreadableRule = false
         switch alert.rule {
         case .priceDrop?:
             break
@@ -154,7 +169,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
             // Not offered by this UI, but a real alert: keep it as it is until a kind is chosen on purpose.
             carriedRule = .anyChange
         case nil:
-            break
+            // A mode this build cannot read: there is nothing to carry, so the person must choose a kind to replace it.
+            unreadableRule = true
         }
         let sensitivity = PriceAlertSensitivity(matching: alert.minimumChange)
         self.init(
@@ -163,22 +179,28 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
             payment: alert.paymentType,
             sensitivity: sensitivity,
             customChangeText: sensitivity == .custom ? PriceAlertPriceInput.editableText(for: alert.minimumChange) : "",
-            carriedRule: carriedRule
+            carriedRule: carriedRule,
+            unreadableRule: unreadableRule
         )
     }
 
-    /// The kind shown as selected: `nil` while the form carries a rule this UI has no card for.
+    /// Whether the alert's own rule stands in for the kind cards: carried (this UI has no card for it) or unreadable.
+    private var keepsOwnRule: Bool {
+        carriedRule != nil || unreadableRule
+    }
+
+    /// The kind shown as selected: `nil` while the form carries a rule this UI has no card for, or cannot read one.
     var selectedKind: PriceAlertKind? {
-        carriedRule == nil ? kind : nil
+        keepsOwnRule ? nil : kind
     }
 
     var showsPriceField: Bool {
-        carriedRule == nil && kind == .atOrBelow
+        keepsOwnRule == false && kind == .atOrBelow
     }
 
     /// The drop size only means something to a Price Drop alert.
     var showsSensitivity: Bool {
-        carriedRule == nil && kind == .priceDrop
+        keepsOwnRule == false && kind == .priceDrop
     }
 
     var showsCustomChangeField: Bool {
@@ -189,6 +211,7 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
 
     var resolution: Resolution {
         if let carriedRule { return .rule(carriedRule) }
+        if unreadableRule { return .needsKind }
         switch kind {
         case .priceDrop:
             return .rule(.priceDrop)
@@ -248,8 +271,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     ///   alert, the new-alert default. The cooldown is never edited here: an existing alert keeps its own.
     func preferences(existing: PriceAlert?) -> PriceAlertPreferences? {
         let base = existing?.preferences ?? .newAlertDefaults
-        // A carried rule has no drop size on screen: the alert keeps the one it has.
-        if carriedRule != nil { return base }
+        // A carried (or unreadable) rule has no drop size on screen: the alert keeps the one it has.
+        if keepsOwnRule { return base }
         switch kind {
         case .atOrBelow:
             return base
@@ -282,6 +305,7 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     func saveBlocker(existing: PriceAlert?) -> SaveBlocker? {
         if payment?.isSpecified != true { return .choosePayment }
         switch resolution {
+        case .needsKind: return .chooseKind
         case .needsPrice: return .needsPrice
         case .invalid(let problem): return .invalidPrice(problem)
         case .rule: break
@@ -303,10 +327,11 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     // MARK: Editing
 
     /// Picks a kind. The typed price is kept — see this file's header. Picking one is also the person's decision to
-    /// replace a carried rule this UI has no card for.
+    /// replace a carried rule this UI has no card for, or a rule this build cannot read.
     mutating func select(_ newKind: PriceAlertKind) {
         kind = newKind
         carriedRule = nil
+        unreadableRule = false
     }
 
     /// Picks the price to watch. `.unknown` is not a choice and is ignored.

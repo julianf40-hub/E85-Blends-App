@@ -222,9 +222,11 @@ struct StationAlertsView: View {
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 3) {
+                        // Primary text colour, not the warning yellow: yellow on the Light card is far below readable
+                        // contrast. The state is carried by the words, the icon and the card's border.
                         Text(banner.title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text(banner.message)
                             .font(.caption)
@@ -304,11 +306,10 @@ struct StationAlertsView: View {
                         .multilineTextAlignment(.leading)
 
                     // Which price the alert watches (and, for Price Drop, how big a drop). An alert made
-                    // before payment types existed says so, in the warning colour, and the sheet it opens
-                    // asks for a choice.
+                    // before payment types existed says so in words, and the banner under the row asks for a choice.
                     Text(row.watchText)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(row.needsPaymentChoice ? AppTheme.Colors.stationYellow : AppTheme.Colors.textSecondary)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
 

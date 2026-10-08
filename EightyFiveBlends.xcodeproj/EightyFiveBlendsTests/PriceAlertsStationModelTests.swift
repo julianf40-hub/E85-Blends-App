@@ -81,7 +81,7 @@ struct PriceAlertsStationModelPhaseTests {
         #expect(model.canSave == false)
     }
 
-    @Test("A mode this build has never heard of displays as a custom alert, cannot crash, and can be replaced")
+    @Test("A mode this build has never heard of displays as a custom alert, cannot crash, and is replaced only by choosing a type")
     func unknownFutureMode() async throws {
         _ = try await stack.service.createAlert(communityStationID: stationOneID, rule: .priceDrop)
         overwriteServerAlert(stack, mode: "percent_drop")
@@ -93,11 +93,23 @@ struct PriceAlertsStationModelPhaseTests {
         #expect(model.currentSummary == .unrecognized)
         #expect(model.currentSummary?.title == "Custom alert")
         #expect(model.existingRule == nil)
-        // Nothing of the unreadable alert is guessed: its drop size is read (5¢), its payment type is not set.
-        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents))
-        // Saving a chosen type replaces it — the one alert per station — once a price is chosen for it.
+        // Nothing of the unreadable alert is guessed: its drop size is read (5¢), its payment type is not set, and no
+        // alert type looks selected (Phase 3C.1) - the rule cannot be sent back as it was.
+        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents, unreadableRule: true))
+        #expect(model.form.selectedKind == nil)
         #expect(model.canSave == false)
+        // Choosing a price type alone does NOT turn it into a Price Drop: Save waits for an alert type on purpose.
         model.select(payment: .cash)
+        #expect(model.canSave == false)
+        #expect(model.saveBlocker == .chooseKind)
+        #expect(model.saveHint == "Choose an alert type first.")
+        let before = stack.transport.count(of: "set_alert")
+        await model.save()
+        #expect(stack.transport.count(of: "set_alert") == before, "nothing was sent")
+        #expect(model.currentSummary == .unrecognized, "the alert is as it was")
+        // Choosing a type is the person's decision to replace it - the one alert per station.
+        model.select(.priceDrop)
+        #expect(model.form.selectedKind == .priceDrop)
         #expect(model.canSave)
         await model.save()
         #expect(model.currentSummary == .priceDrop)

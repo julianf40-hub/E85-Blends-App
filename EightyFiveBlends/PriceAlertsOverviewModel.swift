@@ -61,9 +61,11 @@ final class PriceAlertsOverviewModel {
             latestPriceText = Self.latestPriceText(for: listing)
         }
 
+        /// The row as VoiceOver reads it. The "Payment type needed" banner under the row is its own element (with the Edit
+        /// button), so its sentence is not repeated here — the row says the price type is not set, and its hint says what a
+        /// tap does.
         var accessibilityLabel: String {
             var parts = [target.name, "Alert: \(alertTitle)", watchSpokenText]
-            if let paymentChoiceBanner { parts.append("\(paymentChoiceBanner.title). \(paymentChoiceBanner.message)") }
             if let latestPriceText { parts.append(latestPriceText) }
             return parts.joined(separator: ", ")
         }

@@ -175,9 +175,9 @@ final class PriceAlertsService {
         return try await save(draft)
     }
 
-    /// Changes an existing alert. Whatever is not passed keeps its current value — the backend would
-    /// otherwise reset it to a default, because `set_alert` replaces the whole alert. That includes the
-    /// payment type: it is sent as the existing alert's own unless a new one is given.
+    /// Changes an existing alert. Whatever is not passed keeps its current value — the backend would otherwise reset
+    /// it to a default, because `set_alert` replaces the mode, target and cooldown (and the drop size when the request
+    /// means it). That includes the payment type: it is sent as the existing alert's own unless a new one is given.
     @discardableResult
     func updateAlert(
         _ existing: PriceAlert,

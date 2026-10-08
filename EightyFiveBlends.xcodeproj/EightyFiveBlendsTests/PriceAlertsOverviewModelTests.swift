@@ -223,8 +223,9 @@ struct PriceAlertsOverviewPaymentTests {
         #expect(row.needsPaymentChoice)
         #expect(row.watchText == "Payment type not set · 5¢ drop")
         #expect(row.latestPriceText == "Latest community price $3.149")
-        // Phase 3C.1: the spoken row also says what is needed, in the banner's own words.
-        #expect(row.accessibilityLabel == "Corner Pump, Alert: Price Drop, Payment type not set. Notifies on a drop of 5¢ or more, Payment type needed. Choose Cash or Credit to continue watching this station's prices., Latest community price $3.149")
+        // Phase 3C.1: what is needed is said by the banner under the row (its own element, with the Edit button), so the
+        // row's spoken label is unchanged and does not repeat the banner's sentence.
+        #expect(row.accessibilityLabel == "Corner Pump, Alert: Price Drop, Payment type not set. Notifies on a drop of 5¢ or more, Latest community price $3.149")
         #expect(row.paymentChoiceBanner?.title == "Payment type needed")
         #expect(row.watchText.contains("Cash") == false)
         #expect(row.watchText.contains("Credit") == false)

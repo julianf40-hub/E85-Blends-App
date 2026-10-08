@@ -36,6 +36,15 @@ private func serverAlert(_ stack: PriceAlertsStack, station seed: UInt8) -> [Str
     return stack.transport.alerts[installationID]?[wire(seed)]
 }
 
+/// Leaves the simulated server holding, for the station `seed`, a LEGACY alert (no payment type) in a mode this build has
+/// never heard of - the way a newer backend could.
+@MainActor
+private func overwriteWithUnreadableLegacyAlert(_ stack: PriceAlertsStack, station seed: UInt8, mode: String = "percent_drop") {
+    let installationID = stack.transport.installations.keys.first!
+    stack.transport.alerts[installationID, default: [:]][wire(seed)] =
+        BackendFixtures.alertObject(stationID: PriceAlertsStack.stationID(seed), mode: mode, paymentType: "unknown")
+}
+
 /// Words that would promise a notification now. None of the migration copy may contain one.
 private let promisesOfImmediacy = ["immediately", "right away", "instantly", "as soon as", "guarantee", "within minutes", "at once"]
 
@@ -133,9 +142,9 @@ struct PriceAlertsLegacyMigrationSheetTests {
         // Looking at everything the view reads changes nothing either.
         _ = (model.paymentChoicePrompt, model.deliveryNote, model.currentWatch, model.noComparablePriceNote, model.saveHint)
 
-        let added = Set(stack.transport.requests.dropFirst(setUp).map(\.action))
-        #expect(added.contains("list_alerts"))
-        #expect(added.isDisjoint(with: ["set_alert", "delete_alert", "register_device", "unregister_device"]))
+        // Exactly the read of the list: no set_alert, delete_alert, bootstrap or device call.
+        let added = stack.transport.requests.dropFirst(setUp).map(\.action)
+        #expect(added == ["list_alerts"])
         #expect(serverAlert(stack, station: 1)?["payment_type"] as? String == "unknown")
     }
 
@@ -247,12 +256,45 @@ struct PriceAlertsLegacyMigrationSheetTests {
 
         #expect(model.form.selectedKind == .priceDrop)
         #expect(model.form.carriedRule == nil)
-        #expect(model.paymentChoicePrompt?.settingsNote == nil, "the form no longer matches the alert")
+        let changedPrompt = try #require(model.paymentChoicePrompt, "the prompt is still there")
+        #expect(changedPrompt.settingsNote == nil, "the form no longer matches the alert")
         await model.save()
         let request = try #require(stack.transport.lastRequest("set_alert"))
         #expect(request.json["alert_mode"] as? String == "price_drop")
         #expect(request.json["minimum_change"] as? Double == 0.2, "the alert's own drop size is still the starting choice")
         #expect(model.currentSummary == .priceDrop)
+    }
+
+    @Test("A legacy alert in a mode this build cannot read is never rewritten by the price type alone: Save waits for an alert type")
+    func unreadableRule_isNotConvertedByChoosingAPriceType() async throws {
+        _ = try await stack.service.createAlert(communityStationID: PriceAlertsStack.stationID(1), rule: .priceDrop, paymentType: nil)
+        overwriteWithUnreadableLegacyAlert(stack, station: 1)
+        let model = stack.stationModel(service: stack.relaunchedService())
+        await model.load()
+
+        // The prompt is there, but the reassurance is NOT: nothing about this alert can be kept as it was.
+        let prompt = try #require(model.paymentChoicePrompt)
+        #expect(prompt.settingsNote == nil)
+        #expect(model.form.selectedKind == nil, "no alert type looks selected")
+        #expect(model.currentSummary == .unrecognized)
+
+        model.select(payment: .credit)
+        #expect(model.canSave == false)
+        #expect(model.saveBlocker == .chooseKind)
+        #expect(model.saveHint == "Choose an alert type first.")
+        let before = stack.transport.count(of: "set_alert")
+        await model.save()
+        #expect(stack.transport.count(of: "set_alert") == before, "nothing is sent")
+        #expect(serverAlert(stack, station: 1)?["alert_mode"] as? String == "percent_drop", "the alert is as it was")
+        #expect(serverAlert(stack, station: 1)?["payment_type"] as? String == "unknown")
+
+        // Picking a type is the person's decision to replace it.
+        model.select(.priceDrop)
+        #expect(model.canSave)
+        await model.save()
+        #expect(serverAlert(stack, station: 1)?["alert_mode"] as? String == "price_drop")
+        #expect(serverAlert(stack, station: 1)?["payment_type"] as? String == "credit")
+        #expect(model.paymentChoicePrompt == nil)
     }
 
     @Test("The reassurance is made only while it is true: change the alert type or the drop size and it goes")
@@ -262,15 +304,15 @@ struct PriceAlertsLegacyMigrationSheetTests {
         #expect(model.paymentChoicePrompt?.settingsNote == "Your alert type and settings stay the same.")
 
         model.select(payment: .cash)
-        #expect(model.paymentChoicePrompt?.settingsNote != nil, "choosing a price type alone leaves the rest as it was")
+        #expect(try #require(model.paymentChoicePrompt).settingsNote != nil, "choosing a price type alone leaves the rest as it was")
 
         model.form.priceText = "3.20"
-        #expect(model.paymentChoicePrompt?.settingsNote == nil)
+        #expect(try #require(model.paymentChoicePrompt).settingsNote == nil)
         model.form.priceText = "3.25"
-        #expect(model.paymentChoicePrompt?.settingsNote != nil)
+        #expect(try #require(model.paymentChoicePrompt).settingsNote != nil)
 
         model.select(.priceDrop)
-        #expect(model.paymentChoicePrompt?.settingsNote == nil)
+        #expect(try #require(model.paymentChoicePrompt).settingsNote == nil)
     }
 
     // MARK: no comparable price
@@ -287,7 +329,7 @@ struct PriceAlertsLegacyMigrationSheetTests {
         let prompt = try #require(model.paymentChoicePrompt)
         #expect(prompt.referenceNote == PriceAlertPaymentMigrationCopy.referenceNote(for: .cash))
         model.select(payment: .credit)
-        #expect(model.paymentChoicePrompt?.referenceNote == PriceAlertPaymentMigrationCopy.referenceNote(for: .credit))
+        #expect(try #require(model.paymentChoicePrompt).referenceNote == PriceAlertPaymentMigrationCopy.referenceNote(for: .credit))
 
         // After saving: the server's own list says no Credit price is known.
         await model.save()
@@ -320,7 +362,7 @@ struct PriceAlertsLegacyMigrationSheetTests {
         let model = try await legacyModel(rule: .atOrBelow(amount(3_100)))
         await model.load()
         model.select(payment: .cash)
-        #expect(model.paymentChoicePrompt?.referenceNote == nil)
+        #expect(try #require(model.paymentChoicePrompt).referenceNote == nil)
 
         await model.save()
 
@@ -419,6 +461,38 @@ struct PriceAlertsLegacyMigrationSheetTests {
         #expect(model.visibleSaveFailure == nil)
     }
 
+    @Test("A NEW alert saved against a backend that ignores the price type is reported as created without one - not as 'unchanged'")
+    func notApplied_onCreate_isReportedAsCreatedWithoutAPriceType() async throws {
+        stack.transport.backendPredatesPaymentTypes = true
+        let model = stack.stationModel()
+        await model.load()
+        #expect(model.hasExistingAlert == false)
+        model.select(payment: .credit)
+
+        await model.save()
+
+        #expect(model.visibleSaveFailure == PriceAlertsUserMessage.paymentChoiceNotSavedOnCreate)
+        #expect(model.visibleSaveFailure?.body.contains("unchanged") == false, "the alert WAS created, so 'unchanged' would be untrue")
+        #expect(model.announcement?.isError == true)
+        #expect(model.announcement?.text != "Price Alert created.")
+        #expect(model.hasExistingAlert, "the alert exists on the server, without a price type")
+        #expect(serverAlert(stack, station: 1) != nil)
+        #expect(serverAlert(stack, station: 1)?["payment_type"] == nil, "that backend stored no price type at all")
+        #expect(model.form.payment == .credit, "the choice stays on screen")
+        assertSafeToShow(PriceAlertsUserMessage.paymentChoiceNotSavedOnCreate.headline)
+        assertSafeToShow(PriceAlertsUserMessage.paymentChoiceNotSavedOnCreate.body)
+        // The prompt now offers the same choice for the alert that was created.
+        #expect(model.paymentChoicePrompt != nil)
+
+        // The backend catches up: the same choice now saves, as an UPDATE of the alert that was created.
+        stack.transport.backendPredatesPaymentTypes = false
+        #expect(model.canSave)
+        await model.save()
+        #expect(model.currentWatch?.payment == .credit)
+        #expect(model.paymentChoicePrompt == nil)
+        #expect(model.announcement?.text == "Price Alert updated.")
+    }
+
     @Test("A double tap on Save sends one request")
     func doubleTap_isOneRequest() async throws {
         let model = try await legacyModel()
@@ -453,6 +527,7 @@ struct PriceAlertsLegacyMigrationSheetTests {
             PriceAlertPaymentMigrationCopy.editAccessibilityHint,
             PriceAlertPaymentMigrationCopy.settingsStayTheSame,
             PriceAlertPaymentMigrationCopy.carriedRuleNote,
+            PriceAlertPaymentMigrationCopy.unreadableRuleNote,
             PriceAlertPaymentMigrationCopy.referenceNote(for: .cash),
             PriceAlertPaymentMigrationCopy.referenceNote(for: .credit),
             PriceAlertPaymentMigrationCopy.noPriceYet(for: .cash),
@@ -466,6 +541,8 @@ struct PriceAlertsLegacyMigrationSheetTests {
                 #expect(lowered.contains(promise) == false, "“\(text)” must not promise “\(promise)”")
             }
         }
+        // The starting point is only taken from a price reported in the past week (the server's reference horizon).
+        #expect(PriceAlertPaymentMigrationCopy.referenceNote(for: .cash).contains("in the past week"))
         #expect(PriceAlertPaymentMigrationCopy.rowTitle == "Payment type needed")
         #expect(PriceAlertPaymentMigrationCopy.rowMessage == "Choose Cash or Credit to continue watching this station's prices.")
         #expect(PriceAlertPaymentMigrationCopy.editActionTitle == "Edit")
@@ -503,7 +580,9 @@ struct PriceAlertsLegacyMigrationOverviewTests {
             #expect(banner.editTitle == "Edit")
             #expect(banner.editAccessibilityLabel == "Edit alert for Corner Pump")
             #expect(banner.editAccessibilityHint == "Opens this alert so you can choose Cash or Credit.")
-            #expect(row.accessibilityLabel.contains("Payment type needed. Choose Cash or Credit to continue watching this station's prices."))
+            // The banner is its own VoiceOver element (with the Edit button): its sentence is not repeated in the row's label.
+            #expect(row.accessibilityLabel.contains("Payment type not set"))
+            #expect(row.accessibilityLabel.contains("Payment type needed") == false)
             #expect(row.accessibilityHint == "Opens this alert so you can choose Cash or Credit.")
             #expect(row.watchText.contains("Payment type not set"))
         }
@@ -547,9 +626,8 @@ struct PriceAlertsLegacyMigrationOverviewTests {
         await model.load()
         _ = (model.rows, model.paymentChoicePrompt, model.alertsNeedingPaymentChoice)
 
-        let added = Set(stack.transport.requests.dropFirst(setUp).map(\.action))
-        #expect(added.contains("list_alerts"))
-        #expect(added.isDisjoint(with: ["set_alert", "delete_alert", "register_device", "unregister_device"]))
+        let added = stack.transport.requests.dropFirst(setUp).map(\.action)
+        #expect(added == ["list_alerts"], "exactly the read of the list: nothing is written by looking")
         #expect(model.rows.filter(\.needsPaymentChoice).count == 2)
     }
 

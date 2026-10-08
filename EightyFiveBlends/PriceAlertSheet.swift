@@ -45,7 +45,7 @@ struct PriceAlertSheet: View {
     @ScaledMetric(relativeTo: .headline) private var scaledPaymentColumnMinimum: CGFloat = 150
     @ScaledMetric(relativeTo: .headline) private var scaledSensitivityColumnMinimum: CGFloat = 88
 
-    private var paymentColumnMinimum: CGFloat { min(scaledPaymentColumnMinimum, 320) }
+    private func paymentColumnMinimum(cap: CGFloat) -> CGFloat { min(scaledPaymentColumnMinimum, cap) }
     private var sensitivityColumnMinimum: CGFloat { min(scaledSensitivityColumnMinimum, 320) }
 
     /// The two text fields the sheet can show (the target price, and a Custom drop size).
@@ -208,13 +208,16 @@ struct PriceAlertSheet: View {
 
     @ViewBuilder
     private var readyContent: some View {
-        if let warning = model.refreshWarning {
-            refreshWarningCard(warning)
-        }
-        // An alert made before payment types existed: the explanation and the choice come first, and replace the
-        // ordinary "Price to watch" section below (one picker on screen, never two).
-        if let prompt = model.paymentChoicePrompt {
-            paymentChoiceCard(prompt)
+        // Grouped so this builder stays well under the ViewBuilder's ten-child limit.
+        Group {
+            if let warning = model.refreshWarning {
+                refreshWarningCard(warning)
+            }
+            // An alert made before payment types existed: the explanation and the choice come first, and replace the
+            // ordinary "Price to watch" section below (one picker on screen, never two).
+            if let prompt = model.paymentChoicePrompt {
+                paymentChoiceCard(prompt)
+            }
         }
         statusCard
         kindSection
@@ -274,7 +277,7 @@ struct PriceAlertSheet: View {
                     if let watch = model.currentWatch {
                         Text(watch.paymentLine)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(watch.needsPaymentChoice ? AppTheme.Colors.stationYellow : AppTheme.Colors.textPrimary)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         if let dropLine = watch.dropLine {
                             Text(dropLine)
@@ -308,6 +311,12 @@ struct PriceAlertSheet: View {
             // one of the cards above is chosen on purpose.
             if model.form.carriedRule != nil {
                 Text(PriceAlertPaymentMigrationCopy.carriedRuleNote)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.form.unreadableRule {
+                // A type this version of the app cannot show: nothing looks selected, and Save waits for a choice.
+                Text(PriceAlertPaymentMigrationCopy.unreadableRuleNote)
                     .font(.caption)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -368,7 +377,7 @@ struct PriceAlertSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: PriceAlertPaymentCopy.sectionTitle)
 
-            paymentPicker
+            paymentPicker(cap: 320)
 
             if let hint = model.paymentHint {
                 paymentHintLabel(hint)
@@ -383,8 +392,10 @@ struct PriceAlertSheet: View {
 
     /// The two choices. Used by the ordinary section and by the legacy-alert card, so there is one picker and one place
     /// that decides what a tap does (`PriceAlertsStationModel.select(payment:)`).
-    private var paymentPicker: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: paymentColumnMinimum), spacing: 10)], spacing: 10) {
+    /// - Parameter cap: the widest a column's minimum may grow. The ordinary section sits in the 343 pt content of a 375 pt
+    ///   phone; inside the legacy card (18 pt padding each side) only 307 pt is left, so it passes a smaller cap.
+    private func paymentPicker(cap: CGFloat) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: paymentColumnMinimum(cap: cap)), spacing: 10)], spacing: 10) {
             ForEach(PriceAlertPayment.choices, id: \.self) { payment in
                 paymentOption(payment)
             }
@@ -430,7 +441,7 @@ struct PriceAlertSheet: View {
                     Spacer(minLength: 0)
                 }
 
-                paymentPicker
+                paymentPicker(cap: 280)
 
                 if let hint = model.paymentHint {
                     paymentHintLabel(hint)

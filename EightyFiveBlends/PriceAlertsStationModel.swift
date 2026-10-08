@@ -192,6 +192,8 @@ final class PriceAlertsStationModel {
         switch saveBlocker {
         case .choosePayment?:
             return "Choose Cash or Credit first."
+        case .chooseKind?:
+            return "Choose an alert type first."
         case .needsPrice?:
             return "Enter a target price first."
         case .invalidPrice?:
@@ -358,7 +360,8 @@ final class PriceAlertsStationModel {
             // does not know payment types yet ignores the field), nothing the person asked for happened: say so, keep
             // what they chose on screen, and do not announce an update.
             guard saved.paymentType == payment else {
-                let message = PriceAlertsUserMessage.paymentChoiceNotSaved
+                // A new alert WAS created (without the price type); an existing one is as it was.
+                let message = existing == nil ? PriceAlertsUserMessage.paymentChoiceNotSavedOnCreate : PriceAlertsUserMessage.paymentChoiceNotSaved
                 saveFailure = message
                 saveFailureForm = sentForm
                 announce("\(message.headline). \(message.body)", isError: true)

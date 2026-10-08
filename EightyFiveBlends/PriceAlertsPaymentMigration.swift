@@ -47,10 +47,13 @@ nonisolated enum PriceAlertPaymentMigrationCopy {
     /// Under the alert types, for an alert whose type this screen has no card for (it notifies on any price change).
     static let carriedRuleNote = "This alert keeps its current type unless you choose one of these."
 
+    /// Under the alert types, for an alert whose type this version of the app cannot show at all.
+    static let unreadableRuleNote = "This alert's type can't be shown in this version of the app. Choose one of these to replace it."
+
     /// What a chosen price type means for a Price Drop's starting point, said before saving. It states how the
     /// comparison works and when it can begin; it does not say a notification will arrive.
     static func referenceNote(for payment: PriceAlertPayment) -> String {
-        "Drops are measured from the latest \(payment.title) price reported for this station. If there isn't one yet, the next \(payment.title) price — or one reported as the same for both — sets the starting point."
+        "Drops are measured from the latest \(payment.title) price reported for this station in the past week. If there isn't one, the next \(payment.title) price — or one reported as the same for both — sets the starting point."
     }
 
     /// What the alert's status says once it watches a price type and the server knows no report of that kind yet.
