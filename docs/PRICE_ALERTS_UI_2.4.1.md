@@ -9,6 +9,16 @@ while building it** — every test runs over fakes — and **real push delivery 
 
 Status: Phase 3B is a stacked branch on Phase 3A (`767f9de`), not merged, not released.
 
+> **Phase 3C changed this screen.** An alert now watches **Cash or Credit** (chosen explicitly — there is no default,
+> and an alert made before payment types existed opens as "Payment type not set"), and a Price Drop has a **drop
+> size**: 5¢, 10¢ (Recommended; the default for a *new* alert), 20¢ or Custom (0.01–2.00). The sheet is now: status,
+> alert type, **price to watch**, **drop size** (Price Drop) or target price (At or Below), Save, notifications, Turn Off.
+> The central list shows the price type and drop size per alert and the alert's own latest comparable price. The
+> two-kind rule, the price field, saving/editing, Turn Off, Pro behavior and notifications below are otherwise as
+> described. Details, rules and tests: [`PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md`](PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md) §8.3.
+> Statements below that the sheet has no minimum-change control, or that the delivery note quotes `$0.05`, describe
+> Phase 3B as delivered.
+
 ## 1. What a person sees
 
 ### 1.1 Entry points
@@ -231,7 +241,8 @@ idempotence, backoff, convergence, the real push service's no-loop property) and
 ## 8. Known limitations and follow-ups
 
 * A station needs a community UUID for the bell to appear; stations nobody has reported on never get one.
-* The sheet offers no minimum-change or cooldown controls (the backend supports them; the MVP does not).
+* The sheet offers no cooldown control (Phase 3C added the drop size for Price Drop; the cooldown stays the alert's
+  own value, 6 hours for a new alert, and is only stated in the note under the form).
 * The Price Alerts screen has no search, and lists in the server's order (by station name).
 * While a save or turn-off is in flight, Close and swipe-to-dismiss are disabled (as in the price-report
   sheet), so the person always sees the outcome instead of losing it behind a dismissed sheet. It is

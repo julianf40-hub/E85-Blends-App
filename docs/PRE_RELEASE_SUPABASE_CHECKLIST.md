@@ -74,6 +74,12 @@ Two fixes were made, in order, as of 2.3.2:
 
 ### `e85_price_reports`
 
+> **2.4.1 Phase 3C (prepared, NOT applied):** `20261007120000_community_price_payment_type.sql` adds one column,
+> `payment_type`, and extends the clients' column-scoped INSERT grant by that column only. After it is applied (a
+> separate, authorized step — see `PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md`), re-check this table: INSERT stays
+> column-scoped (now including `payment_type`), the policy and the price bound are unchanged, and there is still no
+> UPDATE or DELETE grant for `anon`/`authenticated`. The rows below describe the state before that migration.
+
 | Check | Expected | Verified? |
 |---|---|---|
 | RLS is **ENABLED** on this table | Yes | ✅ Verified live |

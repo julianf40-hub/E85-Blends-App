@@ -9,6 +9,14 @@ at launch, and no network call to Supabase was made while building it (every tes
 > never opted in and, for one that did, only maintains an existing registration (it never creates an
 > installation and never prompts).
 
+> **Phase 3C (Cash / Credit prices, configurable Price Drop) extends this contract additively** — see
+> [`PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md`](PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md). The deltas to this document:
+> `set_alert` takes an optional `payment_type` (`cash`/`credit`) and every alert response carries it; `list_alerts`
+> adds `latest_comparable_price`, `latest_comparable_reported_at`, `latest_comparable_payment_type`; there is a new
+> `400 invalid_payment_type`; the push payload gains an optional `payment_type`; and server evaluation compares
+> only reports of the alert's own price type (so §1.3's description of `private.evaluate_price_alert` is superseded
+> by `private.evaluate_price_alert_v2`). Those backend changes are **prepared, not deployed**.
+
 > **Production backend state — corrected at the start of Phase 3B.** The first version of this document
 > described the worker scheduler as not yet active, three migrations as not applied and the APNs secrets as
 > still to be provisioned. That was stale. As reported by the project owner (Supabase project
@@ -126,7 +134,12 @@ An upsert on `(installation_id, station_id)`: **one alert per installation per s
   rejected) and `1 ≤ x ≤ 8` (`400 invalid_threshold_price`); for the other two modes it must be
   absent/`null` (`400 threshold_only_valid_for_at_or_below`). It is **dollars per gallon** — the
   price the observed station price must be at or below.
-* `minimum_change`: JSON number, default `0.05`, `0.01 ≤ x ≤ 2` — dollars/gal.
+* `minimum_change`: JSON number, default `0.05` (the **legacy** server default, unchanged — the 2.4.1 app sends its
+  10¢ new-alert default explicitly), `0.01 ≤ x ≤ 2` — dollars/gal.
+* `payment_type` *(Phase 3C)*: optional `"cash"` or `"credit"` — which price the alert watches. Anything else
+  (`"unknown"`, `"same_for_both"`, another case, a non-string) is `400 invalid_payment_type`. **Absent or `null` means
+  "not specified"**: an existing alert keeps its current method, a new alert is stored as `unknown` (a legacy alert).
+  Unlike the other preferences, an omitted `payment_type` is *preserved*, never reset.
 * `cooldown_minutes`: JSON integer, default `360`, `60 ≤ x ≤ 10080`.
   Out-of-range preferences are `400 invalid_alert_preferences`.
 * `station_id` must be a UUID of an existing `public.community_stations` row, else
@@ -153,7 +166,9 @@ Both are idempotent: deleting/unregistering something that is not there is `200`
 
 Alerts of the authenticated installation joined to `public.community_stations`, ordered by station
 name, no pagination, not Pro-gated. `latest_price`/`latest_reported_at` are the station's newest
-community report (both `null` when it has none).
+community report of **any** payment type (both `null` when it has none). *(Phase 3C)* each row also carries
+`payment_type` and `latest_comparable_price` / `latest_comparable_reported_at` / `latest_comparable_payment_type` —
+the newest report the alert is actually judged on (its own price type; a `same_for_both` report counts for either).
 
 #### `status`
 
@@ -188,7 +203,7 @@ Every failure is a JSON object `{ "error": "<snake_case_code>" }` with an HTTP s
 
 | Status | Codes |
 |---|---|
-| 400 | `invalid_json`, `invalid_json_object`, `action_required`, `unknown_action`, `invalid_installation_credentials` (malformed id/secret), `invalid_platform`, `invalid_contributor_id`, `invalid_app_version`, `revenuecat_identity_requires_environment`, `invalid_revenuecat_identity`, `invalid_device_registration`, `invalid_device_token`, `invalid_alert`, `invalid_threshold_price`, `threshold_only_valid_for_at_or_below`, `invalid_alert_preferences`, `invalid_station_id` |
+| 400 | `invalid_json`, `invalid_json_object`, `action_required`, `unknown_action`, `invalid_installation_credentials` (malformed id/secret), `invalid_platform`, `invalid_contributor_id`, `invalid_app_version`, `revenuecat_identity_requires_environment`, `invalid_revenuecat_identity`, `invalid_device_registration`, `invalid_device_token`, `invalid_alert`, `invalid_threshold_price`, `threshold_only_valid_for_at_or_below`, `invalid_alert_preferences`, `invalid_payment_type` *(Phase 3C)*, `invalid_station_id` |
 | 401 | `unauthorized` (**API key** rejected — a configuration problem, not the installation), `invalid_installation_credentials` (**installation unknown to the server, or the secret does not match**) |
 | 403 | `pro_required` (`set_alert` only) |
 | 404 | `station_not_found` |
@@ -225,7 +240,8 @@ touching the installation.
 `price-alerts-worker` sends alert pushes to `https://api.sandbox.push.apple.com` when the stored
 `apns_environment` is `sandbox` and to `https://api.push.apple.com` when it is `production`, with
 `apns-topic` = the stored `bundle_id`. Payload: `aps.alert{title,body}`, `aps.sound`,
-`type:"price_alert"`, `station_id` (canonical UUID), `observed_price` (number). HTTP 410 and the APNs
+`type:"price_alert"`, `station_id` (canonical UUID), `observed_price` (number), and — *(Phase 3C)* for a Cash or Credit
+alert only — an additive `payment_type` (`"cash"`/`"credit"`; absent for a legacy alert). HTTP 410 and the APNs
 reasons `BadDeviceToken`, `DeviceTokenNotForTopic`, `Unregistered` **permanently invalidate the
 device row** (until the same token is registered again). A wrong `bundle_id` or `apns_environment`
 therefore does not fail loudly — it silently kills delivery for that device.
