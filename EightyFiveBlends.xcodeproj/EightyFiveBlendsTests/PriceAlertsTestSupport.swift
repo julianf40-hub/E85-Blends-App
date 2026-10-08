@@ -184,6 +184,12 @@ final class FakePriceAlertsTransport: PriceAlertsAPITransport, @unchecked Sendab
     var knownStationIDs: Set<String>?                     // nil: every station exists
     /// Whether the simulated server treats a RevenueCat-linked installation as Pro.
     var serverGrantsPro = true
+    /// A backend that predates payment types (the one in production until the rollout): it ignores `payment_type` and
+    /// `alert_contract_version`, never sends `payment_type` and never sends the comparable-price fields.
+    var backendPredatesPaymentTypes = false
+    /// Whether the simulated station has a report of the alert's own price type. `false` models a station where, say, only
+    /// Credit has ever been reported: a Cash alert lists with NO comparable price (the keys are present, the values null).
+    var comparablePricesAvailable = true
 
     var actions: [String] { requests.map(\.action) }
 
@@ -277,25 +283,45 @@ final class FakePriceAlertsTransport: PriceAlertsAPITransport, @unchecked Sendab
                 return reply(404, BackendFixtures.error("station_not_found"))
             }
             let threshold = (request.json["threshold_price"] as? Double).map { String(format: "%.3f", $0) }
-            let minimum = (request.json["minimum_change"] as? Double).map { String(format: "%.3f", $0) } ?? "0.050"
+            let existingAlert = alerts[id]?[station]
+            // minimum_change follows the sensitivity contract (supabase/functions/price-alerts-api/alert-input.ts): a NEW
+            // alert stores the value sent (0.05 when none); an EXISTING alert's value is replaced only when the request
+            // declares alert_contract_version >= 2 and names a value, or names a value that is not the fixed legacy 0.05.
+            // (The contract itself is proven against the real function by the Deno scenarios; this keeps the simulation
+            // faithful so a service-level test reads like the real thing.) A backend that predates payment types takes
+            // the request at face value: it always stores what it was sent.
+            let namedMinimum = request.json["minimum_change"] as? Double
+            let sentMinimum = namedMinimum ?? 0.05
+            let declaredVersion = request.json["alert_contract_version"] as? Int ?? 1
+            let replaces: Bool
+            if backendPredatesPaymentTypes || existingAlert == nil {
+                replaces = true
+            } else if namedMinimum == nil {
+                replaces = false
+            } else {
+                replaces = declaredVersion >= 2 || Int((sentMinimum * 1000).rounded()) != 50
+            }
+            let minimum = replaces
+                ? String(format: "%.3f", sentMinimum)
+                : (existingAlert?["minimum_change"] as? String ?? String(format: "%.3f", sentMinimum))
             let cooldown = request.json["cooldown_minutes"] as? Int ?? 360
             // payment_type: cash | credit | absent. Anything else is refused, as the real function does; an
             // absent field keeps the alert's current one, or stores `unknown` for a new alert.
-            var payment = (alerts[id]?[station]?["payment_type"] as? String) ?? "unknown"
-            if let requested = request.json["payment_type"], (requested is NSNull) == false {
+            var payment = (existingAlert?["payment_type"] as? String) ?? "unknown"
+            if backendPredatesPaymentTypes == false, let requested = request.json["payment_type"], (requested is NSNull) == false {
                 guard let text = requested as? String, text == "cash" || text == "credit" else {
                     return reply(400, BackendFixtures.error("invalid_payment_type"))
                 }
                 payment = text
             }
             let alert = BackendFixtures.alertObject(
-                id: (alerts[id]?[station]?["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID(),
+                id: (existingAlert?["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID(),
                 stationID: UUID(uuidString: station) ?? UUID(),
                 mode: request.json["alert_mode"] as? String ?? "price_drop",
                 threshold: threshold,
                 minimumChange: minimum,
                 cooldownMinutes: cooldown,
-                paymentType: payment
+                paymentType: backendPredatesPaymentTypes ? nil : payment
             )
             alerts[id, default: [:]][station] = alert
             return reply(BackendFixtures.saved(alert))
@@ -312,8 +338,14 @@ final class FakePriceAlertsTransport: PriceAlertsAPITransport, @unchecked Sendab
             let rows = (alerts[id] ?? [:]).values
                 .map { alert -> [String: Any] in
                     let payment = alert["payment_type"] as? String ?? "unknown"
-                    let comparable: (price: String?, reportedAt: String?, paymentType: String?)? =
-                        payment == "unknown" ? nil : (price: "3.149", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: payment)
+                    let comparable: (price: String?, reportedAt: String?, paymentType: String?)?
+                    if payment == "unknown" {
+                        comparable = nil
+                    } else if comparablePricesAvailable {
+                        comparable = (price: "3.149", reportedAt: "2026-10-06T08:00:00.000Z", paymentType: payment)
+                    } else {
+                        comparable = (price: nil, reportedAt: nil, paymentType: nil)
+                    }
                     return BackendFixtures.listRow(alert: alert, latestComparable: comparable)
                 }
                 .sorted { ($0["station_id"] as? String ?? "") < ($1["station_id"] as? String ?? "") }

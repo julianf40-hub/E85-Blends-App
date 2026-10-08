@@ -22,6 +22,14 @@
 //      shows nor changes one: a new At or Below alert is stored with the new-alert default, an existing one
 //      keeps its own.
 //
+//  PHASE 3C.1 ADDS TWO THINGS FOR AN ALERT MADE BEFORE PAYMENT TYPES EXISTED (payment type `unknown`):
+//    - A RULE THIS UI DOES NOT OFFER IS CARRIED, NOT REWRITTEN. An `any_change` alert (the backend supports it, this UI
+//      never creates it) has no card to select. Choosing Cash or Credit for it must change the price it watches and
+//      nothing else, so the form carries the alert's rule (`carriedRule`) until the person picks a kind on purpose.
+//      Seeing "Price Drop" selected and saving would have replaced it without anyone noticing.
+//    - THE WORDS FOR THE MIGRATION live in PriceAlertsPaymentMigration.swift, and everything about whether to show them
+//      is read from the alert the server holds (PriceAlertWatch.needsPaymentChoice), never from a local flag.
+//
 //  THE FORM NEVER CARRIES A SECOND COPY OF THE SERVER'S ALERT. It holds what the person is editing;
 //  the alert itself is whatever PriceAlertsService.alerts says (the server is authoritative). The form
 //  is seeded from that, and re-seeded after a save or turn-off.
@@ -102,19 +110,25 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     var sensitivity: PriceAlertSensitivity
     /// What was typed for a Custom drop size. Kept when another choice is picked, like the target price.
     var customChangeText: String
+    /// The rule of an alert the server holds that this UI cannot offer (`any_change`), carried forward unchanged.
+    /// While it is set, `kind` is only a placeholder: no kind is shown as selected and the rule a save would send is
+    /// this one. Picking a kind (`select(_ kind:)`) is the person's decision to replace it, and clears it.
+    var carriedRule: PriceAlertRule?
 
     init(
         kind: PriceAlertKind = .priceDrop,
         priceText: String = "",
         payment: PriceAlertPayment? = nil,
         sensitivity: PriceAlertSensitivity = .recommended,
-        customChangeText: String = ""
+        customChangeText: String = "",
+        carriedRule: PriceAlertRule? = nil
     ) {
         self.kind = kind
         self.priceText = priceText
         self.payment = payment?.isSpecified == true ? payment : nil
         self.sensitivity = sensitivity
         self.customChangeText = customChangeText
+        self.carriedRule = carriedRule
     }
 
     /// Seeds the form from the alert the server holds (`nil`: there is none — a fresh form, with the new-alert
@@ -129,13 +143,17 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
         }
         var kind = PriceAlertKind.priceDrop
         var priceText = ""
+        var carriedRule: PriceAlertRule?
         switch alert.rule {
         case .priceDrop?:
             break
         case .atOrBelow(let amount)?:
             kind = .atOrBelow
             priceText = PriceAlertPriceInput.editableText(for: amount)
-        case .anyChange?, nil:
+        case .anyChange?:
+            // Not offered by this UI, but a real alert: keep it as it is until a kind is chosen on purpose.
+            carriedRule = .anyChange
+        case nil:
             break
         }
         let sensitivity = PriceAlertSensitivity(matching: alert.minimumChange)
@@ -144,17 +162,23 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
             priceText: priceText,
             payment: alert.paymentType,
             sensitivity: sensitivity,
-            customChangeText: sensitivity == .custom ? PriceAlertPriceInput.editableText(for: alert.minimumChange) : ""
+            customChangeText: sensitivity == .custom ? PriceAlertPriceInput.editableText(for: alert.minimumChange) : "",
+            carriedRule: carriedRule
         )
     }
 
+    /// The kind shown as selected: `nil` while the form carries a rule this UI has no card for.
+    var selectedKind: PriceAlertKind? {
+        carriedRule == nil ? kind : nil
+    }
+
     var showsPriceField: Bool {
-        kind == .atOrBelow
+        carriedRule == nil && kind == .atOrBelow
     }
 
     /// The drop size only means something to a Price Drop alert.
     var showsSensitivity: Bool {
-        kind == .priceDrop
+        carriedRule == nil && kind == .priceDrop
     }
 
     var showsCustomChangeField: Bool {
@@ -164,6 +188,7 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     // MARK: Rule
 
     var resolution: Resolution {
+        if let carriedRule { return .rule(carriedRule) }
         switch kind {
         case .priceDrop:
             return .rule(.priceDrop)
@@ -223,6 +248,8 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     ///   alert, the new-alert default. The cooldown is never edited here: an existing alert keeps its own.
     func preferences(existing: PriceAlert?) -> PriceAlertPreferences? {
         let base = existing?.preferences ?? .newAlertDefaults
+        // A carried rule has no drop size on screen: the alert keeps the one it has.
+        if carriedRule != nil { return base }
         switch kind {
         case .atOrBelow:
             return base
@@ -236,9 +263,16 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
     /// the same kind and price, the same payment type, and (for Price Drop) the same drop size. `false`
     /// whenever there is no alert, the alert's mode is one this build cannot read, or the form is incomplete.
     func isUnchanged(from existing: PriceAlert?) -> Bool {
-        guard let existing, let existingRule = existing.rule, let rule, let payment else { return false }
-        guard rule == existingRule, payment == existing.paymentType else { return false }
-        if kind == .priceDrop {
+        guard let existing, let payment, payment == existing.paymentType else { return false }
+        return matchesSettings(of: existing)
+    }
+
+    /// Whether everything on the form EXCEPT the price type is what the alert already holds: the same rule and, for a
+    /// Price Drop, the same drop size. `false` for no alert, an alert this build cannot read, or an incomplete form. This
+    /// is what lets the app say, truthfully, that choosing a price type leaves the rest of the alert as it was.
+    func matchesSettings(of existing: PriceAlert?) -> Bool {
+        guard let existing, let existingRule = existing.rule, let rule, rule == existingRule else { return false }
+        if showsSensitivity {
             return minimumChange == existing.minimumChange
         }
         return true
@@ -252,7 +286,7 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
         case .invalid(let problem): return .invalidPrice(problem)
         case .rule: break
         }
-        if kind == .priceDrop {
+        if showsSensitivity {
             switch changeResolution {
             case .needsAmount: return .needsChangeAmount
             case .invalid(let problem): return .invalidChangeAmount(problem)
@@ -268,9 +302,11 @@ nonisolated struct PriceAlertForm: Equatable, Sendable {
 
     // MARK: Editing
 
-    /// Picks a kind. The typed price is kept — see this file's header.
+    /// Picks a kind. The typed price is kept — see this file's header. Picking one is also the person's decision to
+    /// replace a carried rule this UI has no card for.
     mutating func select(_ newKind: PriceAlertKind) {
         kind = newKind
+        carriedRule = nil
     }
 
     /// Picks the price to watch. `.unknown` is not a choice and is ignored.
@@ -391,8 +427,6 @@ nonisolated enum PriceAlertPaymentCopy {
     static let helpText = "A Cash alert looks only at Cash prices and a Credit alert only at Credit prices. A price reported as the same for both counts for either."
     /// Under the choice while nothing is chosen. Guidance, not an error.
     static let chooseHint = "Choose Cash or Credit to continue."
-    /// For an alert made before payment types existed.
-    static let legacyAlertNotice = "This alert was set up before Cash and Credit prices were reported separately. Choose the price it should watch so it keeps up with new reports."
 }
 
 // MARK: - How often it can fire
@@ -425,6 +459,27 @@ nonisolated enum PriceAlertDeliveryNote {
             return "You'll be notified when the \(price) falls by \(drop) or more, at most once every \(interval) for this station. \(timingSentence)"
         case .atOrBelow:
             return "You'll be notified when the \(price) reaches your target, at most once every \(interval) for this station. \(timingSentence)"
+        }
+    }
+
+    /// The sentence for a rule this UI carries but does not offer (`any_change`): it says what that alert does, in the
+    /// same terms, so choosing a price type for it never shows a Price Drop sentence for an alert that is not one.
+    static func text(forCarried rule: PriceAlertRule, payment: PriceAlertPayment?, preferences: PriceAlertPreferences) -> String {
+        let interval = durationText(minutes: preferences.cooldownMinutes)
+        let price: String
+        if let payment, payment.isSpecified {
+            price = "\(payment.title) price"
+        } else {
+            price = "price"
+        }
+        switch rule {
+        case .anyChange:
+            let change = PriceAlertSensitivity.displayText(for: preferences.minimumChange)
+            return "You'll be notified when the \(price) changes by \(change) or more, at most once every \(interval) for this station. \(timingSentence)"
+        case .priceDrop:
+            return text(for: .priceDrop, payment: payment, preferences: preferences)
+        case .atOrBelow:
+            return text(for: .atOrBelow, payment: payment, preferences: preferences)
         }
     }
 

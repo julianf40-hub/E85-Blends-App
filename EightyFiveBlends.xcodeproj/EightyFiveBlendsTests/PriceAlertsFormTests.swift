@@ -287,9 +287,10 @@ struct PriceAlertFormTests {
         let target = try serverAlert(mode: "at_or_below", threshold: "3.499", minimumChange: "0.050", payment: "cash")
         #expect(PriceAlertForm(seededFrom: target) == PriceAlertForm(kind: .atOrBelow, priceText: "3.499", payment: .cash, sensitivity: .fiveCents))
 
-        // An alert type this UI does not offer starts the kind at its default, but keeps what it can read.
+        // An alert type this UI does not offer starts the kind at its default, keeps what it can read, and CARRIES the
+        // alert's own rule so that saving it does not silently turn it into a Price Drop.
         let any = try serverAlert(mode: "any_change", minimumChange: "0.200", payment: "cash")
-        #expect(PriceAlertForm(seededFrom: any) == PriceAlertForm(kind: .priceDrop, priceText: "", payment: .cash, sensitivity: .twentyCents))
+        #expect(PriceAlertForm(seededFrom: any) == PriceAlertForm(kind: .priceDrop, priceText: "", payment: .cash, sensitivity: .twentyCents, carriedRule: .anyChange))
         let future = try serverAlert(mode: "percent_drop", payment: "credit")
         #expect(PriceAlertForm(seededFrom: future).kind == .priceDrop)
     }

@@ -18,6 +18,11 @@
 //  An alert is created from a STATION (its bell, on the Stations screen), not from here: the screen
 //  says so when there are none.
 //
+//  ALERTS MADE BEFORE CASH AND CREDIT PRICES WERE REPORTED SEPARATELY have no payment type. Each such row carries a
+//  "Payment type needed" banner with an Edit action, and the list starts with one "Choose Your Price Type" explanation.
+//  Both come from the server's list (PriceAlertsOverviewModel) on every read; nothing is stored locally, and nothing is
+//  written by opening this screen. Edit opens the same Price Alert sheet as a tap on the row.
+//
 
 import SwiftUI
 
@@ -140,14 +145,114 @@ struct StationAlertsView: View {
         VStack(alignment: .leading, spacing: 16) {
             refreshWarning
 
+            if let prompt = model.paymentChoicePrompt {
+                paymentChoiceExplainer(prompt)
+            }
+
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader(title: "Your alerts", subtitle: "Tap an alert to change it or turn it off.")
                 ForEach(model.rows) { row in
-                    rowButton(row)
+                    alertCard(row)
                 }
             }
 
             PriceAlertsNotificationCard(model: model.notifications)
+        }
+    }
+
+    /// Said once, above the list, when any alert needs a price type. Calm, not an error.
+    private func paymentChoiceExplainer(_ prompt: PriceAlertPaymentChoicePrompt) -> some View {
+        AppCard {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "info.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(AppTheme.Colors.stationYellow)
+                    .frame(width: 28)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(prompt.title)
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(prompt.message)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    /// One alert: the row (a button that opens its sheet) and, for an alert with no payment type, the banner under it.
+    /// The card's frame is drawn here so the banner sits INSIDE the same card as its row.
+    private func alertCard(_ row: PriceAlertsOverviewModel.Row) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            rowButton(row)
+            if let banner = row.paymentChoiceBanner {
+                paymentChoiceBanner(banner, row: row)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceElevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(row.needsPaymentChoice ? AppTheme.Colors.stationYellow.opacity(0.65) : AppTheme.Colors.border, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// "Payment type needed" with a clear Edit action. Laid out vertically (text, then the button) so it holds at the
+    /// largest Dynamic Type sizes instead of squeezing the words beside a button.
+    private func paymentChoiceBanner(_ banner: PriceAlertPaymentChoiceBanner, row: PriceAlertsOverviewModel.Row) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+                .overlay(AppTheme.Colors.border)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.headline)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                        .frame(width: 28)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(banner.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(banner.message)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+
+                    Spacer(minLength: 0)
+                }
+
+                Button {
+                    AppHaptics.selection()
+                    selectedTarget = row.target
+                } label: {
+                    Text(banner.editTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .padding(.horizontal, 20)
+                        .frame(minHeight: 44)
+                        .background(AppTheme.Colors.primaryGreen)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(banner.editAccessibilityLabel)
+                .accessibilityHint(banner.editAccessibilityHint)
+            }
+            .padding(16)
         }
     }
 
@@ -224,16 +329,11 @@ struct StationAlertsView: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.surfaceElevated)
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(AppTheme.Colors.border, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(row.accessibilityLabel)
-        .accessibilityHint("Opens this alert so you can change it or turn it off.")
+        .accessibilityHint(row.accessibilityHint)
     }
 }
 

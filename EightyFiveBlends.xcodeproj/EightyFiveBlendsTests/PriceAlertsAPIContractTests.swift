@@ -58,6 +58,14 @@ private func envelope(_ action: String, _ extra: [String: Any] = [:]) -> [String
     return body
 }
 
+/// A `set_alert` body as the 2.4.1 app sends it: the envelope, the fields it names, and — always — the declaration that
+/// its `minimum_change` is a deliberate choice (the sensitivity contract).
+private func setAlertEnvelope(_ extra: [String: Any]) -> [String: Any] {
+    var fields = extra
+    fields["alert_contract_version"] = 2
+    return envelope("set_alert", fields)
+}
+
 private func parseISO(_ text: String) -> Date {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -187,7 +195,7 @@ struct PriceAlertsRequestContractTests {
 
         _ = try await client.saveAlert(credential: credential, draft: draft)
 
-        #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+        #expect(bodyMismatches(transport.lastRequest("set_alert"), setAlertEnvelope([
             "station_id": wireStation,
             "alert_mode": "price_drop",
             "minimum_change": 0.05,
@@ -208,7 +216,7 @@ struct PriceAlertsRequestContractTests {
 
         _ = try await client.saveAlert(credential: credential, draft: draft)
 
-        #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+        #expect(bodyMismatches(transport.lastRequest("set_alert"), setAlertEnvelope([
             "station_id": wireStation,
             "alert_mode": "at_or_below",
             "threshold_price": 3.499,
@@ -231,7 +239,7 @@ struct PriceAlertsRequestContractTests {
 
         _ = try await client.saveAlert(credential: credential, draft: draft)
 
-        #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+        #expect(bodyMismatches(transport.lastRequest("set_alert"), setAlertEnvelope([
             "station_id": wireStation,
             "alert_mode": "at_or_below",
             "threshold_price": 3.0,
@@ -253,7 +261,7 @@ struct PriceAlertsRequestContractTests {
 
             let saved = try await client.saveAlert(credential: credential, draft: draft)
 
-            #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+            #expect(bodyMismatches(transport.lastRequest("set_alert"), setAlertEnvelope([
                 "station_id": wireStation,
                 "alert_mode": "price_drop",
                 "minimum_change": 0.1,
@@ -272,7 +280,7 @@ struct PriceAlertsRequestContractTests {
 
             _ = try await client.saveAlert(credential: credential, draft: draft)
 
-            #expect(bodyMismatches(transport.lastRequest("set_alert"), envelope("set_alert", [
+            #expect(bodyMismatches(transport.lastRequest("set_alert"), setAlertEnvelope([
                 "station_id": wireStation,
                 "alert_mode": "price_drop",
                 "minimum_change": 0.05,
@@ -315,6 +323,81 @@ struct PriceAlertsRequestContractTests {
             #expect(request.json["alert_mode"] is String)
         }
         #expect(transport.requests.map { $0.json["alert_mode"] as? String } == ["any_change", "price_drop", "at_or_below"])
+    }
+
+    // MARK: the sensitivity contract
+
+    @Test("Every set_alert declares alert_contract_version 2 — for every rule, drop size and payment type, 5¢ included")
+    func setAlert_alwaysDeclaresTheSensitivityContract() async throws {
+        #expect(PriceAlertsWireRequest.alertContractVersion == 2)
+        let rules: [PriceAlertRule] = [.priceDrop, .atOrBelow(amount(3_250)), .anyChange]
+        let drops = [50, 100, 200, 137, 10, 2_000]
+        let payments: [PriceAlertPayment?] = [nil, .unknown, .cash, .credit]
+        var sent = 0
+        for rule in rules {
+            for drop in drops {
+                for payment in payments {
+                    transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station))))
+                    let draft = try PriceAlertDraft(
+                        communityStationID: station,
+                        rule: rule,
+                        preferences: PriceAlertPreferences(minimumChange: amount(drop), cooldownMinutes: 360),
+                        paymentType: payment
+                    )
+                    _ = try await client.saveAlert(credential: credential, draft: draft)
+                    let request = try #require(transport.lastRequest("set_alert"))
+                    #expect(request.json["alert_contract_version"] as? Int == 2, "\(rule) \(drop) \(String(describing: payment))")
+                    #expect(request.json["minimum_change"] is Double, "the drop size is always named, so the backend can apply it")
+                    sent += 1
+                }
+            }
+        }
+        #expect(sent == rules.count * drops.count * payments.count)
+        #expect(transport.count(of: "set_alert") == sent)
+    }
+
+    @Test("The version rides ONLY on set_alert — no other action sends it")
+    func contractVersion_isOnlyOnSetAlert() async throws {
+        transport.enqueue("bootstrap", .ok(BackendFixtures.bootstrap(installationID: wireID)))
+        transport.enqueue("register_device", .ok(BackendFixtures.registered()))
+        transport.enqueue("unregister_device", .ok(BackendFixtures.unregistered()))
+        transport.enqueue("delete_alert", .ok(BackendFixtures.deleted()))
+        transport.enqueue("list_alerts", .ok(BackendFixtures.list([])))
+        transport.enqueue("status", .ok(BackendFixtures.status()))
+        let token = FakePushState.token(3)
+        let metadata = try #require(PushDeviceRegistrationMetadata(bundleIdentifier: "com.example.app", apnsEnvironment: .sandbox))
+
+        _ = try await client.bootstrap(credential: credential, revenueCat: nil, appVersion: "2.4.1 (100)")
+        _ = try await client.registerDevice(credential: credential, token: token, metadata: metadata)
+        _ = try await client.unregisterDevice(credential: credential, token: token)
+        _ = try await client.deleteAlert(credential: credential, stationID: station)
+        _ = try await client.listAlerts(credential: credential)
+        _ = try await client.status(credential: credential)
+
+        #expect(transport.requests.count == 6)
+        for request in transport.requests {
+            #expect(request.json["alert_contract_version"] == nil, "\(request.action) must not carry the version")
+        }
+    }
+
+    @Test("The version is a plain JSON integer under the backend's key, never a string")
+    func contractVersion_isAnIntegerOnTheWire() async throws {
+        transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station))))
+        let draft = try PriceAlertDraft(communityStationID: station, rule: .priceDrop)
+        _ = try await client.saveAlert(credential: credential, draft: draft)
+        let text = try #require(transport.lastRequest("set_alert")).bodyText
+        #expect(text.contains("\"alert_contract_version\":2"))
+        #expect(text.contains("\"alert_contract_version\":\"") == false)
+    }
+
+    @Test("Saving against a backend that does not know the contract still works: the extra key is simply ignored")
+    func contractVersion_isHarmlessToAnOlderBackend() async throws {
+        // An older backend answers exactly as it always did (no payment_type in the reply).
+        transport.enqueue("set_alert", .ok(BackendFixtures.saved(BackendFixtures.alertObject(stationID: station, minimumChange: "0.100"))))
+        let draft = try PriceAlertDraft(communityStationID: station, rule: .priceDrop, preferences: .newAlertDefaults, paymentType: .cash)
+        let saved = try await client.saveAlert(credential: credential, draft: draft)
+        #expect(saved.minimumChange == amount(100))
+        #expect(saved.paymentType == .unknown)
     }
 
     @Test("Saving always reports the alert as enabled, as the backend writes enabled = true on every save")
@@ -366,7 +449,7 @@ struct PriceAlertsRequestContractTests {
         let second = try PriceAlertsAPIClient.encoder().encode(request)
         #expect(first == second)
         let text = String(decoding: first, as: UTF8.self)
-        let keys = ["action", "alert_mode", "client_installation_id", "cooldown_minutes", "installation_secret", "minimum_change", "station_id", "threshold_price"]
+        let keys = ["action", "alert_contract_version", "alert_mode", "client_installation_id", "cooldown_minutes", "installation_secret", "minimum_change", "station_id", "threshold_price"]
         let positions = keys.compactMap { text.range(of: "\"\($0)\"")?.lowerBound }
         #expect(positions.count == keys.count)
         #expect(positions == positions.sorted())

@@ -72,7 +72,7 @@ struct PriceAlertsStationRequirementTests {
 
         for request in stack.transport.requests where request.action == "set_alert" {
             let keys = Set(request.json.keys)
-            #expect(keys.isSubset(of: ["action", "client_installation_id", "installation_secret", "station_id", "alert_mode", "threshold_price", "minimum_change", "cooldown_minutes"]))
+            #expect(keys.isSubset(of: ["action", "client_installation_id", "installation_secret", "station_id", "alert_mode", "threshold_price", "minimum_change", "cooldown_minutes", "alert_contract_version"]))
             for forbidden in ["name", "station_name", "address", "city", "state", "zip", "latitude", "longitude", "normalized_key", "canonical_key", "gasbuddy_id", "id"] {
                 #expect(request.json[forbidden] == nil, "\(forbidden) must not be sent")
             }

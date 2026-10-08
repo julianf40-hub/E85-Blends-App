@@ -19,7 +19,10 @@
 //    proRequired           the existing locked-feature card with its "Unlock 85Blends Pro" button
 //    loading / loadFailed  a spinner / a plain-words error with Try Again
 //    ready                 status, alert type, price to watch, drop size / target price, Save,
-//                          notifications, Turn Off
+//                          notifications, Turn Off. For an alert made before Cash and Credit prices were reported
+//                          separately, a "Choose Your Price Type" card comes first and holds the Cash / Credit
+//                          choice (PriceAlertsStationModel.paymentChoicePrompt): nothing is chosen for the person,
+//                          Save stays off until they choose, and everything else about the alert is carried as it was.
 //
 //  ACCESSIBILITY. Every state is carried by words and an icon, never by colour alone (the selected
 //  alert type has a check mark, its border is thicker and VoiceOver reads it as selected; errors
@@ -208,9 +211,16 @@ struct PriceAlertSheet: View {
         if let warning = model.refreshWarning {
             refreshWarningCard(warning)
         }
+        // An alert made before payment types existed: the explanation and the choice come first, and replace the
+        // ordinary "Price to watch" section below (one picker on screen, never two).
+        if let prompt = model.paymentChoicePrompt {
+            paymentChoiceCard(prompt)
+        }
         statusCard
         kindSection
-        paymentSection
+        if model.paymentChoicePrompt == nil {
+            paymentSection
+        }
         if model.form.showsSensitivity {
             sensitivitySection
         }
@@ -272,6 +282,13 @@ struct PriceAlertSheet: View {
                                 .foregroundStyle(AppTheme.Colors.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        // Nothing of this kind has been reported yet: say when the comparison can begin.
+                        if let note = model.noComparablePriceNote {
+                            Text(note)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 
@@ -287,11 +304,19 @@ struct PriceAlertSheet: View {
             ForEach(PriceAlertKind.allCases) { kind in
                 kindOption(kind)
             }
+            // An alert of a type this screen has no card for (it notifies on any price change) keeps its type until
+            // one of the cards above is chosen on purpose.
+            if model.form.carriedRule != nil {
+                Text(PriceAlertPaymentMigrationCopy.carriedRuleNote)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
     private func kindOption(_ kind: PriceAlertKind) -> some View {
-        let isSelected = model.form.kind == kind
+        let isSelected = model.form.selectedKind == kind
         let traits: AccessibilityTraits = isSelected ? [.isSelected] : []
         return Button {
             guard isSelected == false else { return }
@@ -343,28 +368,91 @@ struct PriceAlertSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: PriceAlertPaymentCopy.sectionTitle)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: paymentColumnMinimum), spacing: 10)], spacing: 10) {
-                ForEach(PriceAlertPayment.choices, id: \.self) { payment in
-                    paymentOption(payment)
-                }
-            }
+            paymentPicker
 
-            if let notice = model.legacyPaymentNotice {
-                Label(notice, systemImage: "info.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.stationYellow)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let hint = model.paymentHint {
-                Label(hint, systemImage: "info.circle")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if let hint = model.paymentHint {
+                paymentHintLabel(hint)
             }
 
             Text(PriceAlertPaymentCopy.helpText)
                 .font(.caption)
                 .foregroundStyle(AppTheme.Colors.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The two choices. Used by the ordinary section and by the legacy-alert card, so there is one picker and one place
+    /// that decides what a tap does (`PriceAlertsStationModel.select(payment:)`).
+    private var paymentPicker: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: paymentColumnMinimum), spacing: 10)], spacing: 10) {
+            ForEach(PriceAlertPayment.choices, id: \.self) { payment in
+                paymentOption(payment)
+            }
+        }
+    }
+
+    private func paymentHintLabel(_ hint: String) -> some View {
+        Label(hint, systemImage: "info.circle")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: Legacy alert: choose a price type
+
+    /// "Choose Your Price Type" — for an alert made before Cash and Credit prices were reported separately. Calm, not an
+    /// error: an info icon in the app's attention colour, the explanation, the same Cash / Credit choice with nothing
+    /// pre-selected, and (when true) the reassurance that the rest of the alert stays as it is. It promises no
+    /// notification; the sentence under Save says alerts aren't instant.
+    private func paymentChoiceCard(_ prompt: PriceAlertPaymentChoicePrompt) -> some View {
+        AppCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(AppTheme.Colors.stationYellow)
+                        .frame(width: 28)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(prompt.title)
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(prompt.message)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+
+                    Spacer(minLength: 0)
+                }
+
+                paymentPicker
+
+                if let hint = model.paymentHint {
+                    paymentHintLabel(hint)
+                }
+                if let note = prompt.settingsNote {
+                    Text(note)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let reference = prompt.referenceNote {
+                    Text(reference)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text(PriceAlertPaymentCopy.helpText)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

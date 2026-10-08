@@ -21,6 +21,13 @@
 //  starts as nil for a new alert AND for an alert made before payment types existed, and Save stays off
 //  until it is chosen. The model never fills it in, and it never sends one the person did not pick.
 //
+//  A LEGACY ALERT (Phase 3C.1). An alert the server holds with payment type `unknown` gets the "Choose Your Price
+//  Type" prompt (`paymentChoicePrompt`). It is a pure function of the server's alert and the form: opening the sheet
+//  writes nothing, the choice starts empty, the rule, drop size, target and cooldown the alert already has are carried
+//  into the save unchanged, and the prompt goes away only when the server's own answer says the alert has a price type.
+//  If the server answers a save with a DIFFERENT price type from the one chosen (a backend that does not know payment
+//  types yet), the sheet says the choice was not saved instead of announcing an update that did not happen.
+//
 //  THINGS THAT CANNOT HAPPEN (each has a test)
 //    - Two saves from one double tap: `isSaving` is set before the first suspension point, so the
 //      second call finds it set and returns.
@@ -203,11 +210,25 @@ final class PriceAlertsStationModel {
         form.payment == nil ? PriceAlertPaymentCopy.chooseHint : nil
     }
 
-    /// Shown for an alert made before payment types existed, until a price is chosen for it: it has no
-    /// payment type, so it is only compared with reports that did not say which price they were.
-    var legacyPaymentNotice: String? {
-        guard form.payment == nil, let watch = currentWatch, watch.needsPaymentChoice else { return nil }
-        return PriceAlertPaymentCopy.legacyAlertNotice
+    /// The "Choose Your Price Type" prompt, for an alert the server holds with no payment type (one made before payment
+    /// types existed). Driven entirely by the server's alert: it is there while the list says the payment type is not
+    /// set, and gone as soon as a save makes the server say otherwise. `nil` for a new alert, for an alert that watches
+    /// Cash or Credit, and whenever the sheet is not ready — a Free person sees the Pro card and an unresolved
+    /// entitlement is "checking", never Free.
+    var paymentChoicePrompt: PriceAlertPaymentChoicePrompt? {
+        guard phase == .ready, let alert = existingListing?.alert else { return nil }
+        return PriceAlertPaymentChoicePrompt.make(for: alert, form: form)
+    }
+
+    /// For an alert that watches Cash or Credit: said when the server knows no report of that kind for the station yet,
+    /// so the next one sets the starting point of a Price Drop. `nil` otherwise — including when the backend does not
+    /// send the comparable price at all (it then cannot say, and nothing is claimed).
+    var noComparablePriceNote: String? {
+        guard phase == .ready, let listing = existingListing,
+              listing.alert.paymentType.isSpecified, listing.alert.rule == .priceDrop,
+              listing.latestComparablePrice == nil
+        else { return nil }
+        return PriceAlertPaymentMigrationCopy.noPriceYet(for: listing.alert.paymentType)
     }
 
     /// Guidance under an empty Custom drop size — not an error.
@@ -227,6 +248,9 @@ final class PriceAlertsStationModel {
         var preferences = existingListing?.alert.preferences ?? .newAlertDefaults
         if form.showsSensitivity, let minimumChange = form.minimumChange {
             preferences.minimumChange = minimumChange
+        }
+        if let carried = form.carriedRule {
+            return PriceAlertDeliveryNote.text(forCarried: carried, payment: form.payment, preferences: preferences)
         }
         return PriceAlertDeliveryNote.text(for: form.kind, payment: form.payment, preferences: preferences)
     }
@@ -329,6 +353,16 @@ final class PriceAlertsStationModel {
                     preferences: preferences,
                     paymentType: payment
                 )
+            }
+            // The server must have applied the price type that was chosen. If it answers with another one (a backend that
+            // does not know payment types yet ignores the field), nothing the person asked for happened: say so, keep
+            // what they chose on screen, and do not announce an update.
+            guard saved.paymentType == payment else {
+                let message = PriceAlertsUserMessage.paymentChoiceNotSaved
+                saveFailure = message
+                saveFailureForm = sentForm
+                announce("\(message.headline). \(message.body)", isError: true)
+                return
             }
             // Seeded from the server's own answer to this save, not from the list: if the refresh the
             // service makes afterwards failed, the list can still be the old one, and reading it

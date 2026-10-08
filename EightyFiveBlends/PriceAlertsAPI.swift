@@ -139,6 +139,12 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
     /// Always `ios`: this is the iOS client. (The backend would default to the installation's
     /// platform, but the installation's platform is set from what bootstrap sends.)
     static let platform = "ios"
+    /// THE SENSITIVITY CONTRACT (docs/PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md §6.1). Every `set_alert` declares this
+    /// version: it tells the backend that this app chooses the drop size on purpose, so the `minimum_change` it sends —
+    /// a deliberate 5¢ included — is applied to an existing alert. Without it the backend takes the request for a
+    /// pre-2.4.1 client, whose fixed 0.05 means nothing, and keeps the alert's current drop size instead. Raise it only
+    /// together with the backend. (An older backend ignores the field.)
+    static let alertContractVersion = 2
 
     let action: Action
     let credential: PriceAlertsInstallationCredential
@@ -155,6 +161,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
     private(set) var minimumChange: PriceAlertAmount?
     private(set) var cooldownMinutes: Int?
     private(set) var paymentType: PriceAlertPayment?
+    private(set) var alertContractVersion: Int?
 
     private init(action: Action, credential: PriceAlertsInstallationCredential) {
         self.action = action
@@ -205,6 +212,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
     /// payment type, so none may be left to the backend's defaults unless the caller chose them. A
     /// draft with no (or an `unknown`) payment type OMITS the field: the server then keeps an existing
     /// alert's payment type, and stores `unknown` for a new one, as it did before payment types.
+    /// The request also declares `alertContractVersion`, so the `minimum_change` it carries is taken as chosen.
     /// `enabled` is never sent — the backend has no such field.
     static func setAlert(
         credential: PriceAlertsInstallationCredential,
@@ -219,6 +227,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         if let paymentType = draft.paymentType, paymentType.isSpecified {
             request.paymentType = paymentType
         }
+        request.alertContractVersion = Self.alertContractVersion
         return request
     }
 
@@ -267,6 +276,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         case minimumChange = "minimum_change"
         case cooldownMinutes = "cooldown_minutes"
         case paymentType = "payment_type"
+        case alertContractVersion = "alert_contract_version"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -289,6 +299,7 @@ nonisolated struct PriceAlertsWireRequest: Encodable, Sendable {
         try container.encodeIfPresent(minimumChange, forKey: .minimumChange)
         try container.encodeIfPresent(cooldownMinutes, forKey: .cooldownMinutes)
         try container.encodeIfPresent(paymentType?.wireValue, forKey: .paymentType)
+        try container.encodeIfPresent(alertContractVersion, forKey: .alertContractVersion)
     }
 }
 

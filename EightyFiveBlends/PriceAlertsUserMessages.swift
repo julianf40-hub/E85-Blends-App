@@ -104,6 +104,14 @@ nonisolated struct PriceAlertsUserMessage: Equatable, Sendable {
         isRetryable: true
     )
 
+    /// A save the server answered without applying the price type that was chosen (a backend that does not know
+    /// payment types yet). The alert is as it was; nothing is claimed.
+    static let paymentChoiceNotSaved = PriceAlertsUserMessage(
+        headline: "Price type not saved",
+        body: "We couldn't save your Cash or Credit choice just now. Your alert is unchanged. Try again in a little while.",
+        isRetryable: true
+    )
+
     private static func message(for failure: PriceAlertValidationFailure) -> PriceAlertsUserMessage {
         switch failure {
         case .thresholdOutOfRange:

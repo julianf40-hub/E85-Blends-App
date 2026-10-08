@@ -114,7 +114,9 @@ struct PriceAlertsStationModelPhaseTests {
 
         #expect(model.currentSummary == .anyChange)
         #expect(model.currentSummary?.title == "Any price change")
-        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents))
+        // The form never OFFERS any_change, but it carries the alert's rule so nothing rewrites it unasked (Phase 3C.1).
+        #expect(model.form == PriceAlertForm(sensitivity: .fiveCents, carriedRule: .anyChange))
+        #expect(model.form.selectedKind == nil, "no kind card is shown as selected for a rule that has no card")
         #expect(PriceAlertKind.allCases.contains { $0.title.lowercased().contains("any") } == false)
     }
 
@@ -406,28 +408,31 @@ struct PriceAlertsStationModelSaveTests {
         #expect(model.deliveryNote.contains("aren't instant"))
     }
 
-    @Test("A legacy alert explains why it asks for a choice — until one is made; other alerts never show that note")
-    func legacyNotice_goesAwayOnceChosen() async throws {
+    @Test("A legacy alert shows the Choose Your Price Type prompt — until the server says it has one; other alerts never do")
+    func legacyPrompt_goesAwayOnceTheServerHasAPriceType() async throws {
         let legacyModel = try await stack.relaunchedStationModel(existing: .priceDrop, paymentType: nil)
         await legacyModel.load()
-        #expect(legacyModel.legacyPaymentNotice == PriceAlertPaymentCopy.legacyAlertNotice)
+        #expect(legacyModel.paymentChoicePrompt?.title == "Choose Your Price Type")
         #expect(legacyModel.paymentHint == PriceAlertPaymentCopy.chooseHint)
         #expect(legacyModel.canSave == false)
 
+        // Choosing on the form does not remove the prompt: only the SERVER's answer to a save does.
         legacyModel.select(payment: .credit)
-        #expect(legacyModel.legacyPaymentNotice == nil)
+        #expect(legacyModel.paymentChoicePrompt != nil)
         #expect(legacyModel.paymentHint == nil)
         #expect(legacyModel.canSave)
+        await legacyModel.save()
+        #expect(legacyModel.paymentChoicePrompt == nil)
 
         let typedStack = PriceAlertsStack(push: .registered(FakePushState.token(1)))
         let typedModel = try await typedStack.relaunchedStationModel(existing: .priceDrop, paymentType: .cash)
         await typedModel.load()
-        #expect(typedModel.legacyPaymentNotice == nil)
+        #expect(typedModel.paymentChoicePrompt == nil)
         #expect(typedModel.paymentHint == nil)
 
         let newModel = stack.stationModel(seed: 2)
         await newModel.load()
-        #expect(newModel.legacyPaymentNotice == nil, "a brand-new alert is not a legacy one")
+        #expect(newModel.paymentChoicePrompt == nil, "a brand-new alert is not a legacy one")
         #expect(newModel.paymentHint == PriceAlertPaymentCopy.chooseHint)
     }
 

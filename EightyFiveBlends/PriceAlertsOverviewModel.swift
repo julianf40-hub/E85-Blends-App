@@ -12,6 +12,11 @@
 //  read, from the service's list — the server's — so a change made in the sheet shows here with no
 //  signalling between the two, and nothing here can disagree with the server.
 //
+//  LEGACY ALERTS (Phase 3C.1). An alert the server holds with no payment type (made before Cash and Credit prices were
+//  reported separately) gets a "Payment type needed" banner with an Edit action on its row, and the list gets one
+//  explanation ("Choose Your Price Type") above it. Both are computed from the server's list on every read — there is no
+//  local flag to fall out of step — and neither writes anything: Edit opens the same sheet, whose Save is the only write.
+//
 
 import Foundation
 import Observation
@@ -38,6 +43,8 @@ final class PriceAlertsOverviewModel {
         let watchText: String
         /// True for an alert made before payment types existed: it has no price chosen yet.
         let needsPaymentChoice: Bool
+        /// The "Payment type needed" banner and its Edit action; `nil` for an alert that already watches Cash or Credit.
+        let paymentChoiceBanner: PriceAlertPaymentChoiceBanner?
         let latestPriceText: String?
         private let watchSpokenText: String
 
@@ -50,13 +57,20 @@ final class PriceAlertsOverviewModel {
             watchText = watch.shortText
             watchSpokenText = watch.spokenText
             needsPaymentChoice = watch.needsPaymentChoice
+            paymentChoiceBanner = watch.needsPaymentChoice ? PriceAlertPaymentChoiceBanner(stationName: target.name) : nil
             latestPriceText = Self.latestPriceText(for: listing)
         }
 
         var accessibilityLabel: String {
             var parts = [target.name, "Alert: \(alertTitle)", watchSpokenText]
+            if let paymentChoiceBanner { parts.append("\(paymentChoiceBanner.title). \(paymentChoiceBanner.message)") }
             if let latestPriceText { parts.append(latestPriceText) }
             return parts.joined(separator: ", ")
+        }
+
+        /// What VoiceOver says a tap on the row does.
+        var accessibilityHint: String {
+            needsPaymentChoice ? PriceAlertPaymentMigrationCopy.editAccessibilityHint : "Opens this alert so you can change it or turn it off."
         }
 
         /// The newest price the alert is actually judged against — NEVER the other payment type's price.
@@ -106,6 +120,19 @@ final class PriceAlertsOverviewModel {
 
     var rows: [Row] {
         service.alerts.map { Row(listing: $0) }
+    }
+
+    /// How many of the listed alerts have no payment type yet.
+    var alertsNeedingPaymentChoice: Int {
+        rows.filter(\.needsPaymentChoice).count
+    }
+
+    /// The explanation shown once above the list when at least one alert needs a price type. Read from the server's list
+    /// on every access; `nil` when none does, and whenever the list is not what the screen is showing (a Free person sees
+    /// the Pro card, a checking entitlement is not Free, a failed load shows its error).
+    var paymentChoicePrompt: PriceAlertPaymentChoicePrompt? {
+        guard phase == .list, alertsNeedingPaymentChoice > 0 else { return nil }
+        return PriceAlertPaymentChoicePrompt(settingsNote: nil, referenceNote: nil)
     }
 
     var phase: Phase {
