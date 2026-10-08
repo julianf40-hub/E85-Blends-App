@@ -10,7 +10,7 @@ while building it** — every test runs over fakes — and **real push delivery 
 Status: Phase 3B is a stacked branch on Phase 3A (`767f9de`), not merged, not released.
 
 > **Phase 3C changed this screen.** An alert now watches **Cash or Credit** (chosen explicitly — there is no default,
-> and an alert made before payment types existed opens as "Payment type not set"), and a Price Drop has a **drop
+> and an alert made before payment types existed is offered a calm "Choose Your Price Type" step — Phase 3C.1, §1.9), and a Price Drop has a **drop
 > size**: 5¢, 10¢ (Recommended; the default for a *new* alert), 20¢ or Custom (0.01–2.00). The sheet is now: status,
 > alert type, **price to watch**, **drop size** (Price Drop) or target price (At or Below), Save, notifications, Turn Off.
 > The central list shows the price type and drop size per alert and the alert's own latest comparable price. The
@@ -66,7 +66,9 @@ Opened from the Price Alerts screen, the alert is shown at once (the list is alr
 `any_change` exists on the backend and is **never offered** (`PriceAlertKind` has two cases; a test proves
 the form can produce no other rule). An `any_change` alert made elsewhere, or a mode this build has never
 heard of, is *shown* ("Any price change" / "Custom alert") and can be replaced by choosing a type; it cannot
-crash anything. Under the form, one sentence states how often the alert can fire, built from the alert's
+crash anything. (Phase 3C.1: while such an alert is only being moved to Cash or Credit, the form **carries** its rule and saves it
+back unchanged — choosing a price type never converts it to a Price Drop; only an explicit choice of a type does, §1.9.)
+Under the form, one sentence states how often the alert can fire, built from the alert's
 own preferences (default: drops of $0.05 or more, at most once every 6 hours per station) so it cannot
 disagree with what is sent.
 
@@ -135,7 +137,8 @@ coming back from Settings after revoking permission flips it with no help from t
 it would have been a lie, so it is now real: the alerts the server holds, the notification card, and a row
 per alert that opens the same sheet (where changing and turning off happen — one implementation of saving,
 validation and confirmation). It is reached through `ProFeatureGate` from More and from the Stations
-screen's Pro section, which previously listed it under "Coming Soon".
+screen's Pro section, which previously listed it under "Coming Soon". (Phase 3C.1: when any alert has no payment type the list opens
+with one "Choose Your Price Type" explanation, and each such row carries a "Payment type needed" banner with an Edit button — §1.9.)
 
 ### 1.8 Messages
 
@@ -145,11 +148,38 @@ code, function name, installation id, secret or token** — a test scans the who
 for a client that believes it is Pro (`proRequiredByServer`, e.g. the Developer Pro Override) reads "Couldn't
 confirm Pro yet … if you just subscribed, wait a minute and try again".
 
+### 1.9 Alerts made before payment types existed (Phase 3C.1)
+
+Why: such an alert (`payment_type = unknown` on the server) is kept exactly as it was and keeps watching reports that did not say
+Cash or Credit. As more people report typed prices, fewer unclassified reports arrive, so the alert would slowly stop hearing about
+its station. Nobody should find that out by silence, and nobody's alert should be changed behind their back.
+
+| Where | What is shown | Source of truth |
+|---|---|---|
+| Price Alerts list, once, above the rows | "Choose Your Price Type" / "Price reports now distinguish Cash and Credit prices. Choose which price you want to watch to keep your alerts up to date." | `PriceAlertsOverviewModel.paymentChoicePrompt` — only in the loaded list state, only while some alert has no payment type |
+| each such row | a yellow-edged banner "Payment type needed" / "Choose Cash or Credit to continue watching this station's prices." and an **Edit** button (44 pt; the banner stacks text above the button so it survives the largest Dynamic Type) | `PriceAlertsOverviewModel.Row.paymentChoiceBanner` |
+| the sheet (from the row, from Edit, or from the station's bell) | the same prompt first, containing the Cash / Credit picker; "Your alert type and settings stay the same."; after a choice on a Price Drop, how the starting point works | `PriceAlertsStationModel.paymentChoicePrompt`, `PriceAlertPaymentChoicePrompt.make` |
+
+Rules (each is a test in `PriceAlertsLegacyMigrationTests.swift`):
+
+* **Server-driven.** `PriceAlertWatch.needsPaymentChoice` is computed from the alert the server returned; there is no stored flag, so
+  nothing can go stale and the prompt disappears the moment the server reports Cash or Credit. **Opening a screen performs no write.**
+* **Cash and Credit only.** "Same for Both" is something a reporter says about a report; an alert watches one price.
+* **No guess, no default.** Nothing is preselected; Save stays off until a type is chosen; the app never saves Credit "to be safe".
+* **No delete-and-recreate.** The save is the ordinary `PriceAlertsService.updateAlert` upsert on the same installation + station, so the
+  alert id, mode, target, drop size, cooldown, installation and Pro state are untouched. A legacy `any_change` rule is carried
+  (`PriceAlertForm.carriedRule`) until the person picks another type explicitly.
+* **Honest outcome.** After saving, the answer must carry the chosen type; if a backend that predates payment types answers `unknown`,
+  the sheet says "Price type not saved" (keeping the choice, retryable) rather than "Price Alert updated".
+* **No promise.** When no price of the chosen kind exists, the sheet says the next one — or one reported as the same for both — sets the
+  starting point; it never says a notification is coming.
+* **Pro unchanged.** Free sees the Pro card, unresolved entitlement is "checking", a lapse deletes nothing, the server still enforces Pro.
+
 ## 2. How it is built
 
 | Layer | Files | Notes |
 |---|---|---|
-| pure rules | `PriceAlertsStationTarget`, `PriceAlertsPriceInput`, `PriceAlertsForm`, `PriceAlertsUserMessages` | Foundation only |
+| pure rules | `PriceAlertsStationTarget`, `PriceAlertsPriceInput`, `PriceAlertsForm`, `PriceAlertsUserMessages`, `PriceAlertsPaymentMigration` (3C.1: the words, the sheet prompt, the row banner) | Foundation only |
 | models | `PriceAlertsStationModel`, `PriceAlertsOverviewModel`, `PriceAlertsNotificationModel` | `@Observable`, over the narrow `PriceAlertsServing` seam (`PriceAlertsService` conforms unchanged; `disablePushDelivery` is deliberately not in it) |
 | views | `PriceAlertSheet`, `PriceAlertsEntryViews`, `StationAlertsView` | thin: read the model, forward taps |
 | existing code touched | `StationsView` (sheet state, call-site arguments, ~60 lines of helpers), `ProStationsMapView` (one optional row + callback), `MoreView`, `EightyFiveBlendsApp`, `AppDelegate`, `PriceAlertsDeviceRegistration`, `PriceAlertsService`, `PushRegistrationService+PriceAlerts` | no SwiftData model, entitlement, plist, project file, StoreKit/RevenueCat or Supabase change |
@@ -238,6 +268,16 @@ loading, existing / unknown alerts, save, failure, stale load, turn off, device 
 idempotence, backoff, convergence, the real push service's no-loop property) and
 `PriceAlertsNavigationTests` (the notification-tap hand-off still routes once and names the same station).
 
+### 7.1 Phase 3C.1 (legacy-alert flow and the drop-size marker) — what was verified
+
+| Check | Result |
+|---|---|
+| The same Linux SwiftPM harness as above (project language settings, `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`), on the 3C.1 tree | 518 tests in 59 suites pass (the starting commit `ad02bf1` ran 490 in 57: +28 tests, +2 suites); no compiler diagnostics |
+| The same sources in Swift 6 language mode | 518 tests pass, no diagnostics |
+| The SwiftUI files (`PriceAlertSheet`, `StationAlertsView`) against the real models, using a stand-in for SwiftUI | type-checks. **Structural only, not Xcode**: every theme token and component the new views use was also checked by hand against its real declaration in the repository (`AppTheme.Colors.*`, `AppCard`, `AppHaptics.selection()`, the `Divider().overlay(…)` idiom already used elsewhere) |
+| Mutation check: 20 defects injected one at a time into the new logic (the prompt shown for typed alerts, a preselected Credit, an `any_change` rule rewritten as a Price Drop, success announced although the server ignored the choice, Unknown offered as a choice, the entitlement ignored by the prompt, the marker missing or wrong, …) | all 20 detected. Three survived the first pass: two entitlement tests changed the entitlement before the list had loaded (so the mutant had nothing to hide), which exposed a gap — they were rewritten to lapse Pro with the list already loaded — and one mutant was equivalent (no observable difference) and was replaced by a real one ("the form ignores the carried rule when it decides what to send"). All three are then caught. Source restored byte-for-byte after every run |
+| Xcode build and tests | not run here (Linux). The gate is Xcode Cloud's *Test – iOS* on the pushed commit |
+
 ## 8. Known limitations and follow-ups
 
 * A station needs a community UUID for the bell to appear; stations nobody has reported on never get one.
@@ -260,3 +300,11 @@ idempotence, backoff, convergence, the real push service's no-loop property) and
   an app-wide change this phase did not make.
 * `Simple Mode` question above; and whether the Pro section header wording ("Route planning and price
   alerts.") is the wording you want.
+* **(3C.1) The new list explainer, row banner and sheet card have not been compiled by Xcode or seen on a device.** Their logic and
+  words are pure and tested in a Linux harness; the SwiftUI files were checked only against a structural stand-in. Xcode Cloud's
+  *Test – iOS* on the final commit is the gate, and a look at the list and sheet at the largest Dynamic Type and with VoiceOver is
+  worth doing on a device before this reaches anyone.
+* **(3C.1) An alert whose owner never opens the app is never moved.** The prompt is an offer, not a migration (see
+  `PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md` §12 question 17).
+* **(3C.1) The prompt appears in the list only after the list has loaded** (not while loading, failed, empty or the entitlement is
+  resolving), so it never shows beside a spinner or an error.

@@ -79,6 +79,14 @@ Two fixes were made, in order, as of 2.3.2:
 > separate, authorized step — see `PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md`), re-check this table: INSERT stays
 > column-scoped (now including `payment_type`), the policy and the price bound are unchanged, and there is still no
 > UPDATE or DELETE grant for `anon`/`authenticated`. The rows below describe the state before that migration.
+>
+> **Phase 3C.1 added the read-only SQL for exactly that re-check** — `supabase/runbooks/price_alerts_3c_preflight_readonly.sql`
+> (run before anything changes: records the INSERT column list, grants, policies and triggers) and
+> `price_alerts_3c_verify_after_readonly.sql` (run after each migration and compared with the preflight), each one `SELECT` inside a
+> `READ ONLY` transaction. Use them instead of ad-hoc queries; the plan around them, including what to do when a row does not match,
+> is `docs/PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md`. Also remember: the promo migration
+> `20260921000000_promo_campaign_foundation.sql` stays unapplied, so a plain `supabase db push` of this repository is **not** the
+> way to apply anything (readiness document, step 1).
 
 | Check | Expected | Verified? |
 |---|---|---|

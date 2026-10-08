@@ -28,26 +28,45 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   `prepare_price_alert_deliveries` scenarios (cross-payment isolation, cumulative drops, cooldown and rearm,
   out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring, `same_for_both` price drops, the
   documented fail-closed pause, a notification that ends unsent not holding the cooldown, the `mark_sent` guard, and the
-  station advisory lock) — see the file header for the scenario index. Run it on a database with the FULL chain applied.
+  station advisory lock) — see the file header for the scenario index. Phase 3C.1 added D25 (an OLDER client's save keeps a
+  drop size a newer app chose, the engine keeps using it, and a declared client's deliberate 5¢ is applied), D26 (repeated
+  identical saves are safe and leave the reference, notification memory and cooldown alone) and D27 (a legacy alert moves to
+  Cash/Credit through the exact `set_alert` upsert). Run it on a database with the FULL chain applied.
 - `price_alert_payment_type_migration.test.sh` — Phase 3C migrations A and B applied to "production-shaped"
   legacy data: nothing rewritten or backfilled, every report/alert/delivery preserved, no retroactive send, cron and
   Vault untouched, old and new clients both able to insert, idempotent re-apply. It builds its own scratch database.
 - `price_alert_api_payment_type.test.sh` — Phase 3C: the REAL `price-alerts-api` under Deno on a local port, against a
-  database with the full chain applied, driven over HTTP (A1–A9): an older client's `set_alert` (stored `unknown`, legacy
+  database with the full chain applied, driven over HTTP (A1–A16): an older client's `set_alert` (stored `unknown`, legacy
   0.05 / 360), the 2.4.1 app's payment type and drop size, edits that keep the method, `invalid_payment_type`, bounds,
-  `list_alerts` (legacy latest vs comparable latest), re-anchoring when the method changes, non-Pro refusal, delete.
-  Needs deno, curl, jq, psql; COMMITS fixtures under a marker and removes them; refuses a non-local `PGHOST`.
+  `list_alerts` (legacy latest vs comparable latest), re-anchoring when the method changes, non-Pro refusal, delete; and, from
+  Phase 3C.1, the drop-size contract (A10 an older client's re-save keeps the size and the 2.4.1 app can still choose any size,
+  5¢ included; A11 single-field edits; A12 sixteen malformed `alert_contract_version` values refused with nothing stored; A13
+  repeated saves; A14 concurrent saves; A15 the Pro gate whatever the version; A16 a legacy alert moving to Cash then Credit).
+  Needs deno, curl, jq, psql; COMMITS fixtures under a marker and removes them; refuses a non-local `PGHOST`. `API_DIR`
+  points it at a different copy of the API (the rollout script uses that for the previous version).
 - `price_alert_worker_message.test.sh` + `support/worker_with_recorded_fetch.ts` — Phase 3C: the REAL `price-alerts-worker`
   under Deno with `fetch()` replaced by a recorder (nothing is sent to Apple or Google; any other URL is refused): five alerts
   fire (iOS credit / legacy / cash at-or-below, Android credit / legacy) and the script checks exactly what would have been
   sent — copy, the additive `payment_type`, the legacy payload unchanged, the delivery rows' method. Needs deno, curl, jq,
   openssl (throwaway keys), psql and a FRESH replayed database (the worker claims every pending delivery it finds).
-- `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks (PC1-PC5): the cooldown race, the same
-  report prepared twice at once, a concurrent burst through the real grants, `set_alert` racing a prepare, and the lock-order
-  deadlock between the job processor's multi-job transaction, a newly saved alert and a single prepare.
+- `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks (PC1-PC6): the cooldown race, the same
+  report prepared twice at once, a concurrent burst through the real grants, `set_alert` racing a prepare, the lock-order
+  deadlock between the job processor's multi-job transaction, a newly saved alert and a single prepare, and (3C.1) two
+  saves of one alert racing each other — payment-only vs drop-size-only vs an older client — in four forced interleavings.
+- `price_alert_rollout_compat.test.sh` — Phase 3C.1: the ROLLOUT COMPATIBILITY MATRIX. It builds throwaway databases in the
+  three states production can be in (before migration A, A only, A + B), exports the PREVIOUS `price-alerts-api` and
+  `price-alerts-worker` from git (`OLD_REV`, default the Phase 3B tip), and runs the previous and the new functions in each
+  (M1 API × state, M2 worker × state, M3 a Cash/Credit alert with the previous worker). Then the transition scenarios: T1 a
+  false alert between A and B, T2 a notification queued by the previous engine surviving B, T3 a job still queued when B is
+  applied, T4 a B that fails, T5 a report submitted while B runs, T6 the incident drill (pause, cancel, pause the two jobs,
+  resume), T7 the lock window at `ROLLOUT_MEASURE_A_ROWS` rows (default 300000; 0 skips). Local-replay only: it refuses a
+  non-local `PGHOST`, drops its own `e85_rollout*` databases, stubs the push providers, and reaches nothing outside the machine.
+  Needs deno, curl, jq, openssl, psql, git, tar. The statements it runs in T6 are the ones in
+  `docs/PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md` section 9.
 - `support/` — `local_supabase_shims.sql` (stand-ins for the Supabase roles, `auth`/`vault`/`cron`/`net` that a plain
   Postgres lacks) and `replay_migrations.sh <database> [--before <version>]` (replays the migration chain onto a scratch
-  database). Local use only.
+  database), and `worker_with_recorded_fetch.ts` (runs a worker copy — `WORKER_ENTRY` selects another one — with `fetch()`
+  replaced by a recorder). Local use only.
 - `price_alert_worker_readiness.test.sql` — Price Alerts worker scheduler + stale-work safety
   (migration `20261005120000`), single transaction: the pg_net invoker's configuration matrix (HTTPS
   origin only, token trimming/strength, fixed value-free errors, exact URL/header/body), the
@@ -103,3 +122,6 @@ The worker-side Node tests (`node --test supabase/functions/price-alerts-worker/
 404, `SENDER_ID_MISMATCH`, auth/config and provider errors never do; 429/5xx/`UNAVAILABLE`/`INTERNAL` are
 retryable) and `contract.test.ts`, which pins the scheduler's names together across the SQL invoker (Vault secret
 names, header, URL path), the worker (`auth.ts`, `index.ts`, Edge secret name) and the runbook.
+
+The production-side companions are **not** tests and are not in this directory: `supabase/runbooks/` holds the read-only
+preflight, verification and observation SQL and the Edge Function source-hash check for the Phase 3C rollout (see its README).

@@ -16,6 +16,14 @@ at launch, and no network call to Supabase was made while building it (every tes
 > `400 invalid_payment_type`; the push payload gains an optional `payment_type`; and server evaluation compares
 > only reports of the alert's own price type (so §1.3's description of `private.evaluate_price_alert` is superseded
 > by `private.evaluate_price_alert_v2`). Those backend changes are **prepared, not deployed**.
+>
+> **Phase 3C.1 adds one more optional `set_alert` field, `alert_contract_version`** (integer, 1–1000; absent = 1; anything else
+> is `400 invalid_alert_contract_version`). A client that lets people choose a drop size sends `2` together with
+> `minimum_change`; for an *existing* alert the server then stores exactly that value (5¢ included). A request with no version that
+> omits `minimum_change` or sends the fixed `0.05` leaves the stored drop size alone, so an older client re-saving an alert can no
+> longer reset a size a newer client chose. See `PRICE_ALERTS_PAYMENT_TYPES_2.4.1.md` §6.1. The iOS client sends the marker on
+> `set_alert` only (`PriceAlertsAPI.alertContractVersion`). The production rollout plan is
+> [`PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md`](PRICE_ALERTS_PRODUCTION_READINESS_2.4.1.md).
 
 > **Production backend state — corrected at the start of Phase 3B.** The first version of this document
 > described the worker scheduler as not yet active, three migrations as not applied and the APNs secrets as
@@ -90,7 +98,7 @@ All bodies below also carry `action`, `client_installation_id` and `installation
 | `bootstrap` | `platform` (`"ios"`/`"android"`, default `"ios"`), optional `contributor_id` (UUID), optional `app_version` (≤64), optional pair `revenuecat_app_user_id` (≤512) **and** `revenuecat_environment` (`"SANDBOX"`/`"PRODUCTION"`) — the pair must be sent together | `{status:"ready", client_installation_id, platform, pro_is_active, revenuecat_linked}` | no |
 | `register_device` (iOS) | `bundle_id` (3–255), `apns_environment` (`"sandbox"`/`"production"`), `device_token` (16–1024 chars), optional `platform` (defaults to the installation's) | `{status:"registered", platform, device_id}` | no |
 | `unregister_device` | `device_token` (≤1024) | `{status:"unregistered", changed}` | no |
-| `set_alert` | `station_id` (UUID), `alert_mode`, optional `threshold_price`, `minimum_change`, `cooldown_minutes` | `{status:"saved", alert:{id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled}}` | **yes** |
+| `set_alert` | `station_id` (UUID), `alert_mode`, optional `threshold_price`, `minimum_change`, `cooldown_minutes`, `payment_type` *(3C)*, `alert_contract_version` *(3C.1)* | `{status:"saved", alert:{id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled, payment_type *(3C)*}}` | **yes** |
 | `delete_alert` | `station_id` (UUID) | `{status:"deleted", changed}` | no |
 | `list_alerts` | — | `{alerts:[{id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled, last_notified_price, last_notified_at, station_name, address, city, state, latest_price, latest_reported_at}]}` | no |
 | `status` | — | `{platform, pro_is_active, revenuecat_linked, active_devices, enabled_alerts}` | no |
@@ -135,7 +143,14 @@ An upsert on `(installation_id, station_id)`: **one alert per installation per s
   absent/`null` (`400 threshold_only_valid_for_at_or_below`). It is **dollars per gallon** — the
   price the observed station price must be at or below.
 * `minimum_change`: JSON number, default `0.05` (the **legacy** server default, unchanged — the 2.4.1 app sends its
-  10¢ new-alert default explicitly), `0.01 ≤ x ≤ 2` — dollars/gal.
+  10¢ new-alert default explicitly), `0.01 ≤ x ≤ 2` — dollars/gal. **For an alert that already exists** it replaces the
+  stored value only when the request means it (next bullet): the old "every save overwrites it" behavior is gone.
+* `alert_contract_version` *(Phase 3C.1)*: optional integer `1 ≤ x ≤ 1000`; absent or `null` = `1`; a string, `0`, a non-integer,
+  a boolean, an array or `1001` is `400 invalid_alert_contract_version` and nothing is stored. `≥ 2` = "this client chooses the
+  drop size deliberately": a present `minimum_change` is stored (a deliberate `0.05` too) and an omitted one leaves the stored
+  value alone. `1`/absent = a pre-contract client: an omitted `minimum_change`, or the fixed `0.05` (compared at thousandths, so
+  float noise counts), leaves the stored value alone; any other value is stored. A **new** alert always takes the request's value
+  or `0.05`. It is a compatibility hint, not a credential: the installation secret and the Pro gate are unchanged.
 * `payment_type` *(Phase 3C)*: optional `"cash"` or `"credit"` — which price the alert watches. Anything else
   (`"unknown"`, `"same_for_both"`, another case, a non-string) is `400 invalid_payment_type`. **Absent or `null` means
   "not specified"**: an existing alert keeps its current method, a new alert is stored as `unknown` (a legacy alert).
@@ -144,9 +159,9 @@ An upsert on `(installation_id, station_id)`: **one alert per installation per s
   Out-of-range preferences are `400 invalid_alert_preferences`.
 * `station_id` must be a UUID of an existing `public.community_stations` row, else
   `404 station_not_found` (`400 invalid_alert` if it is not a UUID at all).
-* Because it is an upsert that **replaces** mode, threshold, `minimum_change` and `cooldown_minutes`
-  (omitted preferences fall back to the defaults, they are *not* preserved), an update must send the
-  full desired state.
+* Because it is an upsert that **replaces** mode, threshold and `cooldown_minutes` (omitted preferences fall back to the
+  defaults, they are *not* preserved; `minimum_change` follows the rule above and `payment_type` is preserved), an update
+  must send the full desired state.
 * It **always writes `enabled = true`**.
 * Pro-gated: `403 pro_required` for a non-Pro installation, checked before validation.
 
@@ -203,7 +218,7 @@ Every failure is a JSON object `{ "error": "<snake_case_code>" }` with an HTTP s
 
 | Status | Codes |
 |---|---|
-| 400 | `invalid_json`, `invalid_json_object`, `action_required`, `unknown_action`, `invalid_installation_credentials` (malformed id/secret), `invalid_platform`, `invalid_contributor_id`, `invalid_app_version`, `revenuecat_identity_requires_environment`, `invalid_revenuecat_identity`, `invalid_device_registration`, `invalid_device_token`, `invalid_alert`, `invalid_threshold_price`, `threshold_only_valid_for_at_or_below`, `invalid_alert_preferences`, `invalid_payment_type` *(Phase 3C)*, `invalid_station_id` |
+| 400 | `invalid_json`, `invalid_json_object`, `action_required`, `unknown_action`, `invalid_installation_credentials` (malformed id/secret), `invalid_platform`, `invalid_contributor_id`, `invalid_app_version`, `revenuecat_identity_requires_environment`, `invalid_revenuecat_identity`, `invalid_device_registration`, `invalid_device_token`, `invalid_alert`, `invalid_threshold_price`, `threshold_only_valid_for_at_or_below`, `invalid_alert_preferences`, `invalid_payment_type` *(Phase 3C)*, `invalid_alert_contract_version` *(Phase 3C.1)*, `invalid_station_id` |
 | 401 | `unauthorized` (**API key** rejected — a configuration problem, not the installation), `invalid_installation_credentials` (**installation unknown to the server, or the secret does not match**) |
 | 403 | `pro_required` (`set_alert` only) |
 | 404 | `station_not_found` |
