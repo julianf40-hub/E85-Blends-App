@@ -5,8 +5,8 @@
 // file named by RECORD_FILE and answered with a canned success; the Google OAuth token exchange gets a canned token;
 // ANY other URL throws, so the worker cannot reach the network from this wrapper.
 //
-// Used by supabase/tests/price_alert_worker_message.test.sh, which supplies a throwaway signing key, a synthetic
-// service-role key and a scratch database. Nothing here reads or needs a production secret.
+// Used by supabase/tests/price_alert_worker_message.test.sh and price_alert_rollout_compat.test.sh, which supply a throwaway
+// signing key, a synthetic service-role key and a scratch database. Nothing here reads or needs a production secret.
 
 const recordFile = Deno.env.get("RECORD_FILE");
 if (!recordFile) throw new Error("RECORD_FILE is required");
@@ -52,4 +52,11 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit): P
   throw new Error(`blocked outbound request in a local test: ${url}`);
 }) as typeof fetch;
 
-await import("../../functions/price-alerts-worker/index.ts");
+// WORKER_ENTRY (an absolute path) selects another copy of the worker - the rollout-compatibility test runs the PREVIOUS
+// worker (exported from git) through the same recorder. Without it, the worker in this repository runs.
+const entry = Deno.env.get("WORKER_ENTRY");
+if (entry) {
+  await import(new URL(`file://${entry}`).href);
+} else {
+  await import("../../functions/price-alerts-worker/index.ts");
+}
