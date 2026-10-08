@@ -241,8 +241,17 @@ async function paymentTypesFor(sql: Sql, deliveryIds: string[]): Promise<Map<str
       select id, payment_type from private.price_alert_deliveries where id = any(${deliveryIds}::uuid[])
     `;
     for (const row of rows) types.set(row.id, row.payment_type);
-  } catch {
-    // legacy copy
+  } catch (error) {
+    // Fail soft (every delivery gets the plain, method-less copy), but leave a trace: a schema or binding problem
+    // must not silently turn every Cash/Credit notification into a legacy one. Only a code or error name is
+    // logged, never the query or its parameters.
+    const code = (error as { code?: unknown } | null)?.code;
+    console.error(JSON.stringify({
+      level: "warn",
+      message: "price-alerts-worker payment_type lookup failed; sending method-less copy",
+      code: typeof code === "string" ? code : error instanceof Error ? error.name : "unknown",
+      ts: new Date().toISOString(),
+    }));
   }
   return types;
 }

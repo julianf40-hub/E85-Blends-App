@@ -4,7 +4,8 @@
 // What the copy promises, and what it deliberately does not:
 //  * It names WHICH price was reported ("Credit price is now $3.09 at ...") when the alert watches a
 //    payment method, because a bare "$3.09" is ambiguous when stations show a cash and a credit price.
-//    A legacy alert (payment method unknown) gets the plain wording it always had.
+//  * A legacy alert (payment method unknown) gets EXACTLY the wording it has always had, character for character
+//    (see legacyMessageFor): its notifications do not change just because the engine behind them did.
 //  * It never says the price is verified, confirmed or official. These are community reports.
 //  * It never mentions a reason, a baseline or a threshold the person did not see; the target is theirs.
 
@@ -42,7 +43,7 @@ function stationPhrase(name: string | null | undefined): string {
   return trimmed.length > MAX_STATION_NAME_LENGTH ? `${trimmed.slice(0, MAX_STATION_NAME_LENGTH - 1)}…` : trimmed;
 }
 
-/** "Credit price is now $3.09 at Corner Pump." / "E85 price is now $3.09 at Corner Pump." */
+/** "Credit price is now $3.09 at Corner Pump." (Cash/Credit alerts only; a legacy alert uses legacyMessageFor.) */
 function priceSentence(input: MessageInput): string {
   const label = paymentLabel(input.payment_type);
   const subject = label ? `${label} price` : "E85 price";
@@ -51,7 +52,27 @@ function priceSentence(input: MessageInput): string {
   return price ? `${subject} is now ${price} at ${station}.` : `${subject} was updated at ${station}.`;
 }
 
+/**
+ * The wording every alert had before payment methods existed. Kept verbatim (including the "An E85 station" fallback
+ * and `Number()` handling of the stored price) and used only for an alert with no Cash/Credit method, so a legacy
+ * alert's notification is byte-for-byte what it was. A test compares it with the previous implementation.
+ */
+function legacyMessageFor(input: MessageInput): Message {
+  const price = Number(input.observed_price);
+  const formatted = Number.isFinite(price) ? `$${price.toFixed(2)}/gal` : "a new price";
+  const name = input.station_name?.trim() || "An E85 station";
+  switch (input.reason_code) {
+    case "price_dropped": return { title: "E85 price dropped", body: `${name} dropped to ${formatted}.` };
+    case "threshold_crossed":
+    case "threshold_met":
+    case "threshold_price_changed": return { title: "E85 price alert", body: `${name} is now ${formatted}.` };
+    case "price_changed": return { title: "E85 price changed", body: `${name} is now ${formatted}.` };
+    default: return { title: "E85 price update", body: `${name} is now ${formatted}.` };
+  }
+}
+
 export function messageFor(input: MessageInput): Message {
+  if (paymentLabel(input.payment_type) === null) return legacyMessageFor(input);
   const body = priceSentence(input);
   switch (input.reason_code) {
     case "price_dropped":
