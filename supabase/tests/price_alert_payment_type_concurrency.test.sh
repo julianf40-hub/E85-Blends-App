@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# 85Blends 2.4.1 — Phase 3C payment-aware Price Alerts: multi-session checks for
+#   20261007130000_price_alert_payment_aware_evaluation.sql (prepare_price_alert_deliveries).
+#
+# LOCAL-REPLAY ONLY. Needs a SCRATCH database that already has the full migration chain applied (see
+# README.md in this directory) and the libpq environment variables PGHOST, PGPORT, PGUSER, PGDATABASE of a
+# LOCAL Postgres. Like the other concurrency scripts it COMMITS its fixtures (several sessions have to see
+# them) under a unique marker and removes them on exit - never point it at a hosted project. It sends
+# nothing: pg_net is a recording stand-in locally and the worker is never started.
+#
+# What it proves (each needs more than one session):
+#   PC1  the cooldown race is closed. Report R1 is prepared (and its notification reserved) by one
+#        session that has NOT committed yet; a newer qualifying report R2 is then prepared by a second
+#        session. The second session WAITS for the first (row lock on the alert), then meets the cooldown:
+#        exactly ONE pending delivery results, never two.
+#   PC2  the same report prepared by two sessions at once (the cron job and the worker can both do it)
+#        decides once: one set of rows, one reservation.
+#   PC3  a burst of typed reports from many concurrent clients (through the real RLS/grant path) while the
+#        real job processor runs repeatedly: no error, no deadlock, no failed or dead job, every report
+#        stored, and at most ONE pending delivery for the alert inside its cooldown.
+#   PC4  the set_alert upsert (exactly as price-alerts-api runs it) racing a prepare on the same alert:
+#        the upsert waits, neither deadlocks, and the final state is coherent (new sensitivity, same method,
+#        the reservation intact).
+set -euo pipefail
+
+M="ptc$$"                          # unique marker for every row this script creates
+PSQL=(psql -X -q -At -v ON_ERROR_STOP=1)
+TMP="$(mktemp -d)"
+
+case "${PGHOST:-/var/run/postgresql}" in
+  /*|localhost|127.0.0.1|::1) ;;
+  *) echo "REFUSING: PGHOST=${PGHOST} is not a local socket or loopback address" >&2; exit 2 ;;
+esac
+
+sql() { "${PSQL[@]}" -c "$1"; }
+fail() { echo "FAILED: $*" >&2; exit 1; }
+now_ms() { date +%s%3N; }
+
+cleanup() {
+  "${PSQL[@]}" -c "
+    delete from public.e85_price_reports where anonymous_reporter_id like '$M-%';
+    delete from private.price_alert_installations where installation_secret_hash = md5('$M-i') || md5('$M-i2');
+    delete from private.revenuecat_customers where original_app_user_id = '\$RCAnonymousID:$M';
+    delete from public.community_stations where normalized_key like '$M-%';" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+# ---- fixtures (committed) ----------------------------------------------------------------------------------
+sql "
+insert into public.community_stations (name, normalized_key) values ('PT Concurrency', '$M-s');
+insert into private.revenuecat_customers (original_app_user_id, environment, entitlement_id, pro_is_active)
+  values ('\$RCAnonymousID:$M', 'SANDBOX', 'pro', true);
+insert into private.price_alert_installations (client_installation_id, installation_secret_hash, revenuecat_app_user_id, revenuecat_environment, revenuecat_customer_id)
+  select gen_random_uuid(), md5('$M-i') || md5('$M-i2'), c.original_app_user_id, 'SANDBOX', c.id
+  from private.revenuecat_customers c where c.original_app_user_id = '\$RCAnonymousID:$M';
+insert into private.price_alert_push_devices (installation_id, bundle_id, apns_environment, device_token, device_token_hash)
+  select id, 'com.e85blends.app.ios.internal', 'sandbox', repeat('b', 64), md5('$M-d') || md5('$M-d2')
+  from private.price_alert_installations where installation_secret_hash = md5('$M-i') || md5('$M-i2');
+insert into public.e85_price_reports (station_id, price, reported_at, anonymous_reporter_id, payment_type)
+  values ((select id from public.community_stations where normalized_key = '$M-s'), 3.50, now() - interval '110 minutes', '$M-base', 'credit');
+insert into private.price_alerts (installation_id, station_id, alert_mode, minimum_change, cooldown_minutes, payment_type)
+  select i.id, s.id, 'price_drop', 0.100, 360, 'credit'
+  from private.price_alert_installations i, public.community_stations s
+  where i.installation_secret_hash = md5('$M-i') || md5('$M-i2') and s.normalized_key = '$M-s';"
+
+STATION="$(sql "select id from public.community_stations where normalized_key = '$M-s'")"
+ALERT="$(sql "select a.id from private.price_alerts a where a.station_id = '$STATION'")"
+INST="$(sql "select installation_id from private.price_alerts where id = '$ALERT'")"
+
+[ "$(sql "select baseline_price from private.price_alerts where id = '$ALERT'")" = "3.500" ] || fail "fixture: the alert should be anchored at 3.50"
+
+mk_report() { # <price> <age e.g. '20 minutes'> <tag>  -> report id
+  sql "insert into public.e85_price_reports (station_id, price, reported_at, anonymous_reporter_id, payment_type)
+       values ('$STATION', $1, now() - interval '$2', '$M-$3', 'credit') returning id"
+}
+reset_alert() { # back to a quiet, armed state
+  sql "update private.price_alerts set baseline_price = 3.50, baseline_at = now() - interval '100 minutes',
+         last_notified_price = null, last_notified_at = null where id = '$ALERT';
+       delete from private.price_alert_deliveries where alert_id = '$ALERT';" >/dev/null
+}
+pending_count() { sql "select count(*) from private.price_alert_deliveries where alert_id = '$ALERT' and status = 'pending'"; }
+
+# ======================================================================================================
+echo "== PC1: the cooldown race is closed (reservation at prepare + row lock on the alert)"
+R1="$(mk_report 3.30 '30 minutes' r1)"            # 20c below the 3.50 reference: qualifies
+( "${PSQL[@]}" -c "begin; select pending_count from private.prepare_price_alert_deliveries('$R1'); select pg_sleep(4); commit;" >"$TMP/pc1a.out" 2>&1 ) &
+A_PID=$!
+sleep 1
+R2="$(mk_report 3.10 '20 minutes' r2)"            # a NEWER report, a further 20c lower: also qualifies on its own
+sleep 0.5
+START=$(now_ms)
+B_OUT="$(sql "select pending_count || '/' || skipped_count from private.prepare_price_alert_deliveries('$R2')")"
+ELAPSED=$(( $(now_ms) - START ))
+wait "$A_PID"
+grep -qi error "$TMP/pc1a.out" && fail "PC1 first session errored: $(cat "$TMP/pc1a.out")"
+echo "   second session waited ${ELAPSED} ms and decided $B_OUT"
+[ "$ELAPSED" -ge 1500 ] || fail "PC1 the second session did not wait for the first (${ELAPSED} ms): the alert row is not being locked"
+[ "$ELAPSED" -lt 20000 ] || fail "PC1 the second session took far too long (${ELAPSED} ms)"
+[ "$B_OUT" = "0/1" ] || fail "PC1 the second report should be suppressed (got pending/skipped = $B_OUT)"
+[ "$(pending_count)" = "1" ] || fail "PC1 exactly ONE pending delivery expected, got $(pending_count)"
+[ "$(sql "select status || ':' || reason_code from private.price_alert_deliveries where alert_id = '$ALERT' and price_report_id = '$R2'")" = "skipped:cooldown" ] \
+  || fail "PC1 the second report must be recorded as skipped:cooldown"
+[ "$(sql "select baseline_price from private.price_alerts where id = '$ALERT'")" = "3.300" ] \
+  || fail "PC1 the suppressed drop must leave the alert armed at the notified price 3.30"
+
+# ======================================================================================================
+echo "== PC2: one report prepared by two sessions at once is decided once"
+reset_alert
+R3="$(mk_report 3.20 '15 minutes' r3)"
+( "${PSQL[@]}" -c "begin; select pending_count from private.prepare_price_alert_deliveries('$R3'); select pg_sleep(3); commit;" >"$TMP/pc2a.out" 2>&1 ) &
+A_PID=$!
+sleep 1
+START=$(now_ms)
+B_OUT="$(sql "select pending_count || '/' || skipped_count from private.prepare_price_alert_deliveries('$R3')")"
+ELAPSED=$(( $(now_ms) - START ))
+wait "$A_PID"
+grep -qi error "$TMP/pc2a.out" && fail "PC2 first session errored: $(cat "$TMP/pc2a.out")"
+echo "   second session waited ${ELAPSED} ms and decided $B_OUT"
+[ "$ELAPSED" -ge 1000 ] || fail "PC2 the second session did not wait (${ELAPSED} ms)"
+[ "$B_OUT" = "0/0" ] || fail "PC2 the second run must decide nothing (got $B_OUT)"
+[ "$(sql "select count(*) from private.price_alert_deliveries where alert_id = '$ALERT' and price_report_id = '$R3'")" = "1" ] \
+  || fail "PC2 exactly one delivery row for the report"
+[ "$(pending_count)" = "1" ] || fail "PC2 exactly one pending delivery"
+
+# ======================================================================================================
+echo "== PC3: a burst of typed reports from concurrent clients while the real job processor runs"
+reset_alert
+sql "delete from private.price_alert_jobs where price_report_id in (select id from public.e85_price_reports where anonymous_reporter_id like '$M-%');" >/dev/null
+BEFORE_REPORTS="$(sql "select count(*) from public.e85_price_reports where station_id = '$STATION'")"
+for client in $(seq 1 12); do
+  (
+    "${PSQL[@]}" -c "
+      begin;
+      select set_config('request.jwt.claim.role', 'anon', true);
+      set local role anon;
+      insert into public.e85_price_reports (station_id, price, reported_at, anonymous_reporter_id, payment_type)
+      select '$STATION', round((3.45 - (random() * 0.40))::numeric, 2), now() - (random() * interval '5 minutes'), '$M-burst$client', 'credit'
+      from generate_series(1, 5);
+      commit;" >"$TMP/burst$client.out" 2>&1
+  ) &
+done
+( for round in $(seq 1 8); do
+    "${PSQL[@]}" -c "select claimed_count || '/' || prepared_count || '/' || failed_count from private.process_price_alert_jobs(50)" >>"$TMP/processor.out" 2>&1
+    sleep 0.4
+  done ) &
+PROC_PID=$!
+wait
+for client in $(seq 1 12); do
+  grep -qi error "$TMP/burst$client.out" && fail "PC3 client $client errored: $(cat "$TMP/burst$client.out")"
+done
+grep -qi error "$TMP/processor.out" && fail "PC3 the job processor errored: $(cat "$TMP/processor.out")"
+# drain whatever is left
+for round in 1 2 3; do sql "select * from private.process_price_alert_jobs(50)" >/dev/null; done
+AFTER_REPORTS="$(sql "select count(*) from public.e85_price_reports where station_id = '$STATION'")"
+[ $(( AFTER_REPORTS - BEFORE_REPORTS )) -eq 60 ] || fail "PC3 expected 60 new reports, saw $(( AFTER_REPORTS - BEFORE_REPORTS ))"
+[ "$(sql "select count(*) from private.price_alert_jobs j join public.e85_price_reports r on r.id = j.price_report_id where r.anonymous_reporter_id like '$M-burst%' and j.status in ('failed','dead')")" = "0" ] \
+  || fail "PC3 a job failed or died under concurrency"
+[ "$(sql "select count(*) from private.price_alert_jobs j join public.e85_price_reports r on r.id = j.price_report_id where r.anonymous_reporter_id like '$M-burst%' and j.status = 'pending'")" = "0" ] \
+  || fail "PC3 jobs were left unprocessed after draining"
+PENDING="$(pending_count)"
+echo "   60 typed reports stored, no job failed, pending deliveries for the alert: $PENDING"
+[ "$PENDING" -le 1 ] || fail "PC3 more than one pending delivery inside the cooldown ($PENDING)"
+[ "$(sql "select count(*) from (select alert_id, price_report_id, push_device_id from private.price_alert_deliveries group by 1,2,3 having count(*) > 1) d")" = "0" ] \
+  || fail "PC3 a (alert, report, device) pair was decided twice"
+
+# ======================================================================================================
+echo "== PC4: the set_alert upsert racing a prepare on the same alert"
+reset_alert
+R4="$(mk_report 3.25 '0 seconds' r4)"       # observed 'now': newer than every report the burst stored
+( "${PSQL[@]}" -c "begin; select pending_count from private.prepare_price_alert_deliveries('$R4'); select pg_sleep(3); commit;" >"$TMP/pc4a.out" 2>&1 ) &
+A_PID=$!
+sleep 1
+START=$(now_ms)
+UP="$(sql "insert into private.price_alerts (installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled)
+           values ('$INST', '$STATION', 'price_drop', null, 0.200, 360, coalesce(null::text, 'unknown'), true)
+           on conflict (installation_id, station_id) do update
+           set alert_mode = excluded.alert_mode, threshold_price = excluded.threshold_price, minimum_change = excluded.minimum_change,
+               cooldown_minutes = excluded.cooldown_minutes, payment_type = coalesce(null::text, private.price_alerts.payment_type), enabled = true
+           returning minimum_change || ':' || payment_type")"
+ELAPSED=$(( $(now_ms) - START ))
+wait "$A_PID"
+grep -qi error "$TMP/pc4a.out" && fail "PC4 the prepare session errored: $(cat "$TMP/pc4a.out")"
+echo "   upsert waited ${ELAPSED} ms and returned $UP"
+[ "$ELAPSED" -ge 1000 ] || fail "PC4 the upsert did not wait for the prepare's row lock (${ELAPSED} ms)"
+[ "$UP" = "0.200:credit" ] || fail "PC4 the upsert must keep the method and set the sensitivity (got $UP)"
+[ "$(sql "select last_notified_price from private.price_alerts where id = '$ALERT'")" = "3.250" ] \
+  || fail "PC4 the prepare's reservation must survive the upsert"
+[ "$(pending_count)" = "1" ] || fail "PC4 the prepared delivery must still be pending"
+
+echo "ALL PAYMENT-TYPE CONCURRENCY SCENARIOS PASSED (PC1-PC4)"

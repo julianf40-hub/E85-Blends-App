@@ -164,6 +164,21 @@ struct AppNotificationPayloadTests {
         #expect(AppNotificationPayload.pumpArrivalStationRecordIDKey == "stationRecordID")
     }
 
+    @Test("Phase 3C: the worker now also sends payment_type — an additive key that changes nothing about parsing or routing")
+    func paymentTypeKey_isIgnoredAndHarmless() {
+        for paymentType in ["cash", "credit", "same_for_both", "unknown", "something_new"] {
+            var withPaymentType = workerPriceAlert()
+            withPaymentType["payment_type"] = paymentType
+
+            let payload = classifyFromDelegateContext(withPaymentType)
+
+            #expect(payload == .priceAlert(PriceAlertNotificationPayload(stationID: stationID, observedPrice: 3.19)), "\(paymentType)")
+            #expect(AppNotificationDisposition.resolve(payload, isDefaultAction: true) == .route(.station(communityStationID: stationID)))
+        }
+        // …and a payload from an older worker, without it, is exactly what it was.
+        #expect(workerPriceAlert()["payment_type"] == nil)
+    }
+
     @Test("The Price Alert keys are the worker's contract")
     func priceAlertKeys_matchTheBackendContract() {
         #expect(AppNotificationPayload.priceAlertTypeValue == "price_alert")

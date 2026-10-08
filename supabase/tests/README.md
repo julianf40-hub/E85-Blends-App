@@ -23,6 +23,19 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
   fallback (migrations `20260929230218` + `20260930090000`: gating, subscription-state reduction,
   alias ownership), the reward/code state machine, and `fulfill_referral_reward_offer_code` (see
   the file header for the full scenario list).
+- `price_alert_payment_type.test.sql` — 2.4.1 Phase 3C: cash/credit/same-for-both report storage and
+  grants, the comparable-stream rules, the pure `evaluate_price_alert_v2` decision function, and the
+  `prepare_price_alert_deliveries` scenarios (cross-payment isolation, cumulative drops, cooldown and rearm,
+  out-of-order and repeated reports, legacy alerts, Pro gate, fail-closed, anchoring) — see the file header for the
+  scenario index. Run it on a database with the FULL chain applied.
+- `price_alert_payment_type_migration.test.sh` — Phase 3C migrations A and B applied to "production-shaped"
+  legacy data: nothing rewritten or backfilled, every report/alert/delivery preserved, no retroactive send, cron and
+  Vault untouched, old and new clients both able to insert, idempotent re-apply. It builds its own scratch database.
+- `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks: the cooldown reservation race,
+  the same report prepared twice at once, a concurrent burst through the real grants, and `set_alert` racing a prepare.
+- `support/` — `local_supabase_shims.sql` (stand-ins for the Supabase roles, `auth`/`vault`/`cron`/`net` that a plain
+  Postgres lacks) and `replay_migrations.sh <database> [--before <version>]` (replays the migration chain onto a scratch
+  database). Local use only.
 - `price_alert_worker_readiness.test.sql` — Price Alerts worker scheduler + stale-work safety
   (migration `20261005120000`), single transaction: the pg_net invoker's configuration matrix (HTTPS
   origin only, token trimming/strength, fixed value-free errors, exact URL/header/body), the
