@@ -54,7 +54,7 @@ trap cleanup EXIT
 
 # ---- start the real API ------------------------------------------------------------------------------
 ( cd "$API_DIR" && SUPABASE_DB_URL="$API_DB_URL" SUPABASE_PUBLISHABLE_KEYS="{\"default\":\"$KEY\"}" \
-    DENO_SERVE_ADDRESS="tcp:127.0.0.1:${API_PORT}" exec "$DENO" run --config deno.json -A index.ts >"$TMP/api.log" 2>&1 ) &
+    DENO_SERVE_ADDRESS="tcp:127.0.0.1:${API_PORT}" exec "$DENO" run --no-lock --config deno.json -A index.ts >"$TMP/api.log" 2>&1 ) &
 APIPID=$!
 for _ in $(seq 1 60); do grep -q "Listening on" "$TMP/api.log" 2>/dev/null && break; sleep 0.5; done
 grep -q "Listening on" "$TMP/api.log" || fail "the API did not start: $(cat "$TMP/api.log")"

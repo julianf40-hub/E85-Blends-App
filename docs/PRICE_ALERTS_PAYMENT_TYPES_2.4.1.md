@@ -3,8 +3,8 @@
 > **Status: code-ready, NOT deployed.** Nothing in this document has been run against production.
 > No migration has been applied, no Edge Function deployed, no production row read or written, no secret,
 > scheduler, cron job, APNs/FCM credential, CloudKit schema, entitlement or Xcode Cloud workflow changed. The two
-> migrations and the two Edge Function changes are prepared and tested on a local scratch Postgres and under Node
-> only. Applying them is a separate, explicitly authorized step (see [Rollout](#10-rollout-proposed-nothing-has-been-run)).
+> migrations and the two Edge Function changes are prepared and tested on a local scratch Postgres, under Node and under
+> Deno only. Applying them is a separate, explicitly authorized step (see [Rollout](#10-rollout-proposed-nothing-has-been-run)).
 
 Phase 3A built the Price Alerts client, Phase 3B its UI (`PRICE_ALERTS_CLIENT_INTEGRATION_2.4.1.md`,
 `PRICE_ALERTS_UI_2.4.1.md`). Phase 3C fixes a correctness problem in what an alert compares, and gives Price Drop
@@ -400,10 +400,13 @@ backend (8.4). Migration B before migration A refuses to run.
 | SQL decision matrix — scenarios R1 (reports/grants/RLS), C1 (comparability), E1 (the pure function), D1–D18 (isolation, cumulative drops, type switching, legacy, out-of-order, repeats, cooldown, rearm, baseline, Pro gate, devices, idempotence, fail-closed, anchor, delivery record, the exact `set_alert` upsert incl. an older client and an edit that names no method, `list_alerts` returning both the legacy latest and the comparable latest, and a `same_for_both` report driving a Price Drop alert of either method while never reaching a legacy one), G1 (ACLs, index, re-apply) | `supabase/tests/price_alert_payment_type.test.sql` | local Postgres 16 scratch DB, `supabase/tests/support/replay_migrations.sh` + `local_supabase_shims.sql` |
 | Migration preservation (rows unchanged, no rewrite, idempotent re-apply, legacy fill, old-client insert, permission matrix) | `price_alert_payment_type_migration.test.sh` | same |
 | Concurrency (two sessions, row lock, cooldown reservation race) | `price_alert_payment_type_concurrency.test.sh` | same |
-| Edge Function pure modules (input rules, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping); the Deno entry points are pinned by source-text assertions — Deno itself was not available |
+| Edge Function pure modules (input rules, copy, payload) | `supabase/functions/**/*.test.ts` | `node --test` (Node 22 type-stripping) or `deno test`; the entry points are also pinned by source-text assertions |
+| The Edge Functions themselves, end to end, under Deno against a local Postgres: the API's `set_alert` / `list_alerts` / `delete_alert` over HTTP (A1–A9: an older client, the 2.4.1 app, edits that keep the method, `invalid_payment_type`, bounds, comparable-latest fields, re-anchoring, non-Pro, delete), and the worker preparing, claiming and "sending" five notifications with the push providers stubbed (3 APNs, 2 FCM: copy, additive `payment_type`, legacy payload unchanged, the delivery's recorded method) | `price_alert_api_payment_type.test.sh`, `price_alert_worker_message.test.sh` (+ `support/worker_with_recorded_fetch.ts`) | Deno 2.x, jq, curl, openssl, psql and a replayed scratch database; nothing leaves the machine (the wrapper refuses any URL but the providers') |
 | Swift (models, form, presets, service, wire contract, report rules, breakdown, presenter, widget model, notification payload) | `EightyFiveBlendsTests/*` | Xcode (`xcodebuild test`) |
 
-**What Linux could and could not prove.** The Swift app sources that do not import SwiftUI/SwiftData/MapKit and the
+**What Linux could and could not prove.** The two Edge Function entry points pass `deno check` under the functions' own
+strict config (`strict`, `noUncheckedIndexedAccess`) and were run under Deno 2.9 against a migrated scratch Postgres (above).
+The Swift app sources that do not import SwiftUI/SwiftData/MapKit and the
 Swift Testing files were compiled and run in a throwaway SwiftPM harness (Swift 5 language mode with the project's
 MainActor default isolation, and again in Swift 6 mode), including the real `CommunityPriceService` over a stubbed
 `URLSession`. SwiftUI views were only parsed and, for the alert sheet and the selector, type-checked against a

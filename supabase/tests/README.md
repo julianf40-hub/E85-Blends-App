@@ -31,6 +31,16 @@ psql -v ON_ERROR_STOP=1 -d e85_test -f supabase/tests/referral_reward_active_pro
 - `price_alert_payment_type_migration.test.sh` — Phase 3C migrations A and B applied to "production-shaped"
   legacy data: nothing rewritten or backfilled, every report/alert/delivery preserved, no retroactive send, cron and
   Vault untouched, old and new clients both able to insert, idempotent re-apply. It builds its own scratch database.
+- `price_alert_api_payment_type.test.sh` — Phase 3C: the REAL `price-alerts-api` under Deno on a local port, against a
+  database with the full chain applied, driven over HTTP (A1–A9): an older client's `set_alert` (stored `unknown`, legacy
+  0.05 / 360), the 2.4.1 app's payment type and drop size, edits that keep the method, `invalid_payment_type`, bounds,
+  `list_alerts` (legacy latest vs comparable latest), re-anchoring when the method changes, non-Pro refusal, delete.
+  Needs deno, curl, jq, psql; COMMITS fixtures under a marker and removes them; refuses a non-local `PGHOST`.
+- `price_alert_worker_message.test.sh` + `support/worker_with_recorded_fetch.ts` — Phase 3C: the REAL `price-alerts-worker`
+  under Deno with `fetch()` replaced by a recorder (nothing is sent to Apple or Google; any other URL is refused): five alerts
+  fire (iOS credit / legacy / cash at-or-below, Android credit / legacy) and the script checks exactly what would have been
+  sent — copy, the additive `payment_type`, the legacy payload unchanged, the delivery rows' method. Needs deno, curl, jq,
+  openssl (throwaway keys), psql and a FRESH replayed database (the worker claims every pending delivery it finds).
 - `price_alert_payment_type_concurrency.test.sh` — Phase 3C multi-session checks: the cooldown reservation race,
   the same report prepared twice at once, a concurrent burst through the real grants, and `set_alert` racing a prepare.
 - `support/` — `local_supabase_shims.sql` (stand-ins for the Supabase roles, `auth`/`vault`/`cron`/`net` that a plain
