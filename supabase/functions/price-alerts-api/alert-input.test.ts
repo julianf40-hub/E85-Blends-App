@@ -10,13 +10,17 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  ALERT_CONTRACT_VERSION_RANGE,
   type AlertInput,
   ALLOWED_ALERT_PAYMENT_TYPES,
   COOLDOWN_MINUTES_RANGE,
   DEFAULT_COOLDOWN_MINUTES,
+  LEGACY_CONTRACT_VERSION,
   LEGACY_DEFAULT_MINIMUM_CHANGE,
   MINIMUM_CHANGE_RANGE,
   parseAlertInput,
+  replacesStoredMinimumChange,
+  SENSITIVITY_CONTRACT_VERSION,
   THRESHOLD_RANGE,
 } from "./alert-input.ts";
 
@@ -87,6 +91,117 @@ test("an omitted minimum_change keeps the LEGACY 0.05 default; the newer app sen
   assert.equal(ok(base({ minimum_change: 0.1 })).minimumChange, 0.1);
 });
 
+// ---- the sensitivity contract (alert_contract_version) ------------------------------------------------
+//
+// An older client never chose a drop size: it sent the fixed 0.05 or nothing. A newer client does choose, and
+// declares it with alert_contract_version >= 2. The question every row below answers is "does this request replace
+// the drop size of an alert that ALREADY EXISTS?". (A NEW alert always stores the request's value, or 0.05.)
+
+test("the contract constants are what the iOS app and the docs say they are", () => {
+  assert.equal(LEGACY_CONTRACT_VERSION, 1);
+  assert.equal(SENSITIVITY_CONTRACT_VERSION, 2);
+  assert.deepEqual(ALERT_CONTRACT_VERSION_RANGE, { min: 1, max: 1000 });
+});
+
+type Row = {
+  label: string;
+  body: Record<string, unknown>;
+  replaces: boolean;
+  /** What a NEW alert from this request stores. */
+  newAlertValue: number;
+  version: number;
+};
+
+const sensitivityTable: Row[] = [
+  // ---- a pre-contract client (no version) ----
+  { label: "older client, minimum_change omitted", body: {}, replaces: false, newAlertValue: 0.05, version: 1 },
+  { label: "older client, minimum_change null", body: { minimum_change: null }, replaces: false, newAlertValue: 0.05, version: 1 },
+  { label: "older client, the fixed legacy 0.05", body: { minimum_change: 0.05 }, replaces: false, newAlertValue: 0.05, version: 1 },
+  { label: "older client, 0.050 written differently", body: { minimum_change: 5e-2 }, replaces: false, newAlertValue: 0.05, version: 1 },
+  { label: "older client, 0.05 with float noise", body: { minimum_change: 0.04999999999999999 }, replaces: false, newAlertValue: 0.04999999999999999, version: 1 },
+  { label: "older client, 0.0504 (still 0.050 at numeric(6,3))", body: { minimum_change: 0.0504 }, replaces: false, newAlertValue: 0.0504, version: 1 },
+  { label: "older client, an explicit 10 cents", body: { minimum_change: 0.1 }, replaces: true, newAlertValue: 0.1, version: 1 },
+  { label: "older client, an explicit 20 cents", body: { minimum_change: 0.2 }, replaces: true, newAlertValue: 0.2, version: 1 },
+  { label: "older client, a custom 0.137", body: { minimum_change: 0.137 }, replaces: true, newAlertValue: 0.137, version: 1 },
+  { label: "older client, the 0.01 lower bound", body: { minimum_change: 0.01 }, replaces: true, newAlertValue: 0.01, version: 1 },
+  { label: "older client, the 2.00 upper bound", body: { minimum_change: 2 }, replaces: true, newAlertValue: 2, version: 1 },
+  { label: "older client, 0.0506 (rounds to 0.051: not the fixed value)", body: { minimum_change: 0.0506 }, replaces: true, newAlertValue: 0.0506, version: 1 },
+  { label: "declared version 1 behaves exactly like no version (5 cents)", body: { alert_contract_version: 1, minimum_change: 0.05 }, replaces: false, newAlertValue: 0.05, version: 1 },
+  { label: "declared version 1 behaves exactly like no version (20 cents)", body: { alert_contract_version: 1, minimum_change: 0.2 }, replaces: true, newAlertValue: 0.2, version: 1 },
+  { label: "a null version is no version", body: { alert_contract_version: null, minimum_change: 0.05 }, replaces: false, newAlertValue: 0.05, version: 1 },
+  // ---- a client that chooses (version 2 and up) ----
+  { label: "2.4.1 app, a deliberate 5 cents", body: { alert_contract_version: 2, minimum_change: 0.05 }, replaces: true, newAlertValue: 0.05, version: 2 },
+  { label: "2.4.1 app, 10 cents", body: { alert_contract_version: 2, minimum_change: 0.1 }, replaces: true, newAlertValue: 0.1, version: 2 },
+  { label: "2.4.1 app, 20 cents", body: { alert_contract_version: 2, minimum_change: 0.2 }, replaces: true, newAlertValue: 0.2, version: 2 },
+  { label: "2.4.1 app, custom 0.137", body: { alert_contract_version: 2, minimum_change: 0.137 }, replaces: true, newAlertValue: 0.137, version: 2 },
+  { label: "2.4.1 app, custom 0.015", body: { alert_contract_version: 2, minimum_change: 0.015 }, replaces: true, newAlertValue: 0.015, version: 2 },
+  { label: "2.4.1 app, bounds 0.01", body: { alert_contract_version: 2, minimum_change: 0.01 }, replaces: true, newAlertValue: 0.01, version: 2 },
+  { label: "2.4.1 app, bounds 2.00", body: { alert_contract_version: 2, minimum_change: 2 }, replaces: true, newAlertValue: 2, version: 2 },
+  { label: "version 2, minimum_change omitted: the stored value is kept", body: { alert_contract_version: 2 }, replaces: false, newAlertValue: 0.05, version: 2 },
+  { label: "version 2, minimum_change null: the stored value is kept", body: { alert_contract_version: 2, minimum_change: null }, replaces: false, newAlertValue: 0.05, version: 2 },
+  { label: "a later version behaves as version 2 (5 cents)", body: { alert_contract_version: 3, minimum_change: 0.05 }, replaces: true, newAlertValue: 0.05, version: 3 },
+  { label: "the highest accepted version behaves as version 2", body: { alert_contract_version: 1000, minimum_change: 0.05 }, replaces: true, newAlertValue: 0.05, version: 1000 },
+];
+
+for (const row of sensitivityTable) {
+  test(`sensitivity contract: ${row.label}`, () => {
+    const value = ok(base(row.body));
+    assert.equal(value.contractVersion, row.version, "declared contract version");
+    assert.equal(value.updatesMinimumChange, row.replaces, "replaces an existing alert's drop size");
+    assert.equal(value.minimumChange, row.newAlertValue, "what a NEW alert stores");
+  });
+}
+
+test("the rule is one pure function, and the table above is not just its own mirror", () => {
+  // Independent restatement of the contract: only the combination (no version) + (omitted or the fixed 0.05)
+  // keeps an existing value, plus (version 2+) + (omitted).
+  for (const version of [1, 2, 3, 50, 1000]) {
+    for (const named of [false, true]) {
+      for (const value of [0.01, 0.049, 0.05, 0.051, 0.1, 0.2, 2]) {
+        const expected = !named ? false : version >= 2 ? true : Math.round(value * 1000) !== 50;
+        assert.equal(replacesStoredMinimumChange(version, named, value), expected, `v${version} named=${named} ${value}`);
+      }
+    }
+  }
+});
+
+test("a 5 cent request is NOT ignored when it comes from a client that declared the contract", () => {
+  // The negative control the compatibility fix must never trade away: switching an alert back to 5 cents.
+  assert.equal(ok(base({ alert_contract_version: 2, minimum_change: 0.05 })).updatesMinimumChange, true);
+  assert.equal(ok(base({ minimum_change: 0.05 })).updatesMinimumChange, false);
+});
+
+test("a malformed alert_contract_version is refused with its own stable error, never guessed at", () => {
+  const malformed: unknown[] = ["2", "two", "", " 2", 0, -1, -2, 1.5, 2.5, 1001, 100000, true, false, [], [2], {}, { v: 2 }, NaN, Infinity, -Infinity];
+  for (const bad of malformed) {
+    assert.equal(error(base({ alert_contract_version: bad, minimum_change: 0.2 })), "invalid_alert_contract_version", `alert_contract_version=${String(bad)}`);
+  }
+});
+
+test("a whole-number version written as 2.0 is accepted (JSON cannot tell it from 2)", () => {
+  assert.equal(ok(base({ alert_contract_version: JSON.parse("2.0"), minimum_change: 0.05 })).contractVersion, 2);
+});
+
+test("the version never rescues an invalid request, and a bad version is reported before the preference checks", () => {
+  assert.equal(error(base({ alert_contract_version: 2, minimum_change: 5 })), "invalid_alert_preferences");
+  assert.equal(error(base({ alert_contract_version: 2, minimum_change: "0.10" })), "invalid_alert_preferences");
+  assert.equal(error(base({ alert_contract_version: 2, minimum_change: 0.009 })), "invalid_alert_preferences");
+  assert.equal(error(base({ alert_contract_version: "2", minimum_change: 5 })), "invalid_alert_contract_version");
+  assert.equal(error(base({ alert_contract_version: 2, payment_type: "debit" })), "invalid_payment_type");
+  assert.equal(error({ alert_contract_version: 2, station_id: "nope" }), "invalid_alert");
+});
+
+test("a request that names a version is otherwise parsed exactly as before", () => {
+  const withVersion = ok(base({ alert_contract_version: 2, alert_mode: "at_or_below", threshold_price: 2.89, payment_type: "cash", minimum_change: 0.2, cooldown_minutes: 720 }));
+  assert.deepEqual(
+    { ...withVersion },
+    {
+      stationId: STATION, alertMode: "at_or_below", thresholdPrice: 2.89, minimumChange: 0.2, cooldownMinutes: 720,
+      paymentType: "cash", contractVersion: 2, updatesMinimumChange: true,
+    },
+  );
+});
+
 // ---- the rest of the contract is unchanged -----------------------------------------------------------
 
 test("mode defaults to price_drop and must be a known mode", () => {
@@ -124,7 +239,7 @@ test("cooldown defaults to 360 and is bounded 60..10080 integers", () => {
 test("there is no enable/disable/pause input: unknown fields are ignored, never persisted", () => {
   const value = ok(base({ enabled: false, paused: true, pause: true, set_enabled: false }));
   assert.deepEqual(Object.keys(value).sort(),
-    ["alertMode", "cooldownMinutes", "minimumChange", "paymentType", "stationId", "thresholdPrice"]);
+    ["alertMode", "contractVersion", "cooldownMinutes", "minimumChange", "paymentType", "stationId", "thresholdPrice", "updatesMinimumChange"]);
 });
 
 // ---- wiring in index.ts (it only runs on Deno, so its SQL is pinned as text) -----------------------
@@ -144,6 +259,25 @@ test("set_alert persists payment_type: named => set, omitted => keep (update) or
   assert.match(indexSource, /payment_type = coalesce\(\$\{paymentType\}::text, private\.price_alerts\.payment_type\)/);
   assert.match(indexSource, /on conflict \(installation_id, station_id\) do update/);
   assert.match(indexSource, /returning id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, enabled, payment_type/);
+});
+
+test("set_alert keeps an existing alert's drop size unless the request means to replace it (the sensitivity contract)", () => {
+  const start = indexSource.indexOf("async function setAlert");
+  const end = indexSource.indexOf("async function deleteAlert");
+  const setAlert = indexSource.slice(start, end);
+  // The parsed decision is what drives the SQL...
+  assert.match(setAlert, /updatesMinimumChange \} = parsed\.value/);
+  // ...as a CASE on the row being updated: replaced only when the request means it, otherwise the stored value stays.
+  assert.match(
+    setAlert,
+    /minimum_change = case when \$\{updatesMinimumChange\}::boolean then excluded\.minimum_change\s+else private\.price_alerts\.minimum_change end/,
+  );
+  // A new alert still takes the request's value (or the 0.05 default).
+  assert.match(setAlert, /\$\{thresholdPrice\}, \$\{minimumChange\}, \$\{cooldownMinutes\}/);
+  // The old unconditional overwrite is gone.
+  assert.doesNotMatch(setAlert, /minimum_change = excluded\.minimum_change/);
+  // The version is a hint for THIS statement only: never persisted, never part of auth or Pro.
+  assert.ok(!/alert_contract_version|contractVersion/.test(setAlert), "set_alert must not read or store the raw version");
 });
 
 test("set_alert never writes the reference price or notification history (the database owns those)", () => {

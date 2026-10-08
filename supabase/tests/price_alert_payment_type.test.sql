@@ -43,6 +43,12 @@
 --       alert.  D22 a notification queued BEFORE migration B (no payment_type) still holds a legacy alert's cooldown.
 --   D23 a notification queued under the OTHER payment method does not hold the new method's cooldown.
 --   D24 prepare takes the station-level advisory lock (the lock-order guard; the race itself is PC5 in the concurrency script).
+--   D25 (Phase 3C.1) an OLDER client's save keeps a drop size the newer app chose and the engine keeps using it, while a client
+--       that declared the contract can still deliberately choose 5 cents; a payment-only edit leaves the drop size alone.
+--   D26 (Phase 3C.1) repeated identical saves are safe; harmless edits leave the reference, the notification memory and the
+--       cooldown alone; a change of mode or method keeps the notification TIME and forgets the old notified price.
+--   D27 (Phase 3C.1) moving a LEGACY alert to Cash / Credit through the real upsert: only the method changes, the reference is
+--       re-anchored to the new method's own stream (or left empty), an unclassified report no longer reaches it.
 --   G1  grants/ACL of the new internals and index/plan sanity; migration re-apply is a no-op.
 
 begin;
@@ -994,10 +1000,15 @@ $$;
 
 -- ==================================================================================================
 -- D16: the exact upsert price-alerts-api runs for set_alert (kept in sync with index.ts by
---      price-alerts-api/alert-input.test.ts, which pins its clauses)
+--      price-alerts-api/alert-input.test.ts, which pins its clauses). p_updates_min is what alert-input.ts decides
+--      (the sensitivity contract): true = this request replaces an EXISTING alert's minimum_change (a client that
+--      declared alert_contract_version >= 2, or any explicit value other than the fixed legacy 0.05); false = it keeps
+--      the stored one (an older client re-saving, or a request that does not name a value). The real function is
+--      exercised end to end, over HTTP, by price_alert_api_payment_type.test.sh.
 -- ==================================================================================================
 create function pg_temp.api_set_alert(p_inst uuid, p_station uuid, p_mode text, p_threshold numeric,
-                                      p_min numeric, p_cooldown int, p_payment text)
+                                      p_min numeric, p_cooldown int, p_payment text,
+                                      p_updates_min boolean default true)
 returns table (id uuid, alert_mode text, threshold_price numeric, minimum_change numeric,
                cooldown_minutes int, enabled boolean, payment_type text)
 language sql as $$
@@ -1009,7 +1020,8 @@ language sql as $$
   on conflict (installation_id, station_id) do update
   set alert_mode = excluded.alert_mode,
       threshold_price = excluded.threshold_price,
-      minimum_change = excluded.minimum_change,
+      minimum_change = case when p_updates_min::boolean then excluded.minimum_change
+                            else private.price_alerts.minimum_change end,
       cooldown_minutes = excluded.cooldown_minutes,
       payment_type = coalesce(p_payment::text, private.price_alerts.payment_type),
       enabled = true
@@ -1314,6 +1326,201 @@ end;
 $$;
 
 -- ==================================================================================================
+-- D25 (Phase 3C.1): an OLDER client's save keeps a drop size the newer app chose, and the engine keeps using it;
+--      a client that declared the contract can still deliberately choose 5 cents.
+-- ==================================================================================================
+select pg_temp.mk_world('d25');
+do $$
+declare
+  v_inst uuid := (select installation_id from t_world where label = 'd25');
+  v_station uuid := (select station_id from t_world where label = 'd25');
+  v_alert uuid;
+  r record;
+  q1 uuid; q2 uuid; q3 uuid;
+  v_before record;
+begin
+  perform pg_temp.report('d25', 'credit', 3.30, interval '110 minutes', 'd25-reporter');
+
+  -- the 2.4.1 app creates a Credit alert with a 20 cent drop
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.200, 360, 'credit', true);
+  v_alert := r.id;
+  perform pg_temp.expect(r.minimum_change = 0.200 and r.payment_type = 'credit' and pg_temp.baseline(v_alert) = 3.30,
+                         'D25a the 2.4.1 app creates a credit alert at 20c, anchored to the credit price');
+  update private.price_alerts set last_notified_price = 3.50, last_notified_at = now() - interval '7 hours' where id = v_alert;
+  select baseline_price, baseline_at, last_notified_price, last_notified_at, cooldown_minutes, alert_mode, threshold_price
+    into v_before from private.price_alerts where id = v_alert;
+
+  -- an older client re-saves the alert: the fixed 0.05, no payment method. alert-input.ts decides "keep" (p_updates_min = false)
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, null, false);
+  perform pg_temp.expect(r.id = v_alert and r.minimum_change = 0.200 and r.payment_type = 'credit',
+                         'D25b ...the older client''s save keeps the same alert, its 20c drop size and its credit method');
+  perform pg_temp.expect((select baseline_price is not distinct from v_before.baseline_price and baseline_at is not distinct from v_before.baseline_at
+                                 and last_notified_price is not distinct from v_before.last_notified_price
+                                 and last_notified_at is not distinct from v_before.last_notified_at
+                                 and cooldown_minutes = v_before.cooldown_minutes and alert_mode = v_before.alert_mode
+                          from private.price_alerts where id = v_alert),
+                         'D25c ...and neither the reference nor the notification history moved');
+
+  -- the engine really judges with 20c: a 12c fall is not enough, the cumulative 25c fall is
+  q1 := pg_temp.report('d25', 'credit', 3.18, interval '60 minutes', 'd25-reporter');
+  perform pg_temp.expect(pg_temp.prep(q1) = '0/1' and pg_temp.verdict(v_alert, q1) = 'skipped:no_meaningful_drop',
+                         'D25d a 12c fall does not alert a 20c alert (the older client did not reset it to 5c)');
+  q2 := pg_temp.report('d25', 'credit', 3.05, interval '30 minutes', 'd25-reporter');
+  perform pg_temp.expect(pg_temp.prep(q2) = '1/0' and pg_temp.verdict(v_alert, q2) = 'pending:price_dropped',
+                         'D25e ...and the cumulative 25c fall alerts');
+  perform pg_temp.deliver(v_alert, interval '7 hours');
+
+  -- the same older client, again, with a stray non-default value: that is a value it meant, so it is stored
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.120, 360, null, true);
+  perform pg_temp.expect(r.minimum_change = 0.120 and r.payment_type = 'credit', 'D25f an explicit non-default value from a pre-contract client is taken as meant');
+
+  -- a client that declared the contract deliberately chooses 5 cents: that is applied, and the engine follows
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'credit', true);
+  perform pg_temp.expect(r.minimum_change = 0.050 and r.id = v_alert, 'D25g a deliberate 5c from a client that declared the contract is stored');
+  q3 := pg_temp.report('d25', 'credit', 2.99, interval '5 minutes', 'd25-reporter');          -- 6c below the 3.05 reference
+  perform pg_temp.expect(pg_temp.prep(q3) = '1/0' and pg_temp.verdict(v_alert, q3) = 'pending:price_dropped',
+                         'D25h ...and a 6c fall now alerts');
+
+  -- a request that does not name a drop size at all (a payment-only edit) leaves it alone
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'cash', false);
+  perform pg_temp.expect(r.minimum_change = 0.050 and r.payment_type = 'cash', 'D25i a payment-only edit changes the method and nothing else');
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.200, 360, 'cash', true);
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'credit', false);
+  perform pg_temp.expect(r.minimum_change = 0.200 and r.payment_type = 'credit', 'D25j ...and a payment-only edit leaves a 20c drop size at 20c');
+  perform pg_temp.expect((select count(*) from private.price_alerts where installation_id = v_inst and station_id = v_station) = 1, 'D25k still exactly one alert');
+end;
+$$;
+
+-- ==================================================================================================
+-- D26 (Phase 3C.1): repeated identical saves are safe; harmless edits do not touch the notification memory
+--      or the cooldown; a change of mode or method keeps the notification TIME (so the cooldown continues).
+-- ==================================================================================================
+select pg_temp.mk_world('d26');
+do $$
+declare
+  v_inst uuid := (select installation_id from t_world where label = 'd26');
+  v_station uuid := (select station_id from t_world where label = 'd26');
+  v_alert uuid;
+  r record;
+  v_notified_at timestamptz;
+  v_baseline_at timestamptz;
+  q uuid; q2 uuid;
+  i int;
+begin
+  perform pg_temp.report('d26', 'credit', 3.30, interval '110 minutes', 'd26-reporter');
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.100, 360, 'credit', true);
+  v_alert := r.id;
+  update private.price_alerts set last_notified_price = 3.20, last_notified_at = now() - interval '2 hours', baseline_price = 3.25 where id = v_alert;
+  select last_notified_at, baseline_at into v_notified_at, v_baseline_at from private.price_alerts where id = v_alert;
+
+  for i in 1 .. 3 loop
+    select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.100, 360, 'credit', true);
+  end loop;
+  perform pg_temp.expect(r.id = v_alert and (select count(*) from private.price_alerts where installation_id = v_inst and station_id = v_station) = 1,
+                         'D26a three identical saves leave one alert with the same id');
+  perform pg_temp.expect((select baseline_price = 3.25 and baseline_at is not distinct from v_baseline_at
+                                 and last_notified_price = 3.20 and last_notified_at is not distinct from v_notified_at
+                                 and minimum_change = 0.100 and payment_type = 'credit' and enabled
+                          from private.price_alerts where id = v_alert),
+                         'D26b ...and the reference and the notification memory are exactly as they were');
+  perform pg_temp.expect((select count(*) from private.price_alert_deliveries where alert_id = v_alert) = 0, 'D26c ...and saving queued nothing');
+
+  -- harmless edits: another drop size and another cooldown, then back
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.200, 720, 'credit', true);
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.100, 360, 'credit', true);
+  perform pg_temp.expect((select baseline_price = 3.25 and last_notified_price = 3.20 and last_notified_at is not distinct from v_notified_at
+                          from private.price_alerts where id = v_alert),
+                         'D26d editing the drop size and the cooldown does not touch the reference or the notification memory');
+
+  -- the cooldown (notified 2 hours ago, 6 hour cooldown) still holds after all those saves: a qualifying fall is suppressed
+  q := pg_temp.report('d26', 'credit', 3.05, interval '10 minutes', 'd26-reporter');           -- 20c below the 3.25 reference
+  perform pg_temp.expect(pg_temp.prep(q) = '0/1' and pg_temp.verdict(v_alert, q) = 'skipped:cooldown',
+                         'D26e repeated saves and edits did not clear the cooldown');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.25, 'D26f ...and a suppressed qualifying fall keeps the alert armed (reference unchanged)');
+
+  -- a change of mode keeps the notification TIME (the cooldown continues) but forgets the old notified price
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'at_or_below', 2.89, 0.100, 360, 'credit', true);
+  perform pg_temp.expect((select last_notified_price is null and last_notified_at is not distinct from v_notified_at from private.price_alerts where id = v_alert),
+                         'D26g changing the mode clears the notified PRICE and keeps the notified TIME');
+  -- a change of method does the same
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'at_or_below', 2.89, 0.100, 360, 'cash', true);
+  perform pg_temp.expect((select last_notified_price is null and last_notified_at is not distinct from v_notified_at and payment_type = 'cash'
+                          from private.price_alerts where id = v_alert),
+                         'D26h changing the method does the same');
+end;
+$$;
+
+-- ==================================================================================================
+-- D27 (Phase 3C.1): moving a LEGACY alert to Cash or Credit through the real upsert. Only the method changes; the rule,
+--      target, drop size and cooldown the alert had are exactly as they were; the reference is re-anchored to the new
+--      method's own stream (or left empty when there is none); an unclassified report no longer reaches it.
+-- ==================================================================================================
+select pg_temp.mk_world('d27');
+do $$
+declare
+  v_inst uuid := (select installation_id from t_world where label = 'd27');
+  v_station uuid := (select station_id from t_world where label = 'd27');
+  v_alert uuid;
+  r record;
+  v_notified_at timestamptz;
+begin
+  perform pg_temp.report('d27', 'unknown', 3.40, interval '3 hours', 'd27-reporter');
+  perform pg_temp.report('d27', 'cash', 2.99, interval '2 hours', 'd27-reporter');
+  perform pg_temp.report('d27', 'credit', 3.19, interval '90 minutes', 'd27-reporter');
+  perform pg_temp.report('d27', 'same_for_both', 3.05, interval '60 minutes', 'd27-reporter');
+
+  -- a legacy At or Below alert with a target, an odd drop size and a long cooldown, as an older client made it
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'at_or_below', 3.25, 0.070, 720, null, true);
+  v_alert := r.id;
+  perform pg_temp.expect(r.payment_type = 'unknown' and pg_temp.baseline(v_alert) = 3.40, 'D27a the legacy alert is anchored to the latest UNCLASSIFIED report');
+  update private.price_alerts set last_notified_price = 3.60, last_notified_at = now() - interval '3 hours' where id = v_alert;
+  select last_notified_at into v_notified_at from private.price_alerts where id = v_alert;
+
+  -- the 2.4.1 app moves it to Cash: it sends the alert's own settings back unchanged, plus the choice
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'at_or_below', 3.25, 0.070, 720, 'cash', true);
+  perform pg_temp.expect(r.id = v_alert and r.payment_type = 'cash' and r.alert_mode = 'at_or_below' and r.threshold_price = 3.250
+                         and r.minimum_change = 0.070 and r.cooldown_minutes = 720,
+                         'D27b only the payment type changed: same alert, mode, target, drop size and cooldown');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) = 3.05, 'D27c ...and the reference is the newest CASH-comparable report (a same_for_both 3.05 beats cash 2.99)');
+  perform pg_temp.expect((select last_notified_price is null and last_notified_at is not distinct from v_notified_at from private.price_alerts where id = v_alert),
+                         'D27d ...the notification time is kept (the cooldown continues), the old notified price is forgotten');
+
+  -- an unclassified report after the move never reaches the typed alert
+  declare v_late uuid;
+  begin
+    v_late := pg_temp.report('d27', 'unknown', 2.50, interval '5 minutes', 'd27-reporter');
+    perform pg_temp.expect(pg_temp.prep(v_late) = '0/1' and pg_temp.verdict(v_alert, v_late) = 'skipped:payment_type_mismatch',
+                           'D27e an unclassified report no longer reaches the alert that now watches Cash');
+  end;
+end;
+$$;
+
+select pg_temp.mk_world('d27b');
+do $$
+declare
+  v_inst uuid := (select installation_id from t_world where label = 'd27b');
+  v_station uuid := (select station_id from t_world where label = 'd27b');
+  v_alert uuid;
+  r record;
+  q1 uuid; q2 uuid;
+begin
+  -- a legacy Price Drop alert at a station whose only reports are unclassified
+  perform pg_temp.report('d27b', 'unknown', 3.40, interval '5 hours', 'd27b-reporter');
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, null, true);
+  v_alert := r.id;
+  select * into r from pg_temp.api_set_alert(v_inst, v_station, 'price_drop', null, 0.050, 360, 'credit', true);
+  perform pg_temp.expect(r.id = v_alert and r.payment_type = 'credit' and r.minimum_change = 0.050, 'D27f the legacy alert moves to Credit and keeps its 5c');
+  perform pg_temp.expect(pg_temp.baseline(v_alert) is null, 'D27g ...with NO reference: there is no Credit price to anchor on, and none is invented from the unclassified one');
+  q1 := pg_temp.report('d27b', 'credit', 3.00, interval '40 minutes', 'd27b-reporter');
+  perform pg_temp.expect(pg_temp.prep(q1) = '0/1' and pg_temp.verdict(v_alert, q1) = 'skipped:baseline_established' and pg_temp.baseline(v_alert) = 3.00,
+                         'D27h the next Credit report establishes the reference and notifies nobody');
+  q2 := pg_temp.report('d27b', 'credit', 2.94, interval '20 minutes', 'd27b-reporter');
+  perform pg_temp.expect(pg_temp.prep(q2) = '1/0' and pg_temp.verdict(v_alert, q2) = 'pending:price_dropped',
+                         'D27i ...and a later 6c fall notifies (never the establishing report itself)');
+end;
+$$;
+
+-- ==================================================================================================
 -- G1: grants / ACL of the new internals, the index, re-apply
 -- ==================================================================================================
 do $$
@@ -1447,4 +1654,4 @@ $$;
 
 rollback;
 
-\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D24, G1)
+\echo ALL PRICE ALERT PAYMENT-TYPE SCENARIOS PASSED (R1, C1, E1, D1-D27, G1)

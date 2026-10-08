@@ -26,6 +26,9 @@
 #        alert (a lower id) in that gap and the worker prepares a report of the same station, the two used to
 #        lock the alert rows in opposite orders and deadlock. The station-level advisory lock taken first by
 #        prepare_price_alert_deliveries serializes them: nothing fails, nothing is lost.
+#   PC6  (Phase 3C.1) two saves of the same alert racing each other - one that changes only the payment method, one that
+#        changes only the drop size, and an older client re-saving the fixed 0.05 - are serialized by the alert row and BOTH
+#        changes survive, in either order (the upsert reads the row it is updating after the other commit, not a stale copy).
 set -euo pipefail
 
 M="ptc$$"                          # unique marker for every row this script creates
@@ -81,6 +84,17 @@ INST="$(sql "select installation_id from private.price_alerts where id = '$ALERT
 mk_report() { # <price> <age e.g. '20 minutes'> <tag>  -> report id
   sql "insert into public.e85_price_reports (station_id, price, reported_at, anonymous_reporter_id, payment_type)
        values ('$STATION', $1, now() - interval '$2', '$M-$3', 'credit') returning id"
+}
+upsert_sql() { # <minimum_change> <replaces an existing drop size: true|false> <payment_type|null>  -> exactly the statement price-alerts-api runs
+  local pay="null::text"
+  [ "$3" = "null" ] || pay="'$3'::text"
+  echo "insert into private.price_alerts (installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled)
+        values ('$INST', '$STATION', 'price_drop', null, $1, 360, coalesce($pay, 'unknown'), true)
+        on conflict (installation_id, station_id) do update
+        set alert_mode = excluded.alert_mode, threshold_price = excluded.threshold_price,
+            minimum_change = case when $2::boolean then excluded.minimum_change else private.price_alerts.minimum_change end,
+            cooldown_minutes = excluded.cooldown_minutes, payment_type = coalesce($pay, private.price_alerts.payment_type), enabled = true
+        returning minimum_change || ':' || payment_type"
 }
 reset_alert() { # back to a quiet, armed state
   sql "update private.price_alerts set baseline_price = 3.50, baseline_at = now() - interval '100 minutes',
@@ -180,12 +194,7 @@ R4="$(mk_report 3.25 '0 seconds' r4)"       # observed 'now': newer than every r
 A_PID=$!
 sleep 1
 START=$(now_ms)
-UP="$(sql "insert into private.price_alerts (installation_id, station_id, alert_mode, threshold_price, minimum_change, cooldown_minutes, payment_type, enabled)
-           values ('$INST', '$STATION', 'price_drop', null, 0.200, 360, coalesce(null::text, 'unknown'), true)
-           on conflict (installation_id, station_id) do update
-           set alert_mode = excluded.alert_mode, threshold_price = excluded.threshold_price, minimum_change = excluded.minimum_change,
-               cooldown_minutes = excluded.cooldown_minutes, payment_type = coalesce(null::text, private.price_alerts.payment_type), enabled = true
-           returning minimum_change || ':' || payment_type")"
+UP="$(sql "$(upsert_sql 0.200 true null)")"
 ELAPSED=$(( $(now_ms) - START ))
 wait "$A_PID"
 grep -qi error "$TMP/pc4a.out" && fail "PC4 the prepare session errored: $(cat "$TMP/pc4a.out")"
@@ -234,4 +243,34 @@ echo "   worker prepare waited ${ELAPSED} ms and returned: $W_OUT; job processor
 [ "$(cat "$TMP/pc5cron.out")" = "4/4/0" ] || fail "PC5 the job processor should claim, prepare and fail 4/4/0, got $(cat "$TMP/pc5cron.out")"
 [ "$(sql "select count(*) from private.price_alert_jobs where status = 'failed'")" = "0" ] || fail "PC5 a job was marked failed"
 
-echo "ALL PAYMENT-TYPE CONCURRENCY SCENARIOS PASSED (PC1-PC5)"
+# ======================================================================================================
+echo "== PC6: two saves racing each other both survive (payment-only vs sensitivity-only, and an older client)"
+race() { # <label> <holder statement> <waiter statement> <expected final min:payment>
+  local label="$1" holder="$2" waiter="$3" expected="$4"
+  ( "${PSQL[@]}" -c "begin; $holder; select pg_sleep(2.5); commit;" >"$TMP/pc6a.out" 2>&1 ) &
+  local a_pid=$!
+  sleep 1
+  local start; start=$(now_ms)
+  local out; out="$(sql "$waiter")"
+  local elapsed=$(( $(now_ms) - start ))
+  wait "$a_pid"
+  grep -qi error "$TMP/pc6a.out" && fail "PC6 $label: the holder errored: $(cat "$TMP/pc6a.out")"
+  echo "   $label: the second save waited ${elapsed} ms; it returned $out; the stored alert is $(sql "select minimum_change || ':' || payment_type from private.price_alerts where id = '$ALERT'")"
+  [ "$elapsed" -ge 1000 ] || fail "PC6 $label: the second save did not wait for the first (${elapsed} ms)"
+  [ "$(sql "select minimum_change || ':' || payment_type from private.price_alerts where id = '$ALERT'")" = "$expected" ] \
+    || fail "PC6 $label: expected $expected, got $(sql "select minimum_change || ':' || payment_type from private.price_alerts where id = '$ALERT'")"
+}
+sql "update private.price_alerts set payment_type = 'cash', minimum_change = 0.100 where id = '$ALERT'" >/dev/null
+# the holder changes only the method (a payment-only save); the waiter changes only the drop size
+race "payment-only first, sensitivity-only second" "$(upsert_sql 0.050 false credit)" "$(upsert_sql 0.200 true null)" "0.200:credit"
+# the holder changes only the drop size; the waiter changes only the method
+sql "update private.price_alerts set payment_type = 'cash', minimum_change = 0.100 where id = '$ALERT'" >/dev/null
+race "sensitivity-only first, payment-only second" "$(upsert_sql 0.300 true null)" "$(upsert_sql 0.050 false credit)" "0.300:credit"
+# an older client re-saving the fixed 0.05 while a deliberate 15c is being saved
+sql "update private.price_alerts set payment_type = 'credit', minimum_change = 0.100 where id = '$ALERT'" >/dev/null
+race "a deliberate 15c first, an older client's fixed 0.05 second" "$(upsert_sql 0.150 true null)" "$(upsert_sql 0.050 false null)" "0.150:credit"
+# the reverse: the older client holds the row, the deliberate 15c waits - the same outcome
+sql "update private.price_alerts set payment_type = 'credit', minimum_change = 0.100 where id = '$ALERT'" >/dev/null
+race "an older client's fixed 0.05 first, a deliberate 15c second" "$(upsert_sql 0.050 false null)" "$(upsert_sql 0.150 true null)" "0.150:credit"
+
+echo "ALL PAYMENT-TYPE CONCURRENCY SCENARIOS PASSED (PC1-PC6)"

@@ -329,7 +329,7 @@ async function setAlert(sql: Sql, body: JsonObject): Promise<Response> {
   // cooldown) lives in alert-input.ts so it is unit-tested; nothing is re-decided here.
   const parsed = parseAlertInput(body);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { stationId, alertMode, thresholdPrice, minimumChange, cooldownMinutes, paymentType } = parsed.value;
+  const { stationId, alertMode, thresholdPrice, minimumChange, cooldownMinutes, paymentType, updatesMinimumChange } = parsed.value;
   const stationRows = await sql<{ id: string }[]>`select id from public.community_stations where id = ${stationId} limit 1`;
   if (stationRows.length === 0) return json(404, { error: "station_not_found" });
   // payment_type: a request that names a method sets it; a request that does not (an older app, or a
@@ -337,6 +337,12 @@ async function setAlert(sql: Sql, body: JsonObject): Promise<Response> {
   // from such a client is stored as 'unknown' (a legacy alert) - a method is never invented. Changing
   // the method or the mode re-anchors the alert's reference price inside the database (trigger
   // price_alerts_anchor_baseline); a plain edit of the other fields does not.
+  //
+  // minimum_change: see "THE SENSITIVITY CONTRACT" in alert-input.ts. A new alert stores the request's value
+  // (or the 0.05 default); an existing alert's value is replaced only when the request means it
+  // (updatesMinimumChange) and is otherwise KEPT, so an older app re-saving the alert cannot reset a drop size that
+  // a newer app chose. The CASE reads the row being updated, which Postgres has locked, so two concurrent saves
+  // (say one that changes the payment method and one that changes the drop size) both survive.
   const rows = await sql<{
     id: string; station_id: string; alert_mode: string; threshold_price: string | null;
     minimum_change: string; cooldown_minutes: number; enabled: boolean; payment_type: string;
@@ -350,7 +356,8 @@ async function setAlert(sql: Sql, body: JsonObject): Promise<Response> {
     on conflict (installation_id, station_id) do update
     set alert_mode = excluded.alert_mode,
         threshold_price = excluded.threshold_price,
-        minimum_change = excluded.minimum_change,
+        minimum_change = case when ${updatesMinimumChange}::boolean then excluded.minimum_change
+                              else private.price_alerts.minimum_change end,
         cooldown_minutes = excluded.cooldown_minutes,
         payment_type = coalesce(${paymentType}::text, private.price_alerts.payment_type),
         enabled = true
