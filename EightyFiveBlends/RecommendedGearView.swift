@@ -811,7 +811,8 @@ private struct FeaturedSponsorCard: View {
                 badgeAndLogo(plateWidth: RVPSupplyLogoLayout.cardMediumWidth)
                 badgeAndLogo(plateWidth: RVPSupplyLogoLayout.cardNarrowWidth)
 
-                // At accessibility text sizes the badge is too wide to share a row with the logo.
+                // Safety net for large accessibility text on a narrow card: when the badge is too wide
+                // to share a row even with the narrowest plate, the logo goes under it.
                 VStack(alignment: .leading, spacing: 8) {
                     FeaturedBadge(title: FeaturedGearPage.sponsorBadgeTitle)
 

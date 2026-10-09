@@ -6,8 +6,10 @@
 //  (1622 x 969 px, with an alpha channel and a transparent surround), not the earlier opaque
 //  1500 x 1145 image with a black background baked in, and that the plate's heights stay compact.
 //
-//  The logo is white lettering on transparency, so what it looks like on the dark plate is a device
-//  check, not something these tests can prove.
+//  These pin the supplied artwork on purpose (its pixel size and a few known pixels), so replacing the
+//  logo with a different file is a deliberate edit here too; the plate's own layout never depends on
+//  those dimensions. The logo is white lettering on transparency, so what it looks like on the dark
+//  plate is a device check, not something these tests can prove.
 //
 
 import CoreGraphics
