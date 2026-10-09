@@ -229,6 +229,36 @@ nonisolated enum FeaturedGalleryLayout {
     }
 }
 
+/// Sizing rules for the RVP Supply logo, which sits on a dark plate in two places: the More screen
+/// sponsor banner and the Recommended Gear sponsor card (`FeaturedSponsorLogoPlate`). Only widths are
+/// chosen here; a plate's height always follows the artwork's own aspect ratio, so none of this
+/// depends on the logo's pixel dimensions. Pure, so it is testable without SwiftUI.
+nonisolated enum RVPSupplyLogoLayout {
+    static let assetName = "RVPSupplyLogo"
+
+    /// Space between the plate's edge and the artwork, and the plate's corner radius.
+    static let horizontalInset: CGFloat = 8
+    static let verticalInset: CGFloat = 6
+    static let cornerRadius: CGFloat = 14
+
+    /// The More banner's plate is this share of the container's width, kept within `bannerWidthRange`,
+    /// so it grows from the smallest iPhone to the largest and stops growing on iPad.
+    static let bannerWidthFraction: CGFloat = 0.31
+    static let bannerWidthRange: ClosedRange<CGFloat> = 108...132
+
+    static func bannerPlateWidth(containerWidth: CGFloat) -> CGFloat {
+        guard containerWidth.isFinite, containerWidth > 0 else { return bannerWidthRange.lowerBound }
+        return min(max(containerWidth * bannerWidthFraction, bannerWidthRange.lowerBound), bannerWidthRange.upperBound)
+    }
+
+    /// The sponsor card header tries these beside the "Sponsor" badge, widest first, and uses the first
+    /// that fits. If none does (the badge grows with Dynamic Type), the plate goes under the badge.
+    static let cardWideWidth: CGFloat = 128
+    static let cardMediumWidth: CGFloat = 116
+    static let cardNarrowWidth: CGFloat = 104
+    static let cardStackedWidth: CGFloat = 128
+}
+
 /// How tall the Featured Brands carousel is while it is swiped. Its pages have very different natural
 /// heights (the eFlexFuel card is far shorter than the RVP gallery card), so the carousel follows the
 /// swipe instead of stepping to the snapped page. Pure, so the whole rule is testable without SwiftUI.
@@ -761,16 +791,33 @@ private struct FeaturedSponsorCard: View {
         .gearCardChrome()
     }
 
+    private func badgeAndLogo(plateWidth: CGFloat) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            FeaturedBadge(title: FeaturedGearPage.sponsorBadgeTitle)
+
+            Spacer(minLength: 8)
+
+            FeaturedSponsorLogoPlate()
+                .frame(width: plateWidth)
+        }
+    }
+
     // One VoiceOver element that identifies the sponsor and the page, read before the tiles. The
     // brand mark and the accent rule are decorative.
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 8) {
-                FeaturedBadge(title: FeaturedGearPage.sponsorBadgeTitle)
+            ViewThatFits(in: .horizontal) {
+                badgeAndLogo(plateWidth: RVPSupplyLogoLayout.cardWideWidth)
+                badgeAndLogo(plateWidth: RVPSupplyLogoLayout.cardMediumWidth)
+                badgeAndLogo(plateWidth: RVPSupplyLogoLayout.cardNarrowWidth)
 
-                Spacer(minLength: 8)
+                // At accessibility text sizes the badge is too wide to share a row with the logo.
+                VStack(alignment: .leading, spacing: 8) {
+                    FeaturedBadge(title: FeaturedGearPage.sponsorBadgeTitle)
 
-                FeaturedSponsorLogoPlate(width: 100, height: 60, scale: 0.095)
+                    FeaturedSponsorLogoPlate()
+                        .frame(width: RVPSupplyLogoLayout.cardStackedWidth)
+                }
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -956,34 +1003,28 @@ private struct FeaturedCallToAction: View {
     }
 }
 
-// The existing RVPSupplyLogo asset (unmodified) is a 1500x1145px image with its black background
-// baked in and a lot of empty padding around the mark. Rather than edit it, it sits on an
-// intentional dark plate, cropped to the mark: the mark spans roughly x 359-1204 and y 308-845 px,
-// so the window is centered on (781, 572) px, a little right of the image center, which the small
-// x offset (31.5px) corrects. `scale` is points per image pixel; the sponsor header's 100x60pt plate
-// at 0.095 shows about x 255-1308 and y 257-888 px, which holds the whole mark with margin.
-// High-quality interpolation keeps the thin arcs and underline clean at this downscale (about 3.5x
-// on 3x screens).
-// The image frame needs both dimensions at the same scale (1500 x 1145): with only a width, the
-// plate's own height would be proposed to the image and scaledToFit would shrink it to fit that.
-private struct FeaturedSponsorLogoPlate: View {
-    let width: CGFloat
-    let height: CGFloat
-    let scale: CGFloat
-
+// The RVPSupplyLogo asset is a transparent PNG with white lettering, so it needs a backing plate of
+// its own: the cards it sits on are white in light mode and near-black in dark and OLED. The plate
+// is a fixed dark color rather than a theme color, so the lettering reads the same in every
+// appearance, and the hairline border separates it from the card. The artwork is aspect-fit inside a
+// small inset: no pixel coordinates, offsets, or scale factors, so it never crops and a replacement
+// asset of other dimensions still lays out. The caller sets only the plate's width (`.frame(width:)`);
+// the height follows the artwork's aspect ratio. High-quality interpolation keeps the thin arcs and
+// underline clean when the large image is scaled down. The logo is decorative: every place that shows
+// it also says "RVP Supply" in text, so it is hidden from VoiceOver rather than read as "RVPSupplyLogo".
+struct FeaturedSponsorLogoPlate: View {
     var body: some View {
-        Image("RVPSupplyLogo")
+        let shape = RoundedRectangle(cornerRadius: RVPSupplyLogoLayout.cornerRadius, style: .continuous)
+
+        Image(RVPSupplyLogoLayout.assetName)
             .resizable()
             .interpolation(.high)
             .scaledToFit()
-            .frame(width: 1500 * scale, height: 1145 * scale)
-            .offset(x: -31.5 * scale)
-            .frame(width: width, height: height)
-            .clipShape(RoundedRectangle(cornerRadius: height * 0.22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: height * 0.22, style: .continuous)
-                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
-            )
+            .padding(.horizontal, RVPSupplyLogoLayout.horizontalInset)
+            .padding(.vertical, RVPSupplyLogoLayout.verticalInset)
+            .background(Color(red: 0.04, green: 0.04, blue: 0.045), in: shape)
+            .overlay(shape.strokeBorder(AppTheme.Colors.border, lineWidth: 1))
+            .accessibilityHidden(true)
     }
 }
 
