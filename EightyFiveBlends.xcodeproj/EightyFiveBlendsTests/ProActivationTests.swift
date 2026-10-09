@@ -195,24 +195,32 @@ struct ProActivationRunnerTests {
         #expect(harness.syncCalls == 2)
     }
 
-    @Test("Scene change mid-sync: a foreground refresh that applies Pro while the sync is outstanding wins, with no extra sync")
-    func sceneChangeMidSync_authoritativeEntitlementWins() async {
+    @Test("A CustomerInfo applied mid-sync (e.g. by the foreground refresh) wins over the sync's own result, with no extra sync")
+    func customerInfoAppliedMidSync_authoritativeEntitlementWins() async {
         let harness = ActivationHarness()
         harness.syncReturns = false                       // the sync itself reports failure …
-        harness.duringSync = { harness.isPro = true }     // … but the foreground refresh applied Pro meanwhile
+        harness.duringSync = { harness.isPro = true }     // … but another path (foreground refresh / stream) applied Pro meanwhile
         let outcome = await harness.makeRunner().run()
         #expect(outcome == .proActive)                    // the entitlement, not the sync Bool, decides
-        #expect(harness.syncCalls == 1)                   // the transition caused no second sync
+        #expect(harness.syncCalls == 1)                   // and nothing triggered a second sync
+        // Scene phase itself is not modelled: by inspection EightyFiveBlendsApp's handler is unchanged and no
+        // activation code observes scene phase, so a transition can neither start nor cancel an attempt.
     }
 
-    @Test("A transient failure never clears an existing Pro entitlement")
-    func transientFailure_keepsExistingPro() async {
-        let harness = ActivationHarness()
-        harness.isPro = true
-        harness.syncReturns = false
-        #expect(await harness.makeRunner().run() == .alreadyPro)
-        #expect(harness.isPro)
-        // The production rule behind refreshCustomerInfoNow()'s catch block, pinned alongside.
+    @Test("Activate Pro only ever reads the entitlement flag: Pro stays Pro, and a failed sync leaves Free as Free")
+    func runnerNeverWritesTheEntitlement() async {
+        let pro = ActivationHarness()
+        pro.isPro = true
+        pro.syncReturns = false
+        #expect(await pro.makeRunner().run() == .alreadyPro)
+        #expect(pro.isPro)
+
+        let free = ActivationHarness()
+        free.syncReturns = false
+        #expect(await free.makeRunner().run() == .failed)
+        #expect(free.isPro == false)
+        // The production rule behind refreshCustomerInfoNow()'s catch block (a failure keeps the
+        // previous value), pinned alongside; the live-service path itself needs a real CustomerInfo.
         #expect(RevenueCatSubscriptionService.revenueCatIsProAfterFailedRefresh(previousValue: true))
     }
 }
@@ -306,7 +314,7 @@ struct ProActivationProgressTests {
         #expect(ProActivationProgress.checkingMessage == "Checking your subscription…")
         #expect(ProActivationProgress.activatedMessage == "85Blends Pro is active.")
         #expect(ProActivationProgress.notConfirmedMessage == "Activation can take a moment. Try again or Restore Purchases.")
-        #expect(ProActivationProgress.failedMessage.contains("Restore Purchases"))
+        #expect(ProActivationProgress.failedMessage == "We couldn't check your subscription. Check your connection and try again.")
 
         for outcome in [ProActivationOutcome.proActive, .alreadyPro, .notConfirmed, .failed, .unavailable] {
             var progress = ProActivationProgress()
@@ -320,11 +328,15 @@ struct ProActivationProgressTests {
 }
 
 // MARK: - C. Existing behavior this fix must not disturb
+//
+// These PIN production rules this change does not touch, so a later edit that breaks them fails here.
+// They do not prove anything about Activate Pro by themselves (the runner has no restore, referral or
+// widget seam to begin with); that it has none is true by construction and by inspection.
 
 @MainActor
 struct ProActivationDoesNotDisturbExistingBehaviorTests {
 
-    @Test("Restore Purchases mappings are unchanged (Activate Pro neither calls nor reuses Restore)")
+    @Test("Pinned: Restore Purchases state/feedback mappings")
     func restorePurchases_unchanged() {
         #expect(SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: false) == .restored)
         #expect(SubscriptionManager.state(forRestoreOutcome: .proActive, wasProBefore: true) == .info("85Blends Pro is active."))
@@ -335,7 +347,7 @@ struct ProActivationDoesNotDisturbExistingBehaviorTests {
         #expect(SubscriptionManager.restoreFeedback(for: .failed("x")) == .failed)
     }
 
-    @Test("All plans, including the legacy quarterly product, stay governed by the single plan-agnostic `pro` entitlement")
+    @Test("Pinned: all plans stay governed by one plan-agnostic `pro` entitlement; the legacy quarterly product is not a ProPlan")
     func planAgnosticEntitlement() {
         let legacyQuarterly = "com.85blends.subscription.quarterly"
         #expect(RevenueCatSubscriptionService.proEntitlementID == "pro")
@@ -350,7 +362,7 @@ struct ProActivationDoesNotDisturbExistingBehaviorTests {
         #expect(RevenueCatSubscriptionService.isProEntitlementActive(entitlementIsActive: nil) == false)
     }
 
-    @Test("Referral entry stays closed to a Pro user, and an unconfirmed activation changes nothing")
+    @Test("Pinned: referral entry stays closed once Pro is active and is unchanged by an unconfirmed activation")
     func referralEligibility_unaffectedByActivation() async {
         func eligibility(isPro: Bool) -> ReferralPresentation.EntryEligibility {
             ReferralPresentation.entryEligibility(
@@ -372,7 +384,7 @@ struct ProActivationDoesNotDisturbExistingBehaviorTests {
         #expect(eligibility(isPro: confirmed.isPro) == .blockedAlreadyPro)
     }
 
-    @Test("A confirmed activation propagates through the existing feature-gate and widget-mirror rules; an unconfirmed one publishes nothing")
+    @Test("Pinned: the entitlement flag Activate Pro reads drives the existing gate and widget-mirror rules; nothing authoritative means nothing mirrored")
     func proChangePropagates() async {
         let confirmed = ActivationHarness()
         confirmed.duringSync = { confirmed.isPro = true }

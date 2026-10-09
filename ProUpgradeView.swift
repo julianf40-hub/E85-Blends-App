@@ -219,9 +219,11 @@ struct ProUpgradeView: View {
             }
         }
         // The Free row is replaced by the Pro screen the moment an activation succeeds, so the
-        // outcome is announced rather than left to VoiceOver focus that just disappeared.
-        .onChange(of: activation.phase) { _, _ in
-            if let message = activation.message {
+        // outcome is announced rather than left to VoiceOver focus that just disappeared. "Active"
+        // is only announced while this screen really shows Pro (a Developer Force Free override can
+        // differ from the raw entitlement in Internal/Debug builds).
+        .onChange(of: activation.phase) { _, phase in
+            if let message = activation.message, phase != .activated || manager.isProUser {
                 AccessibilityNotification.Announcement(message).post()
             }
         }
@@ -528,6 +530,7 @@ struct ProUpgradeView: View {
                     color: AppTheme.Colors.textSecondary,
                     spinning: true
                 )
+                .frame(minHeight: 44)
                 .accessibilityElement(children: .combine)
             } else {
                 let needsRetry = activation.phase == .notConfirmed || activation.phase == .failed
@@ -542,6 +545,8 @@ struct ProUpgradeView: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.stationYellow)
                     }
+                    // Sizing lives INSIDE the label so the 44pt box is the actual tap/VoiceOver target.
+                    .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -551,18 +556,18 @@ struct ProUpgradeView: View {
                 .accessibilityHint("Checks your App Store subscription. This does not start a purchase.")
             }
         }
-        .frame(minHeight: 44)
         .padding(.horizontal, 16)
         .frame(maxWidth: 600)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
     /// Two layers of single-flight: `begin()` refuses a second tap on this screen, and
-    /// `ProActivationRunner` coalesces any overlapping attempt from another screen instance. The
-    /// task is deliberately not tied to this view's lifetime (a half-done sync helps no one); the
-    /// token makes a result that arrives after the screen was left inert.
+    /// `ProActivationRunner` coalesces overlapping Activate Pro attempts from another
+    /// `ProUpgradeView` instance. The task is deliberately not tied to this view's lifetime (a
+    /// half-done sync helps no one); the token makes a result that arrives after the screen was left
+    /// inert. Re-checks the purchase/restore guard the button's `.disabled` applies at render time.
     private func activatePro() {
-        guard let token = activation.begin() else { return }
+        guard isPurchaseOrRestoreInFlight == false, let token = activation.begin() else { return }
         Task {
             let outcome = await ProActivationRunner.shared.run()
             activation.finish(outcome, token: token)

@@ -62,7 +62,9 @@ final class ProActivationRunner {
     }
 
     /// A call made while another is in flight awaits that same attempt instead of starting a second
-    /// sync, so a double tap, a re-presented paywall, or two screens can never overlap `syncPurchases()`.
+    /// sync, so a double tap, a re-presented paywall, or two screens share one `syncPurchases()`. It
+    /// coordinates only Activate Pro attempts: `ReferralRewardRedemptionSheet` calls the manager's
+    /// sync directly (unchanged by design), so those two could in theory overlap.
     /// The attempt runs in its own unstructured task, so a caller going away neither cancels it nor
     /// leaves it half-done; the slot is released inside that task, with no window for a stale result.
     func run() async -> ProActivationOutcome {
@@ -103,7 +105,7 @@ struct ProActivationProgress: Equatable {
     static let checkingMessage = "Checking your subscription…"
     static let activatedMessage = "85Blends Pro is active."
     static let notConfirmedMessage = "Activation can take a moment. Try again or Restore Purchases."
-    static let failedMessage = "We couldn't check your subscription right now. Check your connection and try again, or use Restore Purchases."
+    static let failedMessage = "We couldn't check your subscription. Check your connection and try again."
 
     /// `nil` while an attempt is already in flight (a duplicate tap).
     mutating func begin() -> Int? {
