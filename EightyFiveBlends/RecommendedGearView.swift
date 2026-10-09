@@ -7,15 +7,19 @@
 
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - Featured content model
 //
 // Recommended Gear leads with a "Featured Brands" carousel. "Featured" is a neutral placement
-// label only: a `.brand` page states or implies no sponsorship, partnership, affiliate
-// relationship, endorsement, discount, or offer, and must keep it that way until a relationship
-// is confirmed and approved wording exists. The one exception is a `.sponsor` page, reserved for
-// an actual sponsor (RVP Supply) and labeled as such; it still carries no price, discount, or
-// performance or compatibility claim.
+// label only: a `.brand` page states or implies no sponsorship, partnership, endorsement, or
+// exclusivity. The single exception to its otherwise offer-free copy is the explicitly approved
+// eFlexFuel promotion (`FeaturedOffer.eFlexFuel`: its code and $100 amount, with the commission
+// disclosure beside it); the brand itself is still not called a sponsor, partner, or affiliate. A
+// `.sponsor` page is reserved for an actual sponsor (RVP Supply) and labeled as such; it carries no
+// price, discount, or performance or compatibility claim.
 //
 // These are presentation data only: no `Color`s (AppTheme tokens are dynamic and must be resolved
 // inside `body`, never cached), no remote configuration. They are not `private` solely so
@@ -30,15 +34,21 @@ struct FeaturedBrand: Identifiable {
     let ctaTitle: String
     let destinationURL: URL?
     let accessibilityDescription: String
+    /// The brand's official wordmark in the asset catalog (adaptive: one image for light, one for
+    /// dark and OLED), when it has one.
+    var wordmarkAssetName: String? = nil
+    /// A promotion shown on the brand's card, when one has been approved. Only eFlexFuel has one.
+    var offer: FeaturedOffer? = nil
 }
 
 extension FeaturedBrand {
     // VoiceOver strings are built here, not inline in the views, so FeaturedGearTests holds them to
     // the same relationship and claim guards as the visible copy.
 
-    /// The neutral "Featured Brand" carousel card, with its position in the carousel.
+    /// The neutral "Featured Brand" carousel card's own area, with its position in the carousel. The
+    /// call to action and the offer are separate controls with their own labels.
     func brandCardAccessibilityLabel(position: Int, total: Int) -> String {
-        "\(name). Featured brand \(position) of \(total). \(accessibilityDescription) \(ctaTitle)."
+        "\(name). Featured brand \(position) of \(total). \(accessibilityDescription)"
     }
 
     /// The sponsor card's header, read before its wheel tiles.
@@ -59,8 +69,69 @@ extension FeaturedBrand {
         description: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
         ctaTitle: "View eFlexFuel Products",
         destinationURL: URL(string: "https://eflexfuel.com/us/auto-products"),
-        accessibilityDescription: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp."
+        accessibilityDescription: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
+        wordmarkAssetName: "EFlexFuelWordmark",
+        offer: .eFlexFuel
     )
+}
+
+/// A promotion on a featured brand's card. Presentation data only. The wording is exactly what has
+/// been approved: it names no expiry, no exclusivity, no products beyond those stated, and leaves
+/// eligibility to the brand's checkout.
+struct FeaturedOffer: Equatable {
+    let amountOff: Int
+    let eligibleProducts: String
+    let code: String
+    let terms: String
+    let disclosure: String
+}
+
+extension FeaturedOffer {
+    /// eFlexFuel's code for $100 off eligible Auto or Moto conversion kits. The destination it
+    /// applies to is the brand's own checkout, which decides eligibility.
+    static let eFlexFuel = FeaturedOffer(
+        amountOff: 100,
+        eligibleProducts: "eligible eFlexFuel Auto or Moto conversion kits",
+        code: "E85BLENDS",
+        terms: "Offer terms are determined by eFlexFuel at checkout.",
+        disclosure: "85Blends may earn a commission on qualifying purchases."
+    )
+
+    static let codeLabel = "Use code"
+    static let copyTitle = "Copy Code"
+    static let copiedTitle = "Copied"
+
+    var headline: String { "$\(amountOff) OFF" }
+    var detail: String { "Save $\(amountOff) on \(eligibleProducts)." }
+    /// The terms note and the commission disclosure, shown together in small print under the offer.
+    var finePrint: String { "\(terms) \(disclosure)" }
+
+    // VoiceOver strings, built here so FeaturedGearTests holds them to the same guards as the copy.
+    var accessibilityLabel: String { "\(detail) Use code \(code)." }
+    var copyButtonAccessibilityLabel: String { "Copy code \(code)" }
+    var copiedButtonAccessibilityLabel: String { "Copied. Code \(code)" }
+    var copiedAnnouncement: String { "Code \(code) copied to the clipboard." }
+}
+
+/// The "Copied" feedback after Copy Code is tapped. A value type like `ProActivationProgress`, so a
+/// stale expiry can never clear the feedback of a newer tap, and testable without SwiftUI. It decides
+/// nothing about the pasteboard or any link: copying and opening the website are separate controls.
+struct FeaturedOfferCopyFeedback: Equatable {
+    private(set) var isCopied = false
+    private var generation = 0
+
+    /// Starts the feedback and returns the token its expiry must present.
+    mutating func didCopy() -> Int {
+        generation += 1
+        isCopied = true
+        return generation
+    }
+
+    /// Ends the feedback, but only if `token` belongs to the latest copy.
+    mutating func expire(token: Int) {
+        guard isCopied, token == generation else { return }
+        isCopied = false
+    }
 }
 
 extension FeaturedBrand {
@@ -227,6 +298,23 @@ nonisolated enum FeaturedGalleryLayout {
     static func padding(forRowOf count: Int, columns: Int) -> Int {
         max(0, columns - count)
     }
+}
+
+/// Widths for a featured brand's official wordmark. The artwork is aspect-fit, so only widths are
+/// chosen and the height always follows the image. Pure, so it is testable without SwiftUI.
+nonisolated enum FeaturedWordmarkLayout {
+    /// The More card's wordmark is this share of the container's width, kept within `moreWidthRange`
+    /// (the readable 190-225pt range), so it grows from a small iPhone to a large one and stops on iPad.
+    static let moreWidthFraction: CGFloat = 0.55
+    static let moreWidthRange: ClosedRange<CGFloat> = 190...225
+
+    static func moreWidth(containerWidth: CGFloat) -> CGFloat {
+        guard containerWidth.isFinite, containerWidth > 0 else { return moreWidthRange.lowerBound }
+        return min(max(containerWidth * moreWidthFraction, moreWidthRange.lowerBound), moreWidthRange.upperBound)
+    }
+
+    /// The most the Recommended Gear card's wordmark grows; it shrinks to the card's width below that.
+    static let cardMaxWidth: CGFloat = 260
 }
 
 /// Sizing rules for the RVP Supply logo, which sits on a dark plate in two places: the More screen
@@ -665,9 +753,11 @@ struct RecommendedGearView: View {
 
 // MARK: - Carousel cards
 
-/// Tappable brand card: one coherent accessibility control that opens the brand's website in the
-/// browser. The wordmark and artwork are separate views so approved brand imagery can replace
-/// them later without touching the rest of the card.
+/// Brand card. Its own area (badge, artwork, logo, copy) is one button that opens the brand's website
+/// in the browser, as the whole card used to. The offer and the call to action below it are separate
+/// siblings, never inside that button: no Button is nested in another, Copy Code can never open the
+/// website, and the website buttons can never copy the code. The logo and artwork are separate views
+/// so approved brand imagery can change without touching the rest of the card.
 private struct FeaturedBrandCard: View {
     let brand: FeaturedBrand
     let position: Int
@@ -689,8 +779,8 @@ private struct FeaturedBrandCard: View {
                         FeaturedBrandArtwork()
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        FeaturedBrandWordmark(name: brand.name)
+                    VStack(alignment: .leading, spacing: 8) {
+                        FeaturedBrandWordmark(brand: brand)
 
                         Text(brand.tagline)
                             .font(.subheadline.weight(.semibold))
@@ -702,13 +792,10 @@ private struct FeaturedBrandCard: View {
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    Spacer(minLength: 0)
-
-                    FeaturedCallToAction(title: brand.ctaTitle)
                 }
-                .padding(18)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -717,7 +804,22 @@ private struct FeaturedBrandCard: View {
             .accessibilityHint("Opens the \(brand.name) website in your browser.")
             .accessibilityAddTraits(.isButton)
 
-            // Outside the Button so it is its own VoiceOver element and never part of the tap target.
+            if let offer = brand.offer {
+                FeaturedOfferSection(offer: offer)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 14)
+            }
+
+            Button(action: action) {
+                FeaturedCallToAction(title: brand.ctaTitle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the \(brand.name) website in your browser.")
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
+
+            // Outside the Buttons so it is its own VoiceOver element and never part of a tap target.
             if let statusMessage {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -737,6 +839,130 @@ private struct FeaturedBrandCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .gearCardChrome()
     }
+}
+
+/// The promotion on a brand card: the amount, the eligibility line, the code with its own Copy Code
+/// button, and the terms and commission note in small print. It is not inside any website button.
+/// Copy Code only ever writes the code to the pasteboard (never reads it, never opens a link) and
+/// shows "Copied" for two seconds.
+private struct FeaturedOfferSection: View {
+    let offer: FeaturedOffer
+
+    @State private var copyFeedback = FeaturedOfferCopyFeedback()
+    // The button keeps one width whether it says "Copy Code" or "Copied", at every text size, so the
+    // row never reflows when the label changes.
+    @ScaledMetric(relativeTo: .subheadline) private var copyButtonMinWidth: CGFloat = 132
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(offer.headline)
+                    .font(.system(.title2, design: .rounded).weight(.heavy))
+                    .foregroundStyle(FeaturedOfferStyle.accent)
+
+                Text(offer.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(offer.accessibilityLabel)
+
+            // Side by side when they fit, stacked when they do not (large text, narrow cards).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    codeChip
+                    copyButton
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    codeChip
+                    copyButton
+                }
+            }
+
+            Text(offer.finePrint)
+                .font(.footnote)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FeaturedOfferStyle.accent.opacity(0.08), in: shape)
+        .overlay(shape.strokeBorder(FeaturedOfferStyle.accent.opacity(0.55), lineWidth: 1))
+    }
+
+    // Read once, in the offer text above and on the button, so it is hidden here.
+    private var codeChip: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(FeaturedOffer.codeLabel.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(1.0)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            Text(offer.code)
+                .font(.system(.title3, design: .monospaced).weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(AppTheme.Colors.charcoal, in: shape)
+        .overlay(shape.strokeBorder(AppTheme.Colors.border, lineWidth: 1))
+        .accessibilityHidden(true)
+    }
+
+    private var copyButton: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let copied = copyFeedback.isCopied
+
+        return Button(action: copyCode) {
+            HStack(spacing: 6) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FeaturedOfferStyle.accent)
+                    .accessibilityHidden(true)
+
+                Text(copied ? FeaturedOffer.copiedTitle : FeaturedOffer.copyTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minWidth: copyButtonMinWidth, minHeight: 44)
+            .background(FeaturedOfferStyle.accent.opacity(0.12), in: shape)
+            .overlay(shape.strokeBorder(FeaturedOfferStyle.accent, lineWidth: 1.5))
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(copied ? offer.copiedButtonAccessibilityLabel : offer.copyButtonAccessibilityLabel)
+        .accessibilityHint("Copies the code to the clipboard.")
+    }
+
+    private func copyCode() {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = offer.code
+        #endif
+
+        let token = copyFeedback.didCopy()
+        AccessibilityNotification.Announcement(offer.copiedAnnouncement).post()
+
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copyFeedback.expire(token: token)
+        }
+    }
+}
+
+// eFlexFuel orange, sampled from the "E" of the official wordmark (255, 85, 0). About 3.2:1 on white
+// and 5 to 7:1 on the dark and OLED cards, so it is used for the large amount, borders, and glyphs,
+// never for small text.
+private enum FeaturedOfferStyle {
+    static let accent = Color(red: 1.0, green: 85.0 / 255.0, blue: 0.0)
 }
 
 /// Page-2 sponsor card: RVP Supply's OEM-style beadlock lineup as a 3x3 gallery. Labeled "Sponsor"
@@ -1061,23 +1287,35 @@ private struct FeaturedBadge: View {
     }
 }
 
-// Typographic treatment only. Swap this body for an approved logo asset once one exists; the
-// rest of the card does not depend on it.
+// The brand's official wordmark from the asset catalog (adaptive: charcoal and orange in light mode,
+// white and orange in dark and OLED), aspect-fit so it is never cropped or stretched, and at most
+// `FeaturedWordmarkLayout.cardMaxWidth` wide so it does not dwarf the copy. Decorative: the card's own
+// label names the brand. A brand without a logo asset keeps the typographic treatment.
 private struct FeaturedBrandWordmark: View {
-    let name: String
+    let brand: FeaturedBrand
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(name)
-                .font(.system(.title, design: .rounded).weight(.heavy))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-
-            Capsule()
-                .fill(AppTheme.Colors.accentGreen)
-                .frame(width: 36, height: 4)
+        if let assetName = brand.wordmarkAssetName {
+            Image(assetName)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(maxWidth: FeaturedWordmarkLayout.cardMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityHidden(true)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(brand.name)
+                    .font(.system(.title, design: .rounded).weight(.heavy))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+
+                Capsule()
+                    .fill(AppTheme.Colors.accentGreen)
+                    .frame(width: 36, height: 4)
+                    .accessibilityHidden(true)
+            }
         }
     }
 }

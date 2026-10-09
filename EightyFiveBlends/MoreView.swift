@@ -651,63 +651,106 @@ private struct MoreFeaturedBrandCard: View {
     // FeaturedGearTests cover this card too.
     private let brand = FeaturedBrand.eFlexFuel
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
         NavigationLink {
             RecommendedGearView()
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "drop.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .frame(width: 52, height: 52)
-                    .background(
-                        AppTheme.Colors.softGreenBackground,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.25), lineWidth: 1)
-                    )
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(FeaturedGearPage.brandBadgeTitle.uppercased())
-                        .font(.caption.weight(.bold))
-                        .tracking(1.2)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-
-                    Text(brand.name)
-                        .font(.system(.title3, design: .rounded).weight(.bold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-
-                    Text(brand.tagline)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            content
+                .padding(.horizontal, 18)
+                .padding(.vertical, 15)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textMuted)
-                    .accessibilityHidden(true)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 15)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.surfaceElevated)
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.3), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
+                .background(AppTheme.Colors.surfaceElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.3), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(brand.compactCardAccessibilityLabel)
         .accessibilityHint(brand.compactCardAccessibilityHint)
         .accessibilityAddTraits(.isButton)
+    }
+
+    // The official wordmark replaces the old droplet icon and brand-name text: it already says
+    // "eFlexFuel", so no name label sits beside it. At accessibility text sizes the chevron moves up
+    // beside the "Featured Brand" label so the wordmark and subtitle get the full width.
+    @ViewBuilder
+    private var content: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    badgeLabel
+
+                    Spacer(minLength: 8)
+
+                    chevron
+                }
+
+                wordmark
+
+                subtitle
+            }
+        } else {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    badgeLabel
+
+                    wordmark
+
+                    subtitle
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                chevron
+            }
+        }
+    }
+
+    private var badgeLabel: some View {
+        Text(FeaturedGearPage.brandBadgeTitle.uppercased())
+            .font(.caption.weight(.bold))
+            .tracking(1.2)
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+    }
+
+    // 190-225pt wide where the screen allows (see FeaturedWordmarkLayout), aspect-fit and uncropped; the
+    // asset is adaptive, so light mode gets the charcoal-and-orange logo and dark and OLED the white one.
+    @ViewBuilder
+    private var wordmark: some View {
+        if let assetName = brand.wordmarkAssetName {
+            Image(assetName)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .containerRelativeFrame(.horizontal) { length, _ in
+                    FeaturedWordmarkLayout.moreWidth(containerWidth: length)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+        } else {
+            Text(brand.name)
+                .font(.system(.title3, design: .rounded).weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+        }
+    }
+
+    private var subtitle: some View {
+        Text(brand.tagline)
+            .font(.subheadline)
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textMuted)
+            .accessibilityHidden(true)
     }
 }

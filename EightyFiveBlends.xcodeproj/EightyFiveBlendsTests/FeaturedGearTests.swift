@@ -5,10 +5,13 @@
 //  Pins the Recommended Gear carousel catalog (RecommendedGearView.swift): its page order, the
 //  https-only link rule every destination passes through before openURL, RVP Supply's nine-wheel
 //  gallery (order, ids, product URLs, and the asset-catalog image behind each tile), and
-//  brand-specific copy guards. eFlexFuel is a neutral Featured Brand with no confirmed
-//  relationship, so its copy must never claim sponsorship, partnership, affiliation, exclusivity,
-//  or an offer. RVP Supply is an actual sponsor, so its copy may say so, but no card may state a
-//  price, an offer, or an unsupported performance or compatibility claim.
+//  brand-specific copy guards. eFlexFuel is a neutral Featured Brand, so its brand copy must never
+//  claim sponsorship, partnership, affiliation, exclusivity, or an unsupported result; the one thing
+//  it may carry beyond that copy is the explicitly approved promotion (`FeaturedOffer.eFlexFuel`: code
+//  E85BLENDS, $100 off eligible Auto or Moto conversion kits, with the commission disclosure), which
+//  is held to its own guards below and invents no expiry, exclusivity, or extra eligibility. RVP
+//  Supply is an actual sponsor, so its copy may say so, but no card may state a price, an offer, or
+//  an unsupported performance or compatibility claim.
 //
 //  Data and logic only: no SwiftUI rendering, no network, no openURL. The one exception is the
 //  asset-catalog guard, which looks images up by name in the host app's bundle (this test target is
@@ -25,7 +28,9 @@ struct FeaturedGearTests {
 
     // The user-facing strings a catalog entry owns. Chrome labels that live in the view (the
     // "Featured Brand" and "Sponsor" badges, the section heading) are fixed wording reviewed
-    // separately; which badge a page gets is decided by its FeaturedGearPage case.
+    // separately; which badge a page gets is decided by its FeaturedGearPage case. A brand's offer
+    // is deliberately NOT part of this list: it is the one approved exception to the no-price,
+    // no-discount, no-"85Blends" rules below, so it has its own narrower guards (see "Offer").
     private static func brandCopy(_ brand: FeaturedBrand) -> [String] {
         [
             brand.name,
@@ -146,6 +151,25 @@ struct FeaturedGearTests {
             return nil
         }
         #expect(sponsorIDs == ["rvp-supply-oem-beadlocks"])
+    }
+
+    @Test("Only eFlexFuel carries an offer; RVP Supply, the sponsor, carries none")
+    func catalog_onlyEFlexFuelHasAnOffer() {
+        let withOffer = FeaturedGearPage.catalog.compactMap { page -> String? in
+            switch page {
+            case .brand(let brand), .sponsor(let brand):
+                return brand.offer == nil ? nil : brand.id
+            }
+        }
+        #expect(withOffer == ["eflexfuel"])
+        #expect(FeaturedBrand.rvpSupplyWheels.offer == nil)
+        #expect(FeaturedBrand.eFlexFuel.offer == FeaturedOffer.eFlexFuel)
+    }
+
+    @Test("eFlexFuel names its official wordmark asset; RVP Supply names none here")
+    func brands_wordmarkAssetNames() {
+        #expect(FeaturedBrand.eFlexFuel.wordmarkAssetName == "EFlexFuelWordmark")
+        #expect(FeaturedBrand.rvpSupplyWheels.wordmarkAssetName == nil)
     }
 
     // MARK: - Destinations
@@ -280,6 +304,118 @@ struct FeaturedGearTests {
         #expect(RVPWheelProduct.footnote.lowercased().contains("see product pages"))
     }
 
+    // MARK: - Offer
+    //
+    // The approved eFlexFuel promotion: the only price, discount, or "85Blends" wording allowed
+    // anywhere in the carousel. These guards keep it to exactly what was approved.
+
+    // Everything the offer shows or speaks, except the commission disclosure (which has to name 85Blends).
+    private static func offerCopyWithoutDisclosure(_ offer: FeaturedOffer) -> [String] {
+        [
+            offer.headline,
+            offer.detail,
+            offer.terms,
+            FeaturedOffer.codeLabel,
+            FeaturedOffer.copyTitle,
+            FeaturedOffer.copiedTitle,
+            offer.accessibilityLabel,
+            offer.copyButtonAccessibilityLabel,
+            offer.copiedButtonAccessibilityLabel,
+            offer.copiedAnnouncement
+        ]
+    }
+
+    @Test("The offer is $100 off with code E85BLENDS, exactly")
+    func offer_isTheApprovedCodeAndAmount() {
+        let offer = FeaturedOffer.eFlexFuel
+        #expect(offer.code == "E85BLENDS")
+        #expect(offer.amountOff == 100)
+        #expect(offer.headline == "$100 OFF")
+        #expect(offer.detail == "Save $100 on eligible eFlexFuel Auto or Moto conversion kits.")
+        #expect(FeaturedOffer.codeLabel == "Use code")
+        #expect(FeaturedOffer.copyTitle == "Copy Code")
+        #expect(FeaturedOffer.copiedTitle == "Copied")
+    }
+
+    @Test("The offer is for eligible Auto or Moto conversion kits and claims nothing broader")
+    func offer_claimsNoUniversalEligibility() {
+        let detail = FeaturedOffer.eFlexFuel.detail.lowercased()
+        #expect(detail.contains("eligible"))
+        #expect(detail.contains("auto"))
+        #expect(detail.contains("moto"))
+        #expect(detail.contains("conversion kits"))
+        // No sitewide, accessory, all-product, or guaranteed wording.
+        Self.assertAvoids(
+            ["sitewide", "site-wide", "everything", "every ", "all products", "all kits", "any ", "accessor", "guarantee", "universal", "all vehicles", "fits all", "free"],
+            in: [detail]
+        )
+    }
+
+    @Test("The offer says eFlexFuel decides eligibility at checkout and discloses 85Blends' commission")
+    func offer_hasTermsNoteAndCommissionDisclosure() {
+        let offer = FeaturedOffer.eFlexFuel
+        #expect(offer.terms == "Offer terms are determined by eFlexFuel at checkout.")
+        #expect(offer.disclosure == "85Blends may earn a commission on qualifying purchases.")
+        #expect(offer.finePrint == "\(offer.terms) \(offer.disclosure)")
+    }
+
+    @Test("The offer invents no expiry, exclusivity, urgency, or extra condition")
+    func offer_inventsNoTermsOrUrgency() {
+        let offer = FeaturedOffer.eFlexFuel
+        let everything = Self.offerCopyWithoutDisclosure(offer) + [offer.disclosure, offer.finePrint]
+        Self.assertAvoids(
+            ["exclusive", "limited", "expire", "expiry", "ends today", "ends soon", "ends in", "ends on", "until", "today",
+             "now only", "hurry", "last chance", "minimum", "first order", "new customer", "stack", "free shipping",
+             "% off", "percent", "bonus", "extra"],
+            in: everything
+        )
+
+        // The only digits anywhere are the approved $100 and the 85 in "E85BLENDS" and "85Blends".
+        for text in everything {
+            let stripped = text
+                .replacingOccurrences(of: "E85BLENDS", with: "")
+                .replacingOccurrences(of: "85Blends", with: "")
+                .replacingOccurrences(of: "$100", with: "")
+            #expect(stripped.contains(where: \.isNumber) == false, "\"\(text)\" has an unapproved number")
+        }
+    }
+
+    @Test("The offer claims no sponsorship, partnership, or endorsement")
+    func offer_claimsNoRelationship() {
+        let offer = FeaturedOffer.eFlexFuel
+        // "85blends" is left out for the disclosure only: it has to name 85Blends to say who may earn
+        // the commission. Everything else about a relationship stays banned in all offer copy.
+        let relationshipClaimsExceptName = Self.relationshipClaims.filter { $0 != "85blends" }
+        Self.assertAvoids(
+            relationshipClaimsExceptName + ["rvp"],
+            in: Self.offerCopyWithoutDisclosure(offer) + [offer.disclosure, offer.finePrint]
+        )
+        // The offer's own wording (apart from the disclosure) never names 85Blends. The approved code
+        // E85BLENDS contains the letters, so it is masked out before looking.
+        let withoutCode = Self.offerCopyWithoutDisclosure(offer).map {
+            $0.replacingOccurrences(of: offer.code, with: "")
+        }
+        Self.assertAvoids(["85blends"], in: withoutCode)
+    }
+
+    @Test("The offer's VoiceOver text names the code, the kits and the button, and Copied is announced")
+    func offer_accessibilityText() {
+        let offer = FeaturedOffer.eFlexFuel
+        #expect(offer.accessibilityLabel == "Save $100 on eligible eFlexFuel Auto or Moto conversion kits. Use code E85BLENDS.")
+        #expect(offer.copyButtonAccessibilityLabel == "Copy code E85BLENDS")
+        #expect(offer.copiedButtonAccessibilityLabel == "Copied. Code E85BLENDS")
+        #expect(offer.copiedAnnouncement == "Code E85BLENDS copied to the clipboard.")
+    }
+
+    @Test("The brand copy itself still has no offer, price, or relationship wording; the offer is separate")
+    func offer_staysOutOfTheBrandCopy() {
+        // The guard above (eFlexFuelCopy_avoidsRelationshipAndUnsupportedClaims) still covers every
+        // brand string unchanged; this pins that the offer's amount and code are not in it.
+        let brandStrings = Self.brandCopy(.eFlexFuel).joined(separator: " ")
+        #expect(brandStrings.contains("E85BLENDS") == false)
+        #expect(brandStrings.contains("$") == false)
+    }
+
     // MARK: - Badges
 
     @Test("The neutral brand badge never says Sponsor; the RVP badge does")
@@ -314,7 +450,9 @@ struct FeaturedGearTests {
         let carousel = brand.brandCardAccessibilityLabel(position: 1, total: 2)
 
         #expect(carousel.hasPrefix("eFlexFuel. Featured brand 1 of 2."))
-        #expect(carousel.contains(brand.ctaTitle))
+        #expect(carousel == "eFlexFuel. Featured brand 1 of 2. \(brand.accessibilityDescription)")
+        // The call to action is a separate button with its own label, so it is not read twice.
+        #expect(carousel.contains(brand.ctaTitle) == false)
         #expect(brand.compactCardAccessibilityLabel == "eFlexFuel. Featured brand. Flex-fuel conversion & ethanol monitoring.")
         #expect(brand.compactCardAccessibilityHint == "Opens Recommended Gear with eFlexFuel featured.")
 
