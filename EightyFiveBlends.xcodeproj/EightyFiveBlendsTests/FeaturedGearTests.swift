@@ -80,17 +80,19 @@ struct FeaturedGearTests {
         "collaborat"
     ]
 
-    // The nine wheels in gallery order (row by row), as approved.
+    // The nine wheels in gallery order (row by row), as approved. Each name is RVP Supply's own
+    // product title without its trailing "Beadlock" (e.g. "OEM Hellcat Style Beadlock"), checked
+    // against the live product pages.
     private static let expectedGallery: [(id: String, name: String, asset: String, url: String)] = [
-        ("oem-hellcat", "OEM Hellcat", "RVPWheelOEMHellcat", "https://rvpsupply.com/products/oem-beadlock-style-8"),
-        ("oem-hellcat-v2", "OEM Hellcat V2", "RVPWheelOEMHellcatV2", "https://rvpsupply.com/products/oem-beadlock-style-4"),
-        ("oem-hellcat-redeye", "OEM Hellcat Redeye", "RVPWheelOEMHellcatRedeye", "https://rvpsupply.com/products/oem-beadlock-style-9"),
-        ("5-spoke-hellcat", "5 Spoke Hellcat", "RVPWheel5SpokeHellcat", "https://rvpsupply.com/products/oem-beadlock-style-3"),
-        ("5-spoke-hellcat-v2", "5 Spoke Hellcat V2", "RVPWheel5SpokeHellcatV2", "https://rvpsupply.com/products/oem-beadlock-style-1"),
-        ("oem-demon", "OEM Demon", "RVPWheelOEMDemon", "https://rvpsupply.com/products/oem-beadlock-style-7"),
-        ("hollow-5-spoke", "Hollow 5 Spoke", "RVPWheelHollow5Spoke", "https://rvpsupply.com/products/oem-beadlock-style-5"),
-        ("chrome-oem-hellcat", "Chrome OEM Hellcat", "RVPWheelChromeOEMHellcat", "https://rvpsupply.com/products/oem-beadlock-style-2"),
-        ("oem-widebody", "OEM Widebody", "RVPWheelOEMWidebody", "https://rvpsupply.com/products/oem-beadlock-style-6")
+        ("oem-hellcat", "OEM Hellcat Style", "RVPWheelOEMHellcat", "https://rvpsupply.com/products/oem-beadlock-style-8"),
+        ("oem-hellcat-v2", "OEM Hellcat Style V2", "RVPWheelOEMHellcatV2", "https://rvpsupply.com/products/oem-beadlock-style-4"),
+        ("oem-hellcat-redeye", "OEM Hellcat Redeye Style", "RVPWheelOEMHellcatRedeye", "https://rvpsupply.com/products/oem-beadlock-style-9"),
+        ("5-spoke-hellcat", "5 Spoke Hellcat Style", "RVPWheel5SpokeHellcat", "https://rvpsupply.com/products/oem-beadlock-style-3"),
+        ("5-spoke-hellcat-v2", "5 Spoke Hellcat Style V2", "RVPWheel5SpokeHellcatV2", "https://rvpsupply.com/products/oem-beadlock-style-1"),
+        ("oem-demon", "OEM Demon Style", "RVPWheelOEMDemon", "https://rvpsupply.com/products/oem-beadlock-style-7"),
+        ("hollow-5-spoke", "Hollow 5 Spoke Style", "RVPWheelHollow5Spoke", "https://rvpsupply.com/products/oem-beadlock-style-5"),
+        ("chrome-oem-hellcat", "Chrome OEM Hellcat Style", "RVPWheelChromeOEMHellcat", "https://rvpsupply.com/products/oem-beadlock-style-2"),
+        ("oem-widebody", "OEM Widebody Style", "RVPWheelOEMWidebody", "https://rvpsupply.com/products/oem-beadlock-style-6")
     ]
 
     private static func assertAvoids(_ phrases: [String], in texts: [String]) {
@@ -226,6 +228,14 @@ struct FeaturedGearTests {
             #expect(product.assetName.isEmpty == false)
             #expect(product.assetName.hasPrefix("RVPWheel"))
             #expect(UIImage(named: product.assetName) != nil, "Missing asset-catalog image \"\(product.assetName)\"")
+        }
+    }
+
+    @Test("Wheel names keep RVP's own \"Style\" wording, so none reads as a genuine OEM part")
+    func gallery_namesKeepManufacturerStyleWording() {
+        for product in RVPWheelProduct.catalog {
+            #expect(product.displayName.contains(" Style"), "\"\(product.displayName)\" must keep RVP's \"Style\" qualifier")
+            #expect(product.accessibilityName.contains(" Style"), "\"\(product.accessibilityName)\" must keep RVP's \"Style\" qualifier")
         }
     }
 

@@ -94,66 +94,66 @@ extension RVPWheelProduct {
     static let catalog: [RVPWheelProduct] = [
         RVPWheelProduct(
             id: "oem-hellcat",
-            displayName: "OEM Hellcat",
+            displayName: "OEM Hellcat Style",
             assetName: "RVPWheelOEMHellcat",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-8"),
-            accessibilityName: "OEM Hellcat beadlock wheel"
+            accessibilityName: "OEM Hellcat Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "oem-hellcat-v2",
-            displayName: "OEM Hellcat V2",
+            displayName: "OEM Hellcat Style V2",
             assetName: "RVPWheelOEMHellcatV2",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-4"),
-            accessibilityName: "OEM Hellcat V2 beadlock wheel"
+            accessibilityName: "OEM Hellcat Style V2 beadlock wheel"
         ),
         RVPWheelProduct(
             id: "oem-hellcat-redeye",
-            displayName: "OEM Hellcat Redeye",
+            displayName: "OEM Hellcat Redeye Style",
             assetName: "RVPWheelOEMHellcatRedeye",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-9"),
-            accessibilityName: "OEM Hellcat Redeye beadlock wheel"
+            accessibilityName: "OEM Hellcat Redeye Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "5-spoke-hellcat",
-            displayName: "5 Spoke Hellcat",
+            displayName: "5 Spoke Hellcat Style",
             assetName: "RVPWheel5SpokeHellcat",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-3"),
-            accessibilityName: "5 Spoke Hellcat beadlock wheel"
+            accessibilityName: "5 Spoke Hellcat Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "5-spoke-hellcat-v2",
-            displayName: "5 Spoke Hellcat V2",
+            displayName: "5 Spoke Hellcat Style V2",
             assetName: "RVPWheel5SpokeHellcatV2",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-1"),
-            accessibilityName: "5 Spoke Hellcat V2 beadlock wheel"
+            accessibilityName: "5 Spoke Hellcat Style V2 beadlock wheel"
         ),
         RVPWheelProduct(
             id: "oem-demon",
-            displayName: "OEM Demon",
+            displayName: "OEM Demon Style",
             assetName: "RVPWheelOEMDemon",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-7"),
-            accessibilityName: "OEM Demon beadlock wheel"
+            accessibilityName: "OEM Demon Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "hollow-5-spoke",
-            displayName: "Hollow 5 Spoke",
+            displayName: "Hollow 5 Spoke Style",
             assetName: "RVPWheelHollow5Spoke",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-5"),
-            accessibilityName: "Hollow 5 Spoke beadlock wheel"
+            accessibilityName: "Hollow 5 Spoke Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "chrome-oem-hellcat",
-            displayName: "Chrome OEM Hellcat",
+            displayName: "Chrome OEM Hellcat Style",
             assetName: "RVPWheelChromeOEMHellcat",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-2"),
-            accessibilityName: "Chrome OEM Hellcat beadlock wheel"
+            accessibilityName: "Chrome OEM Hellcat Style beadlock wheel"
         ),
         RVPWheelProduct(
             id: "oem-widebody",
-            displayName: "OEM Widebody",
+            displayName: "OEM Widebody Style",
             assetName: "RVPWheelOEMWidebody",
             productURL: URL(string: "https://rvpsupply.com/products/oem-beadlock-style-6"),
-            accessibilityName: "OEM Widebody beadlock wheel"
+            accessibilityName: "OEM Widebody Style beadlock wheel"
         )
     ]
 
