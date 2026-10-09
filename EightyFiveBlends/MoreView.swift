@@ -44,6 +44,13 @@ struct MoreView: View {
                     // horizontal card introduced in Pass 4; only the position changed.
                     sponsorCard
 
+                    // DEMO-ONLY pitch placeholder: shows how a featured-brand slot could sit
+                    // directly under the sponsor card. It is not a sponsorship, partnership, or
+                    // paid placement and is deliberately worded neutrally ("Featured Brand").
+                    // Remove before any production release unless a confirmed agreement and
+                    // approved wording exist.
+                    MoreFeaturedBrandCard()
+
                     VStack(spacing: 16) {
                         // Pro / Referral — no separate section header: the page header above
                         // already sets context, so this preserves the clean transition from the
@@ -159,7 +166,7 @@ struct MoreView: View {
 
                                 MoreNavigationRow(
                                     title: "Recommended Gear",
-                                    subtitle: "Hand-picked tools, accessories, and sponsor-safe gear recommendations for ethanol-focused setups.",
+                                    subtitle: "Hand-picked E85 tools, accessories, and featured gear.",
                                     systemImage: "wrench.and.screwdriver",
                                     tint: AppTheme.Colors.accentGreen
                                 ) {
@@ -598,5 +605,72 @@ private struct MoreActionRow: View {
             MoreRowLabel(title: title, subtitle: subtitle, systemImage: systemImage, tint: tint)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// DEMO-ONLY eFlexFuel pitch placeholder (see its call site in MoreView.body). A compact "Featured
+// Brand" card that pushes Recommended Gear, whose carousel always opens on the eFlexFuel page, so
+// no routing state is needed. Native shapes and SF Symbols only (no brand imagery), and visually
+// distinct from the sponsor card above it: mint tile and outline instead of a logo and yellow
+// outline, and a chevron (navigates inside the app) instead of the external-link arrow.
+private struct MoreFeaturedBrandCard: View {
+    var body: some View {
+        NavigationLink {
+            RecommendedGearView()
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "drop.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .frame(width: 52, height: 52)
+                    .background(
+                        AppTheme.Colors.softGreenBackground,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.25), lineWidth: 1)
+                    )
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("FEATURED BRAND")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                    Text("eFlexFuel")
+                        .font(.system(.title3, design: .rounded).weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text("Flex-fuel conversion & ethanol monitoring")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textMuted)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceElevated)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.3), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("eFlexFuel. Featured brand. Flex-fuel conversion and ethanol monitoring.")
+        .accessibilityHint("Opens Recommended Gear with eFlexFuel featured.")
+        .accessibilityAddTraits(.isButton)
     }
 }
