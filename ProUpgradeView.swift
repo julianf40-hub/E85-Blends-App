@@ -93,6 +93,10 @@ struct ProUpgradeView: View {
     /// any resulting change, entirely unchanged by this).
     @State private var isShowingManageSubscriptions = false
 
+    /// 85Blends 2.4.1 (issue #122) — presentation state of the "Activate Pro" action for an Offer
+    /// Code redeemed outside the app. See ProActivation.swift; never an entitlement source.
+    @State private var activation = ProActivationProgress()
+
     private var referralManager: ReferralManager { ReferralManager.shared }
 
     /// Trim+uppercase only — see ReferralPresentation.normalizedReferralCode's own header. Shared
@@ -214,6 +218,15 @@ struct ProUpgradeView: View {
                 isShowingReferralCodeSheet = false
             }
         }
+        // The Free row is replaced by the Pro screen the moment an activation succeeds, so the
+        // outcome is announced rather than left to VoiceOver focus that just disappeared. "Active"
+        // is only announced while this screen really shows Pro (a Developer Force Free override can
+        // differ from the raw entitlement in Internal/Debug builds).
+        .onChange(of: activation.phase) { _, phase in
+            if let message = activation.message, phase != .activated || manager.isProUser {
+                AccessibilityNotification.Announcement(message).post()
+            }
+        }
         .task {
             // Wait for any in-progress startup offering fetch to settle before we try.
             // Without this yield + loop, our call hits the loadOfferings() in-flight guard and
@@ -241,7 +254,11 @@ struct ProUpgradeView: View {
         // SubscriptionManager.isPaywallPresented's header). Purely a presentation flag; never
         // touches entitlement or purchasing state.
         .onAppear { manager.setPaywallPresented(true) }
-        .onDisappear { manager.setPaywallPresented(false) }
+        .onDisappear {
+            manager.setPaywallPresented(false)
+            // Invalidates any in-flight attempt's token so its late result can't resurface here.
+            activation.reset()
+        }
         // A plain, declarative animation tied to the state value itself — every state change that
         // shows/hides the overlay (Cancel, Apply & Continue, or a future call site) picks it up
         // automatically, with no risk of a call site forgetting to wrap its own state change in
@@ -484,8 +501,77 @@ struct ProUpgradeView: View {
             } else {
                 offeringUnavailableView
             }
+
+            // Below the hosted paywall (not above it) so it costs RevenueCatUI's content no height
+            // above the plans, and shown in BOTH branches so it still works when the offering failed.
+            activateProRow
         }
         .background(AppTheme.Colors.charcoal)
+    }
+
+    // MARK: - Activate Pro (85Blends 2.4.1, issue #122)
+    //
+    // Free users only. For an Offer Code redeemed OUTSIDE the app, which nothing here can observe.
+    // Runs the existing `syncAfterExternalRedemption()` via ProActivationRunner — never a purchase,
+    // never Restore — and reports Pro only once RevenueCat's own entitlement is active (the screen
+    // then swaps to `proActiveContent` by itself). One plain footer-style row, not a card.
+
+    private var isPurchaseOrRestoreInFlight: Bool {
+        manager.purchaseState == .purchasing || manager.purchaseState == .restoring
+    }
+
+    @ViewBuilder
+    private var activateProRow: some View {
+        Group {
+            if activation.phase == .checking {
+                statusRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    text: ProActivationProgress.checkingMessage,
+                    color: AppTheme.Colors.textSecondary,
+                    spinning: true
+                )
+                .frame(minHeight: 44)
+                .accessibilityElement(children: .combine)
+            } else {
+                let needsRetry = activation.phase == .notConfirmed || activation.phase == .failed
+                Button(action: activatePro) {
+                    HStack(spacing: 8) {
+                        Text(needsRetry ? (activation.message ?? "") : "Already redeemed an Offer Code?")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Text(needsRetry ? "Try Again" : "Activate Pro")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.stationYellow)
+                    }
+                    // Sizing lives INSIDE the label so the 44pt box is the actual tap/VoiceOver target.
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isPurchaseOrRestoreInFlight)
+                .opacity(isPurchaseOrRestoreInFlight ? 0.5 : 1)
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Checks your App Store subscription. This does not start a purchase.")
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: 600)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    /// Two layers of single-flight: `begin()` refuses a second tap on this screen, and
+    /// `ProActivationRunner` coalesces overlapping Activate Pro attempts from another
+    /// `ProUpgradeView` instance. The task is deliberately not tied to this view's lifetime (a
+    /// half-done sync helps no one); the token makes a result that arrives after the screen was left
+    /// inert. Re-checks the purchase/restore guard the button's `.disabled` applies at render time.
+    private func activatePro() {
+        guard isPurchaseOrRestoreInFlight == false, let token = activation.begin() else { return }
+        Task {
+            let outcome = await ProActivationRunner.shared.run()
+            activation.finish(outcome, token: token)
+        }
     }
 
     /// Shown only while `manager.defaultOffering` hasn't loaded (or failed to). Once it loads,
@@ -1056,6 +1142,11 @@ struct ProUpgradeView: View {
             VStack(alignment: .leading, spacing: 20) {
                 proActiveHeroCard
                 purchaseStateRow
+                // The outcome of an "Activate Pro" tap made on the Free screen, which this view
+                // replaced the instant RevenueCat confirmed the entitlement.
+                if activation.phase == .activated, let message = activation.message {
+                    statusRow(icon: "checkmark.seal.fill", text: message, color: AppTheme.Colors.primaryGreen)
+                }
                 proBenefitsCard
 
                 // Restore stays visible even when already Pro, as App Review expects. Tapping
