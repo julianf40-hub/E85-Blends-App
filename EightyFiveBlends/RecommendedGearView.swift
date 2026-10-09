@@ -33,6 +33,25 @@ struct FeaturedBrand: Identifiable {
 }
 
 extension FeaturedBrand {
+    // VoiceOver strings are built here, not inline in the views, so FeaturedGearTests holds them to
+    // the same relationship and claim guards as the visible copy.
+
+    /// The neutral "Featured Brand" carousel card, with its position in the carousel.
+    func brandCardAccessibilityLabel(position: Int, total: Int) -> String {
+        "\(name). Featured brand \(position) of \(total). \(accessibilityDescription) \(ctaTitle)."
+    }
+
+    /// The sponsor card's header, read before its wheel tiles.
+    func sponsorHeaderAccessibilityLabel(position: Int, total: Int) -> String {
+        "\(name). Sponsor. \(accessibilityDescription) Featured card \(position) of \(total). \(description)"
+    }
+
+    /// The compact More-screen card that opens Recommended Gear.
+    var compactCardAccessibilityLabel: String { "\(name). Featured brand. \(tagline)." }
+    var compactCardAccessibilityHint: String { "Opens Recommended Gear with \(name) featured." }
+}
+
+extension FeaturedBrand {
     static let eFlexFuel = FeaturedBrand(
         id: "eflexfuel",
         name: "eFlexFuel",
@@ -179,6 +198,27 @@ nonisolated enum FeaturedBrandLink {
             return nil
         }
         return url
+    }
+}
+
+/// How the RVP wheel gallery lays out its tiles: three to a row, two at accessibility text sizes so
+/// product names keep room. Pure, so the layout (and the padding of a short last row) is testable.
+nonisolated enum FeaturedGalleryLayout {
+    static func columnCount(isAccessibilitySize: Bool) -> Int {
+        isAccessibilitySize ? 2 : 3
+    }
+
+    /// Row-by-row, left-to-right chunks of `columns` items; only the last row can be short.
+    static func rows<Item>(_ items: [Item], columns: Int) -> [[Item]] {
+        let width = max(1, columns)
+        return stride(from: 0, to: items.count, by: width).map { start in
+            Array(items[start..<min(start + width, items.count)])
+        }
+    }
+
+    /// Empty cells a row needs so every tile keeps the same width.
+    static func padding(forRowOf count: Int, columns: Int) -> Int {
+        max(0, columns - count)
     }
 }
 
@@ -477,7 +517,7 @@ private struct FeaturedBrandCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(brand.name). Featured brand \(position) of \(total). \(brand.accessibilityDescription) \(brand.ctaTitle).")
+            .accessibilityLabel(brand.brandCardAccessibilityLabel(position: position, total: total))
             .accessibilityHint("Opens the \(brand.name) website in your browser.")
             .accessibilityAddTraits(.isButton)
 
@@ -621,7 +661,7 @@ private struct FeaturedSponsorCard: View {
                 .frame(width: 44, height: 3)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(brand.name). Sponsor. \(brand.accessibilityDescription) Featured card \(position) of \(total). \(brand.description)")
+        .accessibilityLabel(brand.sponsorHeaderAccessibilityLabel(position: position, total: total))
     }
 }
 
@@ -635,14 +675,11 @@ private struct FeaturedWheelGallery: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var columnCount: Int {
-        dynamicTypeSize.isAccessibilitySize ? 2 : 3
+        FeaturedGalleryLayout.columnCount(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
 
     private var rows: [[RVPWheelProduct]] {
-        let count = columnCount
-        return stride(from: 0, to: products.count, by: count).map { start in
-            Array(products[start..<min(start + count, products.count)])
-        }
+        FeaturedGalleryLayout.rows(products, columns: columnCount)
     }
 
     var body: some View {
@@ -656,7 +693,7 @@ private struct FeaturedWheelGallery: View {
                     }
 
                     // Pads a short last row so every tile keeps the same width.
-                    ForEach(0..<(columns - row.count), id: \.self) { _ in
+                    ForEach(0..<FeaturedGalleryLayout.padding(forRowOf: row.count, columns: columns), id: \.self) { _ in
                         Color.clear
                             .frame(maxWidth: .infinity)
                             .accessibilityHidden(true)

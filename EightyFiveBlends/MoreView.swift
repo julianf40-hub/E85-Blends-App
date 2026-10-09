@@ -614,6 +614,10 @@ private struct MoreActionRow: View {
 // distinct from the sponsor card above it: mint tile and outline instead of a logo and yellow
 // outline, and a chevron (navigates inside the app) instead of the external-link arrow.
 private struct MoreFeaturedBrandCard: View {
+    // Copy comes from the same model the Recommended Gear carousel uses, so the wording guards in
+    // FeaturedGearTests cover this card too.
+    private let brand = FeaturedBrand.eFlexFuel
+
     var body: some View {
         NavigationLink {
             RecommendedGearView()
@@ -639,11 +643,11 @@ private struct MoreFeaturedBrandCard: View {
                         .tracking(1.2)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
 
-                    Text("eFlexFuel")
+                    Text(brand.name)
                         .font(.system(.title3, design: .rounded).weight(.bold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                    Text("Flex-fuel conversion & ethanol monitoring")
+                    Text(brand.tagline)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .multilineTextAlignment(.leading)
@@ -669,8 +673,8 @@ private struct MoreFeaturedBrandCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("eFlexFuel. Featured brand. Flex-fuel conversion and ethanol monitoring.")
-        .accessibilityHint("Opens Recommended Gear with eFlexFuel featured.")
+        .accessibilityLabel(brand.compactCardAccessibilityLabel)
+        .accessibilityHint(brand.compactCardAccessibilityHint)
         .accessibilityAddTraits(.isButton)
     }
 }

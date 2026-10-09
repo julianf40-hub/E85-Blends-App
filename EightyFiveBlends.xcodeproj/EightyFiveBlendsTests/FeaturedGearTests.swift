@@ -257,4 +257,85 @@ struct FeaturedGearTests {
         Self.assertAvoids(["6061", "rotary", "forged", "aluminum"], in: [RVPWheelProduct.footnote])
         #expect(RVPWheelProduct.footnote.lowercased().contains("see product pages"))
     }
+
+    // MARK: - Every destination
+
+    @Test("Every destination the carousel can open (2 brand pages + 9 products) passes the https link gate")
+    func everyDestination_passesLinkGate() {
+        let brandURLs: [URL?] = FeaturedGearPage.catalog.map { page in
+            switch page {
+            case .brand(let brand), .sponsor(let brand):
+                return brand.destinationURL
+            }
+        }
+        let all = brandURLs + RVPWheelProduct.catalog.map { $0.productURL }
+        #expect(all.count == 11)
+        #expect(all.allSatisfy { FeaturedBrandLink.validatedURL($0) != nil })
+        // The app's own scheme would be routed back into the app by ContentView's .onOpenURL.
+        #expect(all.allSatisfy { $0?.scheme?.lowercased() != "e85blends" })
+    }
+
+    // MARK: - VoiceOver copy
+
+    @Test("The eFlexFuel carousel and More-card VoiceOver text is neutral and carries its position")
+    func eFlexFuelAccessibilityCopy_isNeutralAndPositioned() {
+        let brand = FeaturedBrand.eFlexFuel
+        let carousel = brand.brandCardAccessibilityLabel(position: 1, total: 2)
+
+        #expect(carousel.hasPrefix("eFlexFuel. Featured brand 1 of 2."))
+        #expect(carousel.contains(brand.ctaTitle))
+        #expect(brand.compactCardAccessibilityLabel == "eFlexFuel. Featured brand. Flex-fuel conversion & ethanol monitoring.")
+        #expect(brand.compactCardAccessibilityHint == "Opens Recommended Gear with eFlexFuel featured.")
+
+        Self.assertAvoids(
+            Self.relationshipClaims + Self.unsupportedClaims + ["rvp"],
+            in: [carousel, brand.compactCardAccessibilityLabel, brand.compactCardAccessibilityHint]
+        )
+    }
+
+    @Test("The RVP sponsor header says Sponsor and its position, and claims no partnership or offer")
+    func rvpSupplyAccessibilityHeader_identifiesSponsorAndPosition() {
+        let label = FeaturedBrand.rvpSupplyWheels.sponsorHeaderAccessibilityLabel(position: 2, total: 2)
+
+        #expect(label.hasPrefix("RVP Supply. Sponsor."))
+        #expect(label.contains("Featured card 2 of 2."))
+        Self.assertAvoids(["official partner", "affiliate", "exclusive", "endorse"] + Self.unsupportedClaims, in: [label])
+    }
+
+    // MARK: - Gallery layout
+
+    @Test("Standard text sizes show three wheels per row, accessibility sizes two")
+    func galleryLayout_columnCount() {
+        #expect(FeaturedGalleryLayout.columnCount(isAccessibilitySize: false) == 3)
+        #expect(FeaturedGalleryLayout.columnCount(isAccessibilitySize: true) == 2)
+    }
+
+    @Test("Nine wheels fill three rows of three at standard sizes, in order, with no padding")
+    func galleryLayout_standardRows() {
+        let ids = RVPWheelProduct.catalog.map { $0.id }
+        let rows = FeaturedGalleryLayout.rows(ids, columns: 3)
+
+        #expect(rows.map(\.count) == [3, 3, 3])
+        #expect(rows.flatMap { $0 } == ids)
+        #expect(rows.allSatisfy { FeaturedGalleryLayout.padding(forRowOf: $0.count, columns: 3) == 0 })
+    }
+
+    @Test("At accessibility sizes the nine wheels become four rows of two, then a padded row of one")
+    func galleryLayout_accessibilityRows() {
+        let ids = RVPWheelProduct.catalog.map { $0.id }
+        let rows = FeaturedGalleryLayout.rows(ids, columns: 2)
+
+        #expect(rows.map(\.count) == [2, 2, 2, 2, 1])
+        #expect(rows.flatMap { $0 } == ids)
+        #expect(rows.dropLast().allSatisfy { FeaturedGalleryLayout.padding(forRowOf: $0.count, columns: 2) == 0 })
+        #expect(FeaturedGalleryLayout.padding(forRowOf: 1, columns: 2) == 1)
+    }
+
+    @Test("Degenerate input never traps and never drops a tile")
+    func galleryLayout_degenerateInputs() {
+        #expect(FeaturedGalleryLayout.rows([Int](), columns: 3).isEmpty)
+        #expect(FeaturedGalleryLayout.rows([1, 2, 3], columns: 0) == [[1], [2], [3]])
+        #expect(FeaturedGalleryLayout.rows([1, 2], columns: 5) == [[1, 2]])
+        #expect(FeaturedGalleryLayout.padding(forRowOf: 5, columns: 3) == 0)
+    }
 }
