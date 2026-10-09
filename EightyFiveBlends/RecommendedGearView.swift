@@ -56,10 +56,10 @@ extension FeaturedBrand {
         id: "eflexfuel",
         name: "eFlexFuel",
         tagline: "Flex-fuel conversion & ethanol monitoring",
-        description: "Flex-fuel conversion kits, real-time ethanol monitoring, and eFlexApp integration for E85 drivers.",
+        description: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
         ctaTitle: "View eFlexFuel Products",
         destinationURL: URL(string: "https://eflexfuel.com/us/auto-products"),
-        accessibilityDescription: "Flex-fuel conversion and ethanol monitoring. Flex-fuel conversion kits, real-time ethanol monitoring, and eFlexApp integration for E85 drivers."
+        accessibilityDescription: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp."
     )
 }
 
@@ -177,8 +177,15 @@ enum FeaturedGearPage: Identifiable {
         }
     }
 
+    /// The badge text each case carries, in one place so FeaturedGearTests can hold the neutral brand
+    /// to never saying "Sponsor".
+    static let brandBadgeTitle = "Featured Brand"
+    static let sponsorBadgeTitle = "Sponsor"
+
     /// Live-demo catalog: exactly two pages, eFlexFuel (neutral Featured Brand) then RVP Supply
-    /// (sponsor).
+    /// (sponsor). The eFlexFuel page, like MoreView's featured-brand card, is pending an approved
+    /// relationship and wording; dropping `.brand(.eFlexFuel)` here and removing that card is the
+    /// whole demo. Everything else on this screen is the RVP sponsor.
     static let catalog: [FeaturedGearPage] = [
         .brand(.eFlexFuel),
         .sponsor(.rvpSupplyWheels)
@@ -228,6 +235,7 @@ struct RecommendedGearView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
     @State private var selectedPageID: String?
     @State private var linkMessages: [String: String] = [:]
@@ -256,7 +264,11 @@ struct RecommendedGearView: View {
     // broken, so each page keeps its natural height and the carousel follows the current one. It is
     // nil until the first measurement, when the carousel just sizes to its tallest page.
     private var carouselHeight: CGFloat? {
-        pageHeights[pages[currentPageIndex].id]
+        // With VoiceOver on, focus can move to the next page's elements before the page indicator
+        // (which follows the snapped page) has caught up, which would leave them under the clip. So
+        // it sizes to the tallest page instead.
+        guard voiceOverEnabled == false else { return nil }
+        return pageHeights[pages[currentPageIndex].id]
     }
 
     var body: some View {
@@ -485,7 +497,7 @@ private struct FeaturedBrandCard: View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: action) {
                 VStack(alignment: .leading, spacing: 14) {
-                    FeaturedBadge(title: "Featured Brand")
+                    FeaturedBadge(title: FeaturedGearPage.brandBadgeTitle)
 
                     // Decorative only, and dropped at accessibility text sizes so the copy and
                     // the call to action get the room instead.
@@ -509,7 +521,7 @@ private struct FeaturedBrandCard: View {
 
                     Spacer(minLength: 0)
 
-                    callToAction
+                    FeaturedCallToAction(title: brand.ctaTitle)
                 }
                 .padding(18)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -540,39 +552,6 @@ private struct FeaturedBrandCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .gearCardChrome()
-    }
-
-    // Inverted high-contrast pill built from existing tokens (near-black on light, white on
-    // dark/OLED) so it never depends on the accent color for legibility. At accessibility sizes
-    // the external-link glyph moves below the text so the label keeps the full pill width.
-    private var callToAction: some View {
-        let stacked = dynamicTypeSize.isAccessibilitySize
-        let layout = stacked
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 8))
-
-        return layout {
-            Text(brand.ctaTitle)
-                .font(.subheadline.weight(.semibold))
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if stacked == false {
-                Spacer(minLength: 8)
-            }
-
-            Image(systemName: "arrow.up.forward.square")
-                .font(.subheadline.weight(.semibold))
-                .accessibilityHidden(true)
-        }
-        .foregroundStyle(AppTheme.Colors.surfaceElevated)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(
-            AppTheme.Colors.textPrimary,
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
     }
 }
 
@@ -633,7 +612,7 @@ private struct FeaturedSponsorCard: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
-                FeaturedBadge(title: "Sponsor")
+                FeaturedBadge(title: FeaturedGearPage.sponsorBadgeTitle)
 
                 Spacer(minLength: 8)
 
@@ -720,6 +699,7 @@ private struct FeaturedWheelTile: View {
             VStack(spacing: 6) {
                 Image(product.assetName)
                     .resizable()
+                    .interpolation(.high)
                     .scaledToFit()
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .allowsHitTesting(false)
@@ -783,9 +763,9 @@ private struct FeaturedClaimPill: View {
     }
 }
 
-/// The inverted call-to-action pill, matching the one inside `FeaturedBrandCard` (kept separate
-/// so that approved card is untouched). Near-black on light, white on dark/OLED, so it never
-/// depends on the accent color; at accessibility sizes the external-link glyph moves below the text.
+/// The inverted call-to-action pill shared by both cards. Near-black on light, white on dark/OLED,
+/// so it never depends on the accent color; at accessibility sizes the external-link glyph moves
+/// below the text.
 private struct FeaturedCallToAction: View {
     let title: String
 

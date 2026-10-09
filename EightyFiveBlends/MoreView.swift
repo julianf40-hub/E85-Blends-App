@@ -638,7 +638,7 @@ private struct MoreFeaturedBrandCard: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("FEATURED BRAND")
+                    Text(FeaturedGearPage.brandBadgeTitle.uppercased())
                         .font(.caption.weight(.bold))
                         .tracking(1.2)
                         .foregroundStyle(AppTheme.Colors.textSecondary)

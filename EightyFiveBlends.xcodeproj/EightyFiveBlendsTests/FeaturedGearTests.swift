@@ -65,7 +65,19 @@ struct FeaturedGearTests {
         "sponsor",
         "affiliate",
         "exclusive",
-        "endorse"
+        "endorse",
+        // Wording that reads as a tie to 85Blends or as vouching for the brand: eFlexFuel's own page
+        // never says "integration", so the app must not either.
+        "integrat",
+        "works with",
+        "work with",
+        "85blends",
+        "official",
+        "authorized",
+        "trusted",
+        "preferred",
+        "powered by",
+        "collaborat"
     ]
 
     // The nine wheels in gallery order (row by row), as approved.
@@ -256,6 +268,15 @@ struct FeaturedGearTests {
         // so the footnote points to the product pages for specifications rather than asserting it.
         Self.assertAvoids(["6061", "rotary", "forged", "aluminum"], in: [RVPWheelProduct.footnote])
         #expect(RVPWheelProduct.footnote.lowercased().contains("see product pages"))
+    }
+
+    // MARK: - Badges
+
+    @Test("The neutral brand badge never says Sponsor; the RVP badge does")
+    func badges_matchTheRelationship() {
+        #expect(FeaturedGearPage.brandBadgeTitle == "Featured Brand")
+        #expect(FeaturedGearPage.sponsorBadgeTitle == "Sponsor")
+        Self.assertAvoids(Self.relationshipClaims, in: [FeaturedGearPage.brandBadgeTitle])
     }
 
     // MARK: - Every destination
