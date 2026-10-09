@@ -229,17 +229,122 @@ nonisolated enum FeaturedGalleryLayout {
     }
 }
 
+/// How tall the Featured Brands carousel is while it is swiped. Its pages have very different natural
+/// heights (the eFlexFuel card is far shorter than the RVP gallery card), so the carousel follows the
+/// swipe instead of stepping to the snapped page. Pure, so the whole rule is testable without SwiftUI.
+///
+/// "Progress" is the carousel's continuous page position: 0 with the first page settled, 1 with the
+/// second settled, and the fractions in between while swiping. It comes from the pages' measured
+/// leading edges, because the scroll view's snapped-page id (`scrollPosition`) only changes once the
+/// next card has almost reached the edge, which is far too late to size from.
+nonisolated enum FeaturedCarouselMetrics {
+    /// How the height leaves the taller page's height. 1 is linear. 2 keeps the carousel close to the
+    /// taller page's height while most of that page is still on screen, so less of its bottom is cut
+    /// mid-swipe, and still reaches the shorter page's exact height when it settles.
+    static let easeExponent: CGFloat = 2
+
+    /// How close to a page (as a fraction of a page's width) still counts as that page being settled.
+    /// It absorbs the last few points of a snap and a settled page sitting a margin off where it is
+    /// expected, so a settled carousel is always exactly the page's own height. The ramp between two
+    /// pages is stretched over the rest of the swipe, so there is no jump at the edge of this zone.
+    static let settleTolerance: CGFloat = 0.05
+
+    /// The measured progress must have passed this to count as having moved.
+    static let movementThreshold: CGFloat = 0.001
+
+    /// Continuous page position from the pages' leading edges (`nil` = not measured yet), measured in
+    /// the scroll view's own coordinate space. `restingMinX` is where the settled page's leading edge
+    /// sits (the scroll content margin). The spacing between pages is read from the first two edges
+    /// rather than assumed. `nil` when it can't be worked out, and clamped to the real pages otherwise
+    /// so rubber-banding past either end can't ask for a height that doesn't exist.
+    static func progress(pageMinX: [CGFloat?], restingMinX: CGFloat) -> CGFloat? {
+        guard pageMinX.isEmpty == false, let first = pageMinX[0], first.isFinite, restingMinX.isFinite else {
+            return nil
+        }
+        guard pageMinX.count > 1 else { return 0 }
+        guard let second = pageMinX[1], second.isFinite else { return nil }
+
+        let pageSpacing = second - first
+        guard pageSpacing > 1 else { return nil }
+        return min(max((restingMinX - first) / pageSpacing, 0), CGFloat(pageMinX.count - 1))
+    }
+
+    /// The carousel's height at `progress`, between the two pages being swiped. Exactly a page's own
+    /// height whenever that page is settled. `nil` if a page it needs isn't usable yet (not measured,
+    /// zero, negative or not finite), so the caller can fall back to the natural height rather than
+    /// collapse the carousel.
+    static func height(pageHeights: [CGFloat?], progress: CGFloat) -> CGFloat? {
+        guard pageHeights.isEmpty == false, progress.isFinite else { return nil }
+
+        let position = min(max(progress, 0), CGFloat(pageHeights.count - 1))
+        let lowerIndex = Int(position.rounded(.down))
+        let upperIndex = min(lowerIndex + 1, pageHeights.count - 1)
+        let fraction = position - CGFloat(lowerIndex)
+        // A settled page needs only its own height, not its neighbour's.
+        if lowerIndex == upperIndex || fraction <= settleTolerance { return usable(pageHeights[lowerIndex]) }
+        if fraction >= 1 - settleTolerance { return usable(pageHeights[upperIndex]) }
+        guard let lower = usable(pageHeights[lowerIndex]), let upper = usable(pageHeights[upperIndex]) else {
+            return nil
+        }
+
+        // Eased by distance from the TALLER page, so both swipe directions behave the same, the
+        // carousel never gets shorter than the shorter page (it is never cut), and the slope stays
+        // bounded (no sudden jump) at either end.
+        let transit = (fraction - settleTolerance) / (1 - 2 * settleTolerance)
+        let taller = max(lower, upper)
+        let shorter = min(lower, upper)
+        let distanceFromTaller = lower >= upper ? transit : 1 - transit
+        let eased = CGFloat(pow(Double(distanceFromTaller), Double(easeExponent)))
+        return taller - (taller - shorter) * eased
+    }
+
+    /// What the screen uses. With VoiceOver on, focus can move to the next page before the carousel
+    /// has scrolled far enough to have grown, which would leave the focused element under the clip, so
+    /// it is sized to its natural (tallest) height instead. With no usable progress it follows the
+    /// snapped page, as the carousel did before progress was measured.
+    static func carouselHeight(
+        pageHeights: [CGFloat?],
+        progress: CGFloat?,
+        selectedIndex: Int,
+        voiceOverEnabled: Bool
+    ) -> CGFloat? {
+        guard voiceOverEnabled == false else { return nil }
+        return height(pageHeights: pageHeights, progress: progress ?? CGFloat(selectedIndex))
+    }
+
+    /// Checked when the snapped page changes. The carousel only changes page by scrolling, so a
+    /// measured progress that has never left the first page means the measurement is not following the
+    /// scroll (for example its coordinate space moves with the content), and the screen then stops
+    /// using it and follows the snapped page. Deliberately about "ever moved", not "how far": the
+    /// snapped page can change early in a quick flick, so how far along the swipe is varies.
+    static func hasFollowedScroll(furthestProgress: CGFloat) -> Bool {
+        furthestProgress > movementThreshold
+    }
+
+    private static func usable(_ height: CGFloat?) -> CGFloat? {
+        guard let height, height.isFinite, height > 0 else { return nil }
+        return height
+    }
+}
+
 // MARK: - Screen
 
 struct RecommendedGearView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
     @State private var selectedPageID: String?
     @State private var linkMessages: [String: String] = [:]
-    @State private var pageHeights: [String: CGFloat] = [:]
+    // Each page's natural height, in page order (nil until measured), and how far the carousel has
+    // scrolled between pages (0 = first page settled, 1 = second). See FeaturedCarouselMetrics.
+    @State private var pageHeights: [CGFloat?] = []
+    @State private var scrollProgress: CGFloat?
+    // The furthest progress seen so far, and whether to keep using it: if the snapped page changes
+    // while the progress has never moved, the carousel goes back to following the snapped page rather
+    // than trust a measurement that is not following the scroll.
+    @State private var furthestScrollProgress: CGFloat = 0
+    @State private var scrollProgressIsTrusted = true
 
     private let pages = FeaturedGearPage.catalog
 
@@ -254,21 +359,27 @@ struct RecommendedGearView: View {
     private static let cardWidthFraction: CGFloat = 0.93
     private static let cardSpacing: CGFloat = 24
     private static let pageMargin: CGFloat = 16
+    private static let carouselSpace = "featuredCarousel"
 
     private var currentPageIndex: Int {
         pages.firstIndex(where: { $0.id == selectedPageID }) ?? 0
     }
 
-    // The carousel is as tall as the page being shown. The RVP gallery card is much taller than the
-    // eFlexFuel card, and stretching the shorter page to match (or leaving a gap under it) would look
-    // broken, so each page keeps its natural height and the carousel follows the current one. It is
-    // nil until the first measurement, when the carousel just sizes to its tallest page.
+    // The RVP gallery card is much taller than the eFlexFuel card, and stretching the shorter page to
+    // match (or leaving a gap under it) would look broken, so each page keeps its natural height and
+    // the carousel's height follows the SWIPE: exactly a page's own height when it is settled, and
+    // eased between the two pages as the scroll view moves. (It used to follow the snapped page,
+    // whose id only changes once the next card has nearly reached the edge, so a taller card was
+    // clipped for most of the swipe and the height then jumped.) It is nil until the first
+    // measurement, when the carousel just sizes to its tallest page, and with VoiceOver on. All of the
+    // arithmetic is in FeaturedCarouselMetrics.
     private var carouselHeight: CGFloat? {
-        // With VoiceOver on, focus can move to the next page's elements before the page indicator
-        // (which follows the snapped page) has caught up, which would leave them under the clip. So
-        // it sizes to the tallest page instead.
-        guard voiceOverEnabled == false else { return nil }
-        return pageHeights[pages[currentPageIndex].id]
+        FeaturedCarouselMetrics.carouselHeight(
+            pageHeights: pageHeights,
+            progress: scrollProgressIsTrusted ? scrollProgress : nil,
+            selectedIndex: currentPageIndex,
+            voiceOverEnabled: voiceOverEnabled
+        )
     }
 
     var body: some View {
@@ -283,10 +394,8 @@ struct RecommendedGearView: View {
                     .padding(.horizontal, Self.pageMargin)
             }
             .padding(.vertical, 16)
-            // Eases the carousel's height change (and the page dots and About card moving with it)
-            // when the page changes. Keyed on the page, not the height, so the first measurement and
-            // Dynamic Type relayouts do not animate; there is no animation with Reduce Motion.
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: currentPageIndex)
+            // No timed animation on the carousel's height: it follows the scroll position directly, so
+            // the page dots and About card move with the swipe, and Reduce Motion has nothing to turn off.
         }
         .background(AppTheme.Colors.charcoal)
         .navigationTitle("Recommended Gear")
@@ -331,10 +440,15 @@ struct RecommendedGearView: View {
 
     // iOS 17 scroll APIs only (the production target is 17.6): plain ScrollView + HStack (not
     // Lazy, so every card stays in the VoiceOver tree), view-aligned snapping, and scrollPosition
-    // to drive the page indicator. Cards have no fixed height, so they grow with Dynamic Type.
+    // to drive the page indicator. Cards have no fixed height, so they grow with Dynamic Type. Each
+    // card reports its height and its leading edge in the scroll view's own coordinate space; the
+    // edges are how far the carousel has scrolled, which sizes its height (see `carouselHeight`).
     private var carousel: some View {
         let widthFraction = Self.cardWidthFraction
         let spacing = Self.cardSpacing
+        let space = Self.carouselSpace
+        let pageIDs = pages.map(\.id)
+        let restingMinX = Self.pageMargin
 
         return ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 0) {
@@ -344,14 +458,18 @@ struct RecommendedGearView: View {
                             .containerRelativeFrame(.horizontal) { length, _ in
                                 length * widthFraction
                             }
-                            // Natural height (never stretched to a taller neighbor), measured so the
-                            // carousel can follow the page being shown.
+                            // Natural height (never stretched to a taller neighbor), measured with the
+                            // card's leading edge so the carousel can follow the swipe. Neither depends
+                            // on the carousel's own height, so sizing it from them cannot feed back.
                             .fixedSize(horizontal: false, vertical: true)
                             .background(
                                 GeometryReader { proxy in
                                     Color.clear.preference(
-                                        key: FeaturedPageHeightKey.self,
-                                        value: [page.id: proxy.size.height]
+                                        key: FeaturedPageMetricsKey.self,
+                                        value: [page.id: FeaturedPageMetric(
+                                            height: proxy.size.height,
+                                            minX: proxy.frame(in: .named(space)).minX
+                                        )]
                                     )
                                 }
                             )
@@ -370,15 +488,37 @@ struct RecommendedGearView: View {
                     }
                     .accessibilityHidden(true)
             }
-            // The scroll view clips to this height, so a taller page shows in full once it becomes
-            // the current page. (The change is eased by the animation on the page's stack in `body`.)
+            // The scroll view clips to this height, which follows the swipe (see `carouselHeight`).
             .frame(height: carouselHeight, alignment: .top)
         }
-        .onPreferenceChange(FeaturedPageHeightKey.self) { pageHeights = $0 }
+        .coordinateSpace(.named(space))
+        .onPreferenceChange(FeaturedPageMetricsKey.self) { metrics in
+            let heights = pageIDs.map { metrics[$0]?.height }
+            if pageHeights != heights { pageHeights = heights }
+
+            let progress = FeaturedCarouselMetrics.progress(
+                pageMinX: pageIDs.map { metrics[$0]?.minX },
+                restingMinX: restingMinX
+            )
+            if scrollProgress != progress { scrollProgress = progress }
+            if let progress, progress > furthestScrollProgress { furthestScrollProgress = progress }
+        }
         .scrollIndicators(.hidden)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $selectedPageID)
+        .onChange(of: selectedPageID) { old, new in verifyScrollProgress(from: old, to: new) }
         .contentMargins(.horizontal, Self.pageMargin, for: .scrollContent)
+    }
+
+    // Runs when the snapped page changes. (nil is the first page, so the id first being filled in at
+    // launch is not a page change.)
+    private func verifyScrollProgress(from old: String?, to new: String?) {
+        let oldIndex = pages.firstIndex(where: { $0.id == old }) ?? 0
+        let newIndex = pages.firstIndex(where: { $0.id == new }) ?? 0
+        guard oldIndex != newIndex, scrollProgressIsTrusted else { return }
+        if FeaturedCarouselMetrics.hasFollowedScroll(furthestProgress: furthestScrollProgress) == false {
+            scrollProgressIsTrusted = false
+        }
     }
 
     @ViewBuilder
@@ -833,11 +973,17 @@ private struct FeaturedSponsorLogoPlate: View {
     }
 }
 
-// Natural height of each carousel page's card, keyed by page id (the same measuring pattern as
+// A carousel page card's natural height and its leading edge in the carousel scroll view's coordinate
+// space (so it changes as the carousel scrolls), keyed by page id (the same measuring pattern as
 // ContentHeightKey in VehicleLimitUpsellView).
-private struct FeaturedPageHeightKey: PreferenceKey {
-    static let defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+private struct FeaturedPageMetric: Equatable {
+    var height: CGFloat
+    var minX: CGFloat
+}
+
+private struct FeaturedPageMetricsKey: PreferenceKey {
+    static let defaultValue: [String: FeaturedPageMetric] = [:]
+    static func reduce(value: inout [String: FeaturedPageMetric], nextValue: () -> [String: FeaturedPageMetric]) {
         value.merge(nextValue()) { _, new in new }
     }
 }
