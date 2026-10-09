@@ -10,6 +10,7 @@ import SwiftData
 
 struct MoreView: View {
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
 
     @State private var sponsorLinkMessage: String?
@@ -369,38 +370,40 @@ struct MoreView: View {
     }
 
     // 85Blends 2.4.0 Pass 4 — compact horizontal presentation (was a 150pt hero card directly
-    // under the page header; the call site now lives after Guides & Resources). Same asset, URL,
+    // under the page header; the call site now lives after Guides & Resources). Same URL,
     // openSponsorLink() mechanism, and error handling as before — only the layout changed.
+    // The logo is the transparent RVP Supply artwork on its own dark plate (see
+    // FeaturedSponsorLogoPlate), sized from the width of the scroll view (108-132pt) so the
+    // wordmark is readable.
     private var sponsorCard: some View {
         Button {
             openSponsorLink()
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 14) {
-                    Image("RVPSupplyLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 80, height: 60)
+                // From xxxLarge up (every accessibility size included) the logo moves above the text
+                // instead of squeezing it: beside a plate over 100pt wide the text column is too narrow
+                // for whole words at these sizes, most of all on a 320pt-wide screen.
+                if dynamicTypeSize >= .xxxLarge {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 14) {
+                            sponsorLogo
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Sponsored by RVP Supply")
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .multilineTextAlignment(.leading)
+                            Spacer(minLength: 8)
 
-                        Text("Performance parts & gear")
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                            .multilineTextAlignment(.leading)
+                            sponsorLinkIcon
+                        }
+
+                        sponsorText
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack(spacing: 14) {
+                        sponsorLogo
 
-                    Spacer()
+                        sponsorText
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Image(systemName: "arrow.up.forward.square")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textMuted)
-                        .accessibilityHidden(true)
+                        sponsorLinkIcon
+                    }
                 }
 
                 if let sponsorLinkMessage {
@@ -422,6 +425,36 @@ struct MoreView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens the RVP Supply website")
+    }
+
+    private var sponsorLogo: some View {
+        FeaturedSponsorLogoPlate()
+            .containerRelativeFrame(.horizontal) { length, _ in
+                RVPSupplyLogoLayout.bannerPlateWidth(containerWidth: length)
+            }
+    }
+
+    private var sponsorText: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Sponsored by RVP Supply")
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Performance parts & gear")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var sponsorLinkIcon: some View {
+        Image(systemName: "arrow.up.forward.square")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textMuted)
+            .accessibilityHidden(true)
     }
 
     private func openSponsorLink() {
