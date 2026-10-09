@@ -243,17 +243,19 @@ nonisolated enum FeaturedCarouselMetrics {
     /// mid-swipe, and still reaches the shorter page's exact height when it settles.
     static let easeExponent: CGFloat = 2
 
-    /// How close to a page (as a fraction of a page's width) still counts as that page being settled.
-    /// It absorbs the last few points of a snap and a settled page sitting a margin off where it is
-    /// expected, so a settled carousel is always exactly the page's own height. The ramp between two
-    /// pages is stretched over the rest of the swipe, so there is no jump at the edge of this zone.
+    /// How close to a page (as a fraction of the distance between two pages) still counts as that
+    /// page being settled. It absorbs the last few points of a snap and a settled page sitting a margin
+    /// off where it is expected (16pt is within it once the pages are about 320pt apart or more), so a
+    /// settled carousel is exactly the page's own height. The ramp between two pages is stretched over
+    /// the rest of the swipe, so there is no jump at the edge of this zone.
     static let settleTolerance: CGFloat = 0.05
 
     /// The measured progress must have passed this to count as having moved.
     static let movementThreshold: CGFloat = 0.001
 
-    /// Continuous page position from the pages' leading edges (`nil` = not measured yet), measured in
-    /// the scroll view's own coordinate space. `restingMinX` is where the settled page's leading edge
+    /// Continuous page position from the pages' left edges (`nil` = not measured yet), measured in
+    /// the scroll view's own coordinate space. (A right-to-left layout puts the pages in the other
+    /// order, which reads as no usable spacing, so it falls back to the snapped page.) `restingMinX` is where the settled page's leading edge
     /// sits (the scroll content margin). The spacing between pages is read from the first two edges
     /// rather than assumed. `nil` when it can't be worked out, and clamped to the real pages otherwise
     /// so rubber-banding past either end can't ask for a height that doesn't exist.
@@ -332,6 +334,7 @@ nonisolated enum FeaturedCarouselMetrics {
 struct RecommendedGearView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
     @State private var selectedPageID: String?
@@ -371,8 +374,13 @@ struct RecommendedGearView: View {
     // eased between the two pages as the scroll view moves. (It used to follow the snapped page,
     // whose id only changes once the next card has nearly reached the edge, so a taller card was
     // clipped for most of the swipe and the height then jumped.) It is nil until the first
-    // measurement, when the carousel just sizes to its tallest page, and with VoiceOver on. All of the
-    // arithmetic is in FeaturedCarouselMetrics.
+    // measurement, when the carousel just sizes to its tallest page, and with VoiceOver on. Without a
+    // usable swipe measurement it follows the snapped page, as before. All of the arithmetic is in
+    // FeaturedCarouselMetrics.
+    private var carouselFollowsSwipe: Bool {
+        scrollProgressIsTrusted && scrollProgress != nil
+    }
+
     private var carouselHeight: CGFloat? {
         FeaturedCarouselMetrics.carouselHeight(
             pageHeights: pageHeights,
@@ -394,8 +402,12 @@ struct RecommendedGearView: View {
                     .padding(.horizontal, Self.pageMargin)
             }
             .padding(.vertical, 16)
-            // No timed animation on the carousel's height: it follows the scroll position directly, so
-            // the page dots and About card move with the swipe, and Reduce Motion has nothing to turn off.
+            // While the carousel follows the swipe, its height is driven by the scroll position and must not
+            // be animated on top (Reduce Motion then has nothing to turn off). Only when there is no usable
+            // swipe measurement does it step to the snapped page, and that step is eased as it used to be
+            // (never with Reduce Motion). Keyed on the page, not the height, so the first measurement and
+            // Dynamic Type relayouts do not animate.
+            .animation(reduceMotion || carouselFollowsSwipe ? nil : .easeInOut(duration: 0.25), value: currentPageIndex)
         }
         .background(AppTheme.Colors.charcoal)
         .navigationTitle("Recommended Gear")
@@ -488,7 +500,8 @@ struct RecommendedGearView: View {
                     }
                     .accessibilityHidden(true)
             }
-            // The scroll view clips to this height, which follows the swipe (see `carouselHeight`).
+            // The scroll view clips to this height, which follows the swipe (see `carouselHeight`), so the
+            // page dots and About card below stay attached to the carousel instead of jumping.
             .frame(height: carouselHeight, alignment: .top)
         }
         .coordinateSpace(.named(space))
@@ -515,7 +528,8 @@ struct RecommendedGearView: View {
     private func verifyScrollProgress(from old: String?, to new: String?) {
         let oldIndex = pages.firstIndex(where: { $0.id == old }) ?? 0
         let newIndex = pages.firstIndex(where: { $0.id == new }) ?? 0
-        guard oldIndex != newIndex, scrollProgressIsTrusted else { return }
+        // VoiceOver can move the carousel without a drag (and already uses the natural height).
+        guard oldIndex != newIndex, scrollProgressIsTrusted, voiceOverEnabled == false else { return }
         if FeaturedCarouselMetrics.hasFollowedScroll(furthestProgress: furthestScrollProgress) == false {
             scrollProgressIsTrusted = false
         }
@@ -976,7 +990,7 @@ private struct FeaturedSponsorLogoPlate: View {
 // A carousel page card's natural height and its leading edge in the carousel scroll view's coordinate
 // space (so it changes as the carousel scrolls), keyed by page id (the same measuring pattern as
 // ContentHeightKey in VehicleLimitUpsellView).
-private struct FeaturedPageMetric: Equatable {
+private nonisolated struct FeaturedPageMetric: Equatable, Sendable {
     var height: CGFloat
     var minX: CGFloat
 }
