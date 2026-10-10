@@ -107,11 +107,13 @@ enum AppTheme {
         // mid-contrast enough in both appearances that the kit always stands out clearly, while the
         // gradient between the two stays subtle (never adds unauthorized color, only tonal depth).
         static var featuredHeroStudio: Color {
-            // Light: #D8DDE2 — soft silver-gray. Dark and OLED alike: #858C92 — medium slate-gray.
+            // Light: #D8DDE2 — soft silver-gray. Dark and OLED alike: #C6CED5 — a lighter premium
+            // studio-gray than the original slate (#858C92), which read too dark/muted for the kit's
+            // mostly-black wiring, controller, and connectors to stand out as clearly as in light mode.
             dynamic(
                 light: Color(red: 0.847, green: 0.867, blue: 0.886),
-                dark: Color(red: 0.522, green: 0.549, blue: 0.573),
-                oled: Color(red: 0.522, green: 0.549, blue: 0.573)
+                dark: Color(red: 0.776, green: 0.808, blue: 0.835),
+                oled: Color(red: 0.776, green: 0.808, blue: 0.835)
             )
         }
 
@@ -120,8 +122,8 @@ enum AppTheme {
             // falloff rather than a flat fill.
             dynamic(
                 light: Color(red: 0.894, green: 0.910, blue: 0.925),
-                dark: Color(red: 0.580, green: 0.608, blue: 0.631),
-                oled: Color(red: 0.580, green: 0.608, blue: 0.631)
+                dark: Color(red: 0.867, green: 0.886, blue: 0.906),
+                oled: Color(red: 0.867, green: 0.886, blue: 0.906)
             )
         }
 
