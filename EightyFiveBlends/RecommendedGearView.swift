@@ -113,15 +113,18 @@ extension FeaturedOffer {
     var copiedAnnouncement: String { "Code \(code) copied to the clipboard." }
 }
 
-/// The "Copied" feedback after Copy Code is tapped. A value type like `ProActivationProgress`, so a
-/// stale expiry can never clear the feedback of a newer tap, and testable without SwiftUI. It decides
-/// nothing about the pasteboard or any link: copying and opening the website are separate controls.
-struct FeaturedOfferCopyFeedback: Equatable {
+/// What tapping Copy Code does, kept out of the view so it is testable without SwiftUI: it hands the
+/// code to the `write` it is given (the view passes the pasteboard) and starts the "Copied" feedback.
+/// It is a value type like `ProActivationProgress`, so a stale expiry can never clear the feedback of
+/// a newer tap. It never reads anything and knows nothing about any website link: copying and opening
+/// the website are separate controls.
+struct FeaturedOfferCopyState: Equatable {
     private(set) var isCopied = false
     private var generation = 0
 
-    /// Starts the feedback and returns the token its expiry must present.
-    mutating func didCopy() -> Int {
+    /// Writes `code` exactly once and starts the feedback. Returns the token its expiry must present.
+    mutating func copy(_ code: String, using write: (String) -> Void) -> Int {
+        write(code)
         generation += 1
         isCopied = true
         return generation
@@ -848,10 +851,15 @@ private struct FeaturedBrandCard: View {
 private struct FeaturedOfferSection: View {
     let offer: FeaturedOffer
 
-    @State private var copyFeedback = FeaturedOfferCopyFeedback()
+    @State private var copyState = FeaturedOfferCopyState()
+    @Environment(\.colorScheme) private var colorScheme
     // The button keeps one width whether it says "Copy Code" or "Copied", at every text size, so the
     // row never reflows when the label changes.
-    @ScaledMetric(relativeTo: .subheadline) private var copyButtonMinWidth: CGFloat = 132
+    @ScaledMetric(relativeTo: .subheadline) private var copyButtonMinWidth: CGFloat = 120
+
+    // Text, glyphs and borders: the deeper orange in light mode, where the brand orange is only about
+    // 3:1 on the panel's tint; the brand orange itself in dark and OLED.
+    private var accent: Color { FeaturedOfferStyle.accent(isDark: colorScheme == .dark) }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -860,7 +868,7 @@ private struct FeaturedOfferSection: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(offer.headline)
                     .font(.system(.title2, design: .rounded).weight(.heavy))
-                    .foregroundStyle(FeaturedOfferStyle.accent)
+                    .foregroundStyle(accent)
 
                 Text(offer.detail)
                     .font(.subheadline)
@@ -890,11 +898,11 @@ private struct FeaturedOfferSection: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(FeaturedOfferStyle.accent.opacity(0.08), in: shape)
-        .overlay(shape.strokeBorder(FeaturedOfferStyle.accent.opacity(0.55), lineWidth: 1))
+        .background(FeaturedOfferStyle.brandOrange.opacity(0.06), in: shape)
+        .overlay(shape.strokeBorder(accent.opacity(0.55), lineWidth: 1))
     }
 
-    // Read once, in the offer text above and on the button, so it is hidden here.
+    // Spoken in the offer text above and on the Copy Code button's label, so it is hidden here.
     private var codeChip: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
 
@@ -905,7 +913,7 @@ private struct FeaturedOfferSection: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
             Text(offer.code)
-                .font(.system(.title3, design: .monospaced).weight(.bold))
+                .font(.system(.headline, design: .monospaced).weight(.bold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
         }
         .padding(.horizontal, 12)
@@ -917,13 +925,13 @@ private struct FeaturedOfferSection: View {
 
     private var copyButton: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        let copied = copyFeedback.isCopied
+        let copied = copyState.isCopied
 
         return Button(action: copyCode) {
             HStack(spacing: 6) {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(FeaturedOfferStyle.accent)
+                    .foregroundStyle(accent)
                     .accessibilityHidden(true)
 
                 Text(copied ? FeaturedOffer.copiedTitle : FeaturedOffer.copyTitle)
@@ -934,8 +942,8 @@ private struct FeaturedOfferSection: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minWidth: copyButtonMinWidth, minHeight: 44)
-            .background(FeaturedOfferStyle.accent.opacity(0.12), in: shape)
-            .overlay(shape.strokeBorder(FeaturedOfferStyle.accent, lineWidth: 1.5))
+            .background(FeaturedOfferStyle.brandOrange.opacity(0.12), in: shape)
+            .overlay(shape.strokeBorder(accent, lineWidth: 1.5))
             .contentShape(shape)
         }
         .buttonStyle(.plain)
@@ -943,26 +951,34 @@ private struct FeaturedOfferSection: View {
         .accessibilityHint("Copies the code to the clipboard.")
     }
 
+    // The only place the pasteboard is touched, and only from the button's action: it writes the code
+    // and never reads it.
     private func copyCode() {
-        #if canImport(UIKit)
-        UIPasteboard.general.string = offer.code
-        #endif
-
-        let token = copyFeedback.didCopy()
+        let token = copyState.copy(offer.code) { code in
+            #if canImport(UIKit)
+            UIPasteboard.general.string = code
+            #endif
+        }
         AccessibilityNotification.Announcement(offer.copiedAnnouncement).post()
 
         Task {
             try? await Task.sleep(for: .seconds(2))
-            copyFeedback.expire(token: token)
+            copyState.expire(token: token)
         }
     }
 }
 
-// eFlexFuel orange, sampled from the "E" of the official wordmark (255, 85, 0). About 3.2:1 on white
-// and 5 to 7:1 on the dark and OLED cards, so it is used for the large amount, borders, and glyphs,
-// never for small text.
+// eFlexFuel orange, sampled from the "E" of the official wordmark (255, 85, 0), is used as the tint
+// fill and, in dark and OLED, for the large amount, glyph and borders (about 5:1 on those cards). On
+// the light panel it is only about 3:1, so light mode draws those with a deeper orange (about 4:1 on
+// the panel, 3.5:1 on the button's tint). Small text never uses orange.
 private enum FeaturedOfferStyle {
-    static let accent = Color(red: 1.0, green: 85.0 / 255.0, blue: 0.0)
+    static let brandOrange = Color(red: 1.0, green: 85.0 / 255.0, blue: 0.0)
+    static let deepOrange = Color(red: 214.0 / 255.0, green: 69.0 / 255.0, blue: 0.0)
+
+    static func accent(isDark: Bool) -> Color {
+        isDark ? brandOrange : deepOrange
+    }
 }
 
 /// Page-2 sponsor card: RVP Supply's OEM-style beadlock lineup as a 3x3 gallery. Labeled "Sponsor"

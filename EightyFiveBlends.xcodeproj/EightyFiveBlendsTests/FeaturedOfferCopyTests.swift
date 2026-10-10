@@ -4,15 +4,16 @@
 //
 //  Pins two pure pieces behind the eFlexFuel card (RecommendedGearView.swift):
 //
-//  - `FeaturedOfferCopyFeedback`, the "Copied" feedback after Copy Code is tapped. It is a value type
-//    with no knowledge of the pasteboard or of any website link, so these tests also show that the
-//    feedback can only ever follow a copy: nothing else (opening the site included) can start it, and
-//    a stale expiry can never clear a newer tap's feedback.
+//  - `FeaturedOfferCopyState`, what tapping Copy Code does: it hands the code to the writer it is given
+//    (the view passes the pasteboard) exactly once per tap and starts the "Copied" feedback. It has no
+//    way to read anything and no knowledge of any website link, so these tests also show that the code
+//    is only written by a copy, that what is written is exactly the approved code, and that a stale
+//    expiry can never clear a newer tap's feedback.
 //  - `FeaturedWordmarkLayout`, the width rules for the official wordmark on the More card.
 //
-//  That Copy Code really writes E85BLENDS to the pasteboard only when tapped, and that it and the
-//  shop buttons are separate Buttons (none nested in another), is a property of the SwiftUI view and
-//  is checked by reading it and on a device, not here.
+//  That the view only calls `copy` from the Copy Code button's action, and that Copy Code and the shop
+//  buttons are separate Buttons (none nested in another), is a property of the SwiftUI view and is
+//  checked by reading it and on a device, not here.
 //
 
 import Foundation
@@ -25,58 +26,84 @@ struct FeaturedOfferCopyTests {
         abs(a - b) <= tolerance
     }
 
-    // MARK: - Copied feedback
-
-    @Test("Nothing shows Copied until Copy Code has been tapped")
-    func feedback_startsIdle() {
-        let feedback = FeaturedOfferCopyFeedback()
-        #expect(feedback.isCopied == false)
+    // A recorder for what a copy wrote. Calls are made outside #expect (a mutating call cannot be
+    // inside the macro).
+    private final class Pasteboard {
+        private(set) var writes: [String] = []
+        func write(_ string: String) { writes.append(string) }
     }
 
-    @Test("Tapping Copy Code shows Copied, and its own expiry clears it")
-    func feedback_copyThenExpire() {
-        var feedback = FeaturedOfferCopyFeedback()
-        let token = feedback.didCopy()
-        #expect(feedback.isCopied)
+    // MARK: - Copy Code
 
-        feedback.expire(token: token)
-        #expect(feedback.isCopied == false)
+    @Test("Nothing is written, and nothing shows Copied, until Copy Code has been tapped")
+    func copy_startsIdle() {
+        let state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+        #expect(state.isCopied == false)
+        #expect(pasteboard.writes.isEmpty)
     }
 
-    @Test("An expiry with no copy behind it does nothing")
-    func feedback_expireWithoutCopyIsInert() {
-        var feedback = FeaturedOfferCopyFeedback()
-        feedback.expire(token: 1)
-        #expect(feedback.isCopied == false)
-        #expect(feedback == FeaturedOfferCopyFeedback())
+    @Test("Copy Code writes exactly the approved code once, then shows Copied; its own expiry clears it")
+    func copy_writesTheCodeOnceThenExpires() {
+        var state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+
+        let token = state.copy(FeaturedOffer.eFlexFuel.code, using: pasteboard.write)
+        #expect(pasteboard.writes == ["E85BLENDS"])
+        #expect(state.isCopied)
+
+        state.expire(token: token)
+        #expect(state.isCopied == false)
+        #expect(pasteboard.writes == ["E85BLENDS"], "Expiring the feedback must not write again")
+    }
+
+    @Test("Each tap writes once, so two taps write the code twice and nothing else")
+    func copy_eachTapWritesOnce() {
+        var state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+        _ = state.copy(FeaturedOffer.eFlexFuel.code, using: pasteboard.write)
+        _ = state.copy(FeaturedOffer.eFlexFuel.code, using: pasteboard.write)
+        #expect(pasteboard.writes == ["E85BLENDS", "E85BLENDS"])
+    }
+
+    @Test("An expiry with no copy behind it does nothing and writes nothing")
+    func copy_expireWithoutCopyIsInert() {
+        var state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+        state.expire(token: 1)
+        #expect(state.isCopied == false)
+        #expect(state == FeaturedOfferCopyState())
+        #expect(pasteboard.writes.isEmpty)
     }
 
     @Test("A second tap restarts the feedback, and the first tap's late expiry cannot cut it short")
-    func feedback_staleExpiryDoesNotClearANewerCopy() {
-        var feedback = FeaturedOfferCopyFeedback()
-        let first = feedback.didCopy()
-        let second = feedback.didCopy()
+    func copy_staleExpiryDoesNotClearANewerCopy() {
+        var state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+        let first = state.copy("E85BLENDS", using: pasteboard.write)
+        let second = state.copy("E85BLENDS", using: pasteboard.write)
         #expect(first != second)
 
-        feedback.expire(token: first)
-        #expect(feedback.isCopied, "The first tap's expiry arrived after the second tap")
+        state.expire(token: first)
+        #expect(state.isCopied, "The first tap's expiry arrived after the second tap")
 
-        feedback.expire(token: second)
-        #expect(feedback.isCopied == false)
+        state.expire(token: second)
+        #expect(state.isCopied == false)
     }
 
     @Test("Once expired, the same token cannot do anything, and a new tap starts fresh feedback")
-    func feedback_expiredTokenIsInertAndNewTapRestarts() {
-        var feedback = FeaturedOfferCopyFeedback()
-        let first = feedback.didCopy()
-        feedback.expire(token: first)
+    func copy_expiredTokenIsInertAndNewTapRestarts() {
+        var state = FeaturedOfferCopyState()
+        let pasteboard = Pasteboard()
+        let first = state.copy("E85BLENDS", using: pasteboard.write)
+        state.expire(token: first)
 
-        let second = feedback.didCopy()
-        #expect(feedback.isCopied)
-        feedback.expire(token: first)
-        #expect(feedback.isCopied, "A spent token must not clear the new feedback")
-        feedback.expire(token: second)
-        #expect(feedback.isCopied == false)
+        let second = state.copy("E85BLENDS", using: pasteboard.write)
+        #expect(state.isCopied)
+        state.expire(token: first)
+        #expect(state.isCopied, "A spent token must not clear the new feedback")
+        state.expire(token: second)
+        #expect(state.isCopied == false)
     }
 
     // MARK: - More card wordmark width

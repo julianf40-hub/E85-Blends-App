@@ -339,15 +339,19 @@ struct FeaturedGearTests {
 
     @Test("The offer is for eligible Auto or Moto conversion kits and claims nothing broader")
     func offer_claimsNoUniversalEligibility() {
-        let detail = FeaturedOffer.eFlexFuel.detail.lowercased()
+        let offer = FeaturedOffer.eFlexFuel
+        let detail = offer.detail.lowercased()
         #expect(detail.contains("eligible"))
         #expect(detail.contains("auto"))
         #expect(detail.contains("moto"))
         #expect(detail.contains("conversion kits"))
-        // No sitewide, accessory, all-product, or guaranteed wording.
+        // No sitewide, accessory, all-product, or guaranteed wording, and none of the performance or
+        // compatibility claims the carousel bans everywhere, in ANY string the offer shows or speaks.
+        let everything = Self.offerCopyWithoutDisclosure(offer) + [offer.disclosure, offer.finePrint]
         Self.assertAvoids(
-            ["sitewide", "site-wide", "everything", "every ", "all products", "all kits", "any ", "accessor", "guarantee", "universal", "all vehicles", "fits all", "free"],
-            in: [detail]
+            ["sitewide", "site-wide", "everything", "every ", "all products", "all kits", "any ", "accessor", "free",
+             "guarantee", "universal", "all vehicles", "fits all", "horsepower", "racing", "strongest", "fastest"],
+            in: everything
         )
     }
 

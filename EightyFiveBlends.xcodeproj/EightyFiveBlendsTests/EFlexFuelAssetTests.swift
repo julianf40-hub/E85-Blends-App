@@ -81,11 +81,13 @@ struct EFlexFuelAssetTests {
         }
     }
 
-    @Test("The light and dark images are different files")
+    @Test("The light and dark images decode to different pixels")
     func appearancesDiffer() throws {
-        let light = try #require(image(for: .light)?.pngData())
-        let dark = try #require(image(for: .dark)?.pngData())
-        #expect(light != dark)
+        let lightImage = try #require(image(for: .light)?.cgImage)
+        let darkImage = try #require(image(for: .dark)?.cgImage)
+        let light = try #require(bitmap(of: lightImage))
+        let dark = try #require(bitmap(of: darkImage))
+        #expect(light.bytes != dark.bytes)
     }
 
     @Test("Light mode gets the orange-and-charcoal logo and dark mode the orange-and-white one")

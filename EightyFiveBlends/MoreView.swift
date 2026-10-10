@@ -643,9 +643,10 @@ private struct MoreActionRow: View {
 
 // DEMO-ONLY eFlexFuel pitch placeholder (see its call site in MoreView.body). A compact "Featured
 // Brand" card that pushes Recommended Gear, whose carousel always opens on the eFlexFuel page, so
-// no routing state is needed. Native shapes and SF Symbols only (no brand imagery), and visually
-// distinct from the sponsor card above it: mint tile and outline instead of a logo and yellow
-// outline, and a chevron (navigates inside the app) instead of the external-link arrow.
+// no routing state is needed. It leads with eFlexFuel's official wordmark (an adaptive light/dark
+// asset) and is visually distinct from the sponsor card above it: a green outline instead of the
+// sponsor's logo plate and yellow outline, and a chevron (navigates inside the app) instead of the
+// external-link arrow.
 private struct MoreFeaturedBrandCard: View {
     // Copy comes from the same model the Recommended Gear carousel uses, so the wording guards in
     // FeaturedGearTests cover this card too.
