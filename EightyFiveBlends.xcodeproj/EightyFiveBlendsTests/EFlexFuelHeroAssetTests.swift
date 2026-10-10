@@ -4,7 +4,7 @@
 //
 //  Verifies the eFlexFuel Auto conversion kit hero in the compiled asset catalog
 //  (EFlexFuelAutoKitHero, used by FeaturedBrandArtwork in RecommendedGearView.swift): that it loads,
-//  is the supplied 1122 x 976 photo with an alpha channel, that its white studio background was
+//  is the supplied 1094 x 948 photo with an alpha channel, that its white studio background was
 //  removed (all four corners transparent), and that the removal was selective rather than a blanket
 //  "strip every near-white pixel" pass — a known dark product pixel (the EFlexPlus controller body)
 //  stays opaque, and so does a known light one (a label/connector highlight), proving real product
@@ -29,12 +29,12 @@ struct EFlexFuelHeroAssetTests {
         #expect(UIImage(named: Self.assetName) != nil)
     }
 
-    @Test("It is the supplied 1122 x 976 photo with an alpha channel")
+    @Test("It is the supplied 1094 x 948 photo with an alpha channel")
     func heroHasTheSuppliedDimensionsAndAlpha() throws {
         let image = try #require(UIImage(named: Self.assetName))
         let cgImage = try #require(image.cgImage)
-        #expect(cgImage.width == 1122)
-        #expect(cgImage.height == 976)
+        #expect(cgImage.width == 1094)
+        #expect(cgImage.height == 948)
 
         let alpha = cgImage.alphaInfo
         #expect(alpha != .none && alpha != .noneSkipFirst && alpha != .noneSkipLast, "The hero must keep its transparency")
@@ -58,13 +58,13 @@ struct EFlexFuelHeroAssetTests {
         let pixel = try pixelReader(for: cgImage)
 
         // A dark point on the eFlexPlus controller's case.
-        let dark = pixel(255, 560)
+        let dark = pixel(241, 546)
         #expect(dark.a >= 240)
         #expect(dark.r < 50 && dark.g < 50 && dark.b < 50, "Expected a dark, opaque product pixel, got \(dark)")
 
         // A light highlight (connector/label) that a blanket white-removal pass would have erased
         // along with the background.
-        let light = pixel(187, 817)
+        let light = pixel(173, 803)
         #expect(light.a >= 240)
         #expect(light.r > 190 && light.g > 190 && light.b > 190, "Expected a light, opaque product pixel, got \(light)")
     }

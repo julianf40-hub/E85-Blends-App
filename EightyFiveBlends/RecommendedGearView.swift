@@ -1346,26 +1346,30 @@ private struct FeaturedBrandWordmark: View {
 // product photo with its white studio background removed (a plain alpha matte — no synthesized or
 // modified product pixels), presented on a fixed-dark plate rather than an AppTheme token, the same
 // approach FeaturedSponsorLogoPlate uses for the RVP Supply logo so the real product reads the same
-// in light, dark, and OLED. Replaces the earlier native illustration (fuel pump, gauge, monitoring
-// icon placeholder) — same 120pt-tall, full-width footprint as before.
+// in light, dark, and OLED. The plate color is elevatedCardBackground's own dark-mode literal
+// (Theme.swift) — the app's established "premium dark charcoal" surface — rather than near-black, so
+// it reads as a surface and not a void. Replaces the earlier native illustration (fuel pump, gauge,
+// monitoring icon placeholder); taller (200pt, was 120pt) and with a tighter inset so the photo
+// reads considerably larger and more prominent, closer to the approved design reference.
 private struct FeaturedBrandArtwork: View {
     private static let assetName = "EFlexFuelAutoKitHero"
+    private static let plateColor = Color(red: 0.11, green: 0.11, blue: 0.115)
 
     var body: some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
-            .fill(Color(red: 0.04, green: 0.04, blue: 0.045))
+            .fill(Self.plateColor)
             .overlay(
                 Image(Self.assetName)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
-                    .padding(10)
+                    .padding(6)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
-            .frame(height: 120)
+            .frame(height: 200)
             .frame(maxWidth: .infinity)
             .accessibilityHidden(true)
     }
