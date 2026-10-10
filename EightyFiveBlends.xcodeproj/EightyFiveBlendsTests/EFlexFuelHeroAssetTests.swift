@@ -4,15 +4,15 @@
 //
 //  Verifies the eFlexFuel Auto conversion kit hero in the compiled asset catalog
 //  (EFlexFuelAutoKitHero, used by FeaturedBrandArtwork in RecommendedGearView.swift): that it loads,
-//  is the supplied 1094 x 948 photo with an alpha channel, that its white studio background was
+//  is the supplied 1093 x 946 photo with an alpha channel, that its white studio background was
 //  removed (all four corners transparent), and that the removal was selective rather than a blanket
 //  "strip every near-white pixel" pass — a known dark product pixel (the EFlexPlus controller body)
 //  stays opaque, and so does a known light one (a label/connector highlight), proving real product
 //  detail was not punched out along with the background.
 //
 //  Pixel coordinates and colors are pinned against the supplied artwork on purpose, so replacing the
-//  hero with a different file is a deliberate edit here too. How the photo looks against the dark
-//  plate in light, dark, and OLED is a device check, not something these tests can prove.
+//  hero with a different file is a deliberate edit here too. How the photo looks against the studio-
+//  gray plate in light, dark, and OLED is a device check, not something these tests can prove.
 //
 
 import CoreGraphics
@@ -29,12 +29,12 @@ struct EFlexFuelHeroAssetTests {
         #expect(UIImage(named: Self.assetName) != nil)
     }
 
-    @Test("It is the supplied 1094 x 948 photo with an alpha channel")
+    @Test("It is the supplied 1093 x 946 photo with an alpha channel")
     func heroHasTheSuppliedDimensionsAndAlpha() throws {
         let image = try #require(UIImage(named: Self.assetName))
         let cgImage = try #require(image.cgImage)
-        #expect(cgImage.width == 1094)
-        #expect(cgImage.height == 948)
+        #expect(cgImage.width == 1093)
+        #expect(cgImage.height == 946)
 
         let alpha = cgImage.alphaInfo
         #expect(alpha != .none && alpha != .noneSkipFirst && alpha != .noneSkipLast, "The hero must keep its transparency")

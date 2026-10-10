@@ -101,6 +101,30 @@ enum AppTheme {
             )
         }
 
+        // Studio-gray backdrop for the eFlexFuel hero photo (FeaturedBrandArtwork in
+        // RecommendedGearView.swift). The kit itself is mostly black (wiring, controller, hoses), so
+        // a near-black plate let it blend into its own background; this pair is light and
+        // mid-contrast enough in both appearances that the kit always stands out clearly, while the
+        // gradient between the two stays subtle (never adds unauthorized color, only tonal depth).
+        static var featuredHeroStudio: Color {
+            // Light: #D8DDE2 — soft silver-gray. Dark and OLED alike: #858C92 — medium slate-gray.
+            dynamic(
+                light: Color(red: 0.847, green: 0.867, blue: 0.886),
+                dark: Color(red: 0.522, green: 0.549, blue: 0.573),
+                oled: Color(red: 0.522, green: 0.549, blue: 0.573)
+            )
+        }
+
+        static var featuredHeroStudioHighlight: Color {
+            // A touch lighter than featuredHeroStudio in both appearances, for a soft top-to-bottom
+            // falloff rather than a flat fill.
+            dynamic(
+                light: Color(red: 0.894, green: 0.910, blue: 0.925),
+                dark: Color(red: 0.580, green: 0.608, blue: 0.631),
+                oled: Color(red: 0.580, green: 0.608, blue: 0.631)
+            )
+        }
+
         static var tabBarBackground: Color {
             // Light: pure white tab bar for a cleaner separation from the gray page.
             dynamic(
