@@ -174,11 +174,15 @@ struct FeaturedGearTests {
 
     // MARK: - Destinations
 
-    @Test("eFlexFuel opens the official U.S. auto-products page over https")
+    @Test("eFlexFuel opens the vehicle-selection section of the official U.S. site over https")
     func eFlexFuel_destinationIsVerifiedHTTPSPage() {
         let destination = FeaturedBrand.eFlexFuel.destinationURL
-        #expect(destination?.absoluteString == "https://eflexfuel.com/us/auto-products")
-        #expect(FeaturedBrandLink.validatedURL(destination) != nil)
+        #expect(destination?.absoluteString == "https://eflexfuel.com/us#vehicle-selection")
+        #expect(destination?.fragment == "vehicle-selection")
+        // Both website actions (the card's main tap area and "View eFlexFuel Products") share this
+        // one destinationURL, so pinning it here covers both; link validation must not strip the
+        // #vehicle-selection fragment before openURL ever sees it.
+        #expect(FeaturedBrandLink.validatedURL(destination)?.absoluteString == "https://eflexfuel.com/us#vehicle-selection")
     }
 
     @Test("View All RVP Wheels opens the RVP Wheels collection over https")

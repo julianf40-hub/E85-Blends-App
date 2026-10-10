@@ -68,7 +68,10 @@ extension FeaturedBrand {
         tagline: "Flex-fuel conversion & ethanol monitoring",
         description: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
         ctaTitle: "View eFlexFuel Products",
-        destinationURL: URL(string: "https://eflexfuel.com/us/auto-products"),
+        // Deep-links straight to the vehicle-selection section of eFlexFuel's site; both the
+        // card's main tap area and "View eFlexFuel Products" open this same URL (see
+        // FeaturedBrandCard, which passes this through to openFeaturedBrand for both).
+        destinationURL: URL(string: "https://eflexfuel.com/us#vehicle-selection"),
         accessibilityDescription: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
         wordmarkAssetName: "EFlexFuelWordmark",
         offer: .eFlexFuel
@@ -1339,87 +1342,32 @@ private struct FeaturedBrandWordmark: View {
     }
 }
 
-// Native placeholder artwork (fuel, ethanol level, monitoring), all SF Symbols and SwiftUI
-// shapes. Swap this body for an approved product image later; it is decorative either way. The
-// center dial is layered (face, scale ticks, level arc, droplet) from AppTheme tokens only.
+// The eFlexFuel Auto conversion kit (EFlexFuelAutoKitHero in the asset catalog): the supplied
+// product photo with its white studio background removed (a plain alpha matte — no synthesized or
+// modified product pixels), presented on a fixed-dark plate rather than an AppTheme token, the same
+// approach FeaturedSponsorLogoPlate uses for the RVP Supply logo so the real product reads the same
+// in light, dark, and OLED. Replaces the earlier native illustration (fuel pump, gauge, monitoring
+// icon placeholder) — same 120pt-tall, full-width footprint as before.
 private struct FeaturedBrandArtwork: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(AppTheme.Colors.softGreenBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(AppTheme.Colors.accentGreen.opacity(0.25), lineWidth: 1)
-                )
-
-            HStack(spacing: 18) {
-                FeaturedArtworkTile(systemImage: "fuelpump.fill", fill: AppTheme.Colors.surfaceElevated)
-
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.Colors.surfaceElevated)
-
-                    Circle()
-                        .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
-
-                    // One shared 270-degree sweep, rotated so the opening faces down: scale ticks
-                    // (a dashed arc), the track, and the level arc.
-                    ZStack {
-                        Circle()
-                            .trim(from: 0, to: 0.75)
-                            .stroke(
-                                AppTheme.Colors.textMuted.opacity(0.55),
-                                style: StrokeStyle(lineWidth: 5, dash: [1.5, 7.85])
-                            )
-                            .padding(8)
-
-                        Circle()
-                            .trim(from: 0, to: 0.75)
-                            .stroke(
-                                AppTheme.Colors.textMuted.opacity(0.35),
-                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                            )
-                            .padding(18)
-
-                        Circle()
-                            .trim(from: 0, to: 0.52)
-                            .stroke(
-                                AppTheme.Colors.accentGreen,
-                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                            )
-                            .padding(18)
-                    }
-                    .rotationEffect(.degrees(135))
-
-                    Image(systemName: "drop.fill")
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                }
-                .frame(width: 96, height: 96)
-
-                FeaturedArtworkTile(systemImage: "waveform.path.ecg", fill: AppTheme.Colors.surfaceElevated)
-            }
-        }
-        .frame(height: 120)
-        .frame(maxWidth: .infinity)
-        .accessibilityHidden(true)
-    }
-}
-
-private struct FeaturedArtworkTile: View {
-    let systemImage: String
-    let fill: Color
+    private static let assetName = "EFlexFuelAutoKitHero"
 
     var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(AppTheme.Colors.textPrimary)
-            .frame(width: 44, height: 44)
-            .background(fill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(Color(red: 0.04, green: 0.04, blue: 0.045))
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                Image(Self.assetName)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding(10)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
             )
+            .frame(height: 120)
+            .frame(maxWidth: .infinity)
+            .accessibilityHidden(true)
     }
 }
 
