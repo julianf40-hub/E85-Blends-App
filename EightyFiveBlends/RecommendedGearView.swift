@@ -256,10 +256,8 @@ enum FeaturedGearPage: Identifiable {
     static let brandBadgeTitle = "Featured Brand"
     static let sponsorBadgeTitle = "Sponsor"
 
-    /// Live-demo catalog: exactly two pages, eFlexFuel (neutral Featured Brand) then RVP Supply
-    /// (sponsor). The eFlexFuel page, like MoreView's featured-brand card, is pending an approved
-    /// relationship and wording; dropping `.brand(.eFlexFuel)` here and removing that card is the
-    /// whole demo. Everything else on this screen is the RVP sponsor.
+    /// Exactly two pages: eFlexFuel (neutral Featured Brand, with its approved promotion) then RVP
+    /// Supply (sponsor).
     static let catalog: [FeaturedGearPage] = [
         .brand(.eFlexFuel),
         .sponsor(.rvpSupplyWheels)
@@ -307,9 +305,10 @@ nonisolated enum FeaturedGalleryLayout {
 /// chosen and the height always follows the image. Pure, so it is testable without SwiftUI.
 nonisolated enum FeaturedWordmarkLayout {
     /// The More card's wordmark is this share of the container's width, kept within `moreWidthRange`
-    /// (the readable 190-225pt range), so it grows from a small iPhone to a large one and stops on iPad.
-    static let moreWidthFraction: CGFloat = 0.55
-    static let moreWidthRange: ClosedRange<CGFloat> = 190...225
+    /// (the readable 175-205pt range), so it grows from a small iPhone to a large one and stops on
+    /// iPad. Slightly narrower than before so the card's chevron keeps clear breathing room beside it.
+    static let moreWidthFraction: CGFloat = 0.50
+    static let moreWidthRange: ClosedRange<CGFloat> = 175...205
 
     static func moreWidth(containerWidth: CGFloat) -> CGFloat {
         guard containerWidth.isFinite, containerWidth > 0 else { return moreWidthRange.lowerBound }
@@ -856,6 +855,9 @@ private struct FeaturedOfferSection: View {
     // The button keeps one width whether it says "Copy Code" or "Copied", at every text size, so the
     // row never reflows when the label changes.
     @ScaledMetric(relativeTo: .subheadline) private var copyButtonMinWidth: CGFloat = 120
+    // Shared floor so the code chip and the Copy Code button read as one coordinated row instead of
+    // a short pill beside a taller one; both still grow past it together with Dynamic Type.
+    @ScaledMetric(relativeTo: .subheadline) private var controlMinHeight: CGFloat = 48
 
     // Text, glyphs and borders: the deeper orange in light mode, where the brand orange is only about
     // 3:1 on the panel's tint; the brand orange itself in dark and OLED.
@@ -880,7 +882,7 @@ private struct FeaturedOfferSection: View {
 
             // Side by side when they fit, stacked when they do not (large text, narrow cards).
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     codeChip
                     copyButton
                 }
@@ -917,7 +919,8 @@ private struct FeaturedOfferSection: View {
                 .foregroundStyle(AppTheme.Colors.textPrimary)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
+        .frame(minHeight: controlMinHeight, alignment: .center)
         .background(AppTheme.Colors.charcoal, in: shape)
         .overlay(shape.strokeBorder(AppTheme.Colors.border, lineWidth: 1))
         .accessibilityHidden(true)
@@ -941,7 +944,7 @@ private struct FeaturedOfferSection: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .frame(minWidth: copyButtonMinWidth, minHeight: 44)
+            .frame(minWidth: copyButtonMinWidth, minHeight: controlMinHeight)
             .background(FeaturedOfferStyle.brandOrange.opacity(0.12), in: shape)
             .overlay(shape.strokeBorder(accent, lineWidth: 1.5))
             .contentShape(shape)

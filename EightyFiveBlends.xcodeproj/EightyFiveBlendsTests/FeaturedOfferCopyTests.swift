@@ -108,22 +108,22 @@ struct FeaturedOfferCopyTests {
 
     // MARK: - More card wordmark width
 
-    @Test("The More wordmark is 55% of the container on common iPhone widths, inside the 190-225pt range")
+    @Test("The More wordmark is 50% of the container on common iPhone widths, inside the 175-205pt range")
     func wordmark_scalesWithTheContainer() {
-        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 375), 206.25))
-        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 390), 214.5))
-        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 393), 216.15))
-        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 402), 221.1))
-        #expect(FeaturedWordmarkLayout.moreWidthRange == 190...225)
+        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 375), 187.5))
+        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 390), 195))
+        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 393), 196.5))
+        #expect(isClose(FeaturedWordmarkLayout.moreWidth(containerWidth: 402), 201))
+        #expect(FeaturedWordmarkLayout.moreWidthRange == 175...205)
     }
 
     @Test("It stops shrinking on the narrowest layouts and stops growing on the widest")
     func wordmark_isClamped() {
-        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 320) == 190)
-        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 200) == 190)
-        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 430) == 225)
-        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 1024) == 225)
-        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 1366) == 225)
+        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 320) == 175)
+        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 200) == 175)
+        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 430) == 205)
+        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 1024) == 205)
+        #expect(FeaturedWordmarkLayout.moreWidth(containerWidth: 1366) == 205)
     }
 
     @Test("A wider container never gets a smaller wordmark, and every width stays within the range")

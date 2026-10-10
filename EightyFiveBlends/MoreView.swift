@@ -45,11 +45,9 @@ struct MoreView: View {
                     // horizontal card introduced in Pass 4; only the position changed.
                     sponsorCard
 
-                    // DEMO-ONLY pitch placeholder: shows how a featured-brand slot could sit
-                    // directly under the sponsor card. It is not a sponsorship, partnership, or
-                    // paid placement and is deliberately worded neutrally ("Featured Brand").
-                    // Remove before any production release unless a confirmed agreement and
-                    // approved wording exist.
+                    // eFlexFuel featured-brand card, directly under the sponsor card. Deliberately
+                    // worded neutrally ("Featured Brand"): it is not a sponsorship, partnership, or
+                    // paid placement.
                     MoreFeaturedBrandCard()
 
                     VStack(spacing: 16) {
@@ -641,12 +639,11 @@ private struct MoreActionRow: View {
     }
 }
 
-// DEMO-ONLY eFlexFuel pitch placeholder (see its call site in MoreView.body). A compact "Featured
-// Brand" card that pushes Recommended Gear, whose carousel always opens on the eFlexFuel page, so
-// no routing state is needed. It leads with eFlexFuel's official wordmark (an adaptive light/dark
-// asset) and is visually distinct from the sponsor card above it: a green outline instead of the
-// sponsor's logo plate and yellow outline, and a chevron (navigates inside the app) instead of the
-// external-link arrow.
+// A compact "Featured Brand" card that pushes Recommended Gear, whose carousel always opens on
+// the eFlexFuel page, so no routing state is needed. It leads with eFlexFuel's official wordmark
+// (an adaptive light/dark asset) and is visually distinct from the sponsor card above it: a green
+// outline instead of the sponsor's logo plate and yellow outline, and a chevron (navigates inside
+// the app) instead of the external-link arrow.
 private struct MoreFeaturedBrandCard: View {
     // Copy comes from the same model the Recommended Gear carousel uses, so the wording guards in
     // FeaturedGearTests cover this card too.
@@ -697,7 +694,9 @@ private struct MoreFeaturedBrandCard: View {
                 subtitle
             }
         } else {
-            HStack(spacing: 12) {
+            // 18pt (was 12pt) so the chevron keeps clear breathing room beside the now-narrower
+            // wordmark (see FeaturedWordmarkLayout.moreWidthRange) instead of crowding it.
+            HStack(spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
                     badgeLabel
 
@@ -719,7 +718,7 @@ private struct MoreFeaturedBrandCard: View {
             .foregroundStyle(AppTheme.Colors.textSecondary)
     }
 
-    // 190-225pt wide where the screen allows (see FeaturedWordmarkLayout), aspect-fit and uncropped; the
+    // 175-205pt wide where the screen allows (see FeaturedWordmarkLayout), aspect-fit and uncropped; the
     // asset is adaptive, so light mode gets the charcoal-and-orange logo and dark and OLED the white one.
     @ViewBuilder
     private var wordmark: some View {
