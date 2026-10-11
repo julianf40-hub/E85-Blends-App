@@ -586,6 +586,13 @@ struct RecommendedGearView: View {
                 ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
                     featuredCard(for: page, position: index + 1)
                         .containerRelativeFrame(.horizontal)
+                        // Defensive: a card's own content (e.g. a merged accessibility element at
+                        // extreme Dynamic Type sizes) must never be able to report a wider frame than
+                        // the carousel just assigned it — that would throw off this card's own margins
+                        // and the GeometryReader-measured minX below, which FeaturedCarouselMetrics
+                        // trusts. Clipping to the assigned width is a no-op whenever content already
+                        // fits (the normal case) and only engages as a safety net.
+                        .clipped()
                         // Natural height (never stretched to a taller neighbor), measured with the
                         // card's leading edge so the carousel can follow the swipe. Neither depends
                         // on the carousel's own height, so sizing it from them cannot feed back.
