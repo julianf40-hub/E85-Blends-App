@@ -59,6 +59,61 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// 85Blends 2.4.1 — the out-of-area signal must suppress the Pro station/map rendering even
+    /// though the entry still carries a structurally `.ready` snapshot WITH a station and a
+    /// map render attached (deliberately supplied here, unlike `testFallbackStatesAcrossAllFamilies`'s
+    /// cases, precisely so this test would fail if the `!entry.isOutOfArea` guards in
+    /// smallContent/mediumContent/largeContent were ever removed) — every family must instead
+    /// fall through to fallbackBody's "Location changed" copy. A pixel scan (light mode only,
+    /// mirroring testNonProShellsRenderAcrossAllFamiliesAndColorSchemes's own technique) only
+    /// confirms SOME content drew, not the exact wording — this is a visual smoke test, not a
+    /// text-content assertion.
+    func testOutOfAreaFallbackRendersAcrossAllFamiliesDespiteAReadySnapshotAndMap() throws {
+        let now = Date.now
+        let station = NearbyE85Station(id: "one", name: "Stale Station", address: "Example address",
+            latitude: 33.45, longitude: -112.07, distanceMiles: 1.2,
+            price: .init(dollarsPerGallon: 2.89, reportedAt: now, source: .community))
+        let readyWithMap = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                                  userLatitude: 33.44, userLongitude: -112.08)
+        let syntheticMapRender = NearbyE85MapRender(
+            image: UIGraphicsImageRenderer(size: Self.mediumSize).image { context in
+                UIColor.systemBlue.setFill()
+                context.fill(CGRect(origin: .zero, size: Self.mediumSize))
+            },
+            size: Self.mediumSize, markers: [])
+        for (familyName, family, size) in Self.familySizes {
+            let entry = NearbyE85Entry(date: now, snapshot: readyWithMap, access: .pro, mapRender: syntheticMapRender, isOutOfArea: true)
+            let image = try render(entry, family: family, size: size)
+            attach(image, name: "nearby-\(familyName)-out-of-area")
+            var foundContent = false
+            let scale = image.scale
+            for x in stride(from: 8, to: Int(size.width) - 8, by: 6) where !foundContent {
+                for y in stride(from: 8, to: Int(size.height) - 8, by: 6) where !foundContent {
+                    let color = try pixelColor(of: image, at: CGPoint(x: CGFloat(x) * scale, y: CGFloat(y) * scale))
+                    if isNotNearWhite(color) { foundContent = true }
+                }
+            }
+            XCTAssertTrue(foundContent, "\(familyName) out-of-area fallback drew no visible content")
+            // Stronger than the blank-canvas scan above: for medium/large specifically, prove
+            // the synthetic solid-blue map image was never actually composited — if the
+            // `!entry.isOutOfArea` guard were ever removed, this exact color would dominate
+            // the canvas (mediumContent renders it full-bleed; largeContent renders it at 60%
+            // height), so sampling the vertical center column is enough to catch either case.
+            guard family != .systemSmall else { continue }
+            var sawSyntheticMapBlue = false
+            for y in stride(from: 4, to: Int(size.height) - 4, by: 4) {
+                let color = try pixelColor(of: image, at: CGPoint(x: size.width / 2 * scale, y: CGFloat(y) * scale))
+                if isApproximatelySystemBlue(color) { sawSyntheticMapBlue = true; break }
+            }
+            XCTAssertFalse(sawSyntheticMapBlue, "\(familyName) out-of-area entry still composited the stale map image")
+        }
+    }
+
+    private func isApproximatelySystemBlue(_ color: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)) -> Bool {
+        // UIColor.systemBlue (light mode) ≈ (0, 122, 255).
+        abs(Int(color.r) - 0) < 40 && abs(Int(color.g) - 122) < 40 && abs(Int(color.b) - 255) < 40
+    }
+
     /// The manual refresh button, present on every family, must render alongside the map/zoom
     /// controls without clipping the widget's canvas or crashing — Large in particular now
     /// stacks three controls (+/-/refresh) on the map's trailing edge.

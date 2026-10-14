@@ -7,9 +7,18 @@ enum NearbyE85Publisher {
     private static let logger = Logger(subsystem: "com.e85blends", category: "NearbyE85")
     /// `cache` defaults to the real App-Group-backed cache; tests inject
     /// `NearbyE85Cache(fileURL:)` pointed at a temporary file instead.
-    static func publish(_ snapshot: NearbyE85Snapshot, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now) {
+    static func publish(_ snapshot: NearbyE85Snapshot, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now,
+                        areaRelevanceStore: NearbyE85AreaRelevanceStore = NearbyE85AreaRelevanceStore()) {
         do {
             if try cache.write(snapshot, now: now) {
+                // 85Blends 2.4.1 — any snapshot that actually lands here is, by definition,
+                // fresh and authoritative for wherever it was computed (a real Stations search,
+                // or NearbyE85LocationRefreshCoordinator's reposition succeeding again after
+                // the user travels back into range) — so whatever out-of-area signal was
+                // previously recorded is now stale and must be cleared. A failed/no-op search
+                // never reaches this line at all, so this can never falsely clear a genuinely
+                // still-out-of-area cache.
+                areaRelevanceStore.clear()
                 NearbyE85Diagnostics.logReloadRequested(source: "publisher")
                 WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
             }

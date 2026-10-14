@@ -22,6 +22,10 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let zoomLevel: NearbyE85MapZoomLevel
         let mapRender: NearbyE85MapRender?
         let pendingRefreshAt: Date?
+        // 85Blends 2.4.1 — the raw out-of-area signal; the actual per-entry boolean is derived
+        // from this against each entry's own `date`, exactly like `pendingRefreshAt` above is
+        // never itself the `isRefreshing` flag — see entry(...)/timeline(...) below.
+        let areaRelevance: NearbyE85AreaRelevanceState
     }
 
     // 85Blends 2.4.0 Pro gate — the widget gallery's placeholder/preview keeps showing the widget's
@@ -81,8 +85,9 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         guard access.permitsWidgetInteraction else { return lockedEntry(access: access, now: now) }
         let inputs = await loadProInputs()
         let isRefreshing = NearbyE85RefreshFeedback.isRefreshing(requestedAt: inputs.pendingRefreshAt, now: now)
+        let isOutOfArea = NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: inputs.areaRelevance, now: now)
         return .init(date: now, snapshot: inputs.snapshot, access: .pro, mapRender: inputs.mapRender,
-                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing)
+                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing, isOutOfArea: isOutOfArea)
     }
 
     /// getTimeline's timeline: the locked timeline for a non-Pro access, else — after loading the Pro
@@ -95,6 +100,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let zoomLevel = inputs.zoomLevel
         let mapRender = inputs.mapRender
         let pendingRefreshAt = inputs.pendingRefreshAt
+        let areaRelevance = inputs.areaRelevance
         // Schedule the stale and expiry states up front: budgeted reloads are not timers.
         var dates = [now, now.addingTimeInterval(30 * 60)]
         if let snapshot, snapshot.state != .permissionRequired {
@@ -115,10 +121,19 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let settleDate = pendingRefreshAt.addingTimeInterval(NearbyE85RefreshFeedback.window)
             if settleDate > now { dates.append(settleDate) }
         }
+        // 85Blends 2.4.1 — a follow-up date exactly when the out-of-area signal's own expiry
+        // (NearbyE85AreaRelevance.isCurrentlyOutOfArea's window) elapses, so the widget settles
+        // back to its ordinary snapshot-driven rendering on its own even if nothing else ever
+        // triggers a reload in the meantime.
+        if areaRelevance.isOutOfArea {
+            let expiryDate = areaRelevance.determinedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+            if expiryDate > now { dates.append(expiryDate) }
+        }
         let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date in
             NearbyE85Entry(date: date, snapshot: snapshot.flatMap { $0.isValid(at: date) ? $0 : nil },
                           access: .pro, mapRender: mapRender, zoomLevel: zoomLevel,
-                          isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date))
+                          isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date),
+                          isOutOfArea: NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: areaRelevance, now: date))
         }
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60)))
     }
@@ -151,8 +166,16 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let zoomLevel = context.family == .systemLarge ? NearbyE85MapZoomStore().read() : .default
         // The map only ever needs one render per timeline: the region and pins it depicts
         // don't change across the stale/expiry entries, only the copy around them.
+        // 85Blends 2.4.1 — read once, same as the snapshot/zoom above. Checked BEFORE the map
+        // render below so a cache that's provably out of area never pays a real MKMapSnapshotter
+        // pass for pixels NearbyE85WidgetView's out-of-area fallback won't show — see that
+        // view's own station(_:)/mediumContent/largeContent guards. `.now` here is only a
+        // performance decision (skip or don't skip the render this pass); the boolean the VIEW
+        // actually renders against is computed per timeline entry in entry(...)/timeline(...).
+        let areaRelevance = NearbyE85AreaRelevanceStore().read()
+        let isOutOfAreaNow = NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: areaRelevance, now: .now)
         let mapRenderState = NearbyE85Diagnostics.begin("Provider.mapRenderStep")
-        let mapRender = await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+        let mapRender = isOutOfAreaNow ? nil : await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
         NearbyE85Diagnostics.end("Provider.mapRenderStep", mapRenderState)
         // 85Blends 2.4.0 widget polish — the manual refresh button's "in progress" feedback.
         // Read once, same as everything else above: this never claims new data arrived (the
@@ -160,7 +183,8 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // recently the user tapped refresh so the control can show, and then honestly clear,
         // an in-progress appearance. See NearbyE85RefreshFeedback's header.
         let pendingRefreshAt = NearbyE85RefreshRequestStore().pendingRequestDate()
-        return ProInputs(snapshot: snapshot, zoomLevel: zoomLevel, mapRender: mapRender, pendingRefreshAt: pendingRefreshAt)
+        return ProInputs(snapshot: snapshot, zoomLevel: zoomLevel, mapRender: mapRender, pendingRefreshAt: pendingRefreshAt,
+                         areaRelevance: areaRelevance)
     }
     @MainActor private func readAuthorizedSnapshot() -> NearbyE85Snapshot? {
         // Permission is checked again in the extension; it never requests a location or

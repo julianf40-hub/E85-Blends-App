@@ -28,6 +28,7 @@
 
 import CoreLocation
 import Foundation
+import WidgetKit
 
 @MainActor
 enum NearbyE85LocationRefreshCoordinator {
@@ -42,7 +43,8 @@ enum NearbyE85LocationRefreshCoordinator {
     ///   materially different result to actually publish; see
     ///   NearbyE85LocationAcceptance.publishDecision's own doc comment.
     static func handle(location: CLLocation, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now,
-                        isManualRefresh: Bool = false) {
+                        isManualRefresh: Bool = false,
+                        areaRelevanceStore: NearbyE85AreaRelevanceStore = NearbyE85AreaRelevanceStore()) {
         let latitude = location.coordinate.latitude
         let longitude = location.coordinate.longitude
         #if DEBUG
@@ -69,6 +71,17 @@ enum NearbyE85LocationRefreshCoordinator {
             #if DEBUG
             print("[NearbyE85Location] ignored: moved out of range of every cached station; awaiting next app-open refresh")
             #endif
+            // 85Blends 2.4.1 — this accepted, in-range-quality fix just proved every
+            // previously-published station is now outside the ORIGINAL search radius: the
+            // cache isn't merely old, it's for the wrong place. Marks the shared out-of-area
+            // signal so the widget stops presenting those stations as nearby, without starting
+            // a new network search here (see this type's own header for why). Only reloads
+            // when the widget-visible flag actually flips false->true, so repeated SLC
+            // deliveries while still out of range never spend more than one reload.
+            if areaRelevanceStore.markOutOfArea(at: now) {
+                NearbyE85Diagnostics.logReloadRequested(source: "areaRelevance")
+                WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
+            }
             return
         }
 
@@ -90,7 +103,7 @@ enum NearbyE85LocationRefreshCoordinator {
         #endif
         guard decision == .publish else { return }
 
-        NearbyE85Publisher.publish(repositioned, cache: cache, now: now)
+        NearbyE85Publisher.publish(repositioned, cache: cache, now: now, areaRelevanceStore: areaRelevanceStore)
         #if DEBUG
         print("[NearbyE85Location] published repositioned snapshot (WidgetCenter reload requested if it actually changed)")
         #endif

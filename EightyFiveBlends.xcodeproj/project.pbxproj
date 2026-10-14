@@ -44,6 +44,8 @@
 		44E16BBC304E81BE0032D909 /* NearbyE85Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */; };
 		44F78FA5307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */; };
 		44F78FA6307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */; };
+		44F78FA8307F58CC0033FCAF /* NearbyE85AreaRelevance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA7307F58CC0033FCAF /* NearbyE85AreaRelevance.swift */; };
+		44F78FA9307F58CC0033FCAF /* NearbyE85AreaRelevance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA7307F58CC0033FCAF /* NearbyE85AreaRelevance.swift */; };
 		4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5185506854810ED820221CA5 /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */; };
 		7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
@@ -108,6 +110,7 @@
 		44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85RefreshIntent.swift; sourceTree = "<group>"; };
 		44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85Provider.swift; sourceTree = "<group>"; };
 		44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85Diagnostics.swift; sourceTree = "<group>"; };
+		44F78FA7307F58CC0033FCAF /* NearbyE85AreaRelevance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85AreaRelevance.swift; sourceTree = "<group>"; };
 		71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StationDataValidation.swift; path = EightyFiveBlends/StationDataValidation.swift; sourceTree = SOURCE_ROOT; };
 		B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Snapshot.swift; sourceTree = "<group>"; };
 		C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EightyFiveBlendsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -249,6 +252,7 @@
 				44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */,
 				44E16BB7304E81BE0032D909 /* NearbyE85WidgetAccess.swift */,
 				44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */,
+				44F78FA7307F58CC0033FCAF /* NearbyE85AreaRelevance.swift */,
 			);
 			path = SharedNearbyE85;
 			sourceTree = "<group>";
@@ -423,6 +427,7 @@
 				44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */,
 				44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */,
 				4469CCAC2FE13E730069F1D7 /* TripPlannerView.swift in Sources */,
+				44F78FA9307F58CC0033FCAF /* NearbyE85AreaRelevance.swift in Sources */,
 				444863ED2FB5B5B4001A39EE /* ProLimitBannerView.swift in Sources */,
 				4469CCB02FE13E940069F1D7 /* StationAlertsView.swift in Sources */,
 				444863EF2FB5B5CB001A39EE /* ProUpgradeView.swift in Sources */,
@@ -453,6 +458,7 @@
 				44E16BB3304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */,
 				44E16BB5304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */,
 				44E16BB8304E81BE0032D909 /* NearbyE85WidgetAccess.swift in Sources */,
+				44F78FA8307F58CC0033FCAF /* NearbyE85AreaRelevance.swift in Sources */,
 				C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

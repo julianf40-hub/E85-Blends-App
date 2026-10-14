@@ -22,6 +22,13 @@ nonisolated struct NearbyE85Entry: TimelineEntry {
     // never implies the snapshot above is any newer than before, and setting it has no effect
     // on `snapshot.updatedAt`/`locationAt`/any station's `priceReportedAt`.
     var isRefreshing: Bool = false
+    // 85Blends 2.4.1 — true when the cached snapshot's stations are no longer geographically
+    // relevant (the user travelled far enough that every one of them fell outside the original
+    // search radius) — see NearbyE85AreaRelevance. Purely a presentation flag computed fresh
+    // per entry, exactly like `isRefreshing` above: it never mutates `snapshot` itself, so a
+    // `.ready` snapshot can still be present on an entry whose `isOutOfArea` is true — every
+    // render site must check this explicitly rather than trusting `snapshot.state` alone.
+    var isOutOfArea: Bool = false
 }
 
 /// 85Blends 2.4.0 widget polish — named, testable layout constants for the manual refresh
@@ -53,8 +60,13 @@ nonisolated enum NearbyE85WidgetURLResolver {
     /// family or of any snapshot that might (defensively) be attached to the entry; the app's own
     /// entitlement gate then decides between the ordinary route and the paywall — see
     /// NearbyE85WidgetEntitlementRoute. `.pro` is exactly the pre-existing rule above.
-    static func widgetURL(family: WidgetFamily, snapshot: NearbyE85Snapshot?, access: NearbyE85WidgetAccessStatus) -> URL {
+    static func widgetURL(family: WidgetFamily, snapshot: NearbyE85Snapshot?, access: NearbyE85WidgetAccessStatus,
+                          isOutOfArea: Bool = false) -> URL {
         guard access.permitsWidgetInteraction else { return NearbyE85DeepLink.stationsURL() }
+        // 85Blends 2.4.1 — an out-of-area entry must never ship a stale directions link (the
+        // nearest station it remembers is for a place the user has since left); always Stations,
+        // exactly like the non-Pro shells above.
+        guard !isOutOfArea else { return NearbyE85DeepLink.stationsURL() }
         return widgetURL(family: family, snapshot: snapshot)
     }
 }
@@ -160,7 +172,8 @@ struct NearbyE85WidgetView: View {
     var body: some View {
         content
             .containerBackground(.background, for: .widget)
-            .widgetURL(NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: entry.snapshot, access: entry.access))
+            .widgetURL(NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: entry.snapshot, access: entry.access,
+                                                             isOutOfArea: entry.isOutOfArea))
             .privacySensitive()
     }
 
@@ -274,7 +287,7 @@ struct NearbyE85WidgetView: View {
 
     private var smallContent: some View {
         Group {
-            if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
+            if !entry.isOutOfArea, let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
                 VStack(alignment: .leading, spacing: 6) {
                     header
                     station(first, compact: false, showsEthanol: true)
@@ -301,7 +314,7 @@ struct NearbyE85WidgetView: View {
     // MARK: - Medium — map-only: "Where am I, and where is E85 around me?"
 
     @ViewBuilder private var mediumContent: some View {
-        if let snapshot = entry.snapshot, snapshot.state == .ready, let mapRender = entry.mapRender {
+        if !entry.isOutOfArea, let snapshot = entry.snapshot, snapshot.state == .ready, let mapRender = entry.mapRender {
             mapArea(mapRender, snapshot: snapshot)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityElement(children: .ignore)
@@ -309,7 +322,7 @@ struct NearbyE85WidgetView: View {
                 // Sibling overlay of the map, not nested inside its tap region — see
                 // smallContent's identical comment above.
                 .overlay(alignment: .topTrailing) { refreshButton.padding(NearbyE85WidgetLayout.smallMediumRefreshInset) }
-        } else if let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
+        } else if !entry.isOutOfArea, let snapshot = entry.snapshot, snapshot.state == .ready, let first = snapshot.stations.first {
             // No map yet (offline first render, or an older cached snapshot with no user
             // coordinate) — degrade to the small-style information card rather than a blank map.
             // Medium always opens Stations regardless of what's shown, never directions.
@@ -351,7 +364,7 @@ struct NearbyE85WidgetView: View {
     // rendered directly, unwrapped, exactly like Medium, and the "open Stations" tap target
     // moves to a separate, fully transparent Link layered on top of it instead.
     @ViewBuilder private var largeContent: some View {
-        if let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
+        if !entry.isOutOfArea, let snapshot = entry.snapshot, snapshot.state == .ready, !snapshot.stations.isEmpty {
             VStack(spacing: 0) {
                 if let mapRender = entry.mapRender {
                     // Controls are a SIBLING on top of the transparent Link, not nested inside
@@ -672,7 +685,14 @@ struct NearbyE85WidgetView: View {
     private var fallbackBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
-            if entry.snapshot?.state == .permissionRequired {
+            if entry.isOutOfArea {
+                // 85Blends 2.4.1 — distinct from every state below: there IS a cached
+                // snapshot, and it may even still be `.ready`, but it's for a place the user
+                // has since left (see NearbyE85AreaRelevance). Checked first so a stale
+                // "permission required"/"no nearby E85" copy never masks the real reason.
+                Text("Location changed").font(.headline)
+                Text("Open 85Blends to find nearby E85.")
+            } else if entry.snapshot?.state == .permissionRequired {
                 Text("Location needed").font(.headline)
                 Text("Open 85Blends to allow location and find nearby E85.")
             } else if let snapshot = entry.snapshot, snapshot.state == .noStations {
