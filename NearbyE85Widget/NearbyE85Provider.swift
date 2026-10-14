@@ -35,15 +35,25 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (NearbyE85Entry) -> Void) {
         if context.isPreview { completion(placeholder(in: context)); return }
         Task { @MainActor in
+            // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+            // NearbyE85Diagnostics's own header. Ordering/behavior below is unchanged.
+            let overallState = NearbyE85Diagnostics.begin("Provider.getSnapshot")
+            defer { NearbyE85Diagnostics.end("Provider.getSnapshot", overallState) }
             let now = Date.now
             // Access FIRST — see getTimeline's identical guard below for the full rationale.
+            let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
+            NearbyE85Diagnostics.end("Provider.accessGate", accessState)
             let entry = await Self.entry(access: access, now: now) { await proInputs(context: context) }
             completion(entry)
         }
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<NearbyE85Entry>) -> Void) {
         Task { @MainActor in
+            // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+            // NearbyE85Diagnostics's own header. Ordering/behavior below is unchanged.
+            let overallState = NearbyE85Diagnostics.begin("Provider.getTimeline")
+            defer { NearbyE85Diagnostics.end("Provider.getTimeline", overallState) }
             let now = Date.now
             // 85Blends 2.4.0 Pro gate — resolved BEFORE anything else is read. A non-Pro entry
             // (`.free`, or `.unknown` when nothing authoritative has been mirrored yet — see
@@ -53,8 +63,11 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             // it, so none of that data is loaded, and nothing about a user's location ever reaches
             // a locked shell. `timeline(...)` only ever calls the loader below once access is `.pro`,
             // and the Pro path inside it is byte-for-byte what shipped before this gate.
+            let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
+            NearbyE85Diagnostics.end("Provider.accessGate", accessState)
             let timeline = await Self.timeline(access: access, now: now) { await proInputs(context: context) }
+            NearbyE85Diagnostics.logger.debug("Provider.getTimeline: entries=\(timeline.entries.count, privacy: .public) access=\(access.rawValue, privacy: .public)")
             completion(timeline)
         }
     }
@@ -129,13 +142,18 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     /// performed them inline before the gate — snapshot, zoom, map, pending-refresh — so nothing
     /// about their relative timing changed either.
     @MainActor private func proInputs(context: Context) async -> ProInputs {
+        // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational.
+        let snapshotState = NearbyE85Diagnostics.begin("Provider.snapshotLoad")
         let snapshot = readAuthorizedSnapshot()
+        NearbyE85Diagnostics.end("Provider.snapshotLoad", snapshotState)
         // Read once per timeline, same as the snapshot itself — zoom is presentation-only,
         // never a reason to touch location or refetch stations.
         let zoomLevel = context.family == .systemLarge ? NearbyE85MapZoomStore().read() : .default
         // The map only ever needs one render per timeline: the region and pins it depicts
         // don't change across the stale/expiry entries, only the copy around them.
+        let mapRenderState = NearbyE85Diagnostics.begin("Provider.mapRenderStep")
         let mapRender = await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+        NearbyE85Diagnostics.end("Provider.mapRenderStep", mapRenderState)
         // 85Blends 2.4.0 widget polish — the manual refresh button's "in progress" feedback.
         // Read once, same as everything else above: this never claims new data arrived (the
         // snapshot/its timestamps are completely untouched by this), it only tracks how

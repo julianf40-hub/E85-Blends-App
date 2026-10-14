@@ -117,6 +117,7 @@ enum NearbyE85WidgetAccessPublisher {
                         reloadTimelines: () -> Void = { WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind) }) -> Bool {
         guard store.read().status != status else { return false }
         guard store.write(NearbyE85WidgetAccessState(status: status, updatedAt: now)) else { return false }
+        NearbyE85Diagnostics.logReloadRequested(source: "accessPublisher")
         reloadTimelines()
         return true
     }
@@ -129,6 +130,7 @@ enum NearbyE85WidgetAccessPublisher {
     static func resetDebugForcedMirror(store: NearbyE85WidgetAccessStore = NearbyE85WidgetAccessStore(),
                                        reloadTimelines: () -> Void = { WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind) }) -> Bool {
         guard store.clear() else { return false }
+        NearbyE85Diagnostics.logReloadRequested(source: "accessPublisherReset")
         reloadTimelines()
         return true
     }

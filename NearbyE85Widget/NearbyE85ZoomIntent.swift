@@ -51,6 +51,7 @@ nonisolated enum NearbyE85ZoomIntentHandler {
                        zoomStore: NearbyE85MapZoomStore, reloadTimelines: () -> Void) -> Bool {
         guard access.permitsWidgetInteraction else { return false }
         action.apply(using: zoomStore)
+        NearbyE85Diagnostics.logReloadRequested(source: "zoomIntent")
         reloadTimelines()
         return true
     }

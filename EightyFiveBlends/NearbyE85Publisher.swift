@@ -10,6 +10,7 @@ enum NearbyE85Publisher {
     static func publish(_ snapshot: NearbyE85Snapshot, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now) {
         do {
             if try cache.write(snapshot, now: now) {
+                NearbyE85Diagnostics.logReloadRequested(source: "publisher")
                 WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
             }
         } catch {

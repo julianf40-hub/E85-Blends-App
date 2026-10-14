@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // Value-only boundary: the extension never opens SwiftData, CloudKit, or the network.
 nonisolated enum NearbyE85Configuration {
@@ -225,12 +226,21 @@ nonisolated struct NearbyE85Cache {
         }?.appendingPathComponent("NearbyE85/snapshot-v1.json")
     }
 
+    // 85Blends 2.4.1 performance audit (Phase 2A) — signposts/logs below are purely
+    // observational (see NearbyE85Diagnostics's own no-PII rule); none of them change this
+    // function's control flow, return value, or the bytes it reads/writes.
     func read(now: Date = .now) -> NearbyE85Snapshot? {
+        let signpostState = NearbyE85Diagnostics.begin("Cache.read")
+        defer { NearbyE85Diagnostics.end("Cache.read", signpostState) }
         guard let fileURL,
               let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536,
               let data = try? Data(contentsOf: fileURL),
               let value = try? JSONDecoder().decode(NearbyE85Snapshot.self, from: data),
-              value.isValid(at: now) else { return nil }
+              value.isValid(at: now) else {
+            NearbyE85Diagnostics.logger.debug("Cache.read: no valid snapshot")
+            return nil
+        }
+        NearbyE85Diagnostics.logger.debug("Cache.read: ok bytes=\(data.count, privacy: .public)")
         return value
     }
 
@@ -238,9 +248,14 @@ nonisolated struct NearbyE85Cache {
     // look like successful sharing. Atomic replacement gives concurrent readers whole snapshots.
     @discardableResult
     func write(_ snapshot: NearbyE85Snapshot, now: Date = .now) throws -> Bool {
+        let signpostState = NearbyE85Diagnostics.begin("Cache.write")
+        defer { NearbyE85Diagnostics.end("Cache.write", signpostState) }
         guard let fileURL else { throw CocoaError(.fileNoSuchFile) }
         guard snapshot.isValid(at: now) else { throw CocoaError(.fileWriteInvalidFileName) }
-        if read(now: now) == snapshot { return false }
+        if read(now: now) == snapshot {
+            NearbyE85Diagnostics.logger.debug("Cache.write: unchanged, skipped")
+            return false
+        }
         let data = try JSONEncoder().encode(snapshot)
         guard data.count <= 65_536 else { throw CocoaError(.fileWriteOutOfSpace) }
         var directory = fileURL.deletingLastPathComponent()
@@ -249,6 +264,7 @@ nonisolated struct NearbyE85Cache {
         values.isExcludedFromBackup = true
         try directory.setResourceValues(values)
         try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        NearbyE85Diagnostics.logger.debug("Cache.write: ok bytes=\(data.count, privacy: .public)")
         return true
     }
 }

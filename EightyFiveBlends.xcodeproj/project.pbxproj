@@ -13,7 +13,6 @@
 		2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */; };
 		2E4E26685537428120887E81 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF8B729DDDAFF2AF4FA7C20 /* Foundation.framework */; };
 		40A8BB5928209B4CEA90BC87 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 1EAE9D3FAD6DD46FD6FBB734 /* RevenueCat */; };
-		5185506854810ED820221CA5 /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */; };
 		41C189A7C0B7B66245BE24C7 /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */; };
 		44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44309B0C2FE8E4BE00304289 /* SavedTripStore.swift */; };
@@ -38,12 +37,15 @@
 		44E16BB5304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */; };
 		44E16BB6304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */; };
 		44E16BB8304E81BE0032D909 /* NearbyE85WidgetAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81BE0032D909 /* NearbyE85WidgetAccess.swift */; };
+		44E16BB8304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
 		44E16BB9304E81BE0032D909 /* NearbyE85WidgetAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81BE0032D909 /* NearbyE85WidgetAccess.swift */; };
+		44E16BB9304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
 		44E16BBB304E81BE0032D909 /* NearbyE85Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */; };
 		44E16BBC304E81BE0032D909 /* NearbyE85Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */; };
-		44E16BB8304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
-		44E16BB9304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */; };
+		44F78FA5307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */; };
+		44F78FA6307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */; };
 		4F3E87633F557610C73E6590 /* NearbyE85Widget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		5185506854810ED820221CA5 /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 30CFA2AE73E4A2E8A873F6EE /* RevenueCatUI */; };
 		7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */; };
 		8B42980131F9D59B3F676C73 /* GoogleUserMessagingPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = CBAA7DEC6E0E97D78F2078FC /* GoogleUserMessagingPlatform */; };
 		C8603755A2B4926DDBD13DB8 /* NearbyE85Presentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4C1A8BEFDD786BEF70FA18 /* NearbyE85Presentation.swift */; };
@@ -103,8 +105,9 @@
 		44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85ZoomIntent.swift; sourceTree = "<group>"; };
 		44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85RefreshRequest.swift; sourceTree = "<group>"; };
 		44E16BB7304E81BE0032D909 /* NearbyE85WidgetAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85WidgetAccess.swift; sourceTree = "<group>"; };
-		44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85Provider.swift; sourceTree = "<group>"; };
 		44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85RefreshIntent.swift; sourceTree = "<group>"; };
+		44E16BBA304E81BE0032D909 /* NearbyE85Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85Provider.swift; sourceTree = "<group>"; };
+		44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85Diagnostics.swift; sourceTree = "<group>"; };
 		71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StationDataValidation.swift; path = EightyFiveBlends/StationDataValidation.swift; sourceTree = SOURCE_ROOT; };
 		B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NearbyE85Snapshot.swift; sourceTree = "<group>"; };
 		C0E167F8FC0810A3307810EB /* EightyFiveBlendsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EightyFiveBlendsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -245,6 +248,7 @@
 				44E16BAE304E6C180032D909 /* NearbyE85MapZoom.swift */,
 				44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */,
 				44E16BB7304E81BE0032D909 /* NearbyE85WidgetAccess.swift */,
+				44F78FA4307F518B0033FCAF /* NearbyE85Diagnostics.swift */,
 			);
 			path = SharedNearbyE85;
 			sourceTree = "<group>";
@@ -414,6 +418,7 @@
 			files = (
 				4469CCAE2FE13E820069F1D7 /* AdvancedAnalyticsView.swift in Sources */,
 				4469CCAA2FE1397A0069F1D7 /* ProFeatureLockView.swift in Sources */,
+				44F78FA6307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */,
 				44309B0D2FE8E4BE00304289 /* SavedTripStore.swift in Sources */,
 				44309B0B2FE7FDD500304289 /* RouteE85Planner.swift in Sources */,
 				44309B0F2FE8E4C900304289 /* StationReportStore.swift in Sources */,
@@ -439,6 +444,7 @@
 				1FD94376DFEBAF890E2BB805 /* NearbyE85Widget.swift in Sources */,
 				44E16BBB304E81BE0032D909 /* NearbyE85Provider.swift in Sources */,
 				44E16BAF304E6C180032D909 /* NearbyE85MapZoom.swift in Sources */,
+				44F78FA5307F518B0033FCAF /* NearbyE85Diagnostics.swift in Sources */,
 				7815ABC7690A5F271E7442CC /* NearbyE85Snapshot.swift in Sources */,
 				44E16B9F304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
 				44E16BA3304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
@@ -476,7 +482,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NearbyE85Widget/NearbyE85Widget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 272;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NearbyE85Widget/Info.plist;
@@ -569,8 +575,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 100;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
-				ENABLE_TESTABILITY = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = EightyFiveBlends/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = 85Blends;
@@ -736,7 +742,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 272;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -780,7 +786,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = EightyFiveBlends/EightyFiveBlends.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 272;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -888,7 +894,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NearbyE85Widget/NearbyE85Widget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 272;
 				DEVELOPMENT_TEAM = 6G83S7V2SK;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NearbyE85Widget/Info.plist;

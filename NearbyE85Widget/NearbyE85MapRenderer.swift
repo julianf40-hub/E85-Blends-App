@@ -40,6 +40,10 @@ enum NearbyE85MapRenderer {
     @MainActor
     static func render(userLatitude: Double, userLongitude: Double, stations: [NearbyE85Station],
                         size: CGSize, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
+        // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+        // NearbyE85Diagnostics's own header for the no-PII rule this call site follows.
+        let signpostState = NearbyE85Diagnostics.begin("MapRenderer.render")
+        defer { NearbyE85Diagnostics.end("MapRenderer.render", signpostState) }
         guard size.width >= 1, size.height >= 1 else { return nil }
         let userCoordinate = CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude)
         let stationCoordinates = stations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -59,7 +63,10 @@ enum NearbyE85MapRenderer {
         options.mapType = .standard
         options.showsBuildings = false
 
-        guard let snapshot = await snapshot(options: options) else { return nil }
+        guard let snapshot = await snapshot(options: options) else {
+            NearbyE85Diagnostics.logger.debug("MapRenderer.render: MKMapSnapshotter returned no snapshot")
+            return nil
+        }
 
         let stationMarkers = stations.enumerated().map { index, station -> NearbyE85MapMarker in
             let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
@@ -74,6 +81,8 @@ enum NearbyE85MapRenderer {
         let userPoint = NearbyE85MapRegion.declutteredUserPoint(snapshot.point(for: userCoordinate),
                                                                 avoiding: stationMarkers.map(\.point), minimumSeparation: 24)
         let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, priceLabel: nil)] + stationMarkers
+        NearbyE85Diagnostics.logger.debug(
+            "MapRenderer.render: ok width=\(Int(size.width), privacy: .public) height=\(Int(size.height), privacy: .public) stationCount=\(stations.count, privacy: .public)")
         return NearbyE85MapRender(image: snapshot.image, size: size, markers: markers)
     }
 
