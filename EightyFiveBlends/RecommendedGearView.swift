@@ -585,14 +585,17 @@ struct RecommendedGearView: View {
             HStack(alignment: .top, spacing: spacing) {
                 ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
                     featuredCard(for: page, position: index + 1)
+                        // Relative to this scroll view's own content width, which `contentMargins`
+                        // below already insets by pageMargin on each side — so this is the screen
+                        // width minus pageMargin on each side, adaptively, with no assumption that
+                        // the carousel's container is the full device screen (unlike reading
+                        // UIScreen.main.bounds directly, which would stay full-screen-width even in
+                        // a narrower container, e.g. a future multi-window/adaptive layout). An AX5
+                        // cold-launch overflow previously traced to this API turned out to actually
+                        // be FeaturedBadge not wrapping to its proposed width (see FeaturedBadge);
+                        // once that was fixed, this sizing is correct again — see the AX5 cold-launch
+                        // re-verification in the carousel's accessibility-width investigation notes.
                         .containerRelativeFrame(.horizontal)
-                        // Defensive: a card's own content (e.g. a merged accessibility element at
-                        // extreme Dynamic Type sizes) must never be able to report a wider frame than
-                        // the carousel just assigned it — that would throw off this card's own margins
-                        // and the GeometryReader-measured minX below, which FeaturedCarouselMetrics
-                        // trusts. Clipping to the assigned width is a no-op whenever content already
-                        // fits (the normal case) and only engages as a safety net.
-                        .clipped()
                         // Natural height (never stretched to a taller neighbor), measured with the
                         // card's leading edge so the carousel can follow the swipe. Neither depends
                         // on the carousel's own height, so sizing it from them cannot feed back.
@@ -1286,10 +1289,14 @@ private struct FeaturedBadge: View {
     let title: String
 
     var body: some View {
+        // Without this, the Text sizes to its own unwrapped ideal width instead of the width
+        // proposed by the card around it — at AX5 that ideal width is wider than the card itself,
+        // so the badge (and the accessibility frame merged from it) visibly overflows the card.
         Text(title.uppercased())
             .font(.caption.weight(.bold))
             .tracking(1.0)
             .foregroundStyle(AppTheme.Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(AppTheme.Colors.charcoal, in: Capsule())
