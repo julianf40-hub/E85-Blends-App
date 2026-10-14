@@ -44,7 +44,8 @@ enum NearbyE85LocationRefreshCoordinator {
     ///   NearbyE85LocationAcceptance.publishDecision's own doc comment.
     static func handle(location: CLLocation, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now,
                         isManualRefresh: Bool = false,
-                        areaRelevanceStore: NearbyE85AreaRelevanceStore = NearbyE85AreaRelevanceStore()) {
+                        areaRelevanceStore: NearbyE85AreaRelevanceStore = NearbyE85AreaRelevanceStore(),
+                        reloadTimelines: () -> Void = { WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind) }) {
         let latitude = location.coordinate.latitude
         let longitude = location.coordinate.longitude
         #if DEBUG
@@ -80,7 +81,7 @@ enum NearbyE85LocationRefreshCoordinator {
             // deliveries while still out of range never spend more than one reload.
             if areaRelevanceStore.markOutOfArea(at: now) {
                 NearbyE85Diagnostics.logReloadRequested(source: "areaRelevance")
-                WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
+                reloadTimelines()
             }
             return
         }
@@ -103,7 +104,7 @@ enum NearbyE85LocationRefreshCoordinator {
         #endif
         guard decision == .publish else { return }
 
-        NearbyE85Publisher.publish(repositioned, cache: cache, now: now, areaRelevanceStore: areaRelevanceStore)
+        NearbyE85Publisher.publish(repositioned, cache: cache, now: now, areaRelevanceStore: areaRelevanceStore, reloadTimelines: reloadTimelines)
         #if DEBUG
         print("[NearbyE85Location] published repositioned snapshot (WidgetCenter reload requested if it actually changed)")
         #endif

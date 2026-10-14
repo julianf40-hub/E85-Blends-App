@@ -178,6 +178,54 @@ struct NearbyE85AreaRelevanceCoordinatorTests {
         #expect(cache.read(now: laterNow) == original)
     }
 
+    /// 85Blends 2.4.1 Phase 2C — proves the actual WidgetCenter call site fires, not just that
+    /// `markOutOfArea` returned true. `NearbyE85LocationRefreshCoordinator.handle` previously had
+    /// no way for a test to observe the real reload call; this exercises the injected closure
+    /// the same way `NearbyE85RefreshIntent`/`NearbyE85ZoomIntentHandler` already do.
+    @Test func movementFarOutsideTheSearchAreaRequestsExactlyOneTimelineReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(3600)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: laterNow),
+            cache: cache, now: laterNow, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read().isOutOfArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Mirrors `repeatedOutOfRangeFixesKeepTheFlagSetWithoutError` but observes the actual
+    /// reload call count rather than inferring it from the store alone — the second, still-out-
+    /// of-range fix must spend none of WidgetKit's reload budget on a re-render that would be
+    /// identical to what's already showing.
+    @Test func repeatedOutOfRangeFixesRequestNoAdditionalReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let firstFix = now.addingTimeInterval(3600)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: firstFix),
+            cache: cache, now: firstFix, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+        #expect(reloadCount == 1)
+
+        let secondFix = now.addingTimeInterval(4200)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.71, longitude: home.longitude, timestamp: secondFix),
+            cache: cache, now: secondFix, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+        #expect(reloadCount == 1)
+    }
+
     @Test func repeatedOutOfRangeFixesKeepTheFlagSetWithoutError() throws {
         let (cache, directory) = makeCache()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -311,7 +359,15 @@ struct NearbyE85AreaRelevancePublisherTests {
         #expect(areaStore.read() == .inArea)
     }
 
-    @Test func publishingAnIdenticalUnchangedSnapshotNeverTouchesTheAreaRelevanceFlag() throws {
+    /// 85Blends 2.4.1 Phase 2C fix — publishing byte-identical content (cache.write short-
+    /// circuits and returns false) must still clear a previously-recorded out-of-area flag.
+    /// `cache.write` only reaches this call without throwing for a snapshot that already passed
+    /// `isValid(at:)`, so this IS a validated, authoritative result regardless of whether the
+    /// bytes on disk happened to match — gating the clear on the file-content comparison alone
+    /// would leave the widget needlessly stuck on "Location changed" after a genuinely
+    /// successful search. This replaces a prior version of this test that asserted the opposite
+    /// (confirmed defect, corrected here).
+    @Test func aFreshValidatedSnapshotClearsTheOutOfAreaFlagEvenWhenCacheContentIsUnchanged() throws {
         let (cache, directory) = makeCache()
         defer { try? FileManager.default.removeItem(at: directory) }
         let areaStore = isolatedAreaStore()
@@ -322,11 +378,34 @@ struct NearbyE85AreaRelevancePublisherTests {
         try cache.write(snapshot, now: now)
         areaStore.markOutOfArea(at: now)
 
+        var reloadCount = 0
         // Publishing the exact same content again is a no-op write (cache.write short-circuits
-        // on equality) — the out-of-area flag must be left exactly as it was, not assumed clear.
-        NearbyE85Publisher.publish(snapshot, cache: cache, now: now, areaRelevanceStore: areaStore)
+        // on equality) — but the out-of-area flag must still clear, and exactly one reload must
+        // still be requested, since the widget-visible state (the flag) did change even though
+        // the underlying file did not.
+        NearbyE85Publisher.publish(snapshot, cache: cache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
 
-        #expect(areaStore.read().isOutOfArea)
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Preserves the pre-existing no-duplicate-reload behavior for the ordinary case: nothing
+    /// changed (same content, already in-area) — no reload should be spent.
+    @Test func publishingAnIdenticalSnapshotWhileAlreadyInAreaRequestsNoReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.44, userLongitude: -112.08)
+        try cache.write(snapshot, now: now)
+
+        var reloadCount = 0
+        NearbyE85Publisher.publish(snapshot, cache: cache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 0)
     }
 }
 
