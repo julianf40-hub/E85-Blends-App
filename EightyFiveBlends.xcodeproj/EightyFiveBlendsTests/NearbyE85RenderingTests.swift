@@ -248,18 +248,23 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertFalse(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .vibrant))
     }
 
-    /// 85Blends 2.4.1 Phase 2F — a smoke test, not a proof of visual correctness (see this file's
-    /// own `render(...)` header and NearbyE85IconButtonChrome's doc comment for why ImageRenderer
-    /// can't observe WidgetKit's own accented recoloring). What this DOES catch: a crash, an
-    /// empty/zero-size render, or a layout exception from the tinted-mode code paths — the icon
-    /// button's mode branch, the map's `.widgetAccentedRenderingMode(.fullColor)` availability
-    /// guard, and every marker's `.background { }` restructuring — across every family and both
-    /// the idle and in-progress refresh states. A real Home Screen screenshot is still required
-    /// to confirm the actual visual fix; see the Phase 2F final report's own appearance section.
+    /// 85Blends 2.4.1 Phase 2F (revised) — a smoke test, not a proof of visual correctness (see
+    /// this file's own `render(...)` header and NearbyE85IconButtonChrome's doc comment for why
+    /// ImageRenderer can't observe WidgetKit's own accented recoloring). What this DOES catch: a
+    /// crash, an empty/zero-size render, or a layout exception from any tinted-mode code path —
+    /// the icon button's mode branch, the map's `.widgetAccentedRenderingMode(.fullColor)`
+    /// availability guard, every marker's reduced-opacity/stroke treatment, and the ethanol
+    /// badge — across every family and both the idle and in-progress refresh states. A real
+    /// Home Screen screenshot is still required to confirm the actual visual fix.
     func testAccentedRenderingModeRendersWithoutCrashingAcrossAllFamilies() throws {
         let now = Date.now
         let (nearest, second, _) = phoenixStations(now: now)
-        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second], radiusMiles: 25, updatedAt: now, locationAt: now,
+        // Includes ethanol data (phoenixStations's own fixtures don't) so Large's station list
+        // exercises ethanolBadge's accented-mode branch too, not just the map's price badge.
+        let withEthanol = NearbyE85Station(id: "ethanol", name: "Alliance AutoGas", address: "900 W Washington St, Phoenix, AZ",
+            latitude: 33.4490, longitude: -112.0790, distanceMiles: 0.9, price: nil,
+            ethanol: .init(percentage: 75, reportedAt: now.addingTimeInterval(-1 * 86400)))
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second, withEthanol], radiusMiles: 25, updatedAt: now, locationAt: now,
                                               userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
         for (familyName, family, size) in Self.familySizes {
             let heightFraction = family == .systemLarge ? 0.6 : 1.0

@@ -115,12 +115,14 @@ enum NearbyE85IconButtonInteractivity {
 
 /// 85Blends 2.4.1 Phase 2F tinted-mode fix — the pure decision nearbyE85IconButton's chrome
 /// branches on, pulled out so it's directly unit-testable. Deliberately NOT a pixel-rendering
-/// test: `.widgetAccentable()`'s actual two-color recoloring is applied by WidgetKit's real
-/// host process, not by generic SwiftUI rendering (ImageRenderer renders every color literally
-/// regardless of this modifier), so the only thing a test here can honestly prove is that
-/// accented mode selects the outlined (not opaque-material) treatment — not that the result
-/// is visually correct on a real Home Screen. See this file's own render(...) header for the
-/// same ImageRenderer-vs-WidgetKit-host distinction made elsewhere in this codebase.
+/// test: WidgetKit's actual accented-mode compositing (which tints content white and only
+/// preserves opacity — see this function's own call site comment) is applied by WidgetKit's
+/// real host process, not by generic SwiftUI rendering (ImageRenderer renders every literal
+/// color/opacity value faithfully but doesn't apply that host-level recoloring at all), so the
+/// only thing a test here can honestly prove is that accented mode selects the outlined (not
+/// opaque-material) treatment — not that the result is visually correct on a real Home Screen.
+/// See this file's own render(...) header for the same ImageRenderer-vs-WidgetKit-host
+/// distinction made elsewhere in this codebase.
 enum NearbyE85IconButtonChrome {
     static func usesOutlinedTreatment(renderingMode: WidgetRenderingMode) -> Bool {
         renderingMode == .accented
@@ -148,17 +150,18 @@ enum NearbyE85IconButtonChrome {
 /// hit-test the visually-drawn inner circle, silently undoing the decoupling. This is purely a
 /// hit-testing change — it never touches `.disabled(...)`, so the boundary/refresh distinction
 /// `NearbyE85IconButtonInteractivity` enforces is completely unaffected.
-// 85Blends 2.4.1 Phase 2F tinted-mode fix — confirmed on a physical iPhone 17 Pro Max: in
-// `.accented` rendering mode WidgetKit treats every view not marked `.widgetAccentable()` as a
-// template image using ONLY its alpha channel, painting every such view with the SAME single
-// "default group" color (see `widgetAccentable(_:)`'s own doc comment). The `.thinMaterial`
-// circle and the icon on top of it were both in that same default group, so they rendered as
-// the identical solid color — an opaque white circle with an invisible symbol. Splitting them
-// into two groups (icon → accent group, via `.widgetAccentable()`) restores contrast. The
-// background is ALSO swapped to a thin stroked outline specifically in accented mode, rather
-// than an opaque filled circle, per Apple's own guidance that accented/tinted widgets should
-// favor a glass/outlined treatment over solid fills. `.fullColor`/`.vibrant` (ordinary Light and
-// Dark Mode) keep the exact pre-existing `.thinMaterial` circle, byte-for-byte unchanged.
+// 85Blends 2.4.1 Phase 2F tinted-mode fix, confirmed working on a physical iPhone 17 Pro Max —
+// and confirmed, by a LATER round of screenshots plus Apple's own documentation, to work for a
+// different reason than originally written here. `.accented` mode does NOT give the "accent
+// group" and "default group" two different colors on this app's target platforms — Apple's
+// "Optimizing your widget for accented rendering mode and Liquid Glass" guide states plainly
+// that iOS/macOS "tints primary and accented content white" (both groups); only watchOS gets a
+// second, watch-face-derived color. The `.widgetAccentable()` call below is therefore inert
+// here — real contrast comes from swapping the opaque `.thinMaterial` circle for a thin stroked
+// outline with mostly-transparent interior specifically in accented mode: a stroke (painted) vs.
+// empty space (fully transparent) differs in OPACITY, which IS preserved under accented
+// compositing, unlike hue. `.fullColor`/`.vibrant` (ordinary Light and Dark Mode) keep the exact
+// pre-existing `.thinMaterial` circle, byte-for-byte unchanged.
 private func nearbyE85IconButton(systemImage: String, intent: some AppIntent, renderingMode: WidgetRenderingMode,
                                   isVisuallyDimmed: Bool = false, isRefreshing: Bool = false, size: CGFloat = 44,
                                   tapTargetSize: CGFloat? = nil, iconSize: CGFloat = 13, label: String) -> some View {
@@ -512,21 +515,27 @@ struct NearbyE85WidgetView: View {
     /// Says "Reported E78", not a bare "E78" — this is a single most-recent community report (see
     /// NearbyE85Ethanol's own header), not a verified reading, and a bare percentage in an
     /// authoritative-looking capsule reads too easily as a claim about the pump itself.
-    // 85Blends 2.4.1 Phase 2F tinted-mode fix — same failure mode as nearbyE85IconButton's own
-    // header comment: `.background(_:in:)` shares its group membership with the foreground
-    // content it's attached to, so the white text and the green capsule used to render as the
-    // same solid color under `.accented` mode. The capsule is now a sibling view inside a
-    // `.background { }` content closure (not a `.background(_:in:)` shape-style fill) so it can
-    // independently join the accent group via `.widgetAccentable()` while the text stays in the
-    // default group (white) — restoring "white text on a colored pill" contrast. Geometry is
-    // unchanged: `.background(content:)` sizes its content to this view's own bounds, same as
-    // the shape-fill variant it replaces.
+    // 85Blends 2.4.1 Phase 2F tinted-mode fix, REVISED — see markerView's own comment for the
+    // full correction. `.widgetAccentable()` doesn't give the capsule a different color from
+    // the text on iOS (Apple's own docs: accented mode "tints primary and accented content
+    // white" — both groups). A second round of on-device screenshots confirmed the original
+    // fix here didn't work for that reason. Real contrast in `.accented` mode comes from a
+    // reduced-opacity fill plus a fully-opaque stroke outline, vs. the text's own full opacity —
+    // a density difference that survives accented compositing even though hue doesn't.
+    // `.fullColor` (ordinary Light/Dark Mode) keeps the exact pre-existing solid fill.
     private func ethanolBadge(_ ethanol: NearbyE85Ethanol) -> some View {
         Text(ethanol.badgeText)
             .font(.system(size: 9, weight: .bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 5).padding(.vertical, 2)
-            .background { Capsule().fill(Color.green.opacity(0.85)).widgetAccentable() }
+            .background {
+                if renderingMode == .accented {
+                    Capsule().fill(Color.white.opacity(0.35))
+                        .overlay(Capsule().stroke(Color.white, lineWidth: 1))
+                } else {
+                    Capsule().fill(Color.green.opacity(0.85))
+                }
+            }
             .fixedSize()
             .lineLimit(1)
             .accessibilityHidden(true)
@@ -792,6 +801,10 @@ struct NearbyE85WidgetView: View {
 /// coordinate math or a live MKMapView.
 struct NearbyE85MapView: View {
     let render: NearbyE85MapRender
+    // 85Blends 2.4.1 Phase 2F — see markerView's own corrected comment below for why this is
+    // now read directly (instead of relying on `.widgetAccentable()` grouping, which turned
+    // out to do nothing for this app's contrast problem on iOS).
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         ZStack {
@@ -815,9 +828,8 @@ struct NearbyE85MapView: View {
             // is a fully-opaque bitmap, so without this it would flatten into a single solid
             // tinted rectangle — hiding the geography and every station pin — rather than just
             // losing some color richness. `.fullColor` is the documented opt-out for exactly this
-            // case. Markers below are NOT left unmarked — see markerView's own Phase 2F comment
-            // below for why an unmarked colored shape behind a white icon/text turned out to be
-            // a second, confirmed-on-device instance of this exact same failure mode.
+            // case. Markers below handle their own contrast separately — see markerView's own
+            // Phase 2F comment for the (twice-revised, now documentation-confirmed) reasoning.
             // `widgetAccentedRenderingMode` requires iOS 18 — the production deployment target is
             // 17.6 (see CLAUDE.md), so this must stay availability-gated; on older OS versions the
             // system doesn't have an accented mode to opt out of, so no fallback is needed.
@@ -843,27 +855,36 @@ struct NearbyE85MapView: View {
     // NEARBY_WIDGET_TESTING) constructs marker views directly to verify decorations like the
     // price badge never change a marker's own layout size — and therefore never move the
     // geographic anchor `.position(marker.point)` uses above.
-    // 85Blends 2.4.1 Phase 2F tinted-mode fix — confirmed on a physical iPhone 17 Pro Max:
-    // `.background(_:in:)` shares its group membership with the foreground content it's
-    // attached to, so under `.accented` rendering mode every colored circle/capsule below and
-    // the white icon/text drawn over it collapsed into the SAME solid color (template-image
-    // treatment on alpha channel only — see `widgetAccentable(_:)`'s own doc comment) — a
-    // washed-out blob with no visible icon, and unreadable white-on-white price text. The fix
-    // is NOT to force full color (HIG advises against that for anything but media-like content —
-    // see this file's map-image comment above) but to split each pin into two independently
-    // groupable layers: the colored shape as its OWN sibling view inside a `.background { }`
-    // content closure (not a `.background(_:in:)` shape-style fill, which would have shared the
-    // icon's own group) marked `.widgetAccentable()`, so it renders in the accent color, while
-    // the icon/text/stroke stay in the default group (white) — restoring "white icon on a
-    // colored dot" contrast. `.background(content:)` sizes its content to this view's own
-    // bounds, identically to the shape-fill variant it replaces, so every padding/stroke-width/
-    // font-size value and the marker's own geometric anchor are completely unchanged.
+    //
+    // 85Blends 2.4.1 Phase 2F tinted-mode fix, REVISED — the first attempt here marked each
+    // colored shape `.widgetAccentable()`, on the theory that the "accent group" and "default
+    // group" render as two different colors. Confirmed wrong by a second round of physical-
+    // device screenshots (pale circles, unreadable price text) AND by Apple's own documentation
+    // ("Optimizing your widget for accented rendering mode and Liquid Glass": "Tints primary
+    // and accented content white in iOS and macOS" — BOTH groups are white on this app's actual
+    // target platforms; only watchOS gets a second, watch-face-derived color). `.widgetAccentable()`
+    // is therefore a no-op for contrast on iOS and has been removed below.
+    //
+    // The one thing the same documentation DOES guarantee survives accented compositing is
+    // opacity ("maintains opacity for transparent content... and tints them white") — exactly
+    // why nearbyE85IconButton's outlined treatment above already worked: its contrast comes
+    // from "painted vs. transparent," not from two different hues. Markers/badges now use the
+    // same principle in `.accented` mode only: a reduced-opacity fill (lets some of whatever is
+    // behind it — the map, or just less of the eventual white tint — show through) plus a
+    // fully-opaque stroke/icon/text on top, so there's a real density difference regardless of
+    // what single color the system actually paints everything. `.fullColor` (ordinary Light/
+    // Dark Mode) keeps the exact pre-existing solid-fill look, byte-for-byte.
     @ViewBuilder func markerView(_ marker: NearbyE85MapMarker) -> some View {
         switch marker.kind {
         case .user:
+            // Deliberately a different silhouette from the station pins below (a soft dot with
+            // no stroke or icon, vs. their crisp ring + glyph) so the two stay visually distinct
+            // by shape/density even though `.accented` mode can't give them different hues.
             ZStack {
-                Circle().fill(.white).frame(width: 16, height: 16)
-                Circle().fill(.blue).frame(width: 12, height: 12).widgetAccentable()
+                Circle()
+                    .fill(renderingMode == .accented ? Color.white.opacity(0.35) : Color.white)
+                    .frame(width: 16, height: 16)
+                Circle().fill(.blue).frame(width: 12, height: 12)
             }
             .shadow(radius: 1)
         case .nearestStation:
@@ -875,7 +896,9 @@ struct NearbyE85MapView: View {
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                 .padding(5)
-                .background { Circle().fill(Color.green).widgetAccentable() }
+                .background {
+                    Circle().fill(renderingMode == .accented ? Color.white.opacity(0.35) : Color.green)
+                }
                 .overlay(Circle().stroke(.white, lineWidth: 1.5))
                 .shadow(radius: 1)
                 .overlay(alignment: .top) {
@@ -883,7 +906,14 @@ struct NearbyE85MapView: View {
                         Text(priceLabel)
                             .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
                             .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background { Capsule().fill(Color.green).widgetAccentable() }
+                            .background {
+                                if renderingMode == .accented {
+                                    Capsule().fill(Color.white.opacity(0.35))
+                                        .overlay(Capsule().stroke(Color.white, lineWidth: 1))
+                                } else {
+                                    Capsule().fill(Color.green)
+                                }
+                            }
                             .shadow(radius: 1)
                             .fixedSize()
                             .alignmentGuide(.top) { dimensions in dimensions.height + 2 }
@@ -893,7 +923,9 @@ struct NearbyE85MapView: View {
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 8, weight: .semibold)).foregroundStyle(.white)
                 .padding(4)
-                .background { Circle().fill(Color.green.opacity(0.85)).widgetAccentable() }
+                .background {
+                    Circle().fill(renderingMode == .accented ? Color.white.opacity(0.3) : Color.green.opacity(0.85))
+                }
                 .overlay(Circle().stroke(.white, lineWidth: 1))
         }
     }
