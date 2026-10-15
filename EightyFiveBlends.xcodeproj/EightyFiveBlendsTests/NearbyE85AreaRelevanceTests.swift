@@ -407,6 +407,30 @@ struct NearbyE85AreaRelevancePublisherTests {
         #expect(areaStore.read() == .inArea)
         #expect(reloadCount == 0)
     }
+
+    /// 85Blends 2.4.1 Phase 2D cache-write safety review — `NearbyE85Cache.write` throws
+    /// (rather than returning) for every failure case (invalid App Group container here;
+    /// a failed disk write or encoding failure take the identical `catch` path in `publish`).
+    /// `areaRelevanceStore.clear()` sits inside the SAME `do` block, after the `try cache.write`
+    /// line — so a throw jumps straight to `catch` and that line is never reached. This proves
+    /// `publish` can never clear (or report a reload for) an out-of-area state on the strength
+    /// of data that was never actually persisted.
+    @Test func aCacheWriteFailureNeverClearsTheOutOfAreaFlagOrReloads() {
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now)
+        let brokenCache = NearbyE85Cache(fileURL: nil) // simulates an unavailable/invalid App Group container
+
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.44, userLongitude: -112.08)
+
+        var reloadCount = 0
+        NearbyE85Publisher.publish(snapshot, cache: brokenCache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read().isOutOfArea)
+        #expect(reloadCount == 0)
+    }
 }
 
 // MARK: - NearbyE85Provider consumes the flag per timeline entry
