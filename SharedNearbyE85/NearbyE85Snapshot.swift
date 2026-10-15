@@ -35,6 +35,27 @@ nonisolated struct NearbyE85Price: Codable, Equatable, Sendable {
         case .noPrice: return "No price reported"
         }
     }
+
+    /// 85Blends 2.4.1 Phase 2F — whether this price is fresh enough to show as a standalone map
+    /// badge (no station-list context, no freshness caption next to it — the map badge is just
+    /// a bare dollar amount, so an 8-day-old "check price" or 78-day-old "stale" figure shown
+    /// there with no age indicator would read as more current than it is). The station list and
+    /// Small widget are untouched by this — they keep showing every tier via `status(at:)`
+    /// above, including stale ones, always paired with that caption.
+    ///
+    /// Reuses `StationDataValidation.priceFreshnessTier` — the exact same 7/14-day thresholds
+    /// and `daysSince` calendar-day math `status(at:)` already uses — so the map badge can never
+    /// disagree with what the station list/Small widget would say about the same price.
+    ///
+    /// A missing `reportedAt` can't be confirmed fresh, so it's treated as not-fresh here (never
+    /// defaults to showing the badge on missing evidence) — the same "unknown must never read as
+    /// the most favorable state" rule this codebase applies elsewhere (e.g. AdManager's pending-
+    /// entitlement case, NearbyE85WidgetAccessCopy's `.unknown` neutrality).
+    func isFreshEnoughForMapBadge(at date: Date) -> Bool {
+        guard let reportedAt else { return false }
+        let days = StationDataValidation.daysSince(reportedAt, asOf: date)
+        return StationDataValidation.priceFreshnessTier(hasPrice: true, daysSinceUpdate: days) == .fresh
+    }
 }
 
 /// The latest qualifying RECENT COMMUNITY REPORT of a station's ethanol percentage — not a

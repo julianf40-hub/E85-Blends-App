@@ -648,6 +648,45 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertGreaterThan(distanceFromCenter(zoomedNearest.point), distanceFromCenter(standardNearest.point) - 0.01,
                              "Zooming in should push a non-center station's pin farther from the image center, not closer")
     }
+
+    /// 85Blends 2.4.1 Phase 2F — the map price badge now only ever shows a confirmed-fresh
+    /// price (see NearbyE85Price.isFreshEnoughForMapBadge's own header for why: a bare dollar
+    /// amount with no age caption would otherwise misrepresent a stale/check-price figure as
+    /// current). Exercises every StationDataValidation.priceFreshnessTier boundary plus the
+    /// missing-timestamp case, independent of the real-MKMapSnapshotter tests above — this is
+    /// pure, deterministic, and never skipped.
+    func testPriceFreshEnoughForMapBadgeAcrossEveryTierAndBoundary() {
+        let now = Date.now
+        func price(daysAgo: Int?) -> NearbyE85Price {
+            .init(dollarsPerGallon: 2.89, reportedAt: daysAgo.map { now.addingTimeInterval(-Double($0) * 86400) }, source: .community)
+        }
+        XCTAssertTrue(price(daysAgo: 0).isFreshEnoughForMapBadge(at: now), "Reported today is fresh")
+        XCTAssertTrue(price(daysAgo: 7).isFreshEnoughForMapBadge(at: now), "Exactly 7 days — the fresh/check-price boundary — is still fresh")
+        XCTAssertFalse(price(daysAgo: 8).isFreshEnoughForMapBadge(at: now), "8 days — one past the fresh boundary — is check-price, not fresh")
+        XCTAssertFalse(price(daysAgo: 14).isFreshEnoughForMapBadge(at: now), "Exactly 14 days — the check-price/stale boundary — is still not fresh")
+        XCTAssertFalse(price(daysAgo: 15).isFreshEnoughForMapBadge(at: now), "15 days — one past the check-price boundary — is stale")
+        XCTAssertFalse(price(daysAgo: 78).isFreshEnoughForMapBadge(at: now), "A 78-day-old price (the reported real-world case) must never show as fresh")
+        XCTAssertFalse(price(daysAgo: nil).isFreshEnoughForMapBadge(at: now), "A missing reportedAt can't be confirmed fresh — never defaults to showing the badge")
+    }
+
+    /// Best-effort real MKMapSnapshotter capture confirming the actual wiring inside
+    /// NearbyE85MapRenderer.render — not just the pure predicate above — correctly omits the
+    /// nearest station's price badge once its price is stale. Skipped, not failed, with no
+    /// network route to Apple's map tile servers, same as the other real-snapshotter tests.
+    func testLargeMapRealSnapshotterOmitsPriceBadgeForAStalePriceBestEffort() async throws {
+        let now = Date.now
+        let staleNearest = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4,
+            price: .init(dollarsPerGallon: 3.90, reportedAt: now.addingTimeInterval(-78 * 86400), source: .community))
+        let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        guard let mapRender = await NearbyE85MapRenderer.render(
+            userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
+            stations: [staleNearest], size: size, now: now) else {
+            throw XCTSkip("No network route to MapKit tile servers in this environment.")
+        }
+        let nearestMarker = try XCTUnwrap(mapRender.markers.first(where: { $0.kind == .nearestStation }))
+        XCTAssertNil(nearestMarker.priceLabel, "A 78-day-old price must not appear as a map badge with no age indicator")
+    }
 }
 
 /// `NearbyE85MapView.markerView` — the geographic-anchor fix. `.position(marker.point)` centers

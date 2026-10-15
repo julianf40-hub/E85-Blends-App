@@ -14,7 +14,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     /// 85Blends 2.4.0 Pro gate — everything a PRO render needs that a non-Pro render must never
     /// touch: the station cache (behind the app's location-authorization check), the Large zoom
     /// preference, the MKMapSnapshotter render, and the pending manual-refresh flag. Produced only
-    /// by `proInputs(context:)` below, and requested only by `entry(...)`/`timeline(...)` AFTER
+    /// by `proInputs(context:now:)` below, and requested only by `entry(...)`/`timeline(...)` AFTER
     /// access has resolved to `.pro` — NearbyE85WidgetProGateTests injects a failing loader to
     /// prove a `.free`/`.unknown` render never asks for any of it.
     nonisolated struct ProInputs {
@@ -48,7 +48,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
             NearbyE85Diagnostics.end("Provider.accessGate", accessState)
-            let entry = await Self.entry(access: access, now: now) { await proInputs(context: context) }
+            let entry = await Self.entry(access: access, now: now) { await proInputs(context: context, now: now) }
             completion(entry)
         }
     }
@@ -70,7 +70,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
             NearbyE85Diagnostics.end("Provider.accessGate", accessState)
-            let timeline = await Self.timeline(access: access, now: now) { await proInputs(context: context) }
+            let timeline = await Self.timeline(access: access, now: now) { await proInputs(context: context, now: now) }
             NearbyE85Diagnostics.logger.debug("Provider.getTimeline: entries=\(timeline.entries.count, privacy: .public) access=\(access.rawValue, privacy: .public)")
             completion(timeline)
         }
@@ -156,7 +156,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     /// The four reads a Pro render performs, in the same order getSnapshot/getTimeline always
     /// performed them inline before the gate — snapshot, zoom, map, pending-refresh — so nothing
     /// about their relative timing changed either.
-    @MainActor private func proInputs(context: Context) async -> ProInputs {
+    @MainActor private func proInputs(context: Context, now: Date) async -> ProInputs {
         // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational.
         let snapshotState = NearbyE85Diagnostics.begin("Provider.snapshotLoad")
         let snapshot = readAuthorizedSnapshot()
@@ -175,7 +175,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let areaRelevance = NearbyE85AreaRelevanceStore().read()
         let isOutOfAreaNow = NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: areaRelevance, now: .now)
         let mapRenderState = NearbyE85Diagnostics.begin("Provider.mapRenderStep")
-        let mapRender = isOutOfAreaNow ? nil : await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+        let mapRender = isOutOfAreaNow ? nil : await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel, now: now)
         NearbyE85Diagnostics.end("Provider.mapRenderStep", mapRenderState)
         // 85Blends 2.4.0 widget polish — the manual refresh button's "in progress" feedback.
         // Read once, same as everything else above: this never claims new data arrived (the
@@ -200,7 +200,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     // at the default zoom level regardless of the Large widget's stored preference — the two
     // families don't share zoom state.
     @MainActor private func mapRender(for snapshot: NearbyE85Snapshot?, context: Context,
-                                      zoomLevel: NearbyE85MapZoomLevel) async -> NearbyE85MapRender? {
+                                      zoomLevel: NearbyE85MapZoomLevel, now: Date) async -> NearbyE85MapRender? {
         let heightFraction: Double
         switch context.family {
         case .systemMedium: heightFraction = 1.0
@@ -213,9 +213,12 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // NearbyE85MapRenderer.render's own comment): MKMapSnapshotter now picks its own native,
         // device-appropriate raster density instead of a hardcoded/manually-resolved one. Both
         // families share this; only the logical point-space `size` above still differs between them.
+        // 85Blends 2.4.1 Phase 2F — `now` is this same call's own reference time (threaded from
+        // proInputs, not a freshly re-sampled `.now`), so the nearest station's price-freshness
+        // decision baked into the map badge agrees with whatever the rest of this pass computed.
         return await NearbyE85MapRenderer.render(userLatitude: user.latitude, userLongitude: user.longitude,
                                                   stations: snapshot.stations, size: size,
-                                                  zoomLevel: context.family == .systemLarge ? zoomLevel : .default)
+                                                  zoomLevel: context.family == .systemLarge ? zoomLevel : .default, now: now)
     }
     static var example: NearbyE85Snapshot {
         .make(stations: [.init(id: "example", name: "Nearby E85 station", address: "Example address",

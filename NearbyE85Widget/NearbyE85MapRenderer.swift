@@ -39,7 +39,7 @@ enum NearbyE85MapRenderer {
 
     @MainActor
     static func render(userLatitude: Double, userLongitude: Double, stations: [NearbyE85Station],
-                        size: CGSize, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
+                        size: CGSize, zoomLevel: NearbyE85MapZoomLevel = .default, now: Date = .now) async -> NearbyE85MapRender? {
         // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
         // NearbyE85Diagnostics's own header for the no-PII rule this call site follows.
         let signpostState = NearbyE85Diagnostics.begin("MapRenderer.render")
@@ -68,13 +68,24 @@ enum NearbyE85MapRenderer {
             return nil
         }
 
+        // 85Blends 2.4.1 Phase 2F — a stale/check-price/missing-timestamp price shown on the map
+        // with no age indicator (unlike the station list/Small widget, which always pair a price
+        // with its `status(at:)` caption) would read as more current than it is. Only a
+        // confirmed-fresh price (`isFreshEnoughForMapBadge`, the exact same 7/14-day tiers the
+        // rest of the app uses) gets a map badge; every other tier shows the plain station pin,
+        // identical to a station with no price at all. `now` is this render's own reference
+        // time — consistent with the map image itself being a single point-in-time snapshot
+        // (region/zoom/pins are likewise fixed at render time, not re-evaluated per timeline
+        // entry — see NearbyE85Provider.proInputs's own comment on why).
         let stationMarkers = stations.enumerated().map { index, station -> NearbyE85MapMarker in
             let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
             let isNearest = index == 0
+            let priceLabel = isNearest ? station.price.flatMap { price in
+                price.isFreshEnoughForMapBadge(at: now) ? price.dollarsPerGallon.formatted(.currency(code: "USD")) : nil
+            } : nil
             return NearbyE85MapMarker(
                 id: station.id, kind: isNearest ? .nearestStation : .station,
-                point: snapshot.point(for: coordinate),
-                priceLabel: isNearest ? station.price.map { $0.dollarsPerGallon.formatted(.currency(code: "USD")) } : nil)
+                point: snapshot.point(for: coordinate), priceLabel: priceLabel)
         }
         // The nearest station is frequently almost co-located with the user (e.g. standing at
         // the pump); nudge the user dot so it never disappears underneath that larger pin.

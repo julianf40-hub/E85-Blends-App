@@ -893,6 +893,20 @@ struct NearbyE85MapView: View {
             // view's layout size. A VStack containing both would shift the circle's center away
             // from `marker.point` whenever a badge is shown, offsetting the visible pin from its
             // true coordinate.
+            //
+            // 85Blends 2.4.1 Phase 2F — confirmed this badge is a genuinely SEPARATE overlay, not
+            // part of the same shape: `.alignmentGuide(.top) { dimensions.height + 2 }` below
+            // deliberately lies about the badge's own top anchor (claims it sits `height + gap`
+            // below its real top edge), so aligning that claimed anchor with the circle's real
+            // top edge pushes the whole badge straight up, clear of the circle, by exactly
+            // `height + gap` points — the math doesn't produce literal frame overlap. On-device
+            // screenshots nonetheless read the two as merged: `marker.priceLabel` is now ALSO
+            // only ever set for a confirmed-fresh price (see NearbyE85MapRenderer.render) rather
+            // than every tier, which removes most real-world crowding outright, and the gap
+            // below is widened (2pt → 4pt) as a safety margin for the cases that remain — two
+            // independently-shadowed, near-identical translucent-white shapes (since accented
+            // mode can't give them different hues — see markerView's own header) read as touching
+            // at the tightest possible gap, even though their bounding boxes never cross.
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                 .padding(5)
@@ -916,7 +930,7 @@ struct NearbyE85MapView: View {
                             }
                             .shadow(radius: 1)
                             .fixedSize()
-                            .alignmentGuide(.top) { dimensions in dimensions.height + 2 }
+                            .alignmentGuide(.top) { dimensions in dimensions.height + 4 }
                     }
                 }
         case .station:
