@@ -59,6 +59,32 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// 85Blends 2.4.1 Phase 2E accessibility fix — fallbackBody previously had no accessibility
+    /// grouping at all, so VoiceOver announced the header/headline/explanation as separate
+    /// fragments across every one of these four states. Asserts the single combined sentence
+    /// `fallbackAccessibilityLabel` now exposes for each, independent of the pixel-only
+    /// testFallbackStatesAcrossAllFamilies above (which only confirms something drew, not what
+    /// VoiceOver actually announces).
+    func testFallbackAccessibilityLabelCombinesHeaderTitleAndExplanationPerState() {
+        let now = Date.now
+        let outOfAreaEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro, isOutOfArea: true)
+        XCTAssertEqual(NearbyE85WidgetView(entry: outOfAreaEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Location changed. Open 85Blends to find nearby E85.")
+
+        let permissionEntry = NearbyE85Entry(date: now, snapshot: .permissionRequired(at: now), access: .pro)
+        XCTAssertEqual(NearbyE85WidgetView(entry: permissionEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Location needed. Open 85Blends to allow location and find nearby E85.")
+
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
+        let noStationsEntry = NearbyE85Entry(date: now, snapshot: noStations, access: .pro)
+        XCTAssertEqual(NearbyE85WidgetView(entry: noStationsEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. No nearby E85. None found within 25 mi. Open the app to search farther.")
+
+        let noCacheEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro)
+        XCTAssertEqual(NearbyE85WidgetView(entry: noCacheEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Find nearby E85. Open 85Blends to refresh nearby stations.")
+    }
+
     /// 85Blends 2.4.1 — the out-of-area signal must suppress the Pro station/map rendering even
     /// though the entry still carries a structurally `.ready` snapshot WITH a station and a
     /// map render attached (deliberately supplied here, unlike `testFallbackStatesAcrossAllFamilies`'s

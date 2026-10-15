@@ -682,6 +682,34 @@ struct NearbyE85WidgetView: View {
             }
         }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
     }
+    // 85Blends 2.4.1 Phase 2E accessibility fix — previously had no accessibility grouping at
+    // all, so VoiceOver announced the header, headline, and explanation as separate fragments
+    // across all four fallback states (every family routes through this). Mirrors the existing
+    // `.accessibilityElement(children: .ignore)` + explicit-label pattern lockedContent/
+    // unverifiedContent already use above, rather than `.combine`, so the announcement reads as
+    // one clean "Nearby E85 widget. <title>. <body>." sentence instead of whatever order/
+    // punctuation `.combine` would assemble from the Label + Text children.
+    // Not private: EightyFiveBlendsTests exercises this directly, the same way
+    // NearbyE85WidgetLayout/markerView above are deliberately left testable.
+    var fallbackAccessibilityLabel: String {
+        let title: String
+        let body: String
+        if entry.isOutOfArea {
+            title = "Location changed"
+            body = "Open 85Blends to find nearby E85."
+        } else if entry.snapshot?.state == .permissionRequired {
+            title = "Location needed"
+            body = "Open 85Blends to allow location and find nearby E85."
+        } else if let snapshot = entry.snapshot, snapshot.state == .noStations {
+            title = "No nearby E85"
+            body = "None found within \(Int(snapshot.radiusMiles)) mi. Open the app to search farther."
+        } else {
+            title = "Find nearby E85"
+            body = "Open 85Blends to refresh nearby stations."
+        }
+        return "Nearby E85 widget. \(title). \(body)"
+    }
+
     private var fallbackBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
@@ -706,6 +734,8 @@ struct NearbyE85WidgetView: View {
             }
         }
         .font(.caption).foregroundStyle(.secondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(fallbackAccessibilityLabel)
     }
 }
 
@@ -731,7 +761,24 @@ struct NearbyE85MapView: View {
             // that any future resample (e.g. if `.resizable()` above ever actually has to resize)
             // uses the sharpest filter available rather than the system default; it does nothing
             // for a same-size image like today's.
-            Image(uiImage: render.image).resizable().interpolation(.high)
+            // 85Blends 2.4.1 Phase 2E tinted-mode fix — in `.accented` rendering mode WidgetKit
+            // treats every view as a template image, using only its alpha channel (see Apple's
+            // "Optimizing your widget for accented rendering mode" guidance). The map snapshot
+            // is a fully-opaque bitmap, so without this it would flatten into a single solid
+            // tinted rectangle — hiding the geography and every station pin — rather than just
+            // losing some color richness. `.fullColor` is the documented opt-out for exactly this
+            // case. Markers below are deliberately left unmarked: SF Symbols/solid shapes already
+            // render as reasonable tinted silhouettes under the system's default accented
+            // treatment, and HIG advises against applying full-color broadly.
+            // `widgetAccentedRenderingMode` requires iOS 18 — the production deployment target is
+            // 17.6 (see CLAUDE.md), so this must stay availability-gated; on older OS versions the
+            // system doesn't have an accented mode to opt out of, so no fallback is needed.
+            if #available(iOS 18.0, *) {
+                Image(uiImage: render.image).resizable().interpolation(.high)
+                    .widgetAccentedRenderingMode(.fullColor)
+            } else {
+                Image(uiImage: render.image).resizable().interpolation(.high)
+            }
             // Stations draw first, the user dot last, so a station pin sitting almost on top of
             // the user's own point never hides the blue marker underneath it.
             ForEach(render.markers.filter { $0.kind != .user }) { marker in
