@@ -11,13 +11,15 @@ final class NearbyE85RenderingTests: XCTestCase {
     private static let smallSize = CGSize(width: 155, height: 155)
     private static let mediumSize = CGSize(width: 329, height: 155)
     private static let largeSize = CGSize(width: 329, height: 345)
-    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize, colorScheme: ColorScheme = .light) throws -> UIImage {
+    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize, colorScheme: ColorScheme = .light,
+                       renderingMode: WidgetRenderingMode = .fullColor) throws -> UIImage {
         // `widgetContentMargins` is read-only, so tests can't inject a stand-in value the way
         // production gets it from the real widget host — NearbyE85WidgetView reads whatever
         // default this environment resolves to outside an actual widget render context. Visual
         // captures below confirm small/large still get sensible breathing room from it.
         let view = NearbyE85WidgetView(entry: entry, family: family).content
             .environment(\.colorScheme, colorScheme)
+            .environment(\.widgetRenderingMode, renderingMode)
             .frame(width: size.width, height: size.height)
             .background(colorScheme == .dark ? Color.black : Color.white)
         let renderer = ImageRenderer(content: view)
@@ -229,6 +231,48 @@ final class NearbyE85RenderingTests: XCTestCase {
                               "Large's control stack must sit farther from the edge than the pre-polish 8pt")
         XCTAssertLessThan(NearbyE85WidgetLayout.largeControlsTrailingInset, Self.largeSize.width / 4,
                            "The inset must stay well within the Large widget's own bounds")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F tinted-mode fix — confirmed on-device that the icon buttons
+    /// (Small/Medium's refresh button, Large's zoom/refresh stack) rendered as an opaque white
+    /// circle with an invisible symbol under Tinted Home Screen appearance, because the circle
+    /// and the icon shared the same un-grouped "default" color under `.accented` rendering (see
+    /// NearbyE85IconButtonChrome's own header for why a pixel-level test can't prove the actual
+    /// two-color recoloring, which only WidgetKit's real host applies). This asserts the one
+    /// thing actually under this codebase's control: `.accented` selects the outlined treatment,
+    /// and ordinary Light/Dark (`.fullColor`) — and `.vibrant`, which this phase doesn't touch —
+    /// keep the pre-existing opaque-material one.
+    func testAccentedRenderingModeSelectsTheOutlinedButtonTreatment() {
+        XCTAssertTrue(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .accented))
+        XCTAssertFalse(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .fullColor))
+        XCTAssertFalse(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .vibrant))
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — a smoke test, not a proof of visual correctness (see this file's
+    /// own `render(...)` header and NearbyE85IconButtonChrome's doc comment for why ImageRenderer
+    /// can't observe WidgetKit's own accented recoloring). What this DOES catch: a crash, an
+    /// empty/zero-size render, or a layout exception from the tinted-mode code paths — the icon
+    /// button's mode branch, the map's `.widgetAccentedRenderingMode(.fullColor)` availability
+    /// guard, and every marker's `.background { }` restructuring — across every family and both
+    /// the idle and in-progress refresh states. A real Home Screen screenshot is still required
+    /// to confirm the actual visual fix; see the Phase 2F final report's own appearance section.
+    func testAccentedRenderingModeRendersWithoutCrashingAcrossAllFamilies() throws {
+        let now = Date.now
+        let (nearest, second, _) = phoenixStations(now: now)
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        for (familyName, family, size) in Self.familySizes {
+            let heightFraction = family == .systemLarge ? 0.6 : 1.0
+            let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
+            let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
+            for isRefreshing in [false, true] {
+                let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender,
+                                          zoomLevel: .zoomedIn4, isRefreshing: isRefreshing)
+                let image = try render(entry, family: family, size: size, renderingMode: .accented)
+                XCTAssertEqual(image.size, size, "Accented rendering must never resize the widget's own canvas")
+                attach(image, name: "nearby-\(familyName)-accented-refreshing-\(isRefreshing)")
+            }
+        }
     }
 
     // Phoenix-area fixture coordinates so the map region/marker placement is realistic rather
