@@ -96,12 +96,23 @@ enum FuelLogStore {
         )
     }
 
-    static func prefillDraft(from result: BlendCalculator.Result, vehicle: VehicleProfile?) -> FuelLogDraft {
+    static func prefillDraft(
+        from result: BlendCalculator.Result,
+        vehicle: VehicleProfile?,
+        enteredE85PricePerGallon: Double? = nil,
+        enteredGasPricePerGallon: Double? = nil,
+        stationE85PricePerGallon: Double? = nil
+    ) -> FuelLogDraft {
         // Guidance (E85-only) results carry the achieved blend in blendLabel; prefer
         // the explicitly requested target when the calculator provides one.
         let targetBlendPercent = result.requestedTargetEthanolPercent
             ?? Double(result.blendLabel.dropFirst())
             ?? result.finalEthanolPercent
+
+        // A price the user actually typed at the pump is always more trustworthy than a
+        // cached station price, which in turn is more trustworthy than the zeroed default.
+        let e85PricePerGallon = enteredE85PricePerGallon ?? stationE85PricePerGallon ?? 0
+        let gasPricePerGallon = enteredGasPricePerGallon ?? 0
 
         return FuelLogDraft(
             date: .now,
@@ -112,8 +123,8 @@ enum FuelLogStore {
             finalBlendPercent: result.finalEthanolPercent,
             e85Gallons: result.e85Gallons,
             gasGallons: result.gasGallons,
-            e85PricePerGallon: 0,
-            gasPricePerGallon: 0,
+            e85PricePerGallon: e85PricePerGallon,
+            gasPricePerGallon: gasPricePerGallon,
             mpg: 0,
             notes: ""
         )
