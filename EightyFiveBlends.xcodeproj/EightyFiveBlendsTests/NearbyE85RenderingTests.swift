@@ -61,12 +61,25 @@ final class NearbyE85RenderingTests: XCTestCase {
         }
     }
 
+    /// Mirrors `NearbyE85WidgetView.noStationsFreshnessPhrase(for:)`'s own formatter
+    /// configuration exactly, so expected/actual strings match deterministically regardless of
+    /// the test runner's own system locale — see that function's own header for why the locale
+    /// is pinned at all.
+    private func expectedRelativePhrase(from date: Date, relativeTo referenceDate: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: referenceDate)
+    }
+
     /// 85Blends 2.4.1 Phase 2E accessibility fix — fallbackBody previously had no accessibility
     /// grouping at all, so VoiceOver announced the header/headline/explanation as separate
     /// fragments across every one of these four states. Asserts the single combined sentence
     /// `fallbackAccessibilityLabel` now exposes for each, independent of the pixel-only
     /// testFallbackStatesAcrossAllFamilies above (which only confirms something drew, not what
-    /// VoiceOver actually announces).
+    /// VoiceOver actually announces). The out-of-area/permission-required/no-cache cases are
+    /// untouched by the Phase 2F freshness fix below (E: no other fallback label changed) — kept
+    /// as exact-match assertions to prove that.
     func testFallbackAccessibilityLabelCombinesHeaderTitleAndExplanationPerState() {
         let now = Date.now
         let outOfAreaEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro, isOutOfArea: true)
@@ -77,14 +90,66 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertEqual(NearbyE85WidgetView(entry: permissionEntry, family: .systemSmall).fallbackAccessibilityLabel,
                       "Nearby E85 widget. Location needed. Open 85Blends to allow location and find nearby E85.")
 
-        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
+        // 85Blends 2.4.1 Phase 2F — Codex P2 finding: this snapshot is fresh (updated 5 minutes
+        // ago, well under the 60-minute staleAfter threshold footer(_:)/isStale(at:) both use),
+        // so the label must include the exact same freshness phrase a fresh footer(_:) implies,
+        // not just the headline/radius it used to.
+        let freshUpdatedAt = now.addingTimeInterval(-5 * 60)
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: freshUpdatedAt, locationAt: freshUpdatedAt)
         let noStationsEntry = NearbyE85Entry(date: now, snapshot: noStations, access: .pro)
+        let freshRelative = expectedRelativePhrase(from: freshUpdatedAt, relativeTo: now)
         XCTAssertEqual(NearbyE85WidgetView(entry: noStationsEntry, family: .systemSmall).fallbackAccessibilityLabel,
-                      "Nearby E85 widget. No nearby E85. None found within 25 mi. Open the app to search farther.")
+                      "Nearby E85 widget. No nearby E85. None found within 25 mi. Near last app location. Updated \(freshRelative). Open the app to search farther.")
 
         let noCacheEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro)
         XCTAssertEqual(NearbyE85WidgetView(entry: noCacheEntry, family: .systemSmall).fallbackAccessibilityLabel,
                       "Nearby E85 widget. Find nearby E85. Open 85Blends to refresh nearby stations.")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case A (fresh) and C (update-time included):
+    /// a no-stations snapshot updated well within the 60-minute staleAfter window must announce
+    /// "Near last app location" — never "may be outdated" — alongside a spoken update-time phrase.
+    func testNoStationsAccessibilityLabelAnnouncesFreshnessWhenRecentlyUpdated() {
+        let now = Date.now
+        let updatedAt = now.addingTimeInterval(-5 * 60)
+        let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: updatedAt, locationAt: updatedAt)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+        let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+
+        XCTAssertTrue(label.contains("Near last app location"), "A fresh snapshot must never announce as outdated")
+        XCTAssertFalse(label.contains("may be outdated"), "A fresh snapshot must never claim the data might be stale")
+        XCTAssertTrue(label.contains("Updated \(expectedRelativePhrase(from: updatedAt, relativeTo: now))"),
+                     "The spoken label must include the same update-time information footer(_:) shows visually")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case B (stale): a no-stations snapshot
+    /// updated well past the 60-minute staleAfter window must announce it may be outdated —
+    /// using the exact same isStale(at:) boundary footer(_:) itself uses, no new threshold —
+    /// and must never phrase it as current.
+    func testNoStationsAccessibilityLabelAnnouncesStalenessWhenPastTheFreshnessWindow() {
+        let now = Date.now
+        let updatedAt = now.addingTimeInterval(-3 * 3600)
+        let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: updatedAt, locationAt: updatedAt)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+        let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+
+        XCTAssertTrue(label.contains("Location may be outdated"), "A stale snapshot must announce it may be outdated")
+        XCTAssertFalse(label.contains("Near last app location"), "A stale snapshot must never be phrased as current")
+        XCTAssertTrue(label.contains("Updated \(expectedRelativePhrase(from: updatedAt, relativeTo: now))"),
+                     "The spoken label must include the same update-time information footer(_:) shows visually")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case D: the existing radius sentence must
+    /// survive unchanged alongside the new freshness clause, for both a fresh and a stale snapshot.
+    func testNoStationsAccessibilityLabelPreservesExistingRadiusInformation() {
+        let now = Date.now
+        for (name, updatedAt) in [("fresh", now.addingTimeInterval(-60)), ("stale", now.addingTimeInterval(-2 * 86_400))] {
+            let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 40, updatedAt: updatedAt, locationAt: updatedAt)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+            let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+            XCTAssertTrue(label.contains("None found within 40 mi."), "(\(name)) the existing radius sentence must be preserved verbatim")
+            XCTAssertTrue(label.hasSuffix("Open the app to search farther."), "(\(name)) the existing navigation instruction must remain the closing sentence")
+        }
     }
 
     /// 85Blends 2.4.1 — the out-of-area signal must suppress the Pro station/map rendering even

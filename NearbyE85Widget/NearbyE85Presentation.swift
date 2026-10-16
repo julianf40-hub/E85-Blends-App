@@ -752,6 +752,14 @@ struct NearbyE85WidgetView: View {
     // punctuation `.combine` would assemble from the Label + Text children.
     // Not private: EightyFiveBlendsTests exercises this directly, the same way
     // NearbyE85WidgetLayout/markerView above are deliberately left testable.
+    //
+    // 85Blends 2.4.1 Phase 2F — Codex P2 finding: the `.noStations` case visually shows
+    // `footer(snapshot)` (whether the cached location is stale, and when it was last updated),
+    // but `children: .ignore` discarded that content for VoiceOver with nothing here to replace
+    // it — sighted and VoiceOver users saw/heard materially different information. The
+    // `.noStations` branch below now folds that same freshness information (same
+    // `snapshot.isStale(at: entry.date)` check `footer` itself uses, same `snapshot.updatedAt`)
+    // into the spoken label instead. No other branch shows a footer, so no other branch changes.
     var fallbackAccessibilityLabel: String {
         let title: String
         let body: String
@@ -763,12 +771,28 @@ struct NearbyE85WidgetView: View {
             body = "Open 85Blends to allow location and find nearby E85."
         } else if let snapshot = entry.snapshot, snapshot.state == .noStations {
             title = "No nearby E85"
-            body = "None found within \(Int(snapshot.radiusMiles)) mi. Open the app to search farther."
+            body = "None found within \(Int(snapshot.radiusMiles)) mi. \(noStationsFreshnessPhrase(for: snapshot)) Open the app to search farther."
         } else {
             title = "Find nearby E85"
             body = "Open 85Blends to refresh nearby stations."
         }
         return "Nearby E85 widget. \(title). \(body)"
+    }
+
+    /// "Location may be outdated. Updated 3 hours ago." / "Near last app location. Updated 5
+    /// minutes ago." — spoken-form equivalent of `footer(_:)`'s own two-line visual status
+    /// (same `isStale(at:)` call, same `updatedAt`), not a new freshness rule. Locale pinned to
+    /// `en_US` since every other string in this widget is a hardcoded English literal — this is
+    /// the one spot that would otherwise silently follow the device's locale instead — and so a
+    /// test can assert the formatted phrase deterministically regardless of the test runner's
+    /// own locale.
+    private func noStationsFreshnessPhrase(for snapshot: NearbyE85Snapshot) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        let relative = formatter.localizedString(for: snapshot.updatedAt, relativeTo: entry.date)
+        let status = snapshot.isStale(at: entry.date) ? "Location may be outdated" : "Near last app location"
+        return "\(status). Updated \(relative)."
     }
 
     private var fallbackBody: some View {
