@@ -316,8 +316,8 @@ struct AtThePumpView: View {
 
         // Only require a price for fuel that is actually being added, so E85-only and
         // 91-only fills can estimate cost without an irrelevant second price.
-        let e85Price = Double(e85PriceInput) ?? 0
-        let gasPrice = Double(gasPriceInput) ?? 0
+        let e85Price = FuelPriceInput.parsePositiveAmount(e85PriceInput) ?? 0
+        let gasPrice = FuelPriceInput.parsePositiveAmount(gasPriceInput) ?? 0
 
         if result.e85Gallons > 0.005, e85Price <= 0 { return nil }
         if result.gasGallons > 0.005, gasPrice <= 0 { return nil }
@@ -330,14 +330,14 @@ struct AtThePumpView: View {
     /// price, matching the rest of the app's "0 = no price data" convention.
     private var enteredPumpFillUpPrices: PumpModeFillUpPrices {
         PumpModeFillUpPrices(
-            e85PricePerGallon: Double(e85PriceInput).flatMap { $0 > 0 ? $0 : nil },
-            gasPricePerGallon: Double(gasPriceInput).flatMap { $0 > 0 ? $0 : nil }
+            e85PricePerGallon: FuelPriceInput.parsePositiveAmount(e85PriceInput),
+            gasPricePerGallon: FuelPriceInput.parsePositiveAmount(gasPriceInput)
         )
     }
 
     private var budgetExceeded: Bool {
         guard let cost = estimatedFuelCost,
-              let budget = Double(budgetInput), budget > 0 else { return false }
+              let budget = FuelPriceInput.parsePositiveAmount(budgetInput) else { return false }
         return cost > budget
     }
 
@@ -1026,7 +1026,7 @@ struct AtThePumpView: View {
 
     @ViewBuilder
     private var budgetWarningCard: some View {
-        if budgetExceeded, let cost = estimatedFuelCost, let budget = Double(budgetInput) {
+        if budgetExceeded, let cost = estimatedFuelCost, let budget = FuelPriceInput.parsePositiveAmount(budgetInput) {
             WarningCard(
                 title: "Budget Exceeded",
                 message: String(

@@ -227,9 +227,10 @@ struct FuelLogStorePumpPricePersistenceTests {
 
     @Test("A non-numeric entered price string parses to nil and is never silently treated as a real price")
     func invalidPriceInput_isTreatedAsNotEntered() {
-        // Mirrors AtThePumpView's own parsing: Double("abc") is nil, so the computed
-        // PumpModeFillUpPrices.e85PricePerGallon must be nil here, not some fabricated value.
-        #expect(Double("abc") == nil)
+        // Mirrors AtThePumpView's own parsing: FuelPriceInput.parsePositiveAmount("abc") is
+        // nil, so the computed PumpModeFillUpPrices.e85PricePerGallon must be nil here, not
+        // some fabricated value.
+        #expect(FuelPriceInput.parsePositiveAmount("abc") == nil)
 
         let result = mixedBlendResult()
         let draft = FuelLogStore.prefillDraft(
@@ -263,5 +264,51 @@ struct FuelLogStorePumpPricePersistenceTests {
         // an explicit 0 must not block a legitimate fallback, and must not itself be saved
         // as if it were a real $0.00/gal price.
         #expect(draft.e85PricePerGallon == 2.19)
+    }
+
+    // MARK: - Comma-decimal input (e.g. a Spanish-language keyboard on a U.S. iPhone) must
+    // flow through FuelPriceInput end-to-end exactly like a dot-decimal entry
+
+    @Test("A comma-decimal entered price, parsed by FuelPriceInput, still wins over a stale cached station price")
+    func commaDecimalEnteredPrice_stillOverridesStaleStationPrice() {
+        let result = mixedBlendResult()
+
+        // "2,49" is what AtThePumpView.enteredPumpFillUpPrices would compute for a
+        // comma-decimal keyboard entry — feed FuelPriceInput's output straight into
+        // prefillDraft the same way AtThePumpView does.
+        let draft = FuelLogStore.prefillDraft(
+            from: result,
+            vehicle: nil,
+            enteredE85PricePerGallon: FuelPriceInput.parsePositiveAmount("2,49"),
+            enteredGasPricePerGallon: FuelPriceInput.parsePositiveAmount("4,199"),
+            stationE85PricePerGallon: 2.19 // stale cached price from a previously saved station
+        )
+
+        #expect(draft.e85PricePerGallon == 2.49)
+        #expect(draft.gasPricePerGallon == 4.199)
+    }
+
+    @Test("A comma-decimal entered price and its dot-decimal equivalent persist identically")
+    func commaAndDotDecimalEnteredPrices_persistIdentically() {
+        let result = mixedBlendResult()
+
+        let commaDraft = FuelLogStore.prefillDraft(
+            from: result,
+            vehicle: nil,
+            enteredE85PricePerGallon: FuelPriceInput.parsePositiveAmount("2,49"),
+            enteredGasPricePerGallon: FuelPriceInput.parsePositiveAmount("4,19"),
+            stationE85PricePerGallon: nil
+        )
+        let dotDraft = FuelLogStore.prefillDraft(
+            from: result,
+            vehicle: nil,
+            enteredE85PricePerGallon: FuelPriceInput.parsePositiveAmount("2.49"),
+            enteredGasPricePerGallon: FuelPriceInput.parsePositiveAmount("4.19"),
+            stationE85PricePerGallon: nil
+        )
+
+        #expect(commaDraft.e85PricePerGallon == dotDraft.e85PricePerGallon)
+        #expect(commaDraft.gasPricePerGallon == dotDraft.gasPricePerGallon)
+        #expect(abs(commaDraft.computedTotalCost - dotDraft.computedTotalCost) < 0.0001)
     }
 }
