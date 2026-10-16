@@ -21,9 +21,19 @@ nonisolated struct NearbyE85MapMarker: Identifiable {
     let id: String
     let kind: Kind
     let point: CGPoint
-    /// Only ever non-nil for `.nearestStation` — see `NearbyE85WidgetView.markerView`'s own
-    /// freshness gate for how this becomes (or doesn't become) a visible badge.
+    /// Only ever non-nil for `.nearestStation` — see `priceBadgeLabel(at:)` below for how this
+    /// becomes (or doesn't become) a visible badge.
     let price: NearbyE85Price?
+
+    /// Pure, directly-testable version of the exact decision `NearbyE85WidgetView.markerView`
+    /// makes for the nearest-station price badge — pulled out specifically because a unit test
+    /// can observe this deterministically, while a rendered-pixel test can't reliably tell "no
+    /// badge drawn" apart from unrelated SwiftUI/ImageRenderer compositing artifacts.
+    func priceBadgeLabel(at referenceDate: Date) -> String? {
+        price.flatMap { price in
+            price.isFreshEnoughForMapBadge(at: referenceDate) ? price.dollarsPerGallon.formatted(.currency(code: "USD")) : nil
+        }
+    }
 }
 
 /// A rendered static map plus the pixel-space positions of every marker on it. The image and

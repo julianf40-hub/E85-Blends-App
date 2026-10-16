@@ -934,9 +934,7 @@ struct NearbyE85MapView: View {
             // `NearbyE85Provider.timeline` schedules. Re-deriving the label here means that later
             // entry correctly shows the plain pin with no badge, with no new MKMapSnapshotter
             // call and no change to the marker's own geographic anchor.
-            let priceLabel = marker.price.flatMap { price in
-                price.isFreshEnoughForMapBadge(at: referenceDate) ? price.dollarsPerGallon.formatted(.currency(code: "USD")) : nil
-            }
+            let priceLabel = marker.priceBadgeLabel(at: referenceDate)
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                 .padding(5)

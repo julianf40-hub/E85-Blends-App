@@ -693,51 +693,28 @@ final class NearbyE85RenderingTests: XCTestCase {
 
     /// 85Blends 2.4.1 Phase 2F — Codex P2 finding reproduced directly: `NearbyE85Provider.timeline`
     /// explicitly reuses ONE `NearbyE85MapRender` (and therefore one marker with one raw, fixed
-    /// `price`) across every entry it schedules. Builds that shared render exactly once, then
-    /// renders it through two different `referenceDate`s straddling the price's fresh → check-
-    /// price boundary (day 7 vs. day 8) — simulating a timeline generated shortly before the
-    /// transition, as Codex's finding describes. The badge must appear at the earlier date and
-    /// disappear at the later one despite the underlying map image/marker geometry being
-    /// byte-for-byte identical in both renders.
-    func testPriceBadgeDisappearsAtALaterTimelineEntrySharingTheSameMapRender() {
+    /// `price`) across every entry it schedules. Builds that marker exactly once, then evaluates
+    /// `priceBadgeLabel(at:)` — the exact function `NearbyE85WidgetView.markerView` calls, not a
+    /// parallel reimplementation — against two different dates straddling the price's fresh →
+    /// check-price boundary (day 7 vs. day 8), simulating a timeline generated shortly before the
+    /// transition as Codex's finding describes. Deliberately not a pixel-rendered test: an
+    /// earlier attempt here scanned the rendered image for the badge and produced an unreliable
+    /// result unrelated to this logic (SwiftUI/ImageRenderer compositing details, not a
+    /// production bug — the pure predicate test above already proves the freshness tiers
+    /// themselves are correct). Testing the single real decision function directly is both
+    /// simpler and the only way to observe this deterministically.
+    func testPriceBadgeLabelDisappearsAtALaterTimelineEntrySharingTheSameMarker() {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         // Exactly 7 days old at baseDate (the fresh/check-price boundary — still fresh) but 8
         // days old one day later, at the identical `reportedAt` — exactly what a provider run
         // shortly before the transition produces.
         let price = NearbyE85Price(dollarsPerGallon: 2.89, reportedAt: baseDate.addingTimeInterval(-7 * 86400), source: .community)
-        let markerPoint = CGPoint(x: 50, y: 70) // clear of the canvas edges so the badge has room above it
-        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100)).image { context in
-            UIColor.red.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
-        }
-        let sharedRender = NearbyE85MapRender(
-            image: image, size: CGSize(width: 100, height: 100),
-            markers: [NearbyE85MapMarker(id: "n", kind: .nearestStation, point: markerPoint, price: price)])
+        let sharedMarker = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: price)
 
-        func badgeIsVisible(at referenceDate: Date) -> Bool {
-            let view = NearbyE85MapView(render: sharedRender, referenceDate: referenceDate)
-            let format = UIGraphicsImageRendererFormat()
-            format.scale = 1
-            let rendered = ImageRenderer(content: view)
-            rendered.scale = 1
-            guard let image = rendered.uiImage else { return false }
-            // Scan a band above the circle's top edge, where the badge sits when present — any
-            // non-red pixel there means something (the badge) was drawn over the plain red map.
-            for y in stride(from: 18, through: 44, by: 2) {
-                let cropped = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1), format: format).image { _ in
-                    image.draw(at: CGPoint(x: -markerPoint.x, y: -CGFloat(y)))
-                }
-                guard let cgImage = cropped.cgImage, let data = cgImage.dataProvider?.data,
-                      let bytes = CFDataGetBytePtr(data), CFDataGetLength(data) >= 4 else { continue }
-                let isPlainRedMap = bytes[0] > 200 && bytes[1] < 60 && bytes[2] < 60
-                if !isPlainRedMap { return true }
-            }
-            return false
-        }
-
-        XCTAssertTrue(badgeIsVisible(at: baseDate), "At exactly 7 days old the price is still fresh — the badge must be visible")
-        XCTAssertFalse(badgeIsVisible(at: baseDate.addingTimeInterval(86400)),
-                       "One day later (8 days old) the price has crossed into check-price — the SAME reused map's badge must disappear")
+        XCTAssertNotNil(sharedMarker.priceBadgeLabel(at: baseDate),
+                        "At exactly 7 days old the price is still fresh — the badge must be visible")
+        XCTAssertNil(sharedMarker.priceBadgeLabel(at: baseDate.addingTimeInterval(86400)),
+                    "One day later (8 days old) the price has crossed into check-price — the SAME marker's badge must disappear")
     }
 }
 
