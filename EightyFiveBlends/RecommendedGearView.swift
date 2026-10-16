@@ -474,15 +474,12 @@ struct RecommendedGearView: View {
 
     private let pages = FeaturedGearPage.catalog
 
-    // Each card takes most of the carousel's width so the next one peeks in from the trailing
-    // edge, which is what tells people the row swipes. On page 1 the peek works out to
-    // (1 - cardWidthFraction) * container - (cardSpacing - pageMargin), about 16-21pt on 375-440pt
-    // wide phones. That is roughly a card's 18pt inner padding, so only the next card's outer edge
-    // (at most the first couple of points of its content) shows and none of its text is readable
-    // or clipped into view. The card spacing is also larger than the page margin so, once a later
-    // card is aligned to the margin, the previous one is fully off screen instead of leaving a
-    // sliver at the screen edge.
-    private static let cardWidthFraction: CGFloat = 0.93
+    // Each card fills the full width between the carousel's content margins, so a settled page is
+    // centered with equal pageMargin left and right and neither neighbor peeks in. `contentMargins`
+    // below reduces containerRelativeFrame's own reference length by pageMargin on each side already,
+    // so asking for the whole of that (fraction 1) lands the trailing edge exactly pageMargin short of
+    // the far edge — the same margin as the leading edge gets from `restingMinX`. The card spacing
+    // only matters mid-swipe (the gap a neighbor crosses while off screen at rest).
     private static let cardSpacing: CGFloat = 24
     private static let pageMargin: CGFloat = 16
     private static let carouselSpace = "featuredCarousel"
@@ -579,50 +576,44 @@ struct RecommendedGearView: View {
     // card reports its height and its leading edge in the scroll view's own coordinate space; the
     // edges are how far the carousel has scrolled, which sizes its height (see `carouselHeight`).
     private var carousel: some View {
-        let widthFraction = Self.cardWidthFraction
         let spacing = Self.cardSpacing
         let space = Self.carouselSpace
         let pageIDs = pages.map(\.id)
         let restingMinX = Self.pageMargin
 
         return ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 0) {
-                HStack(alignment: .top, spacing: spacing) {
-                    ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
-                        featuredCard(for: page, position: index + 1)
-                            .containerRelativeFrame(.horizontal) { length, _ in
-                                length * widthFraction
+            HStack(alignment: .top, spacing: spacing) {
+                ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
+                    featuredCard(for: page, position: index + 1)
+                        // Relative to this scroll view's own content width, which `contentMargins`
+                        // below already insets by pageMargin on each side — so this is the screen
+                        // width minus pageMargin on each side, adaptively, with no assumption that
+                        // the carousel's container is the full device screen (unlike reading
+                        // UIScreen.main.bounds directly, which would stay full-screen-width even in
+                        // a narrower container, e.g. a future multi-window/adaptive layout). An AX5
+                        // cold-launch overflow previously traced to this API turned out to actually
+                        // be FeaturedBadge not wrapping to its proposed width (see FeaturedBadge);
+                        // once that was fixed, this sizing is correct again — see the AX5 cold-launch
+                        // re-verification in the carousel's accessibility-width investigation notes.
+                        .containerRelativeFrame(.horizontal)
+                        // Natural height (never stretched to a taller neighbor), measured with the
+                        // card's leading edge so the carousel can follow the swipe. Neither depends
+                        // on the carousel's own height, so sizing it from them cannot feed back.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: FeaturedPageMetricsKey.self,
+                                    value: [page.id: FeaturedPageMetric(
+                                        height: proxy.size.height,
+                                        minX: proxy.frame(in: .named(space)).minX
+                                    )]
+                                )
                             }
-                            // Natural height (never stretched to a taller neighbor), measured with the
-                            // card's leading edge so the carousel can follow the swipe. Neither depends
-                            // on the carousel's own height, so sizing it from them cannot feed back.
-                            .fixedSize(horizontal: false, vertical: true)
-                            .background(
-                                GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: FeaturedPageMetricsKey.self,
-                                        value: [page.id: FeaturedPageMetric(
-                                            height: proxy.size.height,
-                                            minX: proxy.frame(in: .named(space)).minX
-                                        )]
-                                    )
-                                }
-                            )
-                    }
+                        )
                 }
-                .scrollTargetLayout()
-
-                // Trailing runway (outside the snap-target layout). Without it the last card can
-                // never reach the leading edge, so scrollPosition keeps reporting the previous
-                // card and the page indicator would lag behind what is on screen. The extra 2pt
-                // keeps that from depending on exact floating-point equality.
-                Color.clear
-                    .frame(height: 1)
-                    .containerRelativeFrame(.horizontal) { length, _ in
-                        length * (1 - widthFraction) + 2
-                    }
-                    .accessibilityHidden(true)
             }
+            .scrollTargetLayout()
             // The scroll view clips to this height, which follows the swipe (see `carouselHeight`), so the
             // page dots and About card below stay attached to the carousel instead of jumping.
             .frame(height: carouselHeight, alignment: .top)
@@ -1298,10 +1289,14 @@ private struct FeaturedBadge: View {
     let title: String
 
     var body: some View {
+        // Without this, the Text sizes to its own unwrapped ideal width instead of the width
+        // proposed by the card around it — at AX5 that ideal width is wider than the card itself,
+        // so the badge (and the accessibility frame merged from it) visibly overflows the card.
         Text(title.uppercased())
             .font(.caption.weight(.bold))
             .tracking(1.0)
             .foregroundStyle(AppTheme.Colors.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(AppTheme.Colors.charcoal, in: Capsule())
