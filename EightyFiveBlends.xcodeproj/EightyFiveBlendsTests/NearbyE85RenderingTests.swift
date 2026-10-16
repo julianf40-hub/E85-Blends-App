@@ -11,13 +11,15 @@ final class NearbyE85RenderingTests: XCTestCase {
     private static let smallSize = CGSize(width: 155, height: 155)
     private static let mediumSize = CGSize(width: 329, height: 155)
     private static let largeSize = CGSize(width: 329, height: 345)
-    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize, colorScheme: ColorScheme = .light) throws -> UIImage {
+    private func render(_ entry: NearbyE85Entry, family: WidgetFamily, size: CGSize, colorScheme: ColorScheme = .light,
+                       renderingMode: WidgetRenderingMode = .fullColor) throws -> UIImage {
         // `widgetContentMargins` is read-only, so tests can't inject a stand-in value the way
         // production gets it from the real widget host — NearbyE85WidgetView reads whatever
         // default this environment resolves to outside an actual widget render context. Visual
         // captures below confirm small/large still get sensible breathing room from it.
         let view = NearbyE85WidgetView(entry: entry, family: family).content
             .environment(\.colorScheme, colorScheme)
+            .environment(\.widgetRenderingMode, renderingMode)
             .frame(width: size.width, height: size.height)
             .background(colorScheme == .dark ? Color.black : Color.white)
         let renderer = ImageRenderer(content: view)
@@ -57,6 +59,152 @@ final class NearbyE85RenderingTests: XCTestCase {
                 attach(image, name: "nearby-\(familyName)-\(stateName)")
             }
         }
+    }
+
+    /// Mirrors `NearbyE85WidgetView.noStationsFreshnessPhrase(for:)`'s own formatter
+    /// configuration exactly, so expected/actual strings match deterministically regardless of
+    /// the test runner's own system locale — see that function's own header for why the locale
+    /// is pinned at all.
+    private func expectedRelativePhrase(from date: Date, relativeTo referenceDate: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: referenceDate)
+    }
+
+    /// 85Blends 2.4.1 Phase 2E accessibility fix — fallbackBody previously had no accessibility
+    /// grouping at all, so VoiceOver announced the header/headline/explanation as separate
+    /// fragments across every one of these four states. Asserts the single combined sentence
+    /// `fallbackAccessibilityLabel` now exposes for each, independent of the pixel-only
+    /// testFallbackStatesAcrossAllFamilies above (which only confirms something drew, not what
+    /// VoiceOver actually announces). The out-of-area/permission-required/no-cache cases are
+    /// untouched by the Phase 2F freshness fix below (E: no other fallback label changed) — kept
+    /// as exact-match assertions to prove that.
+    func testFallbackAccessibilityLabelCombinesHeaderTitleAndExplanationPerState() {
+        let now = Date.now
+        let outOfAreaEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro, isOutOfArea: true)
+        XCTAssertEqual(NearbyE85WidgetView(entry: outOfAreaEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Location changed. Open 85Blends to find nearby E85.")
+
+        let permissionEntry = NearbyE85Entry(date: now, snapshot: .permissionRequired(at: now), access: .pro)
+        XCTAssertEqual(NearbyE85WidgetView(entry: permissionEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Location needed. Open 85Blends to allow location and find nearby E85.")
+
+        // 85Blends 2.4.1 Phase 2F — Codex P2 finding: this snapshot is fresh (updated 5 minutes
+        // ago, well under the 60-minute staleAfter threshold footer(_:)/isStale(at:) both use),
+        // so the label must include the exact same freshness phrase a fresh footer(_:) implies,
+        // not just the headline/radius it used to.
+        let freshUpdatedAt = now.addingTimeInterval(-5 * 60)
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: freshUpdatedAt, locationAt: freshUpdatedAt)
+        let noStationsEntry = NearbyE85Entry(date: now, snapshot: noStations, access: .pro)
+        let freshRelative = expectedRelativePhrase(from: freshUpdatedAt, relativeTo: now)
+        XCTAssertEqual(NearbyE85WidgetView(entry: noStationsEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. No nearby E85. None found within 25 mi. Near last app location. Updated \(freshRelative). Open the app to search farther.")
+
+        let noCacheEntry = NearbyE85Entry(date: now, snapshot: nil, access: .pro)
+        XCTAssertEqual(NearbyE85WidgetView(entry: noCacheEntry, family: .systemSmall).fallbackAccessibilityLabel,
+                      "Nearby E85 widget. Find nearby E85. Open 85Blends to refresh nearby stations.")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case A (fresh) and C (update-time included):
+    /// a no-stations snapshot updated well within the 60-minute staleAfter window must announce
+    /// "Near last app location" — never "may be outdated" — alongside a spoken update-time phrase.
+    func testNoStationsAccessibilityLabelAnnouncesFreshnessWhenRecentlyUpdated() {
+        let now = Date.now
+        let updatedAt = now.addingTimeInterval(-5 * 60)
+        let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: updatedAt, locationAt: updatedAt)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+        let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+
+        XCTAssertTrue(label.contains("Near last app location"), "A fresh snapshot must never announce as outdated")
+        XCTAssertFalse(label.contains("may be outdated"), "A fresh snapshot must never claim the data might be stale")
+        XCTAssertTrue(label.contains("Updated \(expectedRelativePhrase(from: updatedAt, relativeTo: now))"),
+                     "The spoken label must include the same update-time information footer(_:) shows visually")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case B (stale): a no-stations snapshot
+    /// updated well past the 60-minute staleAfter window must announce it may be outdated —
+    /// using the exact same isStale(at:) boundary footer(_:) itself uses, no new threshold —
+    /// and must never phrase it as current.
+    func testNoStationsAccessibilityLabelAnnouncesStalenessWhenPastTheFreshnessWindow() {
+        let now = Date.now
+        let updatedAt = now.addingTimeInterval(-3 * 3600)
+        let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: updatedAt, locationAt: updatedAt)
+        let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+        let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+
+        XCTAssertTrue(label.contains("Location may be outdated"), "A stale snapshot must announce it may be outdated")
+        XCTAssertFalse(label.contains("Near last app location"), "A stale snapshot must never be phrased as current")
+        XCTAssertTrue(label.contains("Updated \(expectedRelativePhrase(from: updatedAt, relativeTo: now))"),
+                     "The spoken label must include the same update-time information footer(_:) shows visually")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding, case D: the existing radius sentence must
+    /// survive unchanged alongside the new freshness clause, for both a fresh and a stale snapshot.
+    func testNoStationsAccessibilityLabelPreservesExistingRadiusInformation() {
+        let now = Date.now
+        for (name, updatedAt) in [("fresh", now.addingTimeInterval(-60)), ("stale", now.addingTimeInterval(-2 * 86_400))] {
+            let snapshot = NearbyE85Snapshot.make(stations: [], radiusMiles: 40, updatedAt: updatedAt, locationAt: updatedAt)
+            let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro)
+            let label = NearbyE85WidgetView(entry: entry, family: .systemSmall).fallbackAccessibilityLabel
+            XCTAssertTrue(label.contains("None found within 40 mi."), "(\(name)) the existing radius sentence must be preserved verbatim")
+            XCTAssertTrue(label.hasSuffix("Open the app to search farther."), "(\(name)) the existing navigation instruction must remain the closing sentence")
+        }
+    }
+
+    /// 85Blends 2.4.1 — the out-of-area signal must suppress the Pro station/map rendering even
+    /// though the entry still carries a structurally `.ready` snapshot WITH a station and a
+    /// map render attached (deliberately supplied here, unlike `testFallbackStatesAcrossAllFamilies`'s
+    /// cases, precisely so this test would fail if the `!entry.isOutOfArea` guards in
+    /// smallContent/mediumContent/largeContent were ever removed) — every family must instead
+    /// fall through to fallbackBody's "Location changed" copy. A pixel scan (light mode only,
+    /// mirroring testNonProShellsRenderAcrossAllFamiliesAndColorSchemes's own technique) only
+    /// confirms SOME content drew, not the exact wording — this is a visual smoke test, not a
+    /// text-content assertion.
+    func testOutOfAreaFallbackRendersAcrossAllFamiliesDespiteAReadySnapshotAndMap() throws {
+        let now = Date.now
+        let station = NearbyE85Station(id: "one", name: "Stale Station", address: "Example address",
+            latitude: 33.45, longitude: -112.07, distanceMiles: 1.2,
+            price: .init(dollarsPerGallon: 2.89, reportedAt: now, source: .community))
+        let readyWithMap = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                                  userLatitude: 33.44, userLongitude: -112.08)
+        let syntheticMapRender = NearbyE85MapRender(
+            image: UIGraphicsImageRenderer(size: Self.mediumSize).image { context in
+                UIColor.systemBlue.setFill()
+                context.fill(CGRect(origin: .zero, size: Self.mediumSize))
+            },
+            size: Self.mediumSize, markers: [])
+        for (familyName, family, size) in Self.familySizes {
+            let entry = NearbyE85Entry(date: now, snapshot: readyWithMap, access: .pro, mapRender: syntheticMapRender, isOutOfArea: true)
+            let image = try render(entry, family: family, size: size)
+            attach(image, name: "nearby-\(familyName)-out-of-area")
+            var foundContent = false
+            let scale = image.scale
+            for x in stride(from: 8, to: Int(size.width) - 8, by: 6) where !foundContent {
+                for y in stride(from: 8, to: Int(size.height) - 8, by: 6) where !foundContent {
+                    let color = try pixelColor(of: image, at: CGPoint(x: CGFloat(x) * scale, y: CGFloat(y) * scale))
+                    if isNotNearWhite(color) { foundContent = true }
+                }
+            }
+            XCTAssertTrue(foundContent, "\(familyName) out-of-area fallback drew no visible content")
+            // Stronger than the blank-canvas scan above: for medium/large specifically, prove
+            // the synthetic solid-blue map image was never actually composited — if the
+            // `!entry.isOutOfArea` guard were ever removed, this exact color would dominate
+            // the canvas (mediumContent renders it full-bleed; largeContent renders it at 60%
+            // height), so sampling the vertical center column is enough to catch either case.
+            guard family != .systemSmall else { continue }
+            var sawSyntheticMapBlue = false
+            for y in stride(from: 4, to: Int(size.height) - 4, by: 4) {
+                let color = try pixelColor(of: image, at: CGPoint(x: size.width / 2 * scale, y: CGFloat(y) * scale))
+                if isApproximatelySystemBlue(color) { sawSyntheticMapBlue = true; break }
+            }
+            XCTAssertFalse(sawSyntheticMapBlue, "\(familyName) out-of-area entry still composited the stale map image")
+        }
+    }
+
+    private func isApproximatelySystemBlue(_ color: (r: UInt8, g: UInt8, b: UInt8, a: UInt8)) -> Bool {
+        // UIColor.systemBlue (light mode) ≈ (0, 122, 255).
+        abs(Int(color.r) - 0) < 40 && abs(Int(color.g) - 122) < 40 && abs(Int(color.b) - 255) < 40
     }
 
     /// The manual refresh button, present on every family, must render alongside the map/zoom
@@ -150,6 +298,53 @@ final class NearbyE85RenderingTests: XCTestCase {
                            "The inset must stay well within the Large widget's own bounds")
     }
 
+    /// 85Blends 2.4.1 Phase 2F tinted-mode fix — confirmed on-device that the icon buttons
+    /// (Small/Medium's refresh button, Large's zoom/refresh stack) rendered as an opaque white
+    /// circle with an invisible symbol under Tinted Home Screen appearance, because the circle
+    /// and the icon shared the same un-grouped "default" color under `.accented` rendering (see
+    /// NearbyE85IconButtonChrome's own header for why a pixel-level test can't prove the actual
+    /// two-color recoloring, which only WidgetKit's real host applies). This asserts the one
+    /// thing actually under this codebase's control: `.accented` selects the outlined treatment,
+    /// and ordinary Light/Dark (`.fullColor`) — and `.vibrant`, which this phase doesn't touch —
+    /// keep the pre-existing opaque-material one.
+    func testAccentedRenderingModeSelectsTheOutlinedButtonTreatment() {
+        XCTAssertTrue(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .accented))
+        XCTAssertFalse(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .fullColor))
+        XCTAssertFalse(NearbyE85IconButtonChrome.usesOutlinedTreatment(renderingMode: .vibrant))
+    }
+
+    /// 85Blends 2.4.1 Phase 2F (revised) — a smoke test, not a proof of visual correctness (see
+    /// this file's own `render(...)` header and NearbyE85IconButtonChrome's doc comment for why
+    /// ImageRenderer can't observe WidgetKit's own accented recoloring). What this DOES catch: a
+    /// crash, an empty/zero-size render, or a layout exception from any tinted-mode code path —
+    /// the icon button's mode branch, the map's `.widgetAccentedRenderingMode(.fullColor)`
+    /// availability guard, every marker's reduced-opacity/stroke treatment, and the ethanol
+    /// badge — across every family and both the idle and in-progress refresh states. A real
+    /// Home Screen screenshot is still required to confirm the actual visual fix.
+    func testAccentedRenderingModeRendersWithoutCrashingAcrossAllFamilies() throws {
+        let now = Date.now
+        let (nearest, second, _) = phoenixStations(now: now)
+        // Includes ethanol data (phoenixStations's own fixtures don't) so Large's station list
+        // exercises ethanolBadge's accented-mode branch too, not just the map's price badge.
+        let withEthanol = NearbyE85Station(id: "ethanol", name: "Alliance AutoGas", address: "900 W Washington St, Phoenix, AZ",
+            latitude: 33.4490, longitude: -112.0790, distanceMiles: 0.9, price: nil,
+            ethanol: .init(percentage: 75, reportedAt: now.addingTimeInterval(-1 * 86400)))
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second, withEthanol], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        for (familyName, family, size) in Self.familySizes {
+            let heightFraction = family == .systemLarge ? 0.6 : 1.0
+            let mapSize = NearbyE85MapRenderer.mapSize(for: size, heightFraction: heightFraction)
+            let mapRender: NearbyE85MapRender? = family == .systemSmall ? nil : syntheticRender(for: snapshot, size: mapSize)
+            for isRefreshing in [false, true] {
+                let entry = NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: mapRender,
+                                          zoomLevel: .zoomedIn4, isRefreshing: isRefreshing)
+                let image = try render(entry, family: family, size: size, renderingMode: .accented)
+                XCTAssertEqual(image.size, size, "Accented rendering must never resize the widget's own canvas")
+                attach(image, name: "nearby-\(familyName)-accented-refreshing-\(isRefreshing)")
+            }
+        }
+    }
+
     // Phoenix-area fixture coordinates so the map region/marker placement is realistic rather
     // than degenerate (e.g. all points identical).
     private static let phoenixUser = (latitude: 33.4484, longitude: -112.0740)
@@ -189,10 +384,10 @@ final class NearbyE85RenderingTests: XCTestCase {
             let isNearest = index == 0
             return NearbyE85MapMarker(
                 id: station.id, kind: isNearest ? .nearestStation : .station, point: point(for: coordinate),
-                priceLabel: isNearest ? station.price.map { $0.dollarsPerGallon.formatted(.currency(code: "USD")) } : nil)
+                price: isNearest ? station.price : nil)
         }
         let userPoint = NearbyE85MapRegion.declutteredUserPoint(point(for: user), avoiding: stationMarkers.map(\.point), minimumSeparation: 24)
-        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, priceLabel: nil)] + stationMarkers
+        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, price: nil)] + stationMarkers
         return NearbyE85MapRender(image: image, size: size, markers: markers)
     }
 
@@ -518,6 +713,74 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertGreaterThan(distanceFromCenter(zoomedNearest.point), distanceFromCenter(standardNearest.point) - 0.01,
                              "Zooming in should push a non-center station's pin farther from the image center, not closer")
     }
+
+    /// 85Blends 2.4.1 Phase 2F — the map price badge now only ever shows a confirmed-fresh
+    /// price (see NearbyE85Price.isFreshEnoughForMapBadge's own header for why: a bare dollar
+    /// amount with no age caption would otherwise misrepresent a stale/check-price figure as
+    /// current). Exercises every StationDataValidation.priceFreshnessTier boundary plus the
+    /// missing-timestamp case, independent of the real-MKMapSnapshotter tests above — this is
+    /// pure, deterministic, and never skipped.
+    func testPriceFreshEnoughForMapBadgeAcrossEveryTierAndBoundary() {
+        let now = Date.now
+        func price(daysAgo: Int?) -> NearbyE85Price {
+            .init(dollarsPerGallon: 2.89, reportedAt: daysAgo.map { now.addingTimeInterval(-Double($0) * 86400) }, source: .community)
+        }
+        XCTAssertTrue(price(daysAgo: 0).isFreshEnoughForMapBadge(at: now), "Reported today is fresh")
+        XCTAssertTrue(price(daysAgo: 7).isFreshEnoughForMapBadge(at: now), "Exactly 7 days — the fresh/check-price boundary — is still fresh")
+        XCTAssertFalse(price(daysAgo: 8).isFreshEnoughForMapBadge(at: now), "8 days — one past the fresh boundary — is check-price, not fresh")
+        XCTAssertFalse(price(daysAgo: 14).isFreshEnoughForMapBadge(at: now), "Exactly 14 days — the check-price/stale boundary — is still not fresh")
+        XCTAssertFalse(price(daysAgo: 15).isFreshEnoughForMapBadge(at: now), "15 days — one past the check-price boundary — is stale")
+        XCTAssertFalse(price(daysAgo: 78).isFreshEnoughForMapBadge(at: now), "A 78-day-old price (the reported real-world case) must never show as fresh")
+        XCTAssertFalse(price(daysAgo: nil).isFreshEnoughForMapBadge(at: now), "A missing reportedAt can't be confirmed fresh — never defaults to showing the badge")
+    }
+
+    /// Best-effort real MKMapSnapshotter capture confirming the actual wiring inside
+    /// NearbyE85MapRenderer.render — not just the pure predicate above — preserves the nearest
+    /// station's raw price unconditionally. The render step itself no longer decides freshness
+    /// at all (see NearbyE85MapMarker's own header) — `markerView` decides per entry, exercised
+    /// separately below — so this only proves the renderer doesn't drop or pre-filter the data
+    /// it hands off. Skipped, not failed, with no network route to Apple's map tile servers.
+    func testLargeMapRealSnapshotterPreservesTheNearestStationsRawPriceBestEffort() async throws {
+        let now = Date.now
+        let staleNearest = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
+            latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4,
+            price: .init(dollarsPerGallon: 3.90, reportedAt: now.addingTimeInterval(-78 * 86400), source: .community))
+        let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
+        guard let mapRender = await NearbyE85MapRenderer.render(
+            userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
+            stations: [staleNearest], size: size) else {
+            throw XCTSkip("No network route to MapKit tile servers in this environment.")
+        }
+        let nearestMarker = try XCTUnwrap(mapRender.markers.first(where: { $0.kind == .nearestStation }))
+        XCTAssertEqual(nearestMarker.price, staleNearest.price,
+                       "The renderer must preserve the raw price untouched — freshness is decided per entry, not baked in here")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding reproduced directly: `NearbyE85Provider.timeline`
+    /// explicitly reuses ONE `NearbyE85MapRender` (and therefore one marker with one raw, fixed
+    /// `price`) across every entry it schedules. Builds that marker exactly once, then evaluates
+    /// `priceBadgeLabel(at:)` — the exact function `NearbyE85WidgetView.markerView` calls, not a
+    /// parallel reimplementation — against two different dates straddling the price's fresh →
+    /// check-price boundary (day 7 vs. day 8), simulating a timeline generated shortly before the
+    /// transition as Codex's finding describes. Deliberately not a pixel-rendered test: an
+    /// earlier attempt here scanned the rendered image for the badge and produced an unreliable
+    /// result unrelated to this logic (SwiftUI/ImageRenderer compositing details, not a
+    /// production bug — the pure predicate test above already proves the freshness tiers
+    /// themselves are correct). Testing the single real decision function directly is both
+    /// simpler and the only way to observe this deterministically.
+    func testPriceBadgeLabelDisappearsAtALaterTimelineEntrySharingTheSameMarker() {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        // Exactly 7 days old at baseDate (the fresh/check-price boundary — still fresh) but 8
+        // days old one day later, at the identical `reportedAt` — exactly what a provider run
+        // shortly before the transition produces.
+        let price = NearbyE85Price(dollarsPerGallon: 2.89, reportedAt: baseDate.addingTimeInterval(-7 * 86400), source: .community)
+        let sharedMarker = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: price)
+
+        XCTAssertNotNil(sharedMarker.priceBadgeLabel(at: baseDate),
+                        "At exactly 7 days old the price is still fresh — the badge must be visible")
+        XCTAssertNil(sharedMarker.priceBadgeLabel(at: baseDate.addingTimeInterval(86400)),
+                    "One day later (8 days old) the price has crossed into check-price — the SAME marker's badge must disappear")
+    }
 }
 
 /// `NearbyE85MapView.markerView` — the geographic-anchor fix. `.position(marker.point)` centers
@@ -537,9 +800,13 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
         return NearbyE85MapView(render: NearbyE85MapRender(image: image, size: CGSize(width: 1, height: 1), markers: []))
     }
 
+    private func freshPrice(_ dollarsPerGallon: Double) -> NearbyE85Price {
+        .init(dollarsPerGallon: dollarsPerGallon, reportedAt: .now, source: .community)
+    }
+
     func testNearestStationMarkerSizeIsIdenticalWithAndWithoutAPriceBadge() {
-        let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: nil)
-        let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
+        let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: nil)
+        let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(2.89))
         let sizeWithoutBadge = idealSize(of: blankMapView.markerView(withoutBadge))
         let sizeWithBadge = idealSize(of: blankMapView.markerView(withBadge))
         XCTAssertEqual(sizeWithoutBadge.width, sizeWithBadge.width, accuracy: 0.5)
@@ -547,8 +814,8 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
     }
 
     func testNearestStationMarkerSizeIsStableAcrossDifferentPriceLabelLengths() {
-        let short = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
-        let long = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$12,345.67")
+        let short = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(2.89))
+        let long = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(12_345.67))
         let sizeShort = idealSize(of: blankMapView.markerView(short))
         let sizeLong = idealSize(of: blankMapView.markerView(long))
         // The badge can grow wider/taller for a longer label, but only via the size-neutral
@@ -558,17 +825,17 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
     }
 
     func testUserMarkerSizeMatchesItsOuterRing() {
-        let user = NearbyE85MapMarker(id: "user", kind: .user, point: .zero, priceLabel: nil)
+        let user = NearbyE85MapMarker(id: "user", kind: .user, point: .zero, price: nil)
         let size = idealSize(of: blankMapView.markerView(user))
         XCTAssertEqual(size.width, 16, accuracy: 0.5)
         XCTAssertEqual(size.height, 16, accuracy: 0.5)
     }
 
     func testPlainStationMarkerNeverCarriesAPriceLabel() {
-        // .station (non-nearest) markers never receive a priceLabel from the renderer, so their
+        // .station (non-nearest) markers never receive a price from the renderer, so their
         // anchor can't be affected by the same badge-decoration failure mode at all.
-        let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, priceLabel: nil)
-        XCTAssertNil(station.priceLabel)
+        let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, price: nil)
+        XCTAssertNil(station.price)
         XCTAssertGreaterThan(idealSize(of: blankMapView.markerView(station)).width, 0)
     }
 
@@ -588,8 +855,8 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
             // own syntheticRender helper does, so this stays independent of live MapKit access.
             let point = CGPoint(x: size.width * (0.5 + (station.longitude - region.center.longitude) / region.span.longitudeDelta),
                                 y: size.height * (0.5 - (station.latitude - region.center.latitude) / region.span.latitudeDelta))
-            let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: nil)
-            let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: "$2.89")
+            let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, price: nil)
+            let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, price: freshPrice(2.89))
             withoutBadgeSizes.append(idealSize(of: blankMapView.markerView(withoutBadge)))
             withBadgeSizes.append(idealSize(of: blankMapView.markerView(withBadge)))
         }

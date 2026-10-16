@@ -44,6 +44,7 @@ struct NearbyE85RefreshIntent: AppIntent {
                                    now: Date, reloadTimelines: () -> Void) -> Bool {
         guard access.permitsWidgetInteraction else { return false }
         requestStore.markRequested(at: now)
+        NearbyE85Diagnostics.logReloadRequested(source: "refreshIntent")
         reloadTimelines()
         return true
     }

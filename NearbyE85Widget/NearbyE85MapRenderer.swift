@@ -5,12 +5,35 @@ import MapKit
 #endif
 
 /// A single pin to draw over the static map snapshot.
+///
+/// 85Blends 2.4.1 Phase 2F — Codex P2 finding: this previously carried a pre-formatted
+/// `priceLabel: String?`, with the fresh/not-fresh decision baked in once at `render(...)` time.
+/// Since one `NearbyE85MapRender` is reused across every entry in a timeline (region/zoom/pins
+/// don't change — see `render`'s own comment), a price that was fresh when the map was generated
+/// could cross into `.checkPrice` by the time a LATER entry's own date arrives (e.g. the explicit
+/// midnight boundary entry `NearbyE85Provider.timeline` schedules), yet the stale baked-in label
+/// would still show with no age indicator until the provider happened to run again. `price` now
+/// carries the raw, unevaluated data; `NearbyE85MapView.markerView` decides freshness itself
+/// against each entry's own `date` at actual display time — the same pattern `isOutOfArea`/
+/// `isRefreshing` already use for exactly this reason (see `NearbyE85Entry`'s own header).
 nonisolated struct NearbyE85MapMarker: Identifiable {
     enum Kind { case user, nearestStation, station }
     let id: String
     let kind: Kind
     let point: CGPoint
-    let priceLabel: String?
+    /// Only ever non-nil for `.nearestStation` — see `priceBadgeLabel(at:)` below for how this
+    /// becomes (or doesn't become) a visible badge.
+    let price: NearbyE85Price?
+
+    /// Pure, directly-testable version of the exact decision `NearbyE85WidgetView.markerView`
+    /// makes for the nearest-station price badge — pulled out specifically because a unit test
+    /// can observe this deterministically, while a rendered-pixel test can't reliably tell "no
+    /// badge drawn" apart from unrelated SwiftUI/ImageRenderer compositing artifacts.
+    func priceBadgeLabel(at referenceDate: Date) -> String? {
+        price.flatMap { price in
+            price.isFreshEnoughForMapBadge(at: referenceDate) ? price.dollarsPerGallon.formatted(.currency(code: "USD")) : nil
+        }
+    }
 }
 
 /// A rendered static map plus the pixel-space positions of every marker on it. The image and
@@ -40,6 +63,10 @@ enum NearbyE85MapRenderer {
     @MainActor
     static func render(userLatitude: Double, userLongitude: Double, stations: [NearbyE85Station],
                         size: CGSize, zoomLevel: NearbyE85MapZoomLevel = .default) async -> NearbyE85MapRender? {
+        // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+        // NearbyE85Diagnostics's own header for the no-PII rule this call site follows.
+        let signpostState = NearbyE85Diagnostics.begin("MapRenderer.render")
+        defer { NearbyE85Diagnostics.end("MapRenderer.render", signpostState) }
         guard size.width >= 1, size.height >= 1 else { return nil }
         let userCoordinate = CLLocationCoordinate2D(latitude: userLatitude, longitude: userLongitude)
         let stationCoordinates = stations.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
@@ -59,21 +86,28 @@ enum NearbyE85MapRenderer {
         options.mapType = .standard
         options.showsBuildings = false
 
-        guard let snapshot = await snapshot(options: options) else { return nil }
+        guard let snapshot = await snapshot(options: options) else {
+            NearbyE85Diagnostics.logger.debug("MapRenderer.render: MKMapSnapshotter returned no snapshot")
+            return nil
+        }
 
+        // 85Blends 2.4.1 Phase 2F — the raw price travels with the marker; whether it's fresh
+        // enough to actually show as a badge is decided per timeline entry at display time (see
+        // NearbyE85MapMarker's own header for why a render-time decision isn't safe here).
         let stationMarkers = stations.enumerated().map { index, station -> NearbyE85MapMarker in
             let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
             let isNearest = index == 0
             return NearbyE85MapMarker(
                 id: station.id, kind: isNearest ? .nearestStation : .station,
-                point: snapshot.point(for: coordinate),
-                priceLabel: isNearest ? station.price.map { $0.dollarsPerGallon.formatted(.currency(code: "USD")) } : nil)
+                point: snapshot.point(for: coordinate), price: isNearest ? station.price : nil)
         }
         // The nearest station is frequently almost co-located with the user (e.g. standing at
         // the pump); nudge the user dot so it never disappears underneath that larger pin.
         let userPoint = NearbyE85MapRegion.declutteredUserPoint(snapshot.point(for: userCoordinate),
                                                                 avoiding: stationMarkers.map(\.point), minimumSeparation: 24)
-        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, priceLabel: nil)] + stationMarkers
+        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, price: nil)] + stationMarkers
+        NearbyE85Diagnostics.logger.debug(
+            "MapRenderer.render: ok width=\(Int(size.width), privacy: .public) height=\(Int(size.height), privacy: .public) stationCount=\(stations.count, privacy: .public)")
         return NearbyE85MapRender(image: snapshot.image, size: size, markers: markers)
     }
 

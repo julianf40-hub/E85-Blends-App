@@ -22,6 +22,10 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let zoomLevel: NearbyE85MapZoomLevel
         let mapRender: NearbyE85MapRender?
         let pendingRefreshAt: Date?
+        // 85Blends 2.4.1 — the raw out-of-area signal; the actual per-entry boolean is derived
+        // from this against each entry's own `date`, exactly like `pendingRefreshAt` above is
+        // never itself the `isRefreshing` flag — see entry(...)/timeline(...) below.
+        let areaRelevance: NearbyE85AreaRelevanceState
     }
 
     // 85Blends 2.4.0 Pro gate — the widget gallery's placeholder/preview keeps showing the widget's
@@ -35,15 +39,25 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (NearbyE85Entry) -> Void) {
         if context.isPreview { completion(placeholder(in: context)); return }
         Task { @MainActor in
+            // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+            // NearbyE85Diagnostics's own header. Ordering/behavior below is unchanged.
+            let overallState = NearbyE85Diagnostics.begin("Provider.getSnapshot")
+            defer { NearbyE85Diagnostics.end("Provider.getSnapshot", overallState) }
             let now = Date.now
             // Access FIRST — see getTimeline's identical guard below for the full rationale.
+            let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
+            NearbyE85Diagnostics.end("Provider.accessGate", accessState)
             let entry = await Self.entry(access: access, now: now) { await proInputs(context: context) }
             completion(entry)
         }
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<NearbyE85Entry>) -> Void) {
         Task { @MainActor in
+            // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational; see
+            // NearbyE85Diagnostics's own header. Ordering/behavior below is unchanged.
+            let overallState = NearbyE85Diagnostics.begin("Provider.getTimeline")
+            defer { NearbyE85Diagnostics.end("Provider.getTimeline", overallState) }
             let now = Date.now
             // 85Blends 2.4.0 Pro gate — resolved BEFORE anything else is read. A non-Pro entry
             // (`.free`, or `.unknown` when nothing authoritative has been mirrored yet — see
@@ -53,8 +67,11 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             // it, so none of that data is loaded, and nothing about a user's location ever reaches
             // a locked shell. `timeline(...)` only ever calls the loader below once access is `.pro`,
             // and the Pro path inside it is byte-for-byte what shipped before this gate.
+            let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
+            NearbyE85Diagnostics.end("Provider.accessGate", accessState)
             let timeline = await Self.timeline(access: access, now: now) { await proInputs(context: context) }
+            NearbyE85Diagnostics.logger.debug("Provider.getTimeline: entries=\(timeline.entries.count, privacy: .public) access=\(access.rawValue, privacy: .public)")
             completion(timeline)
         }
     }
@@ -68,8 +85,13 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         guard access.permitsWidgetInteraction else { return lockedEntry(access: access, now: now) }
         let inputs = await loadProInputs()
         let isRefreshing = NearbyE85RefreshFeedback.isRefreshing(requestedAt: inputs.pendingRefreshAt, now: now)
+        // 85Blends 2.4.1 Phase 2F — Codex P2 finding: out-of-area presentation only ever applies
+        // on top of an eligible, valid, ready snapshot (see NearbyE85AreaRelevance.appliesOutOfArea's
+        // own header) — it must never override permission-required/no-stations/missing-snapshot
+        // presentation just because the persisted signal is still live.
+        let isOutOfArea = NearbyE85AreaRelevance.appliesOutOfArea(to: inputs.snapshot, state: inputs.areaRelevance, at: now)
         return .init(date: now, snapshot: inputs.snapshot, access: .pro, mapRender: inputs.mapRender,
-                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing)
+                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing, isOutOfArea: isOutOfArea)
     }
 
     /// getTimeline's timeline: the locked timeline for a non-Pro access, else — after loading the Pro
@@ -82,6 +104,7 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         let zoomLevel = inputs.zoomLevel
         let mapRender = inputs.mapRender
         let pendingRefreshAt = inputs.pendingRefreshAt
+        let areaRelevance = inputs.areaRelevance
         // Schedule the stale and expiry states up front: budgeted reloads are not timers.
         var dates = [now, now.addingTimeInterval(30 * 60)]
         if let snapshot, snapshot.state != .permissionRequired {
@@ -102,10 +125,25 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let settleDate = pendingRefreshAt.addingTimeInterval(NearbyE85RefreshFeedback.window)
             if settleDate > now { dates.append(settleDate) }
         }
-        let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date in
-            NearbyE85Entry(date: date, snapshot: snapshot.flatMap { $0.isValid(at: date) ? $0 : nil },
+        // 85Blends 2.4.1 — a follow-up date exactly when the out-of-area signal's own expiry
+        // (NearbyE85AreaRelevance.isCurrentlyOutOfArea's window) elapses, so the widget settles
+        // back to its ordinary snapshot-driven rendering on its own even if nothing else ever
+        // triggers a reload in the meantime.
+        if areaRelevance.isOutOfArea {
+            let expiryDate = areaRelevance.determinedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+            if expiryDate > now { dates.append(expiryDate) }
+        }
+        let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date -> NearbyE85Entry in
+            // 85Blends 2.4.1 Phase 2F — Codex P2 finding: each entry re-validates the snapshot
+            // against ITS OWN date exactly once, then feeds that same effective snapshot into both
+            // the entry itself and the out-of-area decision — so a snapshot that has expired by
+            // this entry's date (even though it was still valid at `now`) never has an out-of-area
+            // flag applied alongside it (see NearbyE85AreaRelevance.appliesOutOfArea's own header).
+            let entrySnapshot = snapshot.flatMap { $0.isValid(at: date) ? $0 : nil }
+            return NearbyE85Entry(date: date, snapshot: entrySnapshot,
                           access: .pro, mapRender: mapRender, zoomLevel: zoomLevel,
-                          isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date))
+                          isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date),
+                          isOutOfArea: NearbyE85AreaRelevance.appliesOutOfArea(to: entrySnapshot, state: areaRelevance, at: date))
         }
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60)))
     }
@@ -129,20 +167,34 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
     /// performed them inline before the gate — snapshot, zoom, map, pending-refresh — so nothing
     /// about their relative timing changed either.
     @MainActor private func proInputs(context: Context) async -> ProInputs {
+        // 85Blends 2.4.1 performance audit (Phase 2A) — purely observational.
+        let snapshotState = NearbyE85Diagnostics.begin("Provider.snapshotLoad")
         let snapshot = readAuthorizedSnapshot()
+        NearbyE85Diagnostics.end("Provider.snapshotLoad", snapshotState)
         // Read once per timeline, same as the snapshot itself — zoom is presentation-only,
         // never a reason to touch location or refetch stations.
         let zoomLevel = context.family == .systemLarge ? NearbyE85MapZoomStore().read() : .default
         // The map only ever needs one render per timeline: the region and pins it depicts
         // don't change across the stale/expiry entries, only the copy around them.
-        let mapRender = await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+        // 85Blends 2.4.1 — read once, same as the snapshot/zoom above. Checked BEFORE the map
+        // render below so a cache that's provably out of area never pays a real MKMapSnapshotter
+        // pass for pixels NearbyE85WidgetView's out-of-area fallback won't show — see that
+        // view's own station(_:)/mediumContent/largeContent guards. `.now` here is only a
+        // performance decision (skip or don't skip the render this pass); the boolean the VIEW
+        // actually renders against is computed per timeline entry in entry(...)/timeline(...).
+        let areaRelevance = NearbyE85AreaRelevanceStore().read()
+        let isOutOfAreaNow = NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: areaRelevance, now: .now)
+        let mapRenderState = NearbyE85Diagnostics.begin("Provider.mapRenderStep")
+        let mapRender = isOutOfAreaNow ? nil : await mapRender(for: snapshot, context: context, zoomLevel: zoomLevel)
+        NearbyE85Diagnostics.end("Provider.mapRenderStep", mapRenderState)
         // 85Blends 2.4.0 widget polish — the manual refresh button's "in progress" feedback.
         // Read once, same as everything else above: this never claims new data arrived (the
         // snapshot/its timestamps are completely untouched by this), it only tracks how
         // recently the user tapped refresh so the control can show, and then honestly clear,
         // an in-progress appearance. See NearbyE85RefreshFeedback's header.
         let pendingRefreshAt = NearbyE85RefreshRequestStore().pendingRequestDate()
-        return ProInputs(snapshot: snapshot, zoomLevel: zoomLevel, mapRender: mapRender, pendingRefreshAt: pendingRefreshAt)
+        return ProInputs(snapshot: snapshot, zoomLevel: zoomLevel, mapRender: mapRender, pendingRefreshAt: pendingRefreshAt,
+                         areaRelevance: areaRelevance)
     }
     @MainActor private func readAuthorizedSnapshot() -> NearbyE85Snapshot? {
         // Permission is checked again in the extension; it never requests a location or
@@ -171,6 +223,10 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // NearbyE85MapRenderer.render's own comment): MKMapSnapshotter now picks its own native,
         // device-appropriate raster density instead of a hardcoded/manually-resolved one. Both
         // families share this; only the logical point-space `size` above still differs between them.
+        // 85Blends 2.4.1 Phase 2F — no longer threads a reference time into the renderer at all:
+        // the nearest station's price-freshness decision is made per timeline entry at display
+        // time instead (see NearbyE85MapMarker's own header), so this render step genuinely
+        // never needs one.
         return await NearbyE85MapRenderer.render(userLatitude: user.latitude, userLongitude: user.longitude,
                                                   stations: snapshot.stations, size: size,
                                                   zoomLevel: context.family == .systemLarge ? zoomLevel : .default)

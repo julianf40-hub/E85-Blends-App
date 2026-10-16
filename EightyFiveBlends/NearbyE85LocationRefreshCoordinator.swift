@@ -28,6 +28,7 @@
 
 import CoreLocation
 import Foundation
+import WidgetKit
 
 @MainActor
 enum NearbyE85LocationRefreshCoordinator {
@@ -42,7 +43,9 @@ enum NearbyE85LocationRefreshCoordinator {
     ///   materially different result to actually publish; see
     ///   NearbyE85LocationAcceptance.publishDecision's own doc comment.
     static func handle(location: CLLocation, cache: NearbyE85Cache = NearbyE85Cache(), now: Date = .now,
-                        isManualRefresh: Bool = false) {
+                        isManualRefresh: Bool = false,
+                        areaRelevanceStore: NearbyE85AreaRelevanceStore = NearbyE85AreaRelevanceStore(),
+                        reloadTimelines: () -> Void = { WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind) }) {
         let latitude = location.coordinate.latitude
         let longitude = location.coordinate.longitude
         #if DEBUG
@@ -69,6 +72,17 @@ enum NearbyE85LocationRefreshCoordinator {
             #if DEBUG
             print("[NearbyE85Location] ignored: moved out of range of every cached station; awaiting next app-open refresh")
             #endif
+            // 85Blends 2.4.1 — this accepted, in-range-quality fix just proved every
+            // previously-published station is now outside the ORIGINAL search radius: the
+            // cache isn't merely old, it's for the wrong place. Marks the shared out-of-area
+            // signal so the widget stops presenting those stations as nearby, without starting
+            // a new network search here (see this type's own header for why). Only reloads
+            // when the widget-visible flag actually flips false->true, so repeated SLC
+            // deliveries while still out of range never spend more than one reload.
+            if areaRelevanceStore.markOutOfArea(at: now) {
+                NearbyE85Diagnostics.logReloadRequested(source: "areaRelevance")
+                reloadTimelines()
+            }
             return
         }
 
@@ -88,9 +102,29 @@ enum NearbyE85LocationRefreshCoordinator {
         #if DEBUG
         print("[NearbyE85Location] publishDecision=\(decision) previousNearest=\(cached.stations.first?.name ?? "none") candidateNearest=\(repositioned.stations.first?.name ?? "none")")
         #endif
-        guard decision == .publish else { return }
+        guard decision == .publish else {
+            // 85Blends 2.4.1 Phase 2F — Codex P2 finding: reaching this point already proves a
+            // successful, in-range reposition (the out-of-range guard above returned early
+            // otherwise) — the cached stations are geographically relevant again regardless of
+            // whether the candidate result is materially different enough to publish. Clearing
+            // only ever happened inside NearbyE85Publisher.publish, which this branch never
+            // reaches, so a user who returned near the cached coordinate without moving far
+            // enough to trigger a publish (e.g. a lone near-boundary station briefly flickering
+            // out and back) could stay stuck on "Location changed" indefinitely. This adds a
+            // side effect only on the branch publishDecision already says not to publish on —
+            // its own suppression rules (and the publish branch below) are completely
+            // unchanged, so this can never cause the two branches to both reload.
+            if areaRelevanceStore.clear() {
+                #if DEBUG
+                print("[NearbyE85Location] cleared out-of-area flag on a successful-but-suppressed reposition")
+                #endif
+                NearbyE85Diagnostics.logReloadRequested(source: "areaRelevanceRecovery")
+                reloadTimelines()
+            }
+            return
+        }
 
-        NearbyE85Publisher.publish(repositioned, cache: cache, now: now)
+        NearbyE85Publisher.publish(repositioned, cache: cache, now: now, areaRelevanceStore: areaRelevanceStore, reloadTimelines: reloadTimelines)
         #if DEBUG
         print("[NearbyE85Location] published repositioned snapshot (WidgetCenter reload requested if it actually changed)")
         #endif
