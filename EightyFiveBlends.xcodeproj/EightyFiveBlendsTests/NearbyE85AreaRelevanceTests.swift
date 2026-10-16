@@ -116,6 +116,46 @@ struct NearbyE85AreaRelevanceDecisionTests {
         let state = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: now.addingTimeInterval(60))
         #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: state, now: now) == false)
     }
+
+    // MARK: - appliesOutOfArea (85Blends 2.4.1 Phase 2F — Codex P2 location-permission precedence)
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private var readySnapshot: NearbyE85Snapshot {
+        .make(stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+              radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: -112.08)
+    }
+    private var activeState: NearbyE85AreaRelevanceState { .init(isOutOfArea: true, determinedAt: now.addingTimeInterval(-60)) }
+
+    @Test func appliesOutOfAreaIsTrueForAValidReadySnapshotWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: readySnapshot, state: activeState, at: now))
+    }
+
+    @Test func appliesOutOfAreaIsFalseForAPermissionRequiredSnapshotEvenWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: .permissionRequired(at: now), state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseForANoStationsSnapshotEvenWithAnActiveSignal() {
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: noStations, state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseForANilSnapshotEvenWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: nil, state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseWhenTheSignalItselfHasExpiredEvenWithAReadySnapshot() {
+        let expiredState = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter))
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: readySnapshot, state: expiredState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseWhenTheSnapshotItselfHasExpiredEvenWithAnActiveSignal() {
+        let longAgo = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter - 1)
+        let expiredSnapshot = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: longAgo, locationAt: longAgo)
+        #expect(expiredSnapshot.isValid(at: now) == false)
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: expiredSnapshot, state: activeState, at: now) == false)
+    }
 }
 
 // MARK: - NearbyE85LocationRefreshCoordinator.handle sets/leaves the flag
@@ -503,6 +543,17 @@ struct NearbyE85AreaRelevanceProviderTests {
     private func inputs(areaRelevance: NearbyE85AreaRelevanceState) -> NearbyE85Provider.ProInputs {
         .init(snapshot: readySnapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil, areaRelevance: areaRelevance)
     }
+    private func inputs(snapshot: NearbyE85Snapshot?, areaRelevance: NearbyE85AreaRelevanceState) -> NearbyE85Provider.ProInputs {
+        .init(snapshot: snapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil, areaRelevance: areaRelevance)
+    }
+    private var noStationsSnapshot: NearbyE85Snapshot {
+        .make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: -112.08)
+    }
+    /// An active signal — still well inside `NearbyE85Snapshot.expiresAfter` — reusable across
+    /// the precedence regression tests below.
+    private var activeOutOfArea: NearbyE85AreaRelevanceState {
+        .init(isOutOfArea: true, determinedAt: now.addingTimeInterval(-60))
+    }
 
     @Test func entryReflectsOutOfAreaWhenStillWithinTheExpiryWindow() async {
         let markedAt = now.addingTimeInterval(-60)
@@ -542,6 +593,138 @@ struct NearbyE85AreaRelevanceProviderTests {
         #expect(locked.isOutOfArea == false)
         let lockedTimeline = NearbyE85Provider.lockedTimeline(access: .free, now: now)
         for entry in lockedTimeline.entries { #expect(entry.isOutOfArea == false) }
+    }
+
+    // MARK: - 85Blends 2.4.1 Phase 2F — Codex P2 finding: location-permission precedence
+    //
+    // Establishes (and locks in) the full presentation priority: Pro entitlement, then location
+    // authorization, then a valid ready station snapshot, then geographic area relevance. A
+    // stale-but-still-live out-of-area signal must never outrank permission-required/no-stations/
+    // missing-snapshot presentation — see NearbyE85AreaRelevance.appliesOutOfArea's own header.
+
+    /// A. Pro + permission required + active out-of-area flag → "Location needed," not
+    /// "Location changed." `NearbyE85Presentation.fallbackBody` checks `isOutOfArea` first, so
+    /// this only resolves correctly if `isOutOfArea` itself is false here.
+    @Test func permissionRequiredSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let snapshot = NearbyE85Snapshot.permissionRequired(at: now)
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: snapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot?.state == .permissionRequired)
+    }
+
+    /// B. Pro + ready snapshot + active out-of-area flag → "Location changed" continues to show.
+    @Test func readySnapshotWithAnActiveOutOfAreaFlagStillShowsLocationChanged() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.readySnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea)
+        #expect(entry.snapshot?.state == .ready)
+    }
+
+    /// C. Pro + no-stations snapshot + active out-of-area flag → normal no-stations presentation,
+    /// not "Location changed."
+    @Test func noStationsSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.noStationsSnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot?.state == .noStations)
+    }
+
+    /// D. Pro + missing snapshot + active out-of-area flag → falls back to the generic
+    /// "Find nearby E85" shell, never "Location changed."
+    @Test func missingSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: nil, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+    }
+
+    /// D (continued). Pro + an EXPIRED ready snapshot (no longer `isValid(at:)`) + active
+    /// out-of-area flag → still never "Location changed," since there is no eligible snapshot
+    /// left for it to describe.
+    @Test func expiredReadySnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let longAgo = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter - 1)
+        let expired = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: longAgo, locationAt: longAgo, userLatitude: 33.44, userLongitude: -112.08)
+        #expect(expired.isValid(at: now) == false) // sanity: this snapshot really has expired by `now`
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: expired, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+    }
+
+    /// E. Free entitlement + active out-of-area flag → unaffected, still the existing Pro-locked
+    /// shell (loadProInputs — and therefore the area-relevance signal — is never even consulted).
+    @Test func freeAccessWithAnActiveOutOfAreaFlagStillShowsTheLockedPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .free, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+        let timeline = await NearbyE85Provider.timeline(access: .free, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        for timelineEntry in timeline.entries { #expect(timelineEntry.isOutOfArea == false) }
+    }
+
+    /// F. Unknown entitlement + active out-of-area flag → unaffected, still the existing
+    /// unverified shell.
+    @Test func unknownAccessWithAnActiveOutOfAreaFlagStillShowsTheUnverifiedPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .unknown, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+        let timeline = await NearbyE85Provider.timeline(access: .unknown, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        for timelineEntry in timeline.entries { #expect(timelineEntry.isOutOfArea == false) }
+    }
+
+    /// G. A scheduled timeline entry dated AFTER the snapshot has independently expired by that
+    /// entry's own date must never show out-of-area presentation, even though the signal itself
+    /// is still comfortably inside its own expiry window and the SAME entry would have shown
+    /// out-of-area if evaluated at `now`. Proves `timeline(...)` feeds each entry's own validated
+    /// snapshot into the precedence decision, not a once-computed snapshot from `now`.
+    @Test func timelineEntryAfterSnapshotExpiryNeverShowsOutOfArea() async {
+        // The out-of-area signal was only just determined, so it is still active for the full
+        // 24h window — but the underlying snapshot is already old enough that it independently
+        // expires partway through that SAME window, at oldest + expiresAfter.
+        let oldest = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter + 3600) // expires 1h from `now`
+        let snapshot = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: oldest, locationAt: oldest, userLatitude: 33.44, userLongitude: -112.08)
+        let timeline = await NearbyE85Provider.timeline(access: .pro, now: now) {
+            self.inputs(snapshot: snapshot, areaRelevance: .init(isOutOfArea: true, determinedAt: now))
+        }
+        let afterSnapshotExpiry = timeline.entries.filter { $0.date >= oldest.addingTimeInterval(NearbyE85Snapshot.expiresAfter) }
+        #expect(!afterSnapshotExpiry.isEmpty)
+        for entry in afterSnapshotExpiry {
+            #expect(entry.snapshot == nil)
+            #expect(entry.isOutOfArea == false)
+        }
+        // Sanity: an earlier entry, while the snapshot is still valid, DOES show out-of-area —
+        // proving the suppression above is specifically about that entry's own expired snapshot,
+        // not a blanket regression of the out-of-area signal itself.
+        let beforeSnapshotExpiry = timeline.entries.filter { $0.date < oldest.addingTimeInterval(NearbyE85Snapshot.expiresAfter) }
+        #expect(beforeSnapshotExpiry.contains { $0.isOutOfArea })
+    }
+
+    /// H. Once permission is available again alongside a valid ready snapshot and an active
+    /// out-of-area flag, ordinary area-relevance functionality is fully preserved — this is the
+    /// same shape as `entryReflectsOutOfAreaWhenStillWithinTheExpiryWindow` above, restated here
+    /// to anchor it explicitly as the "recovered" counterpart to tests A/C/D.
+    @Test func permissionAvailableAgainWithAReadySnapshotPreservesOrdinaryOutOfAreaPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.readySnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea)
+        #expect(entry.snapshot?.state == .ready)
     }
 }
 

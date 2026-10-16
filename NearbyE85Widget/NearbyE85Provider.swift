@@ -85,7 +85,11 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         guard access.permitsWidgetInteraction else { return lockedEntry(access: access, now: now) }
         let inputs = await loadProInputs()
         let isRefreshing = NearbyE85RefreshFeedback.isRefreshing(requestedAt: inputs.pendingRefreshAt, now: now)
-        let isOutOfArea = NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: inputs.areaRelevance, now: now)
+        // 85Blends 2.4.1 Phase 2F — Codex P2 finding: out-of-area presentation only ever applies
+        // on top of an eligible, valid, ready snapshot (see NearbyE85AreaRelevance.appliesOutOfArea's
+        // own header) — it must never override permission-required/no-stations/missing-snapshot
+        // presentation just because the persisted signal is still live.
+        let isOutOfArea = NearbyE85AreaRelevance.appliesOutOfArea(to: inputs.snapshot, state: inputs.areaRelevance, at: now)
         return .init(date: now, snapshot: inputs.snapshot, access: .pro, mapRender: inputs.mapRender,
                      zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing, isOutOfArea: isOutOfArea)
     }
@@ -129,11 +133,17 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let expiryDate = areaRelevance.determinedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
             if expiryDate > now { dates.append(expiryDate) }
         }
-        let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date in
-            NearbyE85Entry(date: date, snapshot: snapshot.flatMap { $0.isValid(at: date) ? $0 : nil },
+        let entries = Array(Set(dates)).filter { $0 >= now }.sorted().map { date -> NearbyE85Entry in
+            // 85Blends 2.4.1 Phase 2F — Codex P2 finding: each entry re-validates the snapshot
+            // against ITS OWN date exactly once, then feeds that same effective snapshot into both
+            // the entry itself and the out-of-area decision — so a snapshot that has expired by
+            // this entry's date (even though it was still valid at `now`) never has an out-of-area
+            // flag applied alongside it (see NearbyE85AreaRelevance.appliesOutOfArea's own header).
+            let entrySnapshot = snapshot.flatMap { $0.isValid(at: date) ? $0 : nil }
+            return NearbyE85Entry(date: date, snapshot: entrySnapshot,
                           access: .pro, mapRender: mapRender, zoomLevel: zoomLevel,
                           isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date),
-                          isOutOfArea: NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: areaRelevance, now: date))
+                          isOutOfArea: NearbyE85AreaRelevance.appliesOutOfArea(to: entrySnapshot, state: areaRelevance, at: date))
         }
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60)))
     }

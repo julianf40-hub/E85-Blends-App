@@ -113,4 +113,31 @@ nonisolated enum NearbyE85AreaRelevance {
         let elapsed = now.timeIntervalSince(state.determinedAt)
         return elapsed >= 0 && elapsed < NearbyE85Snapshot.expiresAfter
     }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding: `isCurrentlyOutOfArea` above answers "is the
+    /// persisted signal itself still live" in isolation — it has no notion of what's actually
+    /// being presented alongside it. `NearbyE85Provider.entry`/`timeline` fed that raw answer
+    /// straight into `NearbyE85Entry.isOutOfArea`, so a stale "Location changed" flag could
+    /// outlive the very ready snapshot it was describing: if location permission is later
+    /// revoked, the cache is empty/missing, or (for a scheduled timeline entry) the snapshot has
+    /// since expired by that entry's own date, the widget would still announce "Location
+    /// changed" instead of the state that's actually true — "Location needed," the no-stations
+    /// fallback, or the generic fallback. `fallbackBody`'s own priority chain already checks
+    /// `isOutOfArea` before `.permissionRequired`/`.noStations`, so correcting what `isOutOfArea`
+    /// itself means (rather than reordering that chain) fixes every one of those cases in one
+    /// place. The out-of-area presentation only ever makes sense layered on top of an eligible,
+    /// valid, ready snapshot — one with at least one nearby station (see
+    /// `NearbyE85Snapshot.make`'s own `.ready`-only-when-non-empty rule) that hasn't itself
+    /// expired by the date being presented. Deliberately does NOT clear the persisted
+    /// `NearbyE85AreaRelevanceStore` state — only what gets PRESENTED for a given snapshot/date,
+    /// so the signal is still there, unmodified, the moment a ready snapshot reappears.
+    ///
+    /// - Parameter snapshot: The SAME effective, date-validated snapshot being presented
+    ///   alongside this decision — for a scheduled timeline entry, this must be the snapshot
+    ///   already re-validated against that entry's own `date` (see `NearbyE85Snapshot.isValid`),
+    ///   not a reused single value computed once for the whole timeline.
+    static func appliesOutOfArea(to snapshot: NearbyE85Snapshot?, state: NearbyE85AreaRelevanceState, at date: Date) -> Bool {
+        guard let snapshot, snapshot.state == .ready, snapshot.isValid(at: date) else { return false }
+        return isCurrentlyOutOfArea(state: state, now: date)
+    }
 }
