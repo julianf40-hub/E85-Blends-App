@@ -102,7 +102,27 @@ enum NearbyE85LocationRefreshCoordinator {
         #if DEBUG
         print("[NearbyE85Location] publishDecision=\(decision) previousNearest=\(cached.stations.first?.name ?? "none") candidateNearest=\(repositioned.stations.first?.name ?? "none")")
         #endif
-        guard decision == .publish else { return }
+        guard decision == .publish else {
+            // 85Blends 2.4.1 Phase 2F — Codex P2 finding: reaching this point already proves a
+            // successful, in-range reposition (the out-of-range guard above returned early
+            // otherwise) — the cached stations are geographically relevant again regardless of
+            // whether the candidate result is materially different enough to publish. Clearing
+            // only ever happened inside NearbyE85Publisher.publish, which this branch never
+            // reaches, so a user who returned near the cached coordinate without moving far
+            // enough to trigger a publish (e.g. a lone near-boundary station briefly flickering
+            // out and back) could stay stuck on "Location changed" indefinitely. This adds a
+            // side effect only on the branch publishDecision already says not to publish on —
+            // its own suppression rules (and the publish branch below) are completely
+            // unchanged, so this can never cause the two branches to both reload.
+            if areaRelevanceStore.clear() {
+                #if DEBUG
+                print("[NearbyE85Location] cleared out-of-area flag on a successful-but-suppressed reposition")
+                #endif
+                NearbyE85Diagnostics.logReloadRequested(source: "areaRelevanceRecovery")
+                reloadTimelines()
+            }
+            return
+        }
 
         NearbyE85Publisher.publish(repositioned, cache: cache, now: now, areaRelevanceStore: areaRelevanceStore, reloadTimelines: reloadTimelines)
         #if DEBUG

@@ -265,6 +265,64 @@ struct NearbyE85AreaRelevanceCoordinatorTests {
         #expect(areaStore.read() == .inArea)
     }
 
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding. The cached snapshot's station is still within
+    /// the 25mi search radius, so this fix reaches `publishDecision` (unlike the "every station
+    /// out of range" tests above) — but the candidate location is a tiny jitter from the cached
+    /// coordinate (well under `jitterFloorMiles`), with the same nearest station and the same
+    /// station cluster, and well within `staleAcceptedLocationAge` — exactly the inputs
+    /// `publishDecision` suppresses as insignificant movement. Before the fix, clearing only
+    /// happened inside `NearbyE85Publisher.publish`, which a suppressed decision never reaches,
+    /// so the out-of-area flag stayed stuck on "Location changed" even though this fix already
+    /// proves the cached station is relevant again.
+    @Test func suppressedInsignificantMovementStillClearsAPreviouslySetOutOfAreaFlag() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now) // simulate having previously traveled out of range
+
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(60) // well under staleAcceptedLocationAge (12 min)
+        // ~0.01 miles from the cached coordinate — well under jitterFloorMiles (~0.047mi) — with
+        // the same nearest station and the same visible cluster, so publishDecision suppresses
+        // this as insignificant movement rather than returning .publish.
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude + 0.0001, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow,
+                                                   areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Companion to the test above: when the candidate fix both clears the out-of-area flag AND
+    /// is itself worth publishing (the ordinary `travelingBackIntoRangeClearsTheFlagViaThe
+    /// OrdinaryRepositionPublish` scenario), the two effects must share a single reload — one
+    /// from `NearbyE85Publisher.publish`'s own clear+write reasoning — never two.
+    @Test func travelingBackIntoRangeWithAPublishableResultRequestsExactlyOneReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now) // simulate having previously traveled out of range
+
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(600)
+        // Large enough movement (~2.9mi) to clear largeMovementMiles and trigger an actual
+        // publish, exactly like travelingBackIntoRangeClearsTheFlagViaTheOrdinaryRepositionPublish.
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude - 0.05, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow,
+                                                   areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
     @Test func aPoorAccuracyFixNeverTouchesTheAreaRelevanceFlag() throws {
         let (cache, directory) = makeCache()
         defer { try? FileManager.default.removeItem(at: directory) }
