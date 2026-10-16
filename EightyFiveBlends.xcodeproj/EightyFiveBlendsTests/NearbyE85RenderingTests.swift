@@ -319,10 +319,10 @@ final class NearbyE85RenderingTests: XCTestCase {
             let isNearest = index == 0
             return NearbyE85MapMarker(
                 id: station.id, kind: isNearest ? .nearestStation : .station, point: point(for: coordinate),
-                priceLabel: isNearest ? station.price.map { $0.dollarsPerGallon.formatted(.currency(code: "USD")) } : nil)
+                price: isNearest ? station.price : nil)
         }
         let userPoint = NearbyE85MapRegion.declutteredUserPoint(point(for: user), avoiding: stationMarkers.map(\.point), minimumSeparation: 24)
-        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, priceLabel: nil)] + stationMarkers
+        let markers = [NearbyE85MapMarker(id: "user", kind: .user, point: userPoint, price: nil)] + stationMarkers
         return NearbyE85MapRender(image: image, size: size, markers: markers)
     }
 
@@ -670,10 +670,12 @@ final class NearbyE85RenderingTests: XCTestCase {
     }
 
     /// Best-effort real MKMapSnapshotter capture confirming the actual wiring inside
-    /// NearbyE85MapRenderer.render — not just the pure predicate above — correctly omits the
-    /// nearest station's price badge once its price is stale. Skipped, not failed, with no
-    /// network route to Apple's map tile servers, same as the other real-snapshotter tests.
-    func testLargeMapRealSnapshotterOmitsPriceBadgeForAStalePriceBestEffort() async throws {
+    /// NearbyE85MapRenderer.render — not just the pure predicate above — preserves the nearest
+    /// station's raw price unconditionally. The render step itself no longer decides freshness
+    /// at all (see NearbyE85MapMarker's own header) — `markerView` decides per entry, exercised
+    /// separately below — so this only proves the renderer doesn't drop or pre-filter the data
+    /// it hands off. Skipped, not failed, with no network route to Apple's map tile servers.
+    func testLargeMapRealSnapshotterPreservesTheNearestStationsRawPriceBestEffort() async throws {
         let now = Date.now
         let staleNearest = NearbyE85Station(id: "nearest", name: "Circle K", address: "1 N Central Ave, Phoenix, AZ",
             latitude: 33.4501, longitude: -112.0731, distanceMiles: 0.4,
@@ -681,11 +683,61 @@ final class NearbyE85RenderingTests: XCTestCase {
         let size = NearbyE85MapRenderer.mapSize(for: Self.largeSize, heightFraction: 0.6)
         guard let mapRender = await NearbyE85MapRenderer.render(
             userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude,
-            stations: [staleNearest], size: size, now: now) else {
+            stations: [staleNearest], size: size) else {
             throw XCTSkip("No network route to MapKit tile servers in this environment.")
         }
         let nearestMarker = try XCTUnwrap(mapRender.markers.first(where: { $0.kind == .nearestStation }))
-        XCTAssertNil(nearestMarker.priceLabel, "A 78-day-old price must not appear as a map badge with no age indicator")
+        XCTAssertEqual(nearestMarker.price, staleNearest.price,
+                       "The renderer must preserve the raw price untouched — freshness is decided per entry, not baked in here")
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding reproduced directly: `NearbyE85Provider.timeline`
+    /// explicitly reuses ONE `NearbyE85MapRender` (and therefore one marker with one raw, fixed
+    /// `price`) across every entry it schedules. Builds that shared render exactly once, then
+    /// renders it through two different `referenceDate`s straddling the price's fresh → check-
+    /// price boundary (day 7 vs. day 8) — simulating a timeline generated shortly before the
+    /// transition, as Codex's finding describes. The badge must appear at the earlier date and
+    /// disappear at the later one despite the underlying map image/marker geometry being
+    /// byte-for-byte identical in both renders.
+    func testPriceBadgeDisappearsAtALaterTimelineEntrySharingTheSameMapRender() {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        // Exactly 7 days old at baseDate (the fresh/check-price boundary — still fresh) but 8
+        // days old one day later, at the identical `reportedAt` — exactly what a provider run
+        // shortly before the transition produces.
+        let price = NearbyE85Price(dollarsPerGallon: 2.89, reportedAt: baseDate.addingTimeInterval(-7 * 86400), source: .community)
+        let markerPoint = CGPoint(x: 50, y: 70) // clear of the canvas edges so the badge has room above it
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+        }
+        let sharedRender = NearbyE85MapRender(
+            image: image, size: CGSize(width: 100, height: 100),
+            markers: [NearbyE85MapMarker(id: "n", kind: .nearestStation, point: markerPoint, price: price)])
+
+        func badgeIsVisible(at referenceDate: Date) -> Bool {
+            let view = NearbyE85MapView(render: sharedRender, referenceDate: referenceDate)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let rendered = ImageRenderer(content: view)
+            rendered.scale = 1
+            guard let image = rendered.uiImage else { return false }
+            // Scan a band above the circle's top edge, where the badge sits when present — any
+            // non-red pixel there means something (the badge) was drawn over the plain red map.
+            for y in stride(from: 18, through: 44, by: 2) {
+                let cropped = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1), format: format).image { _ in
+                    image.draw(at: CGPoint(x: -markerPoint.x, y: -CGFloat(y)))
+                }
+                guard let cgImage = cropped.cgImage, let data = cgImage.dataProvider?.data,
+                      let bytes = CFDataGetBytePtr(data), CFDataGetLength(data) >= 4 else { continue }
+                let isPlainRedMap = bytes[0] > 200 && bytes[1] < 60 && bytes[2] < 60
+                if !isPlainRedMap { return true }
+            }
+            return false
+        }
+
+        XCTAssertTrue(badgeIsVisible(at: baseDate), "At exactly 7 days old the price is still fresh — the badge must be visible")
+        XCTAssertFalse(badgeIsVisible(at: baseDate.addingTimeInterval(86400)),
+                       "One day later (8 days old) the price has crossed into check-price — the SAME reused map's badge must disappear")
     }
 }
 
@@ -706,9 +758,13 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
         return NearbyE85MapView(render: NearbyE85MapRender(image: image, size: CGSize(width: 1, height: 1), markers: []))
     }
 
+    private func freshPrice(_ dollarsPerGallon: Double) -> NearbyE85Price {
+        .init(dollarsPerGallon: dollarsPerGallon, reportedAt: .now, source: .community)
+    }
+
     func testNearestStationMarkerSizeIsIdenticalWithAndWithoutAPriceBadge() {
-        let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: nil)
-        let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
+        let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: nil)
+        let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(2.89))
         let sizeWithoutBadge = idealSize(of: blankMapView.markerView(withoutBadge))
         let sizeWithBadge = idealSize(of: blankMapView.markerView(withBadge))
         XCTAssertEqual(sizeWithoutBadge.width, sizeWithBadge.width, accuracy: 0.5)
@@ -716,8 +772,8 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
     }
 
     func testNearestStationMarkerSizeIsStableAcrossDifferentPriceLabelLengths() {
-        let short = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$2.89")
-        let long = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, priceLabel: "$12,345.67")
+        let short = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(2.89))
+        let long = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: .zero, price: freshPrice(12_345.67))
         let sizeShort = idealSize(of: blankMapView.markerView(short))
         let sizeLong = idealSize(of: blankMapView.markerView(long))
         // The badge can grow wider/taller for a longer label, but only via the size-neutral
@@ -727,17 +783,17 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
     }
 
     func testUserMarkerSizeMatchesItsOuterRing() {
-        let user = NearbyE85MapMarker(id: "user", kind: .user, point: .zero, priceLabel: nil)
+        let user = NearbyE85MapMarker(id: "user", kind: .user, point: .zero, price: nil)
         let size = idealSize(of: blankMapView.markerView(user))
         XCTAssertEqual(size.width, 16, accuracy: 0.5)
         XCTAssertEqual(size.height, 16, accuracy: 0.5)
     }
 
     func testPlainStationMarkerNeverCarriesAPriceLabel() {
-        // .station (non-nearest) markers never receive a priceLabel from the renderer, so their
+        // .station (non-nearest) markers never receive a price from the renderer, so their
         // anchor can't be affected by the same badge-decoration failure mode at all.
-        let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, priceLabel: nil)
-        XCTAssertNil(station.priceLabel)
+        let station = NearbyE85MapMarker(id: "s", kind: .station, point: .zero, price: nil)
+        XCTAssertNil(station.price)
         XCTAssertGreaterThan(idealSize(of: blankMapView.markerView(station)).width, 0)
     }
 
@@ -757,8 +813,8 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
             // own syntheticRender helper does, so this stays independent of live MapKit access.
             let point = CGPoint(x: size.width * (0.5 + (station.longitude - region.center.longitude) / region.span.longitudeDelta),
                                 y: size.height * (0.5 - (station.latitude - region.center.latitude) / region.span.latitudeDelta))
-            let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: nil)
-            let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, priceLabel: "$2.89")
+            let withoutBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, price: nil)
+            let withBadge = NearbyE85MapMarker(id: "n", kind: .nearestStation, point: point, price: freshPrice(2.89))
             withoutBadgeSizes.append(idealSize(of: blankMapView.markerView(withoutBadge)))
             withBadgeSizes.append(idealSize(of: blankMapView.markerView(withBadge)))
         }

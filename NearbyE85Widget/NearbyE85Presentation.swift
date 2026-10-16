@@ -552,7 +552,11 @@ struct NearbyE85WidgetView: View {
     /// stale, a single small unobtrusive badge — no persistent header bar or branding repeated
     /// over the map (the Home Screen already labels the widget by app name underneath it).
     @ViewBuilder private func mapArea(_ mapRender: NearbyE85MapRender, snapshot: NearbyE85Snapshot) -> some View {
-        NearbyE85MapView(render: mapRender)
+        // 85Blends 2.4.1 Phase 2F — this entry's own date, not the map's render-time `now`, so
+        // the nearest station's price badge re-evaluates freshness correctly even though the
+        // same mapRender (and its markers' raw, unevaluated prices) is reused across every
+        // entry in the timeline. See NearbyE85MapMarker's own header for why.
+        NearbyE85MapView(render: mapRender, referenceDate: entry.date)
             .frame(maxWidth: .infinity)
             .frame(height: mapRender.size.height)
             // Top-leading, not top-trailing: the refresh button (Medium) and the zoom/refresh
@@ -801,10 +805,22 @@ struct NearbyE85WidgetView: View {
 /// coordinate math or a live MKMapView.
 struct NearbyE85MapView: View {
     let render: NearbyE85MapRender
+    // 85Blends 2.4.1 Phase 2F — Codex P2 finding: the nearest station's raw `price` on each
+    // marker (see NearbyE85MapMarker's own header) is evaluated for freshness against THIS
+    // date, not whatever moment the shared map image was generated at — callers always pass
+    // the actual timeline entry's own `date` (see NearbyE85WidgetView.mapArea). Defaults to
+    // `.now` purely so tests unconcerned with price freshness (e.g. the marker-anchor geometry
+    // suite) don't all need to pass one.
+    let referenceDate: Date
     // 85Blends 2.4.1 Phase 2F — see markerView's own corrected comment below for why this is
     // now read directly (instead of relying on `.widgetAccentable()` grouping, which turned
     // out to do nothing for this app's contrast problem on iOS).
     @Environment(\.widgetRenderingMode) private var renderingMode
+
+    init(render: NearbyE85MapRender, referenceDate: Date = .now) {
+        self.render = render
+        self.referenceDate = referenceDate
+    }
 
     var body: some View {
         ZStack {
@@ -900,13 +916,27 @@ struct NearbyE85MapView: View {
             // below its real top edge), so aligning that claimed anchor with the circle's real
             // top edge pushes the whole badge straight up, clear of the circle, by exactly
             // `height + gap` points — the math doesn't produce literal frame overlap. On-device
-            // screenshots nonetheless read the two as merged: `marker.priceLabel` is now ALSO
-            // only ever set for a confirmed-fresh price (see NearbyE85MapRenderer.render) rather
-            // than every tier, which removes most real-world crowding outright, and the gap
-            // below is widened (2pt → 4pt) as a safety margin for the cases that remain — two
+            // screenshots nonetheless read the two as merged: the badge is now ALSO only ever
+            // shown for a confirmed-fresh price (evaluated against `referenceDate` just below —
+            // see NearbyE85MapMarker's own header for why that can't be baked in at render time)
+            // rather than every tier, which removes most real-world crowding outright, and the
+            // gap below is widened (2pt → 4pt) as a safety margin for the cases that remain — two
             // independently-shadowed, near-identical translucent-white shapes (since accented
             // mode can't give them different hues — see markerView's own header) read as touching
             // at the tightest possible gap, even though their bounding boxes never cross.
+            //
+            // 85Blends 2.4.1 Phase 2F — Codex P2 finding: re-evaluated here, against THIS
+            // instance's `referenceDate` (the actual timeline entry being displayed), rather than
+            // once at map-render time. The same rendered map is reused across every entry in a
+            // timeline (see NearbyE85Provider.proInputs's own comment on why), so a price that
+            // was fresh when the map was generated could cross into `.checkPrice` by the time a
+            // later entry's own date arrives — e.g. the explicit midnight boundary entry
+            // `NearbyE85Provider.timeline` schedules. Re-deriving the label here means that later
+            // entry correctly shows the plain pin with no badge, with no new MKMapSnapshotter
+            // call and no change to the marker's own geographic anchor.
+            let priceLabel = marker.price.flatMap { price in
+                price.isFreshEnoughForMapBadge(at: referenceDate) ? price.dollarsPerGallon.formatted(.currency(code: "USD")) : nil
+            }
             Image(systemName: "fuelpump.fill")
                 .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                 .padding(5)
@@ -916,7 +946,7 @@ struct NearbyE85MapView: View {
                 .overlay(Circle().stroke(.white, lineWidth: 1.5))
                 .shadow(radius: 1)
                 .overlay(alignment: .top) {
-                    if let priceLabel = marker.priceLabel {
+                    if let priceLabel {
                         Text(priceLabel)
                             .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
                             .padding(.horizontal, 5).padding(.vertical, 2)
