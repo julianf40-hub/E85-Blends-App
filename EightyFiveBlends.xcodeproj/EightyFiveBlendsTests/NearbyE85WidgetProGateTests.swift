@@ -510,7 +510,7 @@ struct NearbyE85ProviderAccessGateTests {
     /// Pro inputs that would be unmistakable if they ever leaked: a ready snapshot with a station, a
     /// non-default zoom, and a pending refresh inside the in-progress window.
     private var leakyInputs: NearbyE85Provider.ProInputs {
-        .init(snapshot: readySnapshot, zoomLevel: .zoomedIn4, mapRender: nil, pendingRefreshAt: now)
+        .init(snapshot: readySnapshot, zoomLevel: .zoomedIn4, mapRender: nil, pendingRefreshAt: now, areaRelevance: .inArea)
     }
 
     private func assertDataFree(_ entry: NearbyE85Entry, access: NearbyE85WidgetAccessStatus) {

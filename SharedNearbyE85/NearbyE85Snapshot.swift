@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // Value-only boundary: the extension never opens SwiftData, CloudKit, or the network.
 nonisolated enum NearbyE85Configuration {
@@ -33,6 +34,27 @@ nonisolated struct NearbyE85Price: Codable, Equatable, Sendable {
         case .fresh: return days == 0 ? "Reported today" : "Reported \(days)d ago"
         case .noPrice: return "No price reported"
         }
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — whether this price is fresh enough to show as a standalone map
+    /// badge (no station-list context, no freshness caption next to it — the map badge is just
+    /// a bare dollar amount, so an 8-day-old "check price" or 78-day-old "stale" figure shown
+    /// there with no age indicator would read as more current than it is). The station list and
+    /// Small widget are untouched by this — they keep showing every tier via `status(at:)`
+    /// above, including stale ones, always paired with that caption.
+    ///
+    /// Reuses `StationDataValidation.priceFreshnessTier` — the exact same 7/14-day thresholds
+    /// and `daysSince` calendar-day math `status(at:)` already uses — so the map badge can never
+    /// disagree with what the station list/Small widget would say about the same price.
+    ///
+    /// A missing `reportedAt` can't be confirmed fresh, so it's treated as not-fresh here (never
+    /// defaults to showing the badge on missing evidence) — the same "unknown must never read as
+    /// the most favorable state" rule this codebase applies elsewhere (e.g. AdManager's pending-
+    /// entitlement case, NearbyE85WidgetAccessCopy's `.unknown` neutrality).
+    func isFreshEnoughForMapBadge(at date: Date) -> Bool {
+        guard let reportedAt else { return false }
+        let days = StationDataValidation.daysSince(reportedAt, asOf: date)
+        return StationDataValidation.priceFreshnessTier(hasPrice: true, daysSinceUpdate: days) == .fresh
     }
 }
 
@@ -225,12 +247,21 @@ nonisolated struct NearbyE85Cache {
         }?.appendingPathComponent("NearbyE85/snapshot-v1.json")
     }
 
+    // 85Blends 2.4.1 performance audit (Phase 2A) — signposts/logs below are purely
+    // observational (see NearbyE85Diagnostics's own no-PII rule); none of them change this
+    // function's control flow, return value, or the bytes it reads/writes.
     func read(now: Date = .now) -> NearbyE85Snapshot? {
+        let signpostState = NearbyE85Diagnostics.begin("Cache.read")
+        defer { NearbyE85Diagnostics.end("Cache.read", signpostState) }
         guard let fileURL,
               let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536,
               let data = try? Data(contentsOf: fileURL),
               let value = try? JSONDecoder().decode(NearbyE85Snapshot.self, from: data),
-              value.isValid(at: now) else { return nil }
+              value.isValid(at: now) else {
+            NearbyE85Diagnostics.logger.debug("Cache.read: no valid snapshot")
+            return nil
+        }
+        NearbyE85Diagnostics.logger.debug("Cache.read: ok bytes=\(data.count, privacy: .public)")
         return value
     }
 
@@ -238,9 +269,14 @@ nonisolated struct NearbyE85Cache {
     // look like successful sharing. Atomic replacement gives concurrent readers whole snapshots.
     @discardableResult
     func write(_ snapshot: NearbyE85Snapshot, now: Date = .now) throws -> Bool {
+        let signpostState = NearbyE85Diagnostics.begin("Cache.write")
+        defer { NearbyE85Diagnostics.end("Cache.write", signpostState) }
         guard let fileURL else { throw CocoaError(.fileNoSuchFile) }
         guard snapshot.isValid(at: now) else { throw CocoaError(.fileWriteInvalidFileName) }
-        if read(now: now) == snapshot { return false }
+        if read(now: now) == snapshot {
+            NearbyE85Diagnostics.logger.debug("Cache.write: unchanged, skipped")
+            return false
+        }
         let data = try JSONEncoder().encode(snapshot)
         guard data.count <= 65_536 else { throw CocoaError(.fileWriteOutOfSpace) }
         var directory = fileURL.deletingLastPathComponent()
@@ -249,6 +285,7 @@ nonisolated struct NearbyE85Cache {
         values.isExcludedFromBackup = true
         try directory.setResourceValues(values)
         try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        NearbyE85Diagnostics.logger.debug("Cache.write: ok bytes=\(data.count, privacy: .public)")
         return true
     }
 }

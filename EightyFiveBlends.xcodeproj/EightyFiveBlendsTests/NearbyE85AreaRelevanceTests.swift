@@ -1,0 +1,763 @@
+//
+//  NearbyE85AreaRelevanceTests.swift
+//  EightyFiveBlendsTests
+//
+//  85Blends 2.4.1 — covers the out-of-area signal end to end: the pure store, the pure
+//  expiry rule, NearbyE85LocationRefreshCoordinator.handle setting it, NearbyE85Publisher.
+//  publish clearing it, and NearbyE85Provider/NearbyE85WidgetURLResolver consuming it.
+//
+
+import Testing
+import CoreLocation
+import WidgetKit
+@testable import EightyFiveBlends
+
+// MARK: - Pure store
+
+struct NearbyE85AreaRelevanceStoreTests {
+    private func isolatedDefaults() -> UserDefaults? {
+        UserDefaults(suiteName: "nearby-e85-area-relevance-test-\(UUID().uuidString)")
+    }
+    private func isolatedStore() -> NearbyE85AreaRelevanceStore { NearbyE85AreaRelevanceStore(defaults: isolatedDefaults()) }
+
+    @Test func nothingStoredReadsAsInArea() {
+        #expect(isolatedStore().read() == .inArea)
+        #expect(isolatedStore().read().isOutOfArea == false)
+    }
+
+    @Test func markOutOfAreaThenReadRoundTrips() {
+        let store = isolatedStore()
+        let markedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(store.markOutOfArea(at: markedAt))
+        let state = store.read()
+        #expect(state.isOutOfArea)
+        #expect(state.version == NearbyE85AreaRelevanceState.currentVersion)
+        #expect(abs(state.determinedAt.timeIntervalSince(markedAt)) < 1)
+    }
+
+    @Test func markingOutOfAreaASecondTimeReportsNoVisibleChangeButRefreshesTheTimestamp() {
+        let store = isolatedStore()
+        #expect(store.markOutOfArea(at: Date(timeIntervalSince1970: 1_800_000_000)))
+        let laterMark = Date(timeIntervalSince1970: 1_800_000_500)
+        #expect(store.markOutOfArea(at: laterMark) == false)
+        #expect(abs(store.read().determinedAt.timeIntervalSince(laterMark)) < 1)
+    }
+
+    @Test func clearAfterOutOfAreaReturnsToInAreaAndReportsAChange() {
+        let store = isolatedStore()
+        store.markOutOfArea(at: .now)
+        #expect(store.clear())
+        #expect(store.read() == .inArea)
+    }
+
+    @Test func clearWhenAlreadyInAreaIsAHarmlessNoChange() {
+        let store = isolatedStore()
+        #expect(store.clear() == false)
+        #expect(store.read() == .inArea)
+    }
+
+    @Test func missingAppGroupFallsBackToInAreaAndMarkReportsNoVisibleChange() {
+        let store = NearbyE85AreaRelevanceStore(defaults: nil)
+        #expect(store.markOutOfArea(at: .now) == false) // nothing to write to; never claims a change happened
+        #expect(store.read() == .inArea)
+        #expect(store.clear() == false)
+    }
+
+    @Test func corruptBytesReadAsInArea() {
+        let defaults = isolatedDefaults()
+        defaults?.set(Data("definitely not json".utf8), forKey: NearbyE85AreaRelevanceStore.key)
+        #expect(NearbyE85AreaRelevanceStore(defaults: defaults).read() == .inArea)
+    }
+
+    @Test func wrongTypeUnderTheKeyReadsAsInArea() {
+        let defaults = isolatedDefaults()
+        defaults?.set("true", forKey: NearbyE85AreaRelevanceStore.key)
+        #expect(NearbyE85AreaRelevanceStore(defaults: defaults).read() == .inArea)
+    }
+
+    @Test func unrecognisedVersionReadsAsInAreaEvenWithAnOutOfAreaPayload() throws {
+        let defaults = isolatedDefaults()
+        let bogus = NearbyE85AreaRelevanceState(version: 999, isOutOfArea: true, determinedAt: .now)
+        defaults?.set(try JSONEncoder().encode(bogus), forKey: NearbyE85AreaRelevanceStore.key)
+        #expect(NearbyE85AreaRelevanceStore(defaults: defaults).read() == .inArea)
+    }
+}
+
+// MARK: - Pure expiry rule
+
+struct NearbyE85AreaRelevanceDecisionTests {
+    @Test func inAreaStateIsNeverOutOfAreaRegardlessOfTiming() {
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: .inArea, now: .now) == false)
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: .inArea, now: .distantFuture) == false)
+    }
+
+    @Test func outOfAreaIsTrueImmediatelyAfterBeingDetermined() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let state = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: now)
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: state, now: now))
+    }
+
+    @Test func outOfAreaRemainsTrueWithinTheExpiryWindow() {
+        let determinedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let state = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: determinedAt)
+        let now = determinedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter - 1)
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: state, now: now))
+    }
+
+    @Test func outOfAreaExpiresAtExactlyTheSnapshotExpiryWindow() {
+        let determinedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let state = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: determinedAt)
+        let now = determinedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: state, now: now) == false)
+    }
+
+    @Test func aFutureDeterminedAtClockSkewIsNeverOutOfArea() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let state = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: now.addingTimeInterval(60))
+        #expect(NearbyE85AreaRelevance.isCurrentlyOutOfArea(state: state, now: now) == false)
+    }
+
+    // MARK: - appliesOutOfArea (85Blends 2.4.1 Phase 2F — Codex P2 location-permission precedence)
+
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private var readySnapshot: NearbyE85Snapshot {
+        .make(stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+              radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: -112.08)
+    }
+    private var activeState: NearbyE85AreaRelevanceState { .init(isOutOfArea: true, determinedAt: now.addingTimeInterval(-60)) }
+
+    @Test func appliesOutOfAreaIsTrueForAValidReadySnapshotWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: readySnapshot, state: activeState, at: now))
+    }
+
+    @Test func appliesOutOfAreaIsFalseForAPermissionRequiredSnapshotEvenWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: .permissionRequired(at: now), state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseForANoStationsSnapshotEvenWithAnActiveSignal() {
+        let noStations = NearbyE85Snapshot.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now)
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: noStations, state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseForANilSnapshotEvenWithAnActiveSignal() {
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: nil, state: activeState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseWhenTheSignalItselfHasExpiredEvenWithAReadySnapshot() {
+        let expiredState = NearbyE85AreaRelevanceState(isOutOfArea: true, determinedAt: now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter))
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: readySnapshot, state: expiredState, at: now) == false)
+    }
+
+    @Test func appliesOutOfAreaIsFalseWhenTheSnapshotItselfHasExpiredEvenWithAnActiveSignal() {
+        let longAgo = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter - 1)
+        let expiredSnapshot = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: longAgo, locationAt: longAgo)
+        #expect(expiredSnapshot.isValid(at: now) == false)
+        #expect(NearbyE85AreaRelevance.appliesOutOfArea(to: expiredSnapshot, state: activeState, at: now) == false)
+    }
+}
+
+// MARK: - NearbyE85LocationRefreshCoordinator.handle sets/leaves the flag
+
+struct NearbyE85AreaRelevanceCoordinatorTests {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let home = (latitude: 33.4484, longitude: -112.0740)
+
+    private func station(_ id: String, longitudeOffset: Double, distanceMiles: Double) -> NearbyE85Station {
+        .init(id: id, name: id, address: "Address", latitude: home.latitude, longitude: home.longitude + longitudeOffset,
+              distanceMiles: distanceMiles, price: .init(dollarsPerGallon: 3.89, reportedAt: now, source: .community))
+    }
+    private func makeCache() -> (NearbyE85Cache, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = directory.appendingPathComponent("snapshot.json")
+        return (NearbyE85Cache(fileURL: file), directory)
+    }
+    private func makeLocation(latitude: Double, longitude: Double, horizontalAccuracy: CLLocationAccuracy = 50,
+                               timestamp: Date) -> CLLocation {
+        CLLocation(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), altitude: 0,
+                   horizontalAccuracy: horizontalAccuracy, verticalAccuracy: -1, timestamp: timestamp)
+    }
+    private func isolatedAreaStore() -> NearbyE85AreaRelevanceStore {
+        NearbyE85AreaRelevanceStore(defaults: UserDefaults(suiteName: "nearby-e85-area-coordinator-test-\(UUID().uuidString)"))
+    }
+
+    @Test func movementWithinTheSearchAreaNeverMarksOutOfArea() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        let original = NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: home.latitude, userLongitude: home.longitude)
+        try cache.write(original, now: now)
+
+        let laterNow = now.addingTimeInterval(600)
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude - 0.05, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    @Test func movementFarOutsideTheSearchAreaMarksOutOfArea() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        let original = NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: home.latitude, userLongitude: home.longitude)
+        try cache.write(original, now: now)
+
+        // ~120 miles away — Phoenix to Tucson, well past the 25-mile search radius.
+        let laterNow = now.addingTimeInterval(3600)
+        let location = makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read().isOutOfArea)
+        // The stale Phoenix snapshot itself is untouched — handle() never overwrites it with a
+        // guess, it only raises the independent out-of-area signal.
+        #expect(cache.read(now: laterNow) == original)
+    }
+
+    /// 85Blends 2.4.1 Phase 2C — proves the actual WidgetCenter call site fires, not just that
+    /// `markOutOfArea` returned true. `NearbyE85LocationRefreshCoordinator.handle` previously had
+    /// no way for a test to observe the real reload call; this exercises the injected closure
+    /// the same way `NearbyE85RefreshIntent`/`NearbyE85ZoomIntentHandler` already do.
+    @Test func movementFarOutsideTheSearchAreaRequestsExactlyOneTimelineReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(3600)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: laterNow),
+            cache: cache, now: laterNow, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read().isOutOfArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Mirrors `repeatedOutOfRangeFixesKeepTheFlagSetWithoutError` but observes the actual
+    /// reload call count rather than inferring it from the store alone — the second, still-out-
+    /// of-range fix must spend none of WidgetKit's reload budget on a re-render that would be
+    /// identical to what's already showing.
+    @Test func repeatedOutOfRangeFixesRequestNoAdditionalReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let firstFix = now.addingTimeInterval(3600)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: firstFix),
+            cache: cache, now: firstFix, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+        #expect(reloadCount == 1)
+
+        let secondFix = now.addingTimeInterval(4200)
+        NearbyE85LocationRefreshCoordinator.handle(
+            location: makeLocation(latitude: home.latitude - 1.71, longitude: home.longitude, timestamp: secondFix),
+            cache: cache, now: secondFix, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+        #expect(reloadCount == 1)
+    }
+
+    @Test func repeatedOutOfRangeFixesKeepTheFlagSetWithoutError() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        let firstFix = now.addingTimeInterval(3600)
+        NearbyE85LocationRefreshCoordinator.handle(location: makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: firstFix),
+                                                   cache: cache, now: firstFix, areaRelevanceStore: areaStore)
+        #expect(areaStore.read().isOutOfArea)
+
+        let secondFix = now.addingTimeInterval(4200)
+        NearbyE85LocationRefreshCoordinator.handle(location: makeLocation(latitude: home.latitude - 1.71, longitude: home.longitude, timestamp: secondFix),
+                                                   cache: cache, now: secondFix, areaRelevanceStore: areaStore)
+        #expect(areaStore.read().isOutOfArea)
+        // determinedAt advances with each qualifying fix, keeping the expiry window honest.
+        #expect(abs(areaStore.read().determinedAt.timeIntervalSince(secondFix)) < 1)
+    }
+
+    @Test func travelingBackIntoRangeClearsTheFlagViaTheOrdinaryRepositionPublish() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now) // simulate having previously traveled out of range
+
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        let laterNow = now.addingTimeInterval(600)
+        // Back within range of the still-cached station.
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude - 0.05, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    /// 85Blends 2.4.1 Phase 2F — Codex P2 finding. The cached snapshot's station is still within
+    /// the 25mi search radius, so this fix reaches `publishDecision` (unlike the "every station
+    /// out of range" tests above) — but the candidate location is a tiny jitter from the cached
+    /// coordinate (well under `jitterFloorMiles`), with the same nearest station and the same
+    /// station cluster, and well within `staleAcceptedLocationAge` — exactly the inputs
+    /// `publishDecision` suppresses as insignificant movement. Before the fix, clearing only
+    /// happened inside `NearbyE85Publisher.publish`, which a suppressed decision never reaches,
+    /// so the out-of-area flag stayed stuck on "Location changed" even though this fix already
+    /// proves the cached station is relevant again.
+    @Test func suppressedInsignificantMovementStillClearsAPreviouslySetOutOfAreaFlag() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now) // simulate having previously traveled out of range
+
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(60) // well under staleAcceptedLocationAge (12 min)
+        // ~0.01 miles from the cached coordinate — well under jitterFloorMiles (~0.047mi) — with
+        // the same nearest station and the same visible cluster, so publishDecision suppresses
+        // this as insignificant movement rather than returning .publish.
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude + 0.0001, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow,
+                                                   areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Companion to the test above: when the candidate fix both clears the out-of-area flag AND
+    /// is itself worth publishing (the ordinary `travelingBackIntoRangeClearsTheFlagViaThe
+    /// OrdinaryRepositionPublish` scenario), the two effects must share a single reload — one
+    /// from `NearbyE85Publisher.publish`'s own clear+write reasoning — never two.
+    @Test func travelingBackIntoRangeWithAPublishableResultRequestsExactlyOneReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now) // simulate having previously traveled out of range
+
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        var reloadCount = 0
+        let laterNow = now.addingTimeInterval(600)
+        // Large enough movement (~2.9mi) to clear largeMovementMiles and trigger an actual
+        // publish, exactly like travelingBackIntoRangeClearsTheFlagViaTheOrdinaryRepositionPublish.
+        let location = makeLocation(latitude: home.latitude, longitude: home.longitude - 0.05, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow,
+                                                   areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
+    @Test func aPoorAccuracyFixNeverTouchesTheAreaRelevanceFlag() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let mobil = station("Mobil", longitudeOffset: 0.03, distanceMiles: 2.1)
+        try cache.write(NearbyE85Snapshot.make(stations: [mobil], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                               userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        let laterNow = now.addingTimeInterval(600)
+        // Horizontal accuracy far beyond NearbyE85LocationAcceptance.maximumAcceptableHorizontalAccuracyMeters.
+        let location = makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, horizontalAccuracy: 50_000, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    @Test func noCachedSnapshotNeverTouchesTheAreaRelevanceFlag() {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let location = makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: now)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: now, areaRelevanceStore: areaStore)
+        #expect(areaStore.read() == .inArea)
+    }
+
+    /// An empty search result (`.noStations`) must never be treated as proof the cache is out
+    /// of area — handle()'s own `cached.state == .ready` guard already excludes it from ever
+    /// reaching reposition().
+    @Test func anEmptyCachedSearchResultNeverTouchesTheAreaRelevanceFlag() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        try cache.write(.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now,
+                              userLatitude: home.latitude, userLongitude: home.longitude), now: now)
+
+        let laterNow = now.addingTimeInterval(600)
+        let location = makeLocation(latitude: home.latitude - 1.7, longitude: home.longitude, timestamp: laterNow)
+        NearbyE85LocationRefreshCoordinator.handle(location: location, cache: cache, now: laterNow, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+}
+
+// MARK: - NearbyE85Publisher.publish clears the flag
+
+struct NearbyE85AreaRelevancePublisherTests {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeCache() -> (NearbyE85Cache, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let file = directory.appendingPathComponent("snapshot.json")
+        return (NearbyE85Cache(fileURL: file), directory)
+    }
+    private func isolatedAreaStore() -> NearbyE85AreaRelevanceStore {
+        NearbyE85AreaRelevanceStore(defaults: UserDefaults(suiteName: "nearby-e85-area-publisher-test-\(UUID().uuidString)"))
+    }
+
+    @Test func aFreshReadySnapshotClearsAPreviouslyMarkedOutOfAreaFlag() {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now)
+
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let fresh = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                           userLatitude: 33.44, userLongitude: -112.08)
+        NearbyE85Publisher.publish(fresh, cache: cache, now: now, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    @Test func aFreshNoStationsSnapshotAlsoClearsTheOutOfAreaFlag() {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now)
+
+        NearbyE85Publisher.publish(.make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now), cache: cache, now: now, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    @Test func revokingLocationAlsoClearsTheOutOfAreaFlag() {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now)
+
+        NearbyE85Publisher.publish(.permissionRequired(at: now), cache: cache, now: now, areaRelevanceStore: areaStore)
+
+        #expect(areaStore.read() == .inArea)
+    }
+
+    /// 85Blends 2.4.1 Phase 2C fix — publishing byte-identical content (cache.write short-
+    /// circuits and returns false) must still clear a previously-recorded out-of-area flag.
+    /// `cache.write` only reaches this call without throwing for a snapshot that already passed
+    /// `isValid(at:)`, so this IS a validated, authoritative result regardless of whether the
+    /// bytes on disk happened to match — gating the clear on the file-content comparison alone
+    /// would leave the widget needlessly stuck on "Location changed" after a genuinely
+    /// successful search. This replaces a prior version of this test that asserted the opposite
+    /// (confirmed defect, corrected here).
+    @Test func aFreshValidatedSnapshotClearsTheOutOfAreaFlagEvenWhenCacheContentIsUnchanged() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.44, userLongitude: -112.08)
+        try cache.write(snapshot, now: now)
+        areaStore.markOutOfArea(at: now)
+
+        var reloadCount = 0
+        // Publishing the exact same content again is a no-op write (cache.write short-circuits
+        // on equality) — but the out-of-area flag must still clear, and exactly one reload must
+        // still be requested, since the widget-visible state (the flag) did change even though
+        // the underlying file did not.
+        NearbyE85Publisher.publish(snapshot, cache: cache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 1)
+    }
+
+    /// Preserves the pre-existing no-duplicate-reload behavior for the ordinary case: nothing
+    /// changed (same content, already in-area) — no reload should be spent.
+    @Test func publishingAnIdenticalSnapshotWhileAlreadyInAreaRequestsNoReload() throws {
+        let (cache, directory) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let areaStore = isolatedAreaStore()
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.44, userLongitude: -112.08)
+        try cache.write(snapshot, now: now)
+
+        var reloadCount = 0
+        NearbyE85Publisher.publish(snapshot, cache: cache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read() == .inArea)
+        #expect(reloadCount == 0)
+    }
+
+    /// 85Blends 2.4.1 Phase 2D cache-write safety review — `NearbyE85Cache.write` throws
+    /// (rather than returning) for every failure case (invalid App Group container here;
+    /// a failed disk write or encoding failure take the identical `catch` path in `publish`).
+    /// `areaRelevanceStore.clear()` sits inside the SAME `do` block, after the `try cache.write`
+    /// line — so a throw jumps straight to `catch` and that line is never reached. This proves
+    /// `publish` can never clear (or report a reload for) an out-of-area state on the strength
+    /// of data that was never actually persisted.
+    @Test func aCacheWriteFailureNeverClearsTheOutOfAreaFlagOrReloads() {
+        let areaStore = isolatedAreaStore()
+        areaStore.markOutOfArea(at: now)
+        let brokenCache = NearbyE85Cache(fileURL: nil) // simulates an unavailable/invalid App Group container
+
+        let station = NearbyE85Station(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 1.0, price: nil)
+        let snapshot = NearbyE85Snapshot.make(stations: [station], radiusMiles: 25, updatedAt: now, locationAt: now,
+                                              userLatitude: 33.44, userLongitude: -112.08)
+
+        var reloadCount = 0
+        NearbyE85Publisher.publish(snapshot, cache: brokenCache, now: now, areaRelevanceStore: areaStore, reloadTimelines: { reloadCount += 1 })
+
+        #expect(areaStore.read().isOutOfArea)
+        #expect(reloadCount == 0)
+    }
+}
+
+// MARK: - NearbyE85Provider consumes the flag per timeline entry
+
+struct NearbyE85AreaRelevanceProviderTests {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private var readySnapshot: NearbyE85Snapshot {
+        .make(stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07,
+                               distanceMiles: 1.0, price: nil)],
+              radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: -112.08)
+    }
+    private func inputs(areaRelevance: NearbyE85AreaRelevanceState) -> NearbyE85Provider.ProInputs {
+        .init(snapshot: readySnapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil, areaRelevance: areaRelevance)
+    }
+    private func inputs(snapshot: NearbyE85Snapshot?, areaRelevance: NearbyE85AreaRelevanceState) -> NearbyE85Provider.ProInputs {
+        .init(snapshot: snapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil, areaRelevance: areaRelevance)
+    }
+    private var noStationsSnapshot: NearbyE85Snapshot {
+        .make(stations: [], radiusMiles: 25, updatedAt: now, locationAt: now, userLatitude: 33.44, userLongitude: -112.08)
+    }
+    /// An active signal — still well inside `NearbyE85Snapshot.expiresAfter` — reusable across
+    /// the precedence regression tests below.
+    private var activeOutOfArea: NearbyE85AreaRelevanceState {
+        .init(isOutOfArea: true, determinedAt: now.addingTimeInterval(-60))
+    }
+
+    @Test func entryReflectsOutOfAreaWhenStillWithinTheExpiryWindow() async {
+        let markedAt = now.addingTimeInterval(-60)
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(areaRelevance: .init(isOutOfArea: true, determinedAt: markedAt))
+        }
+        #expect(entry.isOutOfArea)
+        // The snapshot itself is untouched/still present — isOutOfArea is a separate flag, not
+        // a mutation of the cached data.
+        #expect(entry.snapshot == readySnapshot)
+    }
+
+    @Test func entryIsNotOutOfAreaOnceThePastExpiryWindowHasElapsed() async {
+        let markedAt = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter)
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(areaRelevance: .init(isOutOfArea: true, determinedAt: markedAt))
+        }
+        #expect(entry.isOutOfArea == false)
+    }
+
+    @Test func timelineEntriesIndependentlyReflectOutOfAreaAgainstEachEntrysOwnDate() async {
+        let markedAt = now.addingTimeInterval(60)
+        let timeline = await NearbyE85Provider.timeline(access: .pro, now: now) {
+            self.inputs(areaRelevance: .init(isOutOfArea: true, determinedAt: markedAt))
+        }
+        // An entry dated before the signal was even determined must not show it...
+        let beforeEntries = timeline.entries.filter { $0.date <= markedAt }
+        #expect(!beforeEntries.isEmpty)
+        for entry in beforeEntries { #expect(entry.isOutOfArea == false) }
+        // ...while an entry dated after it, but still within BOTH the signal's own expiry window
+        // AND the underlying readySnapshot's own validity window (updatedAt/locationAt == `now`,
+        // so it independently expires at now + expiresAfter — tighter than the signal's own
+        // markedAt + expiresAfter here, since markedAt > now), does. 85Blends 2.4.1 Phase 2F —
+        // Codex P2 finding: an entry past the SNAPSHOT's own expiry must not show out-of-area
+        // even while the persisted signal itself is still live — see
+        // NearbyE85AreaRelevance.appliesOutOfArea's own header — which is exactly why this upper
+        // bound is the tighter of the two, not the signal's expiry alone as before the fix.
+        let snapshotExpiry = now.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+        let signalExpiry = markedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+        let afterEntries = timeline.entries.filter { $0.date > markedAt && $0.date < min(snapshotExpiry, signalExpiry) }
+        #expect(!afterEntries.isEmpty)
+        for entry in afterEntries { #expect(entry.isOutOfArea) }
+        // And an entry past the snapshot's own expiry (but still inside the signal's own window)
+        // must NOT show it — the snapshot it would have described is gone.
+        let afterSnapshotExpiry = timeline.entries.filter { $0.date >= snapshotExpiry && $0.date < signalExpiry }
+        for entry in afterSnapshotExpiry { #expect(entry.isOutOfArea == false) }
+    }
+
+    @Test func lockedEntryAndTimelineAreNeverOutOfAreaRegardlessOfTheStoredSignal() {
+        let locked = NearbyE85Provider.lockedEntry(access: .free, now: now)
+        #expect(locked.isOutOfArea == false)
+        let lockedTimeline = NearbyE85Provider.lockedTimeline(access: .free, now: now)
+        for entry in lockedTimeline.entries { #expect(entry.isOutOfArea == false) }
+    }
+
+    // MARK: - 85Blends 2.4.1 Phase 2F — Codex P2 finding: location-permission precedence
+    //
+    // Establishes (and locks in) the full presentation priority: Pro entitlement, then location
+    // authorization, then a valid ready station snapshot, then geographic area relevance. A
+    // stale-but-still-live out-of-area signal must never outrank permission-required/no-stations/
+    // missing-snapshot presentation — see NearbyE85AreaRelevance.appliesOutOfArea's own header.
+
+    /// A. Pro + permission required + active out-of-area flag → "Location needed," not
+    /// "Location changed." `NearbyE85Presentation.fallbackBody` checks `isOutOfArea` first, so
+    /// this only resolves correctly if `isOutOfArea` itself is false here.
+    @Test func permissionRequiredSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let snapshot = NearbyE85Snapshot.permissionRequired(at: now)
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: snapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot?.state == .permissionRequired)
+    }
+
+    /// B. Pro + ready snapshot + active out-of-area flag → "Location changed" continues to show.
+    @Test func readySnapshotWithAnActiveOutOfAreaFlagStillShowsLocationChanged() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.readySnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea)
+        #expect(entry.snapshot?.state == .ready)
+    }
+
+    /// C. Pro + no-stations snapshot + active out-of-area flag → normal no-stations presentation,
+    /// not "Location changed."
+    @Test func noStationsSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.noStationsSnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot?.state == .noStations)
+    }
+
+    /// D. Pro + missing snapshot + active out-of-area flag → falls back to the generic
+    /// "Find nearby E85" shell, never "Location changed."
+    @Test func missingSnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: nil, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+    }
+
+    /// D (continued). Pro + an EXPIRED ready snapshot (no longer `isValid(at:)`) + active
+    /// out-of-area flag → still never "Location changed," since there is no eligible snapshot
+    /// left for it to describe.
+    @Test func expiredReadySnapshotSuppressesAnActiveOutOfAreaFlag() async {
+        let longAgo = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter - 1)
+        let expired = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: longAgo, locationAt: longAgo, userLatitude: 33.44, userLongitude: -112.08)
+        #expect(expired.isValid(at: now) == false) // sanity: this snapshot really has expired by `now`
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: expired, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+    }
+
+    /// E. Free entitlement + active out-of-area flag → unaffected, still the existing Pro-locked
+    /// shell (loadProInputs — and therefore the area-relevance signal — is never even consulted).
+    @Test func freeAccessWithAnActiveOutOfAreaFlagStillShowsTheLockedPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .free, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+        let timeline = await NearbyE85Provider.timeline(access: .free, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        for timelineEntry in timeline.entries { #expect(timelineEntry.isOutOfArea == false) }
+    }
+
+    /// F. Unknown entitlement + active out-of-area flag → unaffected, still the existing
+    /// unverified shell.
+    @Test func unknownAccessWithAnActiveOutOfAreaFlagStillShowsTheUnverifiedPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .unknown, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea == false)
+        #expect(entry.snapshot == nil)
+        let timeline = await NearbyE85Provider.timeline(access: .unknown, now: now) {
+            self.inputs(areaRelevance: self.activeOutOfArea)
+        }
+        for timelineEntry in timeline.entries { #expect(timelineEntry.isOutOfArea == false) }
+    }
+
+    /// G. A scheduled timeline entry dated AFTER the snapshot has independently expired by that
+    /// entry's own date must never show out-of-area presentation, even though the signal itself
+    /// is still comfortably inside its own expiry window and the SAME entry would have shown
+    /// out-of-area if evaluated at `now`. Proves `timeline(...)` feeds each entry's own validated
+    /// snapshot into the precedence decision, not a once-computed snapshot from `now`.
+    @Test func timelineEntryAfterSnapshotExpiryNeverShowsOutOfArea() async {
+        // The out-of-area signal was only just determined, so it is still active for the full
+        // 24h window — but the underlying snapshot is already old enough that it independently
+        // expires partway through that SAME window, at oldest + expiresAfter.
+        let oldest = now.addingTimeInterval(-NearbyE85Snapshot.expiresAfter + 3600) // expires 1h from `now`
+        let snapshot = NearbyE85Snapshot.make(
+            stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+            radiusMiles: 25, updatedAt: oldest, locationAt: oldest, userLatitude: 33.44, userLongitude: -112.08)
+        let timeline = await NearbyE85Provider.timeline(access: .pro, now: now) {
+            self.inputs(snapshot: snapshot, areaRelevance: .init(isOutOfArea: true, determinedAt: now))
+        }
+        let afterSnapshotExpiry = timeline.entries.filter { $0.date >= oldest.addingTimeInterval(NearbyE85Snapshot.expiresAfter) }
+        #expect(!afterSnapshotExpiry.isEmpty)
+        for entry in afterSnapshotExpiry {
+            #expect(entry.snapshot == nil)
+            #expect(entry.isOutOfArea == false)
+        }
+        // Sanity: an earlier entry, while the snapshot is still valid, DOES show out-of-area —
+        // proving the suppression above is specifically about that entry's own expired snapshot,
+        // not a blanket regression of the out-of-area signal itself.
+        let beforeSnapshotExpiry = timeline.entries.filter { $0.date < oldest.addingTimeInterval(NearbyE85Snapshot.expiresAfter) }
+        #expect(beforeSnapshotExpiry.contains { $0.isOutOfArea })
+    }
+
+    /// H. Once permission is available again alongside a valid ready snapshot and an active
+    /// out-of-area flag, ordinary area-relevance functionality is fully preserved — this is the
+    /// same shape as `entryReflectsOutOfAreaWhenStillWithinTheExpiryWindow` above, restated here
+    /// to anchor it explicitly as the "recovered" counterpart to tests A/C/D.
+    @Test func permissionAvailableAgainWithAReadySnapshotPreservesOrdinaryOutOfAreaPresentation() async {
+        let entry = await NearbyE85Provider.entry(access: .pro, now: now) {
+            self.inputs(snapshot: self.readySnapshot, areaRelevance: self.activeOutOfArea)
+        }
+        #expect(entry.isOutOfArea)
+        #expect(entry.snapshot?.state == .ready)
+    }
+}
+
+// MARK: - NearbyE85WidgetURLResolver never ships a stale directions link while out of area
+
+struct NearbyE85WidgetURLResolverAreaRelevanceTests {
+    private let readyWithStation = NearbyE85Snapshot.make(
+        stations: [.init(id: "one", name: "Mobil", address: "Address", latitude: 33.45, longitude: -112.07, distanceMiles: 1.0, price: nil)],
+        radiusMiles: 25, updatedAt: .now, locationAt: .now)
+
+    @Test func outOfAreaAlwaysResolvesToStationsRegardlessOfFamily() {
+        for family: WidgetFamily in [.systemSmall, .systemMedium, .systemLarge] {
+            let url = NearbyE85WidgetURLResolver.widgetURL(family: family, snapshot: readyWithStation, access: .pro, isOutOfArea: true)
+            #expect(url == NearbyE85DeepLink.stationsURL())
+        }
+    }
+
+    @Test func notOutOfAreaPreservesTheOrdinaryProRule() {
+        let url = NearbyE85WidgetURLResolver.widgetURL(family: .systemSmall, snapshot: readyWithStation, access: .pro, isOutOfArea: false)
+        #expect(url == NearbyE85DeepLink.directionsURL(stationID: "one"))
+    }
+}

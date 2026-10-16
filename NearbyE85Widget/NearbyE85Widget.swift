@@ -81,8 +81,9 @@ private func nearbyE85PreviewMapRender(size: CGSize) -> NearbyE85MapRender {
         context.fill(CGRect(origin: .zero, size: size))
     }
     return NearbyE85MapRender(image: image, size: size, markers: [
-        NearbyE85MapMarker(id: "user", kind: .user, point: CGPoint(x: size.width * 0.5, y: size.height * 0.55), priceLabel: nil),
-        NearbyE85MapMarker(id: "mobil", kind: .nearestStation, point: CGPoint(x: size.width * 0.62, y: size.height * 0.4), priceLabel: "$3.90"),
+        NearbyE85MapMarker(id: "user", kind: .user, point: CGPoint(x: size.width * 0.5, y: size.height * 0.55), price: nil),
+        NearbyE85MapMarker(id: "mobil", kind: .nearestStation, point: CGPoint(x: size.width * 0.62, y: size.height * 0.4),
+                           price: .init(dollarsPerGallon: 3.90, reportedAt: .now, source: .community)),
     ])
 }
 
