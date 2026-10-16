@@ -583,9 +583,23 @@ struct NearbyE85AreaRelevanceProviderTests {
         let beforeEntries = timeline.entries.filter { $0.date <= markedAt }
         #expect(!beforeEntries.isEmpty)
         for entry in beforeEntries { #expect(entry.isOutOfArea == false) }
-        // ...while an entry dated after it (but inside the window) does.
-        let afterEntries = timeline.entries.filter { $0.date > markedAt && $0.date < markedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter) }
+        // ...while an entry dated after it, but still within BOTH the signal's own expiry window
+        // AND the underlying readySnapshot's own validity window (updatedAt/locationAt == `now`,
+        // so it independently expires at now + expiresAfter — tighter than the signal's own
+        // markedAt + expiresAfter here, since markedAt > now), does. 85Blends 2.4.1 Phase 2F —
+        // Codex P2 finding: an entry past the SNAPSHOT's own expiry must not show out-of-area
+        // even while the persisted signal itself is still live — see
+        // NearbyE85AreaRelevance.appliesOutOfArea's own header — which is exactly why this upper
+        // bound is the tighter of the two, not the signal's expiry alone as before the fix.
+        let snapshotExpiry = now.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+        let signalExpiry = markedAt.addingTimeInterval(NearbyE85Snapshot.expiresAfter)
+        let afterEntries = timeline.entries.filter { $0.date > markedAt && $0.date < min(snapshotExpiry, signalExpiry) }
+        #expect(!afterEntries.isEmpty)
         for entry in afterEntries { #expect(entry.isOutOfArea) }
+        // And an entry past the snapshot's own expiry (but still inside the signal's own window)
+        // must NOT show it — the snapshot it would have described is gone.
+        let afterSnapshotExpiry = timeline.entries.filter { $0.date >= snapshotExpiry && $0.date < signalExpiry }
+        for entry in afterSnapshotExpiry { #expect(entry.isOutOfArea == false) }
     }
 
     @Test func lockedEntryAndTimelineAreNeverOutOfAreaRegardlessOfTheStoredSignal() {
