@@ -9,6 +9,15 @@ import CoreLocation
 import SwiftUI
 import UIKit
 
+/// The prices the user actually typed into At The Pump's Budget section, carried
+/// alongside the blend result so `logFillUpAction` can seed the Fuel Log with them
+/// instead of a hardcoded zero or a stale cached station price. `nil` means the user
+/// never entered a usable value for that fuel, not that they entered zero.
+struct PumpModeFillUpPrices {
+    let e85PricePerGallon: Double?
+    let gasPricePerGallon: Double?
+}
+
 struct AtThePumpView: View {
     /// What the user says is coming out of the pump hose today.
     enum PumpFuelOption: Int {
@@ -33,7 +42,7 @@ struct AtThePumpView: View {
     private let restoredFuelLevelPercent: Double?
     /// Applies the user's choice from the ambiguous-candidate picker for this session only.
     let selectAmbiguousCandidateAction: (PumpStationContextCandidate) -> Void
-    let logFillUpAction: (BlendCalculator.Result) -> Void
+    let logFillUpAction: (BlendCalculator.Result, PumpModeFillUpPrices) -> Void
     let closeAction: () -> Void
 
     @State private var tankSizeGallons: Double
@@ -81,7 +90,7 @@ struct AtThePumpView: View {
         locationAccessDenied: Bool,
         lastLoggedBlendPercent: Double? = nil,
         selectAmbiguousCandidateAction: @escaping (PumpStationContextCandidate) -> Void,
-        logFillUpAction: @escaping (BlendCalculator.Result) -> Void,
+        logFillUpAction: @escaping (BlendCalculator.Result, PumpModeFillUpPrices) -> Void,
         closeAction: @escaping () -> Void
     ) {
         self.activeVehicle = activeVehicle
@@ -316,6 +325,16 @@ struct AtThePumpView: View {
         return result.e85Gallons * e85Price + result.gasGallons * gasPrice
     }
 
+    /// A price counts as "entered" only if it parses and is positive — an empty or
+    /// non-numeric field, or an explicit 0, means the user didn't give us a usable
+    /// price, matching the rest of the app's "0 = no price data" convention.
+    private var enteredPumpFillUpPrices: PumpModeFillUpPrices {
+        PumpModeFillUpPrices(
+            e85PricePerGallon: Double(e85PriceInput).flatMap { $0 > 0 ? $0 : nil },
+            gasPricePerGallon: Double(gasPriceInput).flatMap { $0 > 0 ? $0 : nil }
+        )
+    }
+
     private var budgetExceeded: Bool {
         guard let cost = estimatedFuelCost,
               let budget = Double(budgetInput), budget > 0 else { return false }
@@ -544,7 +563,7 @@ struct AtThePumpView: View {
             PrimaryButton(title: canLogFillUp ? "Log This Fill-Up" : "Review Inputs") {
                 guard canLogFillUp else { return }
                 AppHaptics.selection()
-                logFillUpAction(calculation)
+                logFillUpAction(calculation, enteredPumpFillUpPrices)
             }
             .disabled(!canLogFillUp)
             .opacity(canLogFillUp ? 1 : 0.4)
