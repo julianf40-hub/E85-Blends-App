@@ -311,4 +311,23 @@ struct FuelLogStorePumpPricePersistenceTests {
         #expect(commaDraft.gasPricePerGallon == dotDraft.gasPricePerGallon)
         #expect(abs(commaDraft.computedTotalCost - dotDraft.computedTotalCost) < 0.0001)
     }
+
+    @Test("An Arabic-Indic/Persian-digit entered price, parsed by FuelPriceInput, still wins over a stale cached station price")
+    func localizedDigitEnteredPrice_stillOverridesStaleStationPrice() {
+        let result = mixedBlendResult()
+
+        // "٢٫٤٩" (Arabic-Indic) and "۴٫۱۹۹" (Extended Arabic-Indic/Persian) are what
+        // AtThePumpView.enteredPumpFillUpPrices would compute for an Arabic- or
+        // Persian-language decimal-pad entry.
+        let draft = FuelLogStore.prefillDraft(
+            from: result,
+            vehicle: nil,
+            enteredE85PricePerGallon: FuelPriceInput.parsePositiveAmount("٢٫٤٩"),
+            enteredGasPricePerGallon: FuelPriceInput.parsePositiveAmount("۴٫۱۹۹"),
+            stationE85PricePerGallon: 2.19 // stale cached price from a previously saved station
+        )
+
+        #expect(draft.e85PricePerGallon == 2.49)
+        #expect(draft.gasPricePerGallon == 4.199)
+    }
 }

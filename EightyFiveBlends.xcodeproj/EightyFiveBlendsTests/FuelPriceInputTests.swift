@@ -2,12 +2,15 @@
 //  FuelPriceInputTests.swift
 //  EightyFiveBlendsTests
 //
-//  Regression coverage for a Codex finding on PR #133: At The Pump's price/budget fields
-//  use .decimalPad, whose decimal key reflects the keyboard's preferred *language*, not
-//  the device's region — a U.S.-region iPhone with a non-English preferred language (e.g.
-//  Spanish) renders "," as the decimal separator. Double.init?(String) only ever accepts
-//  ".", so a fully valid "2,49" parsed as nil and got silently discarded, reproducing the
-//  exact price-loss bug PR #133 originally fixed, just via a different trigger.
+//  Regression coverage for two Codex findings on PR #133: At The Pump's price/budget
+//  fields use .decimalPad, whose digits and decimal key reflect the keyboard's preferred
+//  *language*, not the device's region — a U.S.-region iPhone with a non-English
+//  preferred language can render "," instead of "." (e.g. Spanish), or localized Arabic-
+//  Indic/Extended Arabic-Indic digits with the Arabic decimal separator "٫" instead of
+//  ASCII digits and "." (e.g. Arabic or Persian). Double.init?(String) only ever accepts
+//  ASCII digits and ".", so any of these parsed as nil and got silently discarded,
+//  reproducing the exact price-loss bug PR #133 originally fixed, just via different
+//  triggers.
 //
 //  All expected values are USD per U.S. gallon — 85Blends is U.S.-only, and this fix does
 //  not add currencies, exchange rates, or non-U.S. units.
@@ -38,6 +41,44 @@ struct FuelPriceInputTests {
         #expect(FuelPriceInput.parsePositiveAmount("4,199") == 4.199)
     }
 
+    // MARK: - Arabic and Persian decimal-pad input must not be discarded either
+
+    @Test("Arabic-Indic digits with the Arabic decimal separator parse to the same value as plain ASCII")
+    func arabicIndicDigits_parseSameAsASCII() {
+        // "٢٫٤٩" — Arabic-Indic 2, Arabic decimal separator, Arabic-Indic 4, Arabic-Indic 9.
+        #expect(FuelPriceInput.parsePositiveAmount("٢٫٤٩") == 2.49)
+        #expect(FuelPriceInput.parsePositiveAmount("٢٫٤٩") == FuelPriceInput.parsePositiveAmount("2.49"))
+    }
+
+    @Test("Extended Arabic-Indic (Persian) digits with the Arabic decimal separator parse to the same value as plain ASCII")
+    func persianDigits_parseSameAsASCII() {
+        // "۲٫۴۹" — Extended Arabic-Indic 2, Arabic decimal separator, Extended Arabic-Indic 4, 9.
+        #expect(FuelPriceInput.parsePositiveAmount("۲٫۴۹") == 2.49)
+        #expect(FuelPriceInput.parsePositiveAmount("۲٫۴۹") == FuelPriceInput.parsePositiveAmount("2.49"))
+    }
+
+    @Test("Three-decimal-place pricing in Arabic-Indic and Persian digits parses correctly")
+    func threeDecimalPlaces_parsesCorrectlyInLocalizedDigits() {
+        #expect(FuelPriceInput.parsePositiveAmount("٤٫١٩٩") == 4.199)
+        #expect(FuelPriceInput.parsePositiveAmount("۴٫۱۹۹") == 4.199)
+    }
+
+    @Test("The Arabic thousands separator is a grouping character, not a decimal point, and is rejected")
+    func arabicThousandsSeparator_isRejected() {
+        // U+066C ARABIC THOUSANDS SEPARATOR — a U.S. gas price never needs grouping, so
+        // this must not be silently treated as a decimal point.
+        #expect(FuelPriceInput.parsePositiveAmount("١\u{066C}٢٣٤") == nil)
+    }
+
+    @Test("Roman numerals, vulgar fractions, and superscript digits are never treated as decimal digits")
+    func nonDecimalUnicodeNumerals_areRejected() {
+        // Character.isNumber is true for all of these — the parser must use an explicit
+        // digit allow-list instead, since none of these can come from a decimal pad.
+        #expect(FuelPriceInput.parsePositiveAmount("Ⅷ") == nil)       // U+2167 ROMAN NUMERAL EIGHT
+        #expect(FuelPriceInput.parsePositiveAmount("2.½") == nil)     // U+00BD VULGAR FRACTION ONE HALF
+        #expect(FuelPriceInput.parsePositiveAmount("2.⁴⁹") == nil)    // superscript 4 and 9
+    }
+
     // MARK: - Invalid / malformed / ambiguous input must never fabricate a price
 
     @Test("Empty input is not a price")
@@ -65,18 +106,20 @@ struct FuelPriceInputTests {
         #expect(FuelPriceInput.parsePositiveAmount("0,00") == nil)
     }
 
-    @Test("Input mixing both separator conventions is ambiguous and rejected rather than guessed at")
+    @Test("Input mixing separator conventions — including the Arabic decimal separator — is ambiguous and rejected rather than guessed at")
     func ambiguousSeparators_areNil() {
         #expect(FuelPriceInput.parsePositiveAmount("1,234.56") == nil)
         #expect(FuelPriceInput.parsePositiveAmount("2.49,99") == nil)
         #expect(FuelPriceInput.parsePositiveAmount("2..49") == nil)
         #expect(FuelPriceInput.parsePositiveAmount("2,,49") == nil)
+        #expect(FuelPriceInput.parsePositiveAmount("2.49\u{066B}99") == nil)
     }
 
     @Test("Non-finite or garbage separator-only input is rejected")
     func separatorOnlyInput_isNil() {
         #expect(FuelPriceInput.parsePositiveAmount(".") == nil)
         #expect(FuelPriceInput.parsePositiveAmount(",") == nil)
+        #expect(FuelPriceInput.parsePositiveAmount("\u{066B}") == nil)
     }
 
     // MARK: - Station auto-fill must remain parseable by the same helper
