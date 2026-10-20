@@ -413,8 +413,8 @@ struct CalculatorView: View {
                 selectAmbiguousCandidateAction: { candidate in
                     pumpContextState = .matched(candidate)
                 },
-                logFillUpAction: { updatedCalculation in
-                    openPumpModeFuelLog(with: updatedCalculation)
+                logFillUpAction: { updatedCalculation, enteredPrices in
+                    openPumpModeFuelLog(with: updatedCalculation, enteredPrices: enteredPrices)
                 },
                 closeAction: {
                     // Bump the session token so a still-in-flight resolution from this
@@ -819,8 +819,8 @@ struct CalculatorView: View {
         #endif
     }
 
-    private func openPumpModeFuelLog(with result: BlendCalculator.Result) {
-        let draft = pumpModeFuelLogDraft(from: result)
+    private func openPumpModeFuelLog(with result: BlendCalculator.Result, enteredPrices: PumpModeFillUpPrices) {
+        let draft = pumpModeFuelLogDraft(from: result, enteredPrices: enteredPrices)
         isShowingPumpMode = false
 
         Task { @MainActor in
@@ -829,15 +829,28 @@ struct CalculatorView: View {
         }
     }
 
-    private func pumpModeFuelLogDraft(from result: BlendCalculator.Result) -> FuelLogDraft {
-        var draft = FuelLogStore.prefillDraft(from: result, vehicle: activeVehicle)
+    private func pumpModeFuelLogDraft(from result: BlendCalculator.Result, enteredPrices: PumpModeFillUpPrices) -> FuelLogDraft {
+        var stationE85Price: Double?
+        var matchedStationName: String?
 
         if case .matched(let candidate) = pumpContextState {
-            draft.stationName = candidate.name
+            matchedStationName = candidate.name
 
             if let price = candidate.e85Price, price > 0 {
-                draft.e85PricePerGallon = price
+                stationE85Price = price
             }
+        }
+
+        var draft = FuelLogStore.prefillDraft(
+            from: result,
+            vehicle: activeVehicle,
+            enteredE85PricePerGallon: enteredPrices.e85PricePerGallon,
+            enteredGasPricePerGallon: enteredPrices.gasPricePerGallon,
+            stationE85PricePerGallon: stationE85Price
+        )
+
+        if let matchedStationName {
+            draft.stationName = matchedStationName
         }
 
         return draft
