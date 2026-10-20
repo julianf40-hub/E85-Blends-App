@@ -1206,7 +1206,7 @@ private struct BlendResultCard: View {
         CalculatorCard {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
-                    Text("\(result.blendLabel)")
+                    Text(CalculatorResultPresentation.displayValue(result.blendLabel, for: result))
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .padding(.horizontal, 13)
@@ -1226,18 +1226,18 @@ private struct BlendResultCard: View {
                 }
 
                 HStack(spacing: 14) {
-                    metricTile(title: "E85 gallons", value: String(format: "%.2f", result.e85Gallons), accent: AppTheme.Colors.primaryGreen)
-                    metricTile(title: "Gas gallons", value: String(format: "%.2f", result.gasGallons), accent: AppTheme.Colors.gasOrange)
-                    metricTile(title: "Estimated octane", value: String(format: "%.1f", result.estimatedOctane), accent: AppTheme.Colors.primaryGreen)
+                    metricTile(title: "E85 gallons", value: CalculatorResultPresentation.displayValue(String(format: "%.2f", result.e85Gallons), for: result), accent: AppTheme.Colors.primaryGreen)
+                    metricTile(title: "Gas gallons", value: CalculatorResultPresentation.displayValue(String(format: "%.2f", result.gasGallons), for: result), accent: AppTheme.Colors.gasOrange)
+                    metricTile(title: "Estimated octane", value: CalculatorResultPresentation.displayValue(String(format: "%.1f", result.estimatedOctane), for: result), accent: AppTheme.Colors.primaryGreen)
                 }
 
                 Divider()
                     .overlay(AppTheme.Colors.border)
 
                 HStack(alignment: .top) {
-                    detailMetric(title: "Final ethanol %", value: String(format: "%.1f%%", result.finalEthanolPercent))
+                    detailMetric(title: "Final ethanol %", value: CalculatorResultPresentation.displayValue(String(format: "%.1f%%", result.finalEthanolPercent), for: result))
                     Spacer()
-                    detailMetric(title: "Total gallons to add", value: String(format: "%.2f gal", result.totalGallonsToAdd))
+                    detailMetric(title: "Total gallons to add", value: CalculatorResultPresentation.displayValue(String(format: "%.2f gal", result.totalGallonsToAdd), for: result))
                 }
             }
             .padding(2)
@@ -1514,19 +1514,19 @@ private struct PumpInstructionsSection: View {
             PumpInstructionStep(
                 step: "Step 1",
                 title: "Fill calculated gallons of E85 first",
-                detail: "Start with \(String(format: "%.2f", result.e85Gallons)) gallons of E85 to anchor the blend."
+                detail: "Start with \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.e85Gallons), for: result)) gallons of E85 to anchor the blend."
             )
 
             PumpInstructionStep(
                 step: "Step 2",
                 title: "Top off with calculated gallons of gas",
-                detail: "Add \(String(format: "%.2f", result.gasGallons)) gallons of pump gas to finish the mix."
+                detail: "Add \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.gasGallons), for: result)) gallons of pump gas to finish the mix."
             )
 
             PumpInstructionStep(
                 step: "Step 3",
                 title: "Result blend and octane",
-                detail: "\(result.blendLabel) at roughly \(String(format: "%.1f", result.estimatedOctane)) octane with \(String(format: "%.2f", result.totalGallonsToAdd)) gallons added."
+                detail: "\(CalculatorResultPresentation.displayValue(result.blendLabel, for: result)) at roughly \(CalculatorResultPresentation.displayValue(String(format: "%.1f", result.estimatedOctane), for: result)) octane with \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.totalGallonsToAdd), for: result)) gallons added."
             )
         }
     }
