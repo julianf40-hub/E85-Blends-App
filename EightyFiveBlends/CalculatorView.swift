@@ -202,16 +202,22 @@ struct CalculatorView: View {
     }
 
     private var calculation: BlendCalculator.Result {
+        // Blank or invalid text (e.g. a typo, or a field cleared mid-edit) must never be
+        // read as a legitimate zero — an empty tank, E0 gasoline, and 0% current ethanol
+        // are all valid, but an absent/unparseable entry is not. Feeding NaN through for
+        // those cases routes them into BlendCalculator's existing `isFinite` guard, which
+        // already reports "Enter valid numeric values before calculating a blend." instead
+        // of silently producing a blend based on a value the user never actually entered.
         BlendCalculator.calculate(
             input: .init(
-                tankSizeGallons: doubleValue(from: tankSize),
-                currentFuelLevelPercent: doubleValue(from: currentLevel),
-                currentFuelEthanolPercent: doubleValue(from: currentFuelEthanol),
-                targetEthanolPercent: doubleValue(from: targetFuelEthanol),
-                e85EthanolPercent: doubleValue(from: e85Ethanol),
-                gasEthanolPercent: doubleValue(from: gasEthanol),
-                e85Octane: doubleValue(from: e85Octane),
-                gasOctane: doubleValue(from: gasOctane)
+                tankSizeGallons: CalculatorNumericInput.parse(tankSize) ?? .nan,
+                currentFuelLevelPercent: CalculatorNumericInput.parse(currentLevel) ?? .nan,
+                currentFuelEthanolPercent: CalculatorNumericInput.parse(currentFuelEthanol) ?? .nan,
+                targetEthanolPercent: CalculatorNumericInput.parse(targetFuelEthanol) ?? .nan,
+                e85EthanolPercent: CalculatorNumericInput.parse(e85Ethanol) ?? .nan,
+                gasEthanolPercent: CalculatorNumericInput.parse(gasEthanol) ?? .nan,
+                e85Octane: CalculatorNumericInput.parse(e85Octane) ?? .nan,
+                gasOctane: CalculatorNumericInput.parse(gasOctane) ?? .nan
             )
         )
     }
