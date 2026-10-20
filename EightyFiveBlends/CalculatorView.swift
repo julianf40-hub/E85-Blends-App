@@ -202,22 +202,36 @@ struct CalculatorView: View {
     }
 
     private var calculation: BlendCalculator.Result {
+        // Blank or invalid text (e.g. a typo, or a field cleared mid-edit) must never be
+        // read as a legitimate zero — an empty tank, E0 gasoline, and 0% current ethanol
+        // are all valid, but an absent/unparseable entry is not. Feeding NaN through for
+        // those cases routes them into BlendCalculator's existing `isFinite` guard, which
+        // already reports "Enter valid numeric values before calculating a blend." instead
+        // of silently producing a blend based on a value the user never actually entered.
         BlendCalculator.calculate(
             input: .init(
-                tankSizeGallons: doubleValue(from: tankSize),
-                currentFuelLevelPercent: doubleValue(from: currentLevel),
-                currentFuelEthanolPercent: doubleValue(from: currentFuelEthanol),
-                targetEthanolPercent: doubleValue(from: targetFuelEthanol),
-                e85EthanolPercent: doubleValue(from: e85Ethanol),
-                gasEthanolPercent: doubleValue(from: gasEthanol),
-                e85Octane: doubleValue(from: e85Octane),
-                gasOctane: doubleValue(from: gasOctane)
+                tankSizeGallons: CalculatorNumericInput.parse(tankSize) ?? .nan,
+                currentFuelLevelPercent: CalculatorNumericInput.parse(currentLevel) ?? .nan,
+                currentFuelEthanolPercent: CalculatorNumericInput.parse(currentFuelEthanol) ?? .nan,
+                targetEthanolPercent: CalculatorNumericInput.parse(targetFuelEthanol) ?? .nan,
+                e85EthanolPercent: CalculatorNumericInput.parse(e85Ethanol) ?? .nan,
+                gasEthanolPercent: CalculatorNumericInput.parse(gasEthanol) ?? .nan,
+                e85Octane: CalculatorNumericInput.parse(e85Octane) ?? .nan,
+                gasOctane: CalculatorNumericInput.parse(gasOctane) ?? .nan
             )
         )
     }
 
     private var preferredTargetBlendValue: Double {
         AppPreferredTargetBlend.percent(fromRawValue: preferredDefaultTargetBlend)
+    }
+
+    // Mirrors AtThePumpView's own hasBlendWarning/canLogFillUp gating — a warning result
+    // (invalid input routed to NaN, an already-full tank, an unreachable blend, etc.) has
+    // zero gallons and an untrustworthy blend percent, so logging it would silently save a
+    // misleading fill-up rather than nothing at all.
+    private var hasBlendWarning: Bool {
+        calculation.warningMessage != nil
     }
 
     var body: some View {
@@ -295,8 +309,12 @@ struct CalculatorView: View {
                     }
 
                     PrimaryButton(title: "+ Log This Fill-Up") {
+                        guard hasBlendWarning == false else { return }
                         calculatorFuelLogDraft = FuelLogStore.prefillDraft(from: calculation, vehicle: activeVehicle)
                     }
+                    .disabled(hasBlendWarning)
+                    .opacity(hasBlendWarning ? 0.4 : 1)
+                    .animation(.easeInOut(duration: 0.15), value: hasBlendWarning)
 
                     // AdMob Phase 2 — 85Blends Home Native placement. Bottom of the scroll,
                     // strictly after every functional control (never between inputs, never
@@ -1188,7 +1206,7 @@ private struct BlendResultCard: View {
         CalculatorCard {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
-                    Text("\(result.blendLabel)")
+                    Text(CalculatorResultPresentation.displayValue(result.blendLabel, for: result))
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
                         .padding(.horizontal, 13)
@@ -1208,18 +1226,18 @@ private struct BlendResultCard: View {
                 }
 
                 HStack(spacing: 14) {
-                    metricTile(title: "E85 gallons", value: String(format: "%.2f", result.e85Gallons), accent: AppTheme.Colors.primaryGreen)
-                    metricTile(title: "Gas gallons", value: String(format: "%.2f", result.gasGallons), accent: AppTheme.Colors.gasOrange)
-                    metricTile(title: "Estimated octane", value: String(format: "%.1f", result.estimatedOctane), accent: AppTheme.Colors.primaryGreen)
+                    metricTile(title: "E85 gallons", value: CalculatorResultPresentation.displayValue(String(format: "%.2f", result.e85Gallons), for: result), accent: AppTheme.Colors.primaryGreen)
+                    metricTile(title: "Gas gallons", value: CalculatorResultPresentation.displayValue(String(format: "%.2f", result.gasGallons), for: result), accent: AppTheme.Colors.gasOrange)
+                    metricTile(title: "Estimated octane", value: CalculatorResultPresentation.displayValue(String(format: "%.1f", result.estimatedOctane), for: result), accent: AppTheme.Colors.primaryGreen)
                 }
 
                 Divider()
                     .overlay(AppTheme.Colors.border)
 
                 HStack(alignment: .top) {
-                    detailMetric(title: "Final ethanol %", value: String(format: "%.1f%%", result.finalEthanolPercent))
+                    detailMetric(title: "Final ethanol %", value: CalculatorResultPresentation.displayValue(String(format: "%.1f%%", result.finalEthanolPercent), for: result))
                     Spacer()
-                    detailMetric(title: "Total gallons to add", value: String(format: "%.2f gal", result.totalGallonsToAdd))
+                    detailMetric(title: "Total gallons to add", value: CalculatorResultPresentation.displayValue(String(format: "%.2f gal", result.totalGallonsToAdd), for: result))
                 }
             }
             .padding(2)
@@ -1496,19 +1514,19 @@ private struct PumpInstructionsSection: View {
             PumpInstructionStep(
                 step: "Step 1",
                 title: "Fill calculated gallons of E85 first",
-                detail: "Start with \(String(format: "%.2f", result.e85Gallons)) gallons of E85 to anchor the blend."
+                detail: "Start with \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.e85Gallons), for: result)) gallons of E85 to anchor the blend."
             )
 
             PumpInstructionStep(
                 step: "Step 2",
                 title: "Top off with calculated gallons of gas",
-                detail: "Add \(String(format: "%.2f", result.gasGallons)) gallons of pump gas to finish the mix."
+                detail: "Add \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.gasGallons), for: result)) gallons of pump gas to finish the mix."
             )
 
             PumpInstructionStep(
                 step: "Step 3",
                 title: "Result blend and octane",
-                detail: "\(result.blendLabel) at roughly \(String(format: "%.1f", result.estimatedOctane)) octane with \(String(format: "%.2f", result.totalGallonsToAdd)) gallons added."
+                detail: "\(CalculatorResultPresentation.displayValue(result.blendLabel, for: result)) at roughly \(CalculatorResultPresentation.displayValue(String(format: "%.1f", result.estimatedOctane), for: result)) octane with \(CalculatorResultPresentation.displayValue(String(format: "%.2f", result.totalGallonsToAdd), for: result)) gallons added."
             )
         }
     }
