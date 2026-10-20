@@ -238,6 +238,42 @@ struct VehicleNicknamePolicyRetiredNicknameTests {
         )
     }
 
+    // MARK: - Ownership must be decided by exact match, not by conflictKey (PR #137 review)
+
+    @Test("A live vehicle's own exact-string history is never orphaned, even when a case variant of its name has unrelated orphaned history")
+    func ownership_isDecidedByExactMatch_notConflictKey() {
+        // Live vehicle is exactly "Truck" and genuinely owns "Truck" Fuel Log history.
+        // Unrelated, genuinely orphaned history already exists under "truck" (lowercase) — left
+        // behind by some other, already-deleted vehicle. "truck" must NOT be exempted just
+        // because it's a conflictKey match for the live "Truck".
+        let orphaned = VehicleNicknamePolicy.orphanedHistoricalNicknameKeys(
+            historicalVehicleNames: ["Truck", "truck"],
+            amongLiveNicknames: ["Truck"]
+        )
+        #expect(orphaned.contains(VehicleNicknamePolicy.conflictKey("Truck")) == false)
+        #expect(orphaned.contains(VehicleNicknamePolicy.conflictKey("truck")))
+    }
+
+    @Test("Renaming a live vehicle into a case variant of its own name is rejected when that variant has unrelated orphaned history")
+    func renameVehicle_intoOwnCaseVariant_withUnrelatedOrphanedHistory_isRejected() {
+        // Vehicle 1 is live as "Truck" and tries to rename to "truck". Live-conflict checking
+        // excludes vehicle 1 from colliding with itself, so only the retired-nickname guard can
+        // catch this. Before the PR #137 fix, this incorrectly passed — letting
+        // GarageView.propagateVehicleRename move vehicle 1's own "Truck" history onto "truck"
+        // and merge it with the unrelated, already-orphaned "truck" records.
+        let existing: [(id: Int, nickname: String)] = [(1, "Truck")]
+        let orphaned = VehicleNicknamePolicy.orphanedHistoricalNicknameKeys(
+            historicalVehicleNames: ["Truck", "truck"],
+            amongLiveNicknames: ["Truck"]
+        )
+        let message = VehicleNicknamePolicy.validationError(
+            for: "truck", excluding: 1, among: existing,
+            orphanedHistoricalNicknameKeysResult: .success(orphaned)
+        )
+        #expect(message != nil)
+        #expect(message != "Another vehicle already uses this nickname.")
+    }
+
     // MARK: - Fail-closed on fetch failure
 
     private struct FakeFetchError: Error {}

@@ -93,10 +93,24 @@ enum VehicleNicknamePolicy {
     // or deletes any historical record itself.
 
     /// The retired-nickname comparison keys (see `conflictKey`) that are currently "reserved":
-    /// present on at least one historical Fuel Log/Reminder/Completion record, but NOT matching
-    /// any currently live vehicle's nickname. A name that still matches a live vehicle (even the
-    /// one being edited, keeping its own unchanged nickname) is never reserved — that history
-    /// legitimately belongs to that vehicle today, not to an orphan.
+    /// present on at least one historical Fuel Log/Reminder/Completion record whose vehicleName
+    /// does NOT EXACTLY match any currently live vehicle's nickname. A name that still exactly
+    /// matches a live vehicle (even the one being edited, keeping its own unchanged nickname) is
+    /// never reserved — that history legitimately belongs to that vehicle today, not to an
+    /// orphan.
+    ///
+    /// Ownership here is deliberately decided by EXACT string equality, not `conflictKey` — the
+    /// same exact-string comparison that actually determines ownership everywhere else in the
+    /// app (`GarageView.propagateVehicleRename`'s `#Predicate { $0.vehicleName == oldName }`,
+    /// `VehicleNicknameResolution`, `VehicleFuelLogIdentityResolution`). Using the broader,
+    /// case/whitespace-insensitive `conflictKey` for this ownership check would be wrong: if a
+    /// live vehicle "Truck" coexists with genuinely orphaned history already stored as "truck",
+    /// `conflictKey`-based ownership would treat "truck" as already owned by "Truck" — so
+    /// renaming "Truck" to "truck" would pass this guard, and `propagateVehicleRename`'s exact
+    /// rename would then move "Truck"'s own history onto "truck", merging it with the orphaned
+    /// "truck" records it never actually owned. `conflictKey` is still the right (broader)
+    /// comparison for the *candidate* side below — catching a case/whitespace variant of a
+    /// retired name — just not for deciding what already counts as "owned."
     ///
     /// Pure: callers are responsible for fetching `historicalVehicleNames` (every vehicleName,
     /// with duplicates, from all three history models) and `liveNicknames` (every currently
@@ -106,12 +120,11 @@ enum VehicleNicknamePolicy {
         historicalVehicleNames: [String],
         amongLiveNicknames liveNicknames: [String]
     ) -> Set<String> {
-        let liveKeys = Set(liveNicknames.filter { isBlank($0) == false }.map(conflictKey))
+        let liveExactNames = Set(liveNicknames.filter { isBlank($0) == false })
         var orphanedKeys = Set<String>()
         for name in historicalVehicleNames where isBlank(name) == false {
-            let key = conflictKey(name)
-            if liveKeys.contains(key) == false {
-                orphanedKeys.insert(key)
+            if liveExactNames.contains(name) == false {
+                orphanedKeys.insert(conflictKey(name))
             }
         }
         return orphanedKeys
