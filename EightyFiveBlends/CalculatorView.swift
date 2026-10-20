@@ -226,6 +226,14 @@ struct CalculatorView: View {
         AppPreferredTargetBlend.percent(fromRawValue: preferredDefaultTargetBlend)
     }
 
+    // Mirrors AtThePumpView's own hasBlendWarning/canLogFillUp gating — a warning result
+    // (invalid input routed to NaN, an already-full tank, an unreachable blend, etc.) has
+    // zero gallons and an untrustworthy blend percent, so logging it would silently save a
+    // misleading fill-up rather than nothing at all.
+    private var hasBlendWarning: Bool {
+        calculation.warningMessage != nil
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -301,8 +309,12 @@ struct CalculatorView: View {
                     }
 
                     PrimaryButton(title: "+ Log This Fill-Up") {
+                        guard hasBlendWarning == false else { return }
                         calculatorFuelLogDraft = FuelLogStore.prefillDraft(from: calculation, vehicle: activeVehicle)
                     }
+                    .disabled(hasBlendWarning)
+                    .opacity(hasBlendWarning ? 0.4 : 1)
+                    .animation(.easeInOut(duration: 0.15), value: hasBlendWarning)
 
                     // AdMob Phase 2 — 85Blends Home Native placement. Bottom of the scroll,
                     // strictly after every functional control (never between inputs, never
