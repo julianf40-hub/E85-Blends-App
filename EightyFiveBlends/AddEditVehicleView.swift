@@ -20,6 +20,12 @@ struct AddEditVehicleView: View {
     // to detect a nickname conflict via VehicleNicknamePolicy. `vehicle`'s own id is excluded
     // from the conflict check inside nicknameValidationMessage, not by pre-filtering this list.
     let existingVehicles: [(id: PersistentIdentifier, nickname: String)]
+    // Retired-nickname guard (85Blends 2.4.1) — the orphaned-historical-nickname comparison
+    // keys computed once, by GarageView, when this sheet was presented. Recomputing this from
+    // SwiftData on every keystroke here would be wasteful; this is a cheap, static snapshot
+    // that's good enough for the live hint below. The authoritative, fail-closed re-check
+    // happens in GarageView.saveVehicle regardless of this snapshot's accuracy.
+    let orphanedHistoricalNicknameKeys: Set<String>
     // True when `vehicle` is currently the only active vehicle. Used only to explain, live,
     // why turning "Active" off won't take effect — saveVehicle enforces the actual guarantee
     // regardless of this hint, so a stale value here can never let the invariant slip.
@@ -34,12 +40,14 @@ struct AddEditVehicleView: View {
         vehicle: VehicleProfile?,
         existingVehiclesCount: Int,
         existingVehicles: [(id: PersistentIdentifier, nickname: String)],
+        orphanedHistoricalNicknameKeys: Set<String> = [],
         isSoleActiveVehicle: Bool = false,
         onSave: @escaping (VehicleDraft) -> Void
     ) {
         self.vehicle = vehicle
         self.existingVehiclesCount = existingVehiclesCount
         self.existingVehicles = existingVehicles
+        self.orphanedHistoricalNicknameKeys = orphanedHistoricalNicknameKeys
         self.isSoleActiveVehicle = isSoleActiveVehicle
         self.onSave = onSave
         _draft = State(initialValue: VehicleDraft(vehicle: vehicle, existingVehiclesCount: existingVehiclesCount))
@@ -47,12 +55,19 @@ struct AddEditVehicleView: View {
 
     // Actionable, non-technical validation message for the current nickname, or nil when it's
     // safe to save — see VehicleNicknamePolicy. Recomputed live as the user types, mirroring
-    // isOdometerRegression/odometerRegressionMessage's pattern below.
+    // isOdometerRegression/odometerRegressionMessage's pattern below. Always passes `.success`
+    // here: a fetch failure is only ever possible in GarageView's authoritative re-check, never
+    // in this already-computed snapshot.
     private var nicknameValidationMessage: String? {
         VehicleNicknamePolicy.validationError(
             for: draft.nickname,
             excluding: vehicle?.persistentModelID,
-            among: existingVehicles
+            among: existingVehicles,
+            // `vehicle?.nickname` — the live VehicleProfile's actual persisted value, never
+            // `draft.nickname` — so the unchanged-nickname exemption only ever exempts a
+            // genuinely unchanged, already-saved nickname. `nil` when creating a new vehicle.
+            editingVehicleCurrentNickname: vehicle?.nickname,
+            orphanedHistoricalNicknameKeysResult: .success(orphanedHistoricalNicknameKeys)
         )
     }
 
@@ -99,8 +114,12 @@ struct AddEditVehicleView: View {
                     Button("Save") {
                         var finalDraft = draft
                         finalDraft.normalizeForSave()
+                        // No dismiss() here — a rejected save (e.g. the authoritative-boundary
+                        // nickname re-check, or a SwiftData write failure) must leave this
+                        // editor open with the user's edits intact, not silently discard them.
+                        // GarageView.saveVehicle owns dismissal: it clears sheetContext itself
+                        // on every path that should actually close this sheet.
                         onSave(finalDraft)
-                        dismiss()
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
                     // Routine editing must never lower the odometer — see saveVehicle for the

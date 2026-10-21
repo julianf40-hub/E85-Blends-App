@@ -71,6 +71,11 @@ struct GarageView: View {
                     vehicle: context.vehicle,
                     existingVehiclesCount: vehicles.count,
                     existingVehicles: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
+                    // Computed once, here, when the sheet opens — never per keystroke. A failed
+                    // fetch here only means the editor's live hint can't preview the rejection;
+                    // the actual guarantee (fail-closed) is enforced in saveVehicle below
+                    // regardless, exactly like isSoleActiveVehicle's hint-only role below.
+                    orphanedHistoricalNicknameKeys: (try? orphanedHistoricalNicknameKeys()) ?? [],
                     // Lets the form explain, live, why turning "Active" off won't take effect —
                     // the actual guarantee is enforced in saveVehicle regardless of this hint.
                     isSoleActiveVehicle: context.vehicle.map { editingVehicle in
@@ -237,7 +242,13 @@ struct GarageView: View {
         if let nicknameError = VehicleNicknamePolicy.validationError(
             for: draft.nickname,
             excluding: vehicle?.persistentModelID,
-            among: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) }
+            among: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
+            // The vehicle's actual, currently-persisted nickname read directly off the live
+            // VehicleProfile — never `draft.nickname` — so the unchanged-nickname exemption
+            // below can only ever exempt a genuinely unchanged, already-saved nickname. `nil`
+            // for a brand-new vehicle (`vehicle == nil`), which never qualifies for it.
+            editingVehicleCurrentNickname: vehicle?.nickname,
+            orphanedHistoricalNicknameKeysResult: orphanedHistoricalNicknameKeysResultForSaveBoundary()
         ) {
             saveErrorMessage = nicknameError
             return
@@ -255,6 +266,9 @@ struct GarageView: View {
                 freeLimit: SubscriptionManager.freeVehicleLimit,
                 canAccessUnlimitedVehicles: SubscriptionManager.shared.canAccessUnlimitedVehicles
             ) else {
+                // Close the Add Vehicle sheet first (preserving this flow's existing behavior),
+                // then show the upgrade prompt — the two sheets can't be presented at once.
+                sheetContext = nil
                 isShowingVehicleLimitPrompt = true
                 return
             }
@@ -336,6 +350,10 @@ struct GarageView: View {
         do {
             try modelContext.save()
             AppHaptics.success()
+            // Only dismiss the editor on confirmed success — a thrown save below, like every
+            // rejection above, must leave it open with the user's edits intact instead of
+            // silently discarding them.
+            sheetContext = nil
         } catch {
             #if DEBUG
             print("[85Blends] GarageView: vehicle save failed:", error)
@@ -387,6 +405,21 @@ struct GarageView: View {
         if let records = try? modelContext.fetch(completionDescriptor) {
             for record in records { record.vehicleName = newName }
         }
+    }
+
+    // MARK: - Retired-nickname guard (85Blends 2.4.1) — see VehicleNicknamePolicy's
+    // "Retired-nickname guard" section for the full rationale. The SwiftData fetch itself lives
+    // in VehicleHistoricalNicknameLookup, shared with OnboardingView.completeOnboarding, so both
+    // authoritative vehicle-creation/edit boundaries make the exact same decision.
+    private func orphanedHistoricalNicknameKeys() throws -> Set<String> {
+        try VehicleHistoricalNicknameLookup.orphanedHistoricalNicknameKeys(
+            modelContext: modelContext,
+            amongLiveNicknames: vehicles.map(\.nickname)
+        )
+    }
+
+    private func orphanedHistoricalNicknameKeysResultForSaveBoundary() -> Result<Set<String>, Error> {
+        Result { try orphanedHistoricalNicknameKeys() }
     }
 
     private func promptDeletion(for vehicle: VehicleProfile) {

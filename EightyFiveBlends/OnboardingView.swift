@@ -32,6 +32,10 @@ struct OnboardingView: View {
     @State private var isShowingFullDisclaimer = false
     @State private var disclaimerGuidanceMessage: String?
     @State private var vehicleSaveErrorMessage: String?
+    // Retired-nickname guard (85Blends 2.4.1) — separate from vehicleSaveErrorMessage because
+    // this specific rejection offers the user two concrete ways forward (go fix the nickname,
+    // or finish onboarding without adding a vehicle at all), not just a plain "OK."
+    @State private var vehicleNicknameRejectionMessage: String?
 
     private let steps: [OnboardingStep] = [
         // 0: Welcome
@@ -152,6 +156,21 @@ struct OnboardingView: View {
             Button("OK", role: .cancel) { vehicleSaveErrorMessage = nil }
         } message: {
             Text(vehicleSaveErrorMessage ?? "")
+        }
+        .alert("Vehicle Nickname", isPresented: Binding(
+            get: { vehicleNicknameRejectionMessage != nil },
+            set: { if !$0 { vehicleNicknameRejectionMessage = nil } }
+        )) {
+            Button("Edit Nickname", role: .cancel) {
+                vehicleNicknameRejectionMessage = nil
+                currentStep = vehicleSetupStepIndex
+            }
+            Button("Continue Without Vehicle") {
+                vehicleNicknameRejectionMessage = nil
+                markOnboardingComplete()
+            }
+        } message: {
+            Text(vehicleNicknameRejectionMessage ?? "")
         }
     }
 
@@ -444,6 +463,26 @@ struct OnboardingView: View {
             )
 
             if canCreate {
+                // Retired-nickname guard (85Blends 2.4.1) — the same authoritative check
+                // GarageView.saveVehicle applies, checked first and before ANY mutation
+                // (including the active-flag clearing below), so a rejected creation never
+                // touches existing vehicles or inserts anything. Onboarding only ever creates a
+                // brand-new vehicle, so `excluding`/`editingVehicleCurrentNickname` are always
+                // nil — this can never receive the existing-vehicle unchanged-nickname
+                // exemption (see VehicleNicknamePolicy.validationError).
+                if let nicknameError = VehicleNicknamePolicy.validationError(
+                    for: draft.nickname,
+                    excluding: nil,
+                    among: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
+                    orphanedHistoricalNicknameKeysResult: VehicleHistoricalNicknameLookup.orphanedHistoricalNicknameKeysResult(
+                        modelContext: modelContext,
+                        amongLiveNicknames: vehicles.map(\.nickname)
+                    )
+                ) {
+                    vehicleNicknameRejectionMessage = nicknameError
+                    return
+                }
+
                 if vehicles.isEmpty == false {
                     for vehicle in vehicles {
                         vehicle.isActive = false
@@ -487,6 +526,14 @@ struct OnboardingView: View {
             }
         }
 
+        markOnboardingComplete()
+    }
+
+    // Never touches vehicles/modelContext — it's the shared tail of completeOnboarding(),
+    // called unconditionally regardless of whether a vehicle was created or skipped, and also
+    // called directly when the user explicitly chooses "Continue Without Vehicle" after a
+    // rejected vehicle creation (see the nickname-rejection alert above).
+    private func markOnboardingComplete() {
         hasAcknowledgedDisclaimer = true
         disclaimerAcknowledgedAt = Date.now.timeIntervalSince1970
         AppHaptics.success()
@@ -735,6 +782,13 @@ struct OnboardingView: View {
 
     private var proStepIndex: Int {
         steps.count - 1
+    }
+
+    // Matches the hardcoded `currentStep == 1` check that routes to vehicleSetupCard — named
+    // here only so the nickname-rejection alert's "Edit Nickname" action has a clear, documented
+    // target to jump back to (that step has no reachable "Back" button from the final Pro step).
+    private var vehicleSetupStepIndex: Int {
+        1
     }
 
     private var isProStep: Bool {
