@@ -141,13 +141,23 @@ enum VehicleNicknamePolicy {
     /// `Result` rather than a plain `Set<String>` so a failed SwiftData fetch of historical
     /// vehicleName values can never be silently treated as "nothing is reserved" — a fetch
     /// failure fails CLOSED (blocks the save with an actionable message) rather than fail-open
-    /// (skipping the check it was supposed to perform). This is the one function GarageView.
-    /// saveVehicle and AddEditVehicleView both call, so both the editor's live hint and the
-    /// authoritative save boundary make the exact same decision.
+    /// (skipping the check it was supposed to perform), with NO exception — see the
+    /// unchanged-nickname exemption below, which is deliberately nested inside the `.success`
+    /// case rather than checked first, so a failed fetch always rejects regardless of candidate.
+    /// This is the one function GarageView.saveVehicle and AddEditVehicleView both call, so both
+    /// the editor's live hint and the authoritative save boundary make the exact same decision.
+    ///
+    /// `editingVehicleCurrentNickname` must be the vehicle-being-edited's ACTUAL, currently
+    /// persisted nickname (e.g. `vehicle.nickname` read directly off the live VehicleProfile) —
+    /// never an untrusted, possibly-already-mutated form/draft value — and must only be passed
+    /// when `editingID` genuinely identifies that same, real, already-saved vehicle. A brand
+    /// new vehicle (`editingID == nil`) has no persisted nickname to be "unchanged" from, so it
+    /// can never qualify for this exemption, independent of whatever this parameter is set to.
     static func validationError<ID: Hashable>(
         for candidate: String,
         excluding editingID: ID?,
         among existingVehicles: [(id: ID, nickname: String)],
+        editingVehicleCurrentNickname: String? = nil,
         orphanedHistoricalNicknameKeysResult: Result<Set<String>, Error>
     ) -> String? {
         guard isBlank(candidate) == false else {
@@ -160,6 +170,23 @@ enum VehicleNicknamePolicy {
         case .failure:
             return "Couldn't verify this nickname against your saved Fuel Log and maintenance history. Please try again."
         case .success(let orphanedHistoricalNicknameKeys):
+            // Retired-nickname guard exemption: a verified existing vehicle (editingID != nil)
+            // keeping its own, EXACT, currently-persisted nickname can never actually be
+            // "reserved by history" — orphanedHistoricalNicknameKeys' own exact-match ownership
+            // rule already excludes that exact name from the orphaned set. This exemption exists
+            // only because isReservedByHistory below compares the CANDIDATE using the broader,
+            // case/whitespace-insensitive conflictKey (needed to catch a rename INTO a case
+            // variant of a retired name), which can otherwise collide with an unrelated orphan
+            // that happens to share the same key — e.g. live "Truck" + unrelated orphaned
+            // "truck" both normalize to conflictKey "truck", so without this exact-match
+            // exemption, saving "Truck" unchanged would be wrongly rejected (see PR #137
+            // review). Exact match against the real persisted nickname, never conflictKey —
+            // "Truck" renamed to "truck" must still be rejected below, not exempted here.
+            if editingID != nil,
+               let editingVehicleCurrentNickname,
+               normalizedForSave(candidate) == editingVehicleCurrentNickname {
+                return nil
+            }
             guard isReservedByHistory(candidate: candidate, orphanedHistoricalNicknameKeys: orphanedHistoricalNicknameKeys) == false else {
                 return "This nickname was used by a vehicle you removed, and its Fuel Log or maintenance history is still saved under that name. Choose a different nickname to avoid mixing histories."
             }

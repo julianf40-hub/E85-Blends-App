@@ -63,6 +63,10 @@ struct AddEditVehicleView: View {
             for: draft.nickname,
             excluding: vehicle?.persistentModelID,
             among: existingVehicles,
+            // `vehicle?.nickname` — the live VehicleProfile's actual persisted value, never
+            // `draft.nickname` — so the unchanged-nickname exemption only ever exempts a
+            // genuinely unchanged, already-saved nickname. `nil` when creating a new vehicle.
+            editingVehicleCurrentNickname: vehicle?.nickname,
             orphanedHistoricalNicknameKeysResult: .success(orphanedHistoricalNicknameKeys)
         )
     }
@@ -110,8 +114,12 @@ struct AddEditVehicleView: View {
                     Button("Save") {
                         var finalDraft = draft
                         finalDraft.normalizeForSave()
+                        // No dismiss() here — a rejected save (e.g. the authoritative-boundary
+                        // nickname re-check, or a SwiftData write failure) must leave this
+                        // editor open with the user's edits intact, not silently discard them.
+                        // GarageView.saveVehicle owns dismissal: it clears sheetContext itself
+                        // on every path that should actually close this sheet.
                         onSave(finalDraft)
-                        dismiss()
                     }
                     .foregroundStyle(AppTheme.Colors.accentGreen)
                     // Routine editing must never lower the odometer — see saveVehicle for the

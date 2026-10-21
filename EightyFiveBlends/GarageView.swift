@@ -243,6 +243,11 @@ struct GarageView: View {
             for: draft.nickname,
             excluding: vehicle?.persistentModelID,
             among: vehicles.map { (id: $0.persistentModelID, nickname: $0.nickname) },
+            // The vehicle's actual, currently-persisted nickname read directly off the live
+            // VehicleProfile — never `draft.nickname` — so the unchanged-nickname exemption
+            // below can only ever exempt a genuinely unchanged, already-saved nickname. `nil`
+            // for a brand-new vehicle (`vehicle == nil`), which never qualifies for it.
+            editingVehicleCurrentNickname: vehicle?.nickname,
             orphanedHistoricalNicknameKeysResult: orphanedHistoricalNicknameKeysResultForSaveBoundary()
         ) {
             saveErrorMessage = nicknameError
@@ -261,6 +266,9 @@ struct GarageView: View {
                 freeLimit: SubscriptionManager.freeVehicleLimit,
                 canAccessUnlimitedVehicles: SubscriptionManager.shared.canAccessUnlimitedVehicles
             ) else {
+                // Close the Add Vehicle sheet first (preserving this flow's existing behavior),
+                // then show the upgrade prompt — the two sheets can't be presented at once.
+                sheetContext = nil
                 isShowingVehicleLimitPrompt = true
                 return
             }
@@ -342,6 +350,10 @@ struct GarageView: View {
         do {
             try modelContext.save()
             AppHaptics.success()
+            // Only dismiss the editor on confirmed success — a thrown save below, like every
+            // rejection above, must leave it open with the user's edits intact instead of
+            // silently discarding them.
+            sheetContext = nil
         } catch {
             #if DEBUG
             print("[85Blends] GarageView: vehicle save failed:", error)
