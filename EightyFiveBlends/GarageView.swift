@@ -408,25 +408,16 @@ struct GarageView: View {
     }
 
     // MARK: - Retired-nickname guard (85Blends 2.4.1) — see VehicleNicknamePolicy's
-    // "Retired-nickname guard" section for the full rationale.
-
-    /// Fetches every vehicleName currently on a Fuel Log, maintenance reminder, or completion
-    /// record, and asks VehicleNicknamePolicy which ones are orphaned (no live vehicle owns
-    /// them). Throws (rather than swallowing) on a fetch failure so callers can choose to fail
-    /// closed instead of silently skipping the check.
+    // "Retired-nickname guard" section for the full rationale. The SwiftData fetch itself lives
+    // in VehicleHistoricalNicknameLookup, shared with OnboardingView.completeOnboarding, so both
+    // authoritative vehicle-creation/edit boundaries make the exact same decision.
     private func orphanedHistoricalNicknameKeys() throws -> Set<String> {
-        let fuelLogNames = try modelContext.fetch(FetchDescriptor<FuelLogEntry>()).map(\.vehicleName)
-        let reminderNames = try modelContext.fetch(FetchDescriptor<MaintenanceReminder>()).map(\.vehicleName)
-        let completionNames = try modelContext.fetch(FetchDescriptor<ReminderCompletionRecord>()).map(\.vehicleName)
-        return VehicleNicknamePolicy.orphanedHistoricalNicknameKeys(
-            historicalVehicleNames: fuelLogNames + reminderNames + completionNames,
+        try VehicleHistoricalNicknameLookup.orphanedHistoricalNicknameKeys(
+            modelContext: modelContext,
             amongLiveNicknames: vehicles.map(\.nickname)
         )
     }
 
-    /// The authoritative-boundary form of `orphanedHistoricalNicknameKeys()` — a fetch failure
-    /// here must fail the save closed, never silently allow it, so this is a `Result`, not an
-    /// optional that a caller could casually coalesce into "nothing reserved."
     private func orphanedHistoricalNicknameKeysResultForSaveBoundary() -> Result<Set<String>, Error> {
         Result { try orphanedHistoricalNicknameKeys() }
     }
