@@ -131,8 +131,8 @@ struct FeaturedGearTests {
         #expect(sponsor.id == "rvp-supply-oem-beadlocks")
         #expect(sponsor.name == "RVP Supply")
         #expect(sponsor.tagline == "OEM+ Beadlock Wheels")
-        #expect(sponsor.description == "Nine OEM-style beadlock designs for supported fitments.")
-        #expect(sponsor.ctaTitle == "View All RVP Wheels")
+        #expect(sponsor.description == "Customize wheel finishes, beadlock rings, hardware and center caps. Save a mockup or request a quote.")
+        #expect(sponsor.ctaTitle == "Build Your Wheels")
     }
 
     @Test("Page ids are unique and stable")
@@ -185,10 +185,10 @@ struct FeaturedGearTests {
         #expect(FeaturedBrandLink.validatedURL(destination)?.absoluteString == "https://eflexfuel.com/us#vehicle-selection")
     }
 
-    @Test("View All RVP Wheels opens the RVP Wheels collection over https")
-    func rvpSupply_collectionDestinationIsWheelsCollection() {
+    @Test("Build Your Wheels opens the RVP wheel configurator over https")
+    func rvpSupply_destinationIsWheelConfigurator() {
         let destination = FeaturedBrand.rvpSupplyWheels.destinationURL
-        #expect(destination?.absoluteString == "https://rvpsupply.com/collections/wheels-1")
+        #expect(destination?.absoluteString == "https://customize.rvpsupply.com/")
         #expect(FeaturedBrandLink.validatedURL(destination) != nil)
     }
 
