@@ -142,16 +142,16 @@ struct FeaturedOfferCopyState: Equatable {
 
 extension FeaturedBrand {
     /// RVP Supply's OEM+ beadlock wheels, shown as a labeled sponsor. The call to action opens the
-    /// Wheels collection, and the card's gallery (`RVPWheelProduct.catalog`) opens individual
+    /// wheel configurator, and the card's gallery (`RVPWheelProduct.catalog`) opens individual
     /// products. The copy is deliberately conservative: no price, no performance or race claim,
     /// and no claim of universal fitment.
     static let rvpSupplyWheels = FeaturedBrand(
         id: "rvp-supply-oem-beadlocks",
         name: "RVP Supply",
         tagline: "OEM+ Beadlock Wheels",
-        description: "Nine OEM-style beadlock designs for supported fitments.",
-        ctaTitle: "View All RVP Wheels",
-        destinationURL: URL(string: "https://rvpsupply.com/collections/wheels-1"),
+        description: "Customize wheel finishes, beadlock rings, hardware and center caps. Save a mockup or request a quote.",
+        ctaTitle: "Build Your Wheels",
+        destinationURL: URL(string: "https://customize.rvpsupply.com/"),
         accessibilityDescription: "OEM plus beadlock wheels."
     )
 }
@@ -981,7 +981,7 @@ private enum FeaturedOfferStyle {
 /// Page-2 sponsor card: RVP Supply's OEM-style beadlock lineup as a 3x3 gallery. Labeled "Sponsor"
 /// (RVP Supply is an actual sponsor, so it is the one card here that may say so). Unlike the brand
 /// card it is not one big button: each wheel tile opens that wheel's own RVP product page, and
-/// "View All RVP Wheels" opens the Wheels collection, all through the same https-only link flow.
+/// "Build Your Wheels" opens the wheel configurator, all through the same https-only link flow.
 /// It is a separate view only so the approved eFlexFuel card stays untouched.
 private struct FeaturedSponsorCard: View {
     let brand: FeaturedBrand

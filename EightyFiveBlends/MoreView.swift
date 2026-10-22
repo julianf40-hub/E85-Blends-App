@@ -422,7 +422,7 @@ struct MoreView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Opens the RVP Supply website")
+        .accessibilityHint("Opens the RVP Supply wheel configurator")
     }
 
     private var sponsorLogo: some View {
@@ -440,7 +440,7 @@ struct MoreView: View {
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Performance parts & gear")
+            Text("Build your custom wheels")
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .multilineTextAlignment(.leading)
@@ -458,7 +458,7 @@ struct MoreView: View {
     private func openSponsorLink() {
         sponsorLinkMessage = nil
 
-        guard let url = URL(string: "https://rvpsupply.com") else {
+        guard let url = URL(string: "https://customize.rvpsupply.com/") else {
             sponsorLinkMessage = "Shop link is unavailable right now."
             return
         }
