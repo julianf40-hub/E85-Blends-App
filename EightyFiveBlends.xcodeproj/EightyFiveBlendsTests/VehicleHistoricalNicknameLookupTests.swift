@@ -34,7 +34,9 @@ struct VehicleHistoricalNicknameLookupTests {
             MaintenanceReminder.self,
             ReminderCompletionRecord.self
         ])
-        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        // CloudKit explicitly off: the default (.automatic) starts CloudKit setup against this
+        // throwaway store, which tears it down mid-test when there is no iCloud account.
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: schema, configurations: [configuration])
         return ModelContext(container)
     }

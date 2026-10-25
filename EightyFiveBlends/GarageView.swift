@@ -238,7 +238,7 @@ struct GarageView: View {
         // blank or conflicts with another vehicle, but this is the actual persistence-boundary
         // guarantee that must hold even if that UI check is ever bypassed or stale — see
         // VehicleNicknamePolicy. Checked first, before ANY mutation (including the active-flag
-        // clearing below), so a rejected save never touches persisted data.
+        // clearing in VehicleSaveAttempt), so a rejected save never touches persisted data.
         if let nicknameError = VehicleNicknamePolicy.validationError(
             for: draft.nickname,
             excluding: vehicle?.persistentModelID,
@@ -256,10 +256,10 @@ struct GarageView: View {
 
         // Defense-in-depth: the Add Vehicle button already checks this before the form ever
         // opens, but re-check here, against the live count, before ANY mutation (including the
-        // active-flag clearing below) — the same "checked first" guarantee as the nickname guard
-        // above. Catches a stale sheet: entitlement or count could have changed (CloudKit sync,
-        // downgrade) while the form was open. Only ever runs for a NEW vehicle (`vehicle == nil`)
-        // — editing an existing vehicle is never subject to this check.
+        // active-flag clearing in VehicleSaveAttempt) — the same "checked first" guarantee as the
+        // nickname guard above. Catches a stale sheet: entitlement or count could have changed
+        // (CloudKit sync, downgrade) while the form was open. Only ever runs for a NEW vehicle
+        // (`vehicle == nil`) — editing an existing vehicle is never subject to this check.
         if vehicle == nil {
             guard VehicleCreationPolicy.canAddVehicle(
                 currentCount: vehicles.count,
@@ -274,87 +274,24 @@ struct GarageView: View {
             }
         }
 
-        var shouldBeActive = vehicle == nil ? (vehicles.isEmpty || draft.isActive) : draft.isActive
-
-        // Never let a normal edit leave every vehicle inactive: if this is the only currently
-        // active vehicle and the edit would turn it off, keep it active instead. Zero active
-        // vehicles hides every reminder under the Reminders tab's default filter, so this
-        // invariant is enforced here regardless of what AddEditVehicleView's toggle shows —
-        // that view surfaces the matching explanation, but this is the actual guarantee.
-        if let vehicle, VehicleActivation.shouldKeepActive(
-            editedVehicleIsActive: vehicle.isActive,
-            requestedActive: shouldBeActive,
-            anyOtherVehicleIsActive: vehicles.contains(where: { $0.persistentModelID != vehicle.persistentModelID && $0.isActive })
+        // Everything from here — the activation rules, the field writes, the history rename, the
+        // save itself — lives in VehicleSaveAttempt so a failed attempt can be undone as a unit:
+        // it fetches rename history before mutating anything, and on a thrown fetch or save it
+        // restores only its own writes and removes only the vehicle it inserted, leaving any
+        // other pending change on this shared context alone.
+        switch VehicleSaveAttempt.perform(
+            draft: draft,
+            editing: vehicle,
+            among: vehicles,
+            in: modelContext
         ) {
-            shouldBeActive = true
-        }
-
-        if shouldBeActive {
-            clearActiveFlag(except: vehicle)
-        }
-
-        if let vehicle {
-            let oldNickname = vehicle.nickname
-            vehicle.nickname = draft.nickname
-            vehicle.year = draft.year
-            vehicle.make = draft.make
-            vehicle.model = draft.model
-            vehicle.trim = draft.trim
-            vehicle.tankSizeGallons = draft.tankSizeGallons
-            // Routine editing must never lower the odometer — AddEditVehicleView disables Save
-            // while the entered value is a regression, but this is the actual guarantee: it
-            // holds even if that UI check is ever bypassed or stale.
-            vehicle.currentOdometer = VehicleOdometerPolicy.resolvedOdometerForRoutineEdit(
-                existing: vehicle.currentOdometer,
-                requested: draft.currentOdometer
-            )
-            // Saving through the Edit Vehicle form always transitions the vehicle to the current
-            // preference semantics — even if the resulting value equals what the legacy field
-            // already held (see VehicleProfile.calculatorPreferenceSemanticsVersion). The legacy
-            // default*/gasEthanolPercent fields are intentionally left untouched below: they are
-            // frozen, unread compatibility columns from here on — see VehicleProfile.swift.
-            vehicle.preferredEthanolTargetPercent = draft.preferredEthanolTargetPercent
-            vehicle.calculatorPreferenceSemanticsVersion = VehiclePreferenceSemantics.current
-            vehicle.requiredOctane = draft.requiredOctane
-            vehicle.isFlexFuel = draft.isFlexFuel
-            vehicle.isActive = shouldBeActive
-            vehicle.vehiclePhotoData = draft.vehiclePhotoData
-            vehicle.updatedAt = .now
-            if oldNickname != draft.nickname, !oldNickname.isEmpty {
-                propagateVehicleRename(from: oldNickname, to: draft.nickname)
-            }
-        } else {
-            // Legacy default*/gasEthanolPercent fields are intentionally omitted here — they
-            // take VehicleProfile's own persistence-compatible defaults and are never read as a
-            // preference for a new-semantics vehicle. See VehicleProfile.swift.
-            let newVehicle = VehicleProfile(
-                nickname: draft.nickname,
-                year: draft.year,
-                make: draft.make,
-                model: draft.model,
-                trim: draft.trim,
-                tankSizeGallons: draft.tankSizeGallons,
-                currentOdometer: draft.currentOdometer,
-                requiredOctane: draft.requiredOctane,
-                isFlexFuel: draft.isFlexFuel,
-                isActive: shouldBeActive,
-                vehiclePhotoData: draft.vehiclePhotoData,
-                createdAt: .now,
-                updatedAt: .now,
-                preferredEthanolTargetPercent: draft.preferredEthanolTargetPercent,
-                calculatorPreferenceSemanticsVersion: VehiclePreferenceSemantics.current
-            )
-            modelContext.insert(newVehicle)
-        }
-
-        do {
-            try modelContext.save()
+        case .saved:
             AppHaptics.success()
-            // Only dismiss the editor on confirmed success — a thrown save below, like every
+            // Only dismiss the editor on confirmed success — a failed attempt below, like every
             // rejection above, must leave it open with the user's edits intact instead of
             // silently discarding them.
             sheetContext = nil
-        } catch {
+        case .historyLookupFailed(let error), .saveFailed(let error):
             #if DEBUG
             print("[85Blends] GarageView: vehicle save failed:", error)
             #endif
@@ -381,29 +318,6 @@ struct GarageView: View {
         for otherVehicle in vehicles where otherVehicle.persistentModelID != vehicle?.persistentModelID {
             otherVehicle.isActive = false
             otherVehicle.updatedAt = .now
-        }
-    }
-
-    private func propagateVehicleRename(from oldName: String, to newName: String) {
-        let fuelDescriptor = FetchDescriptor<FuelLogEntry>(
-            predicate: #Predicate { $0.vehicleName == oldName }
-        )
-        if let logs = try? modelContext.fetch(fuelDescriptor) {
-            for log in logs { log.vehicleName = newName }
-        }
-
-        let reminderDescriptor = FetchDescriptor<MaintenanceReminder>(
-            predicate: #Predicate { $0.vehicleName == oldName }
-        )
-        if let reminders = try? modelContext.fetch(reminderDescriptor) {
-            for reminder in reminders { reminder.vehicleName = newName }
-        }
-
-        let completionDescriptor = FetchDescriptor<ReminderCompletionRecord>(
-            predicate: #Predicate { $0.vehicleName == oldName }
-        )
-        if let records = try? modelContext.fetch(completionDescriptor) {
-            for record in records { record.vehicleName = newName }
         }
     }
 
