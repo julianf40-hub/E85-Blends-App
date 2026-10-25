@@ -220,7 +220,7 @@ struct MoreView: View {
                     // support, and sharing the app are never Normal-Mode-only concerns.
                     supportSection
 
-                    // Trip Planner, Advanced Fuel Analytics, and Station Price Alerts are
+                    // Trip Planner and Advanced Fuel Analytics are
                     // Normal Mode feature navigation — not offered through the Simple Mode
                     // More screen. Nothing here is deleted; a Pro subscriber who switches back
                     // to Normal Mode sees this section again unchanged.
@@ -337,9 +337,9 @@ struct MoreView: View {
     // 2.3.0 UI polish pass: split out of proPreviewSection above so "current Pro features" and
     // "not built yet" are never visually adjacent under the same "Included with 85Blends Pro"
     // header — device feedback found that juxtaposition read as if purchasing today unlocks
-    // these too. Both entries are placeholder shells (see AdvancedAnalyticsView/
-    // StationAlertsView) — .comingSoon availability means neither shows a "PRO" badge or an
-    // "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability).
+    // these too. Advanced Fuel Analytics is a placeholder shell (see AdvancedAnalyticsView) —
+    // .comingSoon availability means it shows no "PRO" badge or "Unlock 85Blends Pro" CTA (see
+    // ProFeatureGate.Availability).
     private var comingSoonSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
@@ -354,15 +354,6 @@ struct MoreView: View {
                 availability: .comingSoon
             ) {
                 AdvancedAnalyticsView()
-            }
-
-            ProFeatureGate(
-                icon: "bell.badge.fill",
-                title: "Station Price Alerts",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
-                availability: .comingSoon
-            ) {
-                StationAlertsView()
             }
         }
     }
