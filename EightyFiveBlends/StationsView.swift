@@ -834,12 +834,11 @@ struct StationsView: View {
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(alignment: .leading, spacing: 16) {
                             headerSection
-                            // Trip Planner / Station Price Alerts entry points are Normal Mode
-                            // feature navigation — core station search, map, favorites, directions,
-                            // and community pricing below remain fully functional in both modes.
+                            // The Trip Planner entry point is Normal Mode feature navigation — core
+                            // station search, map, favorites, directions, and community pricing
+                            // below remain fully functional in both modes.
                             if appExperienceMode == .normal {
                                 proFeaturesSection
-                                comingSoonSection
                             }
                             mapSection
                             findNearbyButton
@@ -1125,25 +1124,6 @@ struct StationsView: View {
                 description: "Plan E85 routes with intelligent fuel stops and range estimates."
             ) {
                 TripPlannerView()
-            }
-        }
-    }
-
-    // 2.3.0 UI polish pass: split out of proFeaturesSection above — Station Price Alerts is a
-    // placeholder shell today (see StationAlertsView). .comingSoon availability means no "PRO"
-    // badge and no "Unlock 85Blends Pro" CTA (see ProFeatureGate.Availability), and it's no
-    // longer visually grouped under the "85Blends Pro" header as if it were current, paid value.
-    private var comingSoonSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "Coming Soon", subtitle: "Features planned for a future update.")
-
-            ProFeatureGate(
-                icon: "bell.badge.fill",
-                title: "Station Price Alerts",
-                description: "Get notified about E85 price changes. Arrives in an upcoming Pro update.",
-                availability: .comingSoon
-            ) {
-                StationAlertsView()
             }
         }
     }
