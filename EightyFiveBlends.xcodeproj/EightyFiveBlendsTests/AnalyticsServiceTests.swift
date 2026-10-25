@@ -82,10 +82,16 @@ final class AnalyticsMockURLProtocol: URLProtocol {
     }
 }
 
+/// Harmless fixed fake reporter ID — the positive tests never read the real persisted one.
+let analyticsTestReporterID = "00000000-0000-4000-8000-000000000085"
+
 private func makeMockedAnalyticsService() throws -> AnalyticsService {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [AnalyticsMockURLProtocol.self]
-    return try AnalyticsService(session: URLSession(configuration: configuration))
+    return try AnalyticsService(
+        interceptedTestSession: URLSession(configuration: configuration),
+        reporterIDProvider: { analyticsTestReporterID }
+    )
 }
 
 @Suite(.serialized)
@@ -135,10 +141,9 @@ struct AnalyticsServiceTests {
     @Test("send encodes event_name, occurred_at, app_version, and contributor_id")
     func send_encodesRequiredTopLevelFields() async throws {
         let occurredAt = Date(timeIntervalSince1970: 1_800_000_000)
-        // Read once up front, on the test's own (MainActor) context: the request handler below is
-        // a nonisolated `@Sendable` closure, which can't touch a MainActor static directly. The ID
-        // is persisted on first read, so this is the same value `send` puts in `contributor_id`.
-        let expectedContributorID = CommunityPriceService.anonymousReporterID
+        // The injected fixed fake reporter ID (see makeMockedAnalyticsService) — exactly what
+        // `send` must put in `contributor_id`.
+        let expectedContributorID = analyticsTestReporterID
 
         AnalyticsMockURLProtocol.requestHandler = { request in
             let body = try #require(request.httpBody)

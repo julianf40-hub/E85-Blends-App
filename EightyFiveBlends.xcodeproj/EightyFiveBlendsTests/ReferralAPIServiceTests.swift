@@ -107,7 +107,7 @@ struct ReferralAPIServiceTests {
         CapturingURLProtocol.reset()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CapturingURLProtocol.self]
-        return try ReferralAPIService(session: URLSession(configuration: configuration))
+        return try ReferralAPIService(interceptedTestSession: URLSession(configuration: configuration))
     }
 
     private static func validStatusJSON() -> Data {

@@ -134,7 +134,7 @@ struct ReferralModelsTests {
 
     @Test("Referral code is normalized (trim + uppercase) before being sent")
     func referralCode_trimAndUppercase() async throws {
-        let service = try ReferralAPIService(session: URLSession(configuration: {
+        let service = try ReferralAPIService(interceptedTestSession: URLSession(configuration: {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.protocolClasses = [ReferralModelsCapturingURLProtocol.self]
             return configuration

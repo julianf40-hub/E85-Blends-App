@@ -714,7 +714,7 @@ struct ReferralPresentationManagerContractTests {
         let service = FakeReferralAPIService()
         service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
         let manager = ReferralManager(
-            credentialStore: InMemoryReferralCredentialStore(),
+            testDoubleCredentialStore: InMemoryReferralCredentialStore(),
             environmentProvider: FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: "rc_user_1"),
             serviceFactory: { service }
@@ -746,7 +746,7 @@ struct ReferralPresentationManagerContractTests {
         let service = FakeReferralAPIService()
         service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
         let manager = ReferralManager(
-            credentialStore: InMemoryReferralCredentialStore(),
+            testDoubleCredentialStore: InMemoryReferralCredentialStore(),
             environmentProvider: FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: "rc_user_1"),
             serviceFactory: { service }
@@ -769,7 +769,7 @@ struct ReferralPresentationManagerContractTests {
         let service = FakeReferralAPIService()
         service.bootstrapResult = .success(ReferralBootstrapResponse(status: ReferralStatus(canApply: true), created: true))
         let manager = ReferralManager(
-            credentialStore: InMemoryReferralCredentialStore(),
+            testDoubleCredentialStore: InMemoryReferralCredentialStore(),
             environmentProvider: FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: "rc_user_1"),
             serviceFactory: { service }

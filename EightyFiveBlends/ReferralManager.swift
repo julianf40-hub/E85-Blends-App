@@ -142,6 +142,10 @@ final class ReferralManager {
     /// this MainActor-isolated type, and the default factory builds `ReferralAPIService`, whose
     /// initializer is MainActor-isolated under this project's default isolation.
     private let serviceFactory: @MainActor @Sendable () throws -> ReferralAPIServicing
+    /// 85Blends 2.4.1 — fixed at init, never mutated. False for every live-default instance in an
+    /// INTERNAL_BUILD or XCTest-hosted process (see ReferralAnalyticsSafetyPolicy); true otherwise,
+    /// or for an instance built by the test-double initializer with no live dependency.
+    private let writesPermitted: Bool
     private var bootstrapTask: Task<Void, Error>?
     /// The most recently QUEUED post-bootstrap operation (refresh or apply), used purely as a
     /// join point — every new operation awaits this before doing its own network call, then
@@ -181,7 +185,31 @@ final class ReferralManager {
         self.environmentProvider = environmentProvider ?? StoreKitReferralRevenueEnvironmentProvider()
         self.identityProvider = identityProvider ?? LiveReferralRevenueCatIdentityProvider()
         self.serviceFactory = serviceFactory ?? { try ReferralAPIService() }
+        self.writesPermitted = ReferralAnalyticsSafetyPolicy.live.allowsLiveWrites
     }
+
+    #if DEBUG || INTERNAL_BUILD
+    /// Test-double initializer: every dependency is REQUIRED, so no live default is ever built
+    /// here. Writes are permitted on this one instance only when none of the injected credential
+    /// store / environment provider / identity provider is a live type — passing a live one keeps
+    /// this instance blocked exactly like the live-default initializer. A live `ReferralAPIService`
+    /// returned by `serviceFactory` is independently blocked by its own `perform` gate.
+    init(
+        testDoubleCredentialStore credentialStore: ReferralCredentialStoring,
+        environmentProvider: ReferralRevenueEnvironmentProviding,
+        identityProvider: ReferralRevenueCatIdentityProviding,
+        serviceFactory: @escaping @MainActor @Sendable () throws -> ReferralAPIServicing
+    ) {
+        self.credentialStore = credentialStore
+        self.environmentProvider = environmentProvider
+        self.identityProvider = identityProvider
+        self.serviceFactory = serviceFactory
+        let injectsLiveDependency = credentialStore is KeychainReferralCredentialStore
+            || environmentProvider is StoreKitReferralRevenueEnvironmentProvider
+            || identityProvider is LiveReferralRevenueCatIdentityProvider
+        self.writesPermitted = injectsLiveDependency == false
+    }
+    #endif
 
     /// Best-effort, fire-and-forget startup entry point — see EightyFiveBlendsApp.swift's
     /// integration point. Never throws: delegates all preparation to `ensureBootstrapped()` and
@@ -351,6 +379,12 @@ final class ReferralManager {
     /// cleared afterward either way so a later call can retry once its own dependencies (identity,
     /// environment, network, Keychain) may have recovered.
     private func ensureBootstrapped() async throws {
+        // 85Blends 2.4.1 — first executable line: a blocked instance never touches
+        // hasBootstrappedThisLaunch/bootstrapTask, identity, Keychain, StoreKit, or serviceFactory.
+        guard writesPermitted else {
+            loadState = .failed(.notConfigured)
+            throw ReferralServiceError.notConfigured
+        }
         if hasBootstrappedThisLaunch { return }
 
         if let bootstrapTask {

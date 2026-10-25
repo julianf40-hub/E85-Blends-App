@@ -28,8 +28,29 @@ struct AnalyticsService {
     private let config: SupabaseConfig
     private let session: URLSession
     private let encoder: JSONEncoder
+    /// 85Blends 2.4.1 — fixed at init; see ReferralAnalyticsSafetyPolicy and `send`'s gate.
+    private let writesPermitted: Bool
+    /// 85Blends 2.4.1 — read only after `send`'s gate. Live default: CommunityPriceService's
+    /// anonymous reporter ID (resolved in the initializer body, not as a default-argument
+    /// expression — see ReferralManager.init for why).
+    private let reporterIDProvider: @MainActor @Sendable () -> String
 
-    init(session: URLSession = AnalyticsService.defaultSession) throws {
+    init(
+        session: URLSession = AnalyticsService.defaultSession,
+        reporterIDProvider: (@MainActor @Sendable () -> String)? = nil
+    ) throws {
+        try self.init(
+            session: session,
+            writesPermitted: ReferralAnalyticsSafetyPolicy.live.allowsLiveWrites,
+            reporterIDProvider: reporterIDProvider ?? { CommunityPriceService.anonymousReporterID }
+        )
+    }
+
+    private init(
+        session: URLSession,
+        writesPermitted: Bool,
+        reporterIDProvider: @escaping @MainActor @Sendable () -> String
+    ) throws {
         do {
             self.config = try SupabaseConfig.load()
         } catch {
@@ -41,7 +62,25 @@ struct AnalyticsService {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         self.encoder = encoder
+        self.writesPermitted = writesPermitted
+        self.reporterIDProvider = reporterIDProvider
     }
+
+    #if DEBUG || INTERNAL_BUILD
+    /// Test-only: permitted only when `session` is intercepted by a URLProtocol defined in the
+    /// .xctest bundle (ReferralAnalyticsSafetyPolicy.isInterceptedTestSession) — a default/live
+    /// session passed here stays blocked. The reporter ID is always an explicit test closure.
+    init(
+        interceptedTestSession session: URLSession,
+        reporterIDProvider: @escaping @MainActor @Sendable () -> String
+    ) throws {
+        try self.init(
+            session: session,
+            writesPermitted: ReferralAnalyticsSafetyPolicy.isInterceptedTestSession(session),
+            reporterIDProvider: reporterIDProvider
+        )
+    }
+    #endif
 
     private static var defaultSession: URLSession {
         let configuration = URLSessionConfiguration.default
@@ -62,7 +101,24 @@ struct AnalyticsService {
         properties: AnalyticsEventProperties = AnalyticsEventProperties(),
         now: Date = .now
     ) {
-        Task {
+        track(eventName, properties: properties, now: now) { work in
+            Task { await work() }
+        }
+    }
+
+    /// 85Blends 2.4.1 — the live policy check runs before `dispatch` (Task creation) is ever
+    /// invoked, so a blocked process never builds an AnalyticsService or schedules any work.
+    /// `dispatch` is a parameter only so tests can observe that nothing is dispatched; there is
+    /// deliberately no policy parameter, so no caller can supply a permissive one.
+    @MainActor
+    static func track(
+        _ eventName: AnalyticsEventName,
+        properties: AnalyticsEventProperties,
+        now: Date,
+        dispatch: (@escaping @MainActor @Sendable () async -> Void) -> Void
+    ) {
+        guard ReferralAnalyticsSafetyPolicy.live.allowsLiveWrites else { return }
+        dispatch {
             do {
                 let service = try AnalyticsService()
                 try await service.send(eventName: eventName, properties: properties, occurredAt: now)
@@ -83,11 +139,15 @@ struct AnalyticsService {
         properties: AnalyticsEventProperties,
         occurredAt: Date
     ) async throws {
+        // 85Blends 2.4.1 — before payload/reporter-ID creation and request construction.
+        guard writesPermitted else {
+            throw AnalyticsServiceError.notConfigured
+        }
         let payload = AnalyticsEventPayload(
             eventName: eventName,
             occurredAt: occurredAt,
             appVersion: Self.appVersion,
-            contributorID: CommunityPriceService.anonymousReporterID,
+            contributorID: reporterIDProvider(),
             properties: properties
         )
 

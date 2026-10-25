@@ -204,8 +204,13 @@ struct EightyFiveBlendsApp: App {
                     // injected ReferralRevenueCatIdentityProviding (see that file's own header),
                     // so a future manual-retry UI never needs to know it either, and never has to
                     // duplicate this startup ordering.
-                    Task {
-                        await ReferralManager.shared.bootstrapIfNeeded()
+                    //
+                    // 85Blends 2.4.1: never attached in an INTERNAL_BUILD or XCTest-hosted process
+                    // (see ReferralAnalyticsSafetyPolicy) — ReferralManager.shared is not even touched.
+                    if ReferralAnalyticsSafetyPolicy.live.allowsLiveWrites {
+                        Task {
+                            await ReferralManager.shared.bootstrapIfNeeded()
+                        }
                     }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
