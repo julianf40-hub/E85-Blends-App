@@ -51,8 +51,14 @@ struct ReferralAPIService: ReferralAPIServicing {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    /// 85Blends 2.4.1 — fixed at init; see ReferralAnalyticsSafetyPolicy and `perform`'s gate.
+    private let writesPermitted: Bool
 
     init(session: URLSession = ReferralAPIService.defaultSession) throws {
+        try self.init(session: session, writesPermitted: ReferralAnalyticsSafetyPolicy.live.allowsLiveWrites)
+    }
+
+    private init(session: URLSession, writesPermitted: Bool) throws {
         do {
             self.config = try SupabaseConfig.load()
         } catch {
@@ -61,7 +67,20 @@ struct ReferralAPIService: ReferralAPIServicing {
         self.session = session
         self.decoder = JSONDecoder()
         self.encoder = JSONEncoder()
+        self.writesPermitted = writesPermitted
     }
+
+    #if DEBUG || INTERNAL_BUILD
+    /// Test-only: permitted only when `session` is intercepted by a URLProtocol defined in the
+    /// .xctest bundle (ReferralAnalyticsSafetyPolicy.isInterceptedTestSession) — a default/live
+    /// session passed here stays blocked.
+    init(interceptedTestSession session: URLSession) throws {
+        try self.init(
+            session: session,
+            writesPermitted: ReferralAnalyticsSafetyPolicy.isInterceptedTestSession(session)
+        )
+    }
+    #endif
 
     private static var defaultSession: URLSession {
         let configuration = URLSessionConfiguration.default
@@ -118,6 +137,10 @@ struct ReferralAPIService: ReferralAPIServicing {
     }
 
     private func perform<Request: Encodable, Response: Decodable>(_ payload: Request) async throws -> Response {
+        // 85Blends 2.4.1 — before any payload encoding or request construction.
+        guard writesPermitted else {
+            throw ReferralServiceError.notConfigured
+        }
         var request = URLRequest(url: endpointURL())
         request.httpMethod = "POST"
         // Always-fresh: this is live account/progress state, never a candidate for the URL

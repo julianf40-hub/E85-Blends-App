@@ -226,7 +226,7 @@ struct ReferralManagerTests {
     ) -> ReferralManager {
         let service = service ?? FakeReferralAPIService()
         return ReferralManager(
-            credentialStore: store ?? InMemoryReferralCredentialStore(),
+            testDoubleCredentialStore: store ?? InMemoryReferralCredentialStore(),
             environmentProvider: environmentProvider ?? FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: appUserID),
             serviceFactory: { service }
@@ -1205,7 +1205,7 @@ struct ReferralManagerTests {
         let service = FakeReferralAPIService()
         service.bootstrapResult = .success(ReferralBootstrapResponse(status: sampleStatus(), created: true))
         let manager = ReferralManager(
-            credentialStore: InMemoryReferralCredentialStore(),
+            testDoubleCredentialStore: InMemoryReferralCredentialStore(),
             environmentProvider: FakeReferralEnvironmentProvider(environment: .production),
             identityProvider: FakeReferralRevenueCatIdentityProvider(appUserID: "rc_distinct_user_42"),
             serviceFactory: { service }
