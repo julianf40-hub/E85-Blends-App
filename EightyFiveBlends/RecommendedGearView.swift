@@ -140,18 +140,40 @@ struct FeaturedOfferCopyState: Equatable {
     }
 }
 
+/// RVP Supply's three non-product destinations, in one place so the More sponsor banner and the
+/// Recommended Gear sponsor card can never drift apart. Each still passes `FeaturedBrandLink` before
+/// `openURL`. No tracking parameters.
+nonisolated enum RVPSupplyDestination {
+    /// The More screen's sponsor banner.
+    static let homepage = URL(string: "https://rvpsupply.com")
+    /// The wheel configurator, opened by the center "Custom Wheels" action of the sponsor card.
+    static let configurator = URL(string: "https://customize.rvpsupply.com/")
+    /// The Wheels collection, opened by "View All RVP Wheels".
+    static let wheelsCollection = URL(string: "https://rvpsupply.com/collections/wheels-1")
+}
+
+/// The center action of the RVP wheel ring. It is an extra control alongside the nine wheels, never
+/// one of them. Presentation data only.
+nonisolated enum RVPConfiguratorAction {
+    static let title = "Custom Wheels"
+    static let subtitle = "Build Your Own"
+    static let accessibilityLabel = "Custom Wheels. Build your own."
+    static let accessibilityHint = "Opens the RVP Supply wheel configurator in your browser."
+}
+
 extension FeaturedBrand {
     /// RVP Supply's OEM+ beadlock wheels, shown as a labeled sponsor. The call to action opens the
-    /// wheel configurator, and the card's gallery (`RVPWheelProduct.catalog`) opens individual
-    /// products. The copy is deliberately conservative: no price, no performance or race claim,
+    /// Wheels collection, the ring's center action opens the configurator
+    /// (`RVPSupplyDestination.configurator`), and each wheel (`RVPWheelProduct.catalog`) opens its
+    /// own product. The copy is deliberately conservative: no price, no performance or race claim,
     /// and no claim of universal fitment.
     static let rvpSupplyWheels = FeaturedBrand(
         id: "rvp-supply-oem-beadlocks",
         name: "RVP Supply",
         tagline: "OEM+ Beadlock Wheels",
-        description: "Customize wheel finishes, beadlock rings, hardware and center caps. Save a mockup or request a quote.",
-        ctaTitle: "Build Your Wheels",
-        destinationURL: URL(string: "https://customize.rvpsupply.com/"),
+        description: "Nine OEM-style beadlock designs for supported fitments, or build your own.",
+        ctaTitle: "View All RVP Wheels",
+        destinationURL: RVPSupplyDestination.wheelsCollection,
         accessibilityDescription: "OEM plus beadlock wheels."
     )
 }
@@ -302,6 +324,59 @@ nonisolated enum FeaturedGalleryLayout {
     static func padding(forRowOf count: Int, columns: Int) -> Int {
         max(0, columns - count)
     }
+}
+
+/// The RVP wheel ring: nine wheels on a circle around the center configurator action, or, at
+/// accessibility text sizes or on a narrow card, a labeled list (configurator first, then the nine
+/// wheels in catalog order). Pure, so the thresholds and the geometry are testable without SwiftUI.
+nonisolated enum RVPWheelRingLayout {
+    /// The ring needs at least this much card content width; below it the list is used.
+    static let minimumRingWidth: CGFloat = 300
+    /// The ring's diameter never exceeds this, so it stops growing on iPad.
+    static let maximumRingDiameter: CGFloat = 360
+    /// Each wheel button's diameter as a share of the ring diameter (never below `minimumTapTarget`).
+    static let wheelFraction: CGFloat = 0.22
+    /// The center action's diameter as a share of the ring diameter (never below `minimumTapTarget`).
+    static let centerFraction: CGFloat = 0.36
+    static let minimumTapTarget: CGFloat = 44
+
+    /// Ring only at standard (non-accessibility) text sizes with enough width.
+    static func usesRing(availableWidth: CGFloat, isAccessibilitySize: Bool) -> Bool {
+        guard isAccessibilitySize == false, availableWidth.isFinite else { return false }
+        return availableWidth >= minimumRingWidth
+    }
+
+    static func ringDiameter(availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth.isFinite, availableWidth > 0 else { return minimumRingWidth }
+        return min(availableWidth, maximumRingDiameter)
+    }
+
+    static func wheelDiameter(ringDiameter: CGFloat) -> CGFloat {
+        max(minimumTapTarget, ringDiameter * wheelFraction)
+    }
+
+    static func centerDiameter(ringDiameter: CGFloat) -> CGFloat {
+        max(minimumTapTarget, ringDiameter * centerFraction)
+    }
+
+    /// Centers of `count` wheels, clockwise from 12 o'clock, inside a square of side `ringDiameter`.
+    /// The orbit radius keeps every wheel fully inside the square.
+    static func wheelCenters(count: Int, ringDiameter: CGFloat) -> [CGPoint] {
+        guard count > 0 else { return [] }
+        let wheel = wheelDiameter(ringDiameter: ringDiameter)
+        let half = ringDiameter / 2
+        let radius = max(0, half - wheel / 2)
+        return (0..<count).map { index in
+            let angle = (Double(index) / Double(count)) * 2 * Double.pi - Double.pi / 2
+            return CGPoint(x: half + radius * CGFloat(cos(angle)), y: half + radius * CGFloat(sin(angle)))
+        }
+    }
+
+    /// The visible 1-based badge number for a wheel at `index`.
+    static func badgeNumber(forIndex index: Int) -> Int { index + 1 }
+
+    /// The legend line under the ring, e.g. "1  OEM Hellcat Style".
+    static func legendEntry(index: Int, name: String) -> String { "\(badgeNumber(forIndex: index))  \(name)" }
 }
 
 /// Widths for a featured brand's official wordmark. The artwork is aspect-fit, so only widths are
@@ -669,6 +744,7 @@ struct RecommendedGearView: View {
                 total: pages.count,
                 statusMessage: linkMessages[brand.id],
                 openProduct: { product in openRVPProduct(product, sponsor: brand) },
+                openConfigurator: { openRVPConfigurator(sponsor: brand) },
                 openCollection: { openFeaturedBrand(brand) }
             )
         }
@@ -737,6 +813,22 @@ struct RecommendedGearView: View {
         openURL(url) { accepted in
             if accepted == false {
                 showLinkMessage("Unable to open the \(product.displayName) page right now.", for: brand)
+            }
+        }
+    }
+
+    // The ring's center action: same validation, openURL, and inline failure message as the others.
+    private func openRVPConfigurator(sponsor brand: FeaturedBrand) {
+        linkMessages[brand.id] = nil
+
+        guard let url = FeaturedBrandLink.validatedURL(RVPSupplyDestination.configurator) else {
+            showLinkMessage("The \(brand.name) wheel configurator link is unavailable right now.", for: brand)
+            return
+        }
+
+        openURL(url) { accepted in
+            if accepted == false {
+                showLinkMessage("Unable to open the \(brand.name) wheel configurator right now.", for: brand)
             }
         }
     }
@@ -978,11 +1070,13 @@ private enum FeaturedOfferStyle {
     }
 }
 
-/// Page-2 sponsor card: RVP Supply's OEM-style beadlock lineup as a 3x3 gallery. Labeled "Sponsor"
-/// (RVP Supply is an actual sponsor, so it is the one card here that may say so). Unlike the brand
-/// card it is not one big button: each wheel tile opens that wheel's own RVP product page, and
-/// "Build Your Wheels" opens the wheel configurator, all through the same https-only link flow.
-/// It is a separate view only so the approved eFlexFuel card stays untouched.
+/// Page-2 sponsor card: RVP Supply's nine OEM-style beadlock wheels on a ring around a center
+/// "Custom Wheels" configurator action (a labeled grid with the configurator first at accessibility
+/// sizes or on a narrow card). Labeled "Sponsor" (RVP Supply is an actual sponsor, so it is the one
+/// card here that may say so). Unlike the brand card it is not one big button: each wheel opens that
+/// wheel's own RVP product page, the center opens the configurator, and "View All RVP Wheels" opens
+/// the Wheels collection, all through the same https-only link flow. It is a separate view only so
+/// the approved eFlexFuel card stays untouched.
 private struct FeaturedSponsorCard: View {
     let brand: FeaturedBrand
     let products: [RVPWheelProduct]
@@ -990,14 +1084,49 @@ private struct FeaturedSponsorCard: View {
     let total: Int
     let statusMessage: String?
     let openProduct: (RVPWheelProduct) -> Void
+    let openConfigurator: () -> Void
     let openCollection: () -> Void
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    // The card's content width, measured (nil until the first layout, when the list is shown).
+    @State private var contentWidth: CGFloat?
+
+    private var usesRing: Bool {
+        guard let contentWidth else { return false }
+        return RVPWheelRingLayout.usesRing(
+            availableWidth: contentWidth,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 header
 
-                FeaturedWheelGallery(products: products, action: openProduct)
+                Group {
+                    if usesRing, let contentWidth {
+                        FeaturedWheelRing(
+                            products: products,
+                            ringDiameter: RVPWheelRingLayout.ringDiameter(availableWidth: contentWidth),
+                            openProduct: openProduct,
+                            openConfigurator: openConfigurator
+                        )
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            FeaturedConfiguratorListButton(action: openConfigurator)
+                            FeaturedWheelGallery(products: products, action: openProduct)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { contentWidth = proxy.size.width }
+                            .onChange(of: proxy.size.width) { _, width in contentWidth = width }
+                    }
+                )
 
                 FeaturedClaimPill(text: RVPWheelProduct.footnote)
 
@@ -1082,6 +1211,150 @@ private struct FeaturedSponsorCard: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(brand.sponsorHeaderAccessibilityLabel(position: position, total: total))
+    }
+}
+
+/// The nine wheels on a true ring around the center configurator action, each with a small visible
+/// number badge, and a noninteractive numbered legend directly under the ring with every full name.
+/// The legend is hidden from VoiceOver (each wheel button already speaks its full name). VoiceOver
+/// order: the center action, then wheels 1-9.
+private struct FeaturedWheelRing: View {
+    let products: [RVPWheelProduct]
+    let ringDiameter: CGFloat
+    let openProduct: (RVPWheelProduct) -> Void
+    let openConfigurator: () -> Void
+
+    var body: some View {
+        let wheel = RVPWheelRingLayout.wheelDiameter(ringDiameter: ringDiameter)
+        let center = RVPWheelRingLayout.centerDiameter(ringDiameter: ringDiameter)
+        let centers = RVPWheelRingLayout.wheelCenters(count: products.count, ringDiameter: ringDiameter)
+
+        VStack(spacing: 12) {
+            ZStack(alignment: .topLeading) {
+                Button(action: openConfigurator) {
+                    VStack(spacing: 2) {
+                        Text(RVPConfiguratorAction.title)
+                            .font(.caption.weight(.bold))
+                        Text(RVPConfiguratorAction.subtitle)
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(AppTheme.Colors.surfaceElevated)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.8)
+                    .padding(6)
+                    .frame(width: center, height: center)
+                    .background(AppTheme.Colors.textPrimary, in: Circle())
+                    .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(RVPConfiguratorAction.accessibilityLabel)
+                .accessibilityHint(RVPConfiguratorAction.accessibilityHint)
+                .accessibilityAddTraits(.isButton)
+                .accessibilitySortPriority(Double(products.count + 1))
+                .position(x: ringDiameter / 2, y: ringDiameter / 2)
+
+                ForEach(Array(zip(products.indices, products)), id: \.1.id) { index, product in
+                    FeaturedWheelRingButton(
+                        product: product,
+                        number: RVPWheelRingLayout.badgeNumber(forIndex: index),
+                        diameter: wheel,
+                        action: { openProduct(product) }
+                    )
+                    .accessibilitySortPriority(Double(products.count - index))
+                    .position(centers[index])
+                }
+            }
+            .frame(width: ringDiameter, height: ringDiameter)
+            .accessibilityElement(children: .contain)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(zip(products.indices, products)), id: \.1.id) { index, product in
+                    Text(RVPWheelRingLayout.legendEntry(index: index, name: product.displayName))
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// One wheel on the ring: the unmodified product photo in a circle with its number badge. The whole
+/// circle (at least 44pt) is the tap target and speaks the full product name.
+private struct FeaturedWheelRingButton: View {
+    let product: RVPWheelProduct
+    let number: Int
+    let diameter: CGFloat
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(product.assetName)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .clipShape(Circle())
+                .padding(3)
+                .frame(width: diameter, height: diameter)
+                .background(AppTheme.Colors.charcoal, in: Circle())
+                .overlay(Circle().strokeBorder(AppTheme.Colors.border, lineWidth: 1))
+                .overlay(alignment: .topTrailing) {
+                    Text("\(number)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.surfaceElevated)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(AppTheme.Colors.textPrimary, in: Circle())
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(product.accessibilityName)
+        .accessibilityHint("Opens RVP Supply product page.")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// The configurator action at the top of the list layout (accessibility sizes, narrow cards).
+private struct FeaturedConfiguratorListButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(RVPConfiguratorAction.title)
+                        .font(.subheadline.weight(.bold))
+                    Text(RVPConfiguratorAction.subtitle)
+                        .font(.caption)
+                }
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(AppTheme.Colors.charcoal, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(AppTheme.Colors.border, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(RVPConfiguratorAction.accessibilityLabel)
+        .accessibilityHint(RVPConfiguratorAction.accessibilityHint)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
