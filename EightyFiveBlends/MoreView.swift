@@ -458,16 +458,21 @@ struct MoreView: View {
     private func openSponsorLink() {
         sponsorLinkMessage = nil
 
-        guard let url = URL(string: "https://rvpsupply.com") else {
-            sponsorLinkMessage = "Shop link is unavailable right now."
+        guard let url = FeaturedBrandLink.validatedURL(RVPSupplyDestination.homepage) else {
+            showSponsorLinkMessage("Shop link is unavailable right now.")
             return
         }
 
         openURL(url) { accepted in
             if accepted == false {
-                sponsorLinkMessage = "Unable to open the shop link right now."
+                showSponsorLinkMessage("Unable to open the shop link right now.")
             }
         }
+    }
+
+    private func showSponsorLinkMessage(_ message: String) {
+        sponsorLinkMessage = message
+        AccessibilityNotification.Announcement(message).post()
     }
 
     // support@85blends.app is 85Blends' existing, official support address — see this row's own

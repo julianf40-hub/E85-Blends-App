@@ -131,7 +131,7 @@ struct FeaturedGearTests {
         #expect(sponsor.id == "rvp-supply-oem-beadlocks")
         #expect(sponsor.name == "RVP Supply")
         #expect(sponsor.tagline == "OEM+ Beadlock Wheels")
-        #expect(sponsor.description == "Nine OEM-style beadlock designs for supported fitments.")
+        #expect(sponsor.description == "Nine OEM-style beadlock designs for supported fitments, or build your own.")
         #expect(sponsor.ctaTitle == "View All RVP Wheels")
     }
 
@@ -189,7 +189,34 @@ struct FeaturedGearTests {
     func rvpSupply_collectionDestinationIsWheelsCollection() {
         let destination = FeaturedBrand.rvpSupplyWheels.destinationURL
         #expect(destination?.absoluteString == "https://rvpsupply.com/collections/wheels-1")
+        #expect(destination == RVPSupplyDestination.wheelsCollection)
         #expect(FeaturedBrandLink.validatedURL(destination) != nil)
+    }
+
+    @Test("The More sponsor banner opens the RVP Supply homepage over https")
+    func rvpSupply_homepageDestination() {
+        let destination = RVPSupplyDestination.homepage
+        #expect(destination?.absoluteString == "https://rvpsupply.com")
+        #expect(FeaturedBrandLink.validatedURL(destination) != nil)
+    }
+
+    @Test("The center Custom Wheels action opens exactly the configurator, with no tracking parameters")
+    func rvpSupply_configuratorDestination() {
+        let destination = RVPSupplyDestination.configurator
+        #expect(destination?.absoluteString == "https://customize.rvpsupply.com/")
+        #expect(destination?.query == nil)
+        #expect(destination?.fragment == nil)
+        #expect(FeaturedBrandLink.validatedURL(destination)?.absoluteString == "https://customize.rvpsupply.com/")
+        #expect(RVPConfiguratorAction.title == "Custom Wheels")
+        #expect(RVPConfiguratorAction.subtitle == "Build Your Own")
+    }
+
+    @Test("Homepage, configurator, and collection are three distinct destinations, none a product page")
+    func rvpSupply_destinationsAreDistinct() {
+        let urls = [RVPSupplyDestination.homepage, RVPSupplyDestination.configurator, RVPSupplyDestination.wheelsCollection]
+        #expect(Set(urls.compactMap { $0?.absoluteString }).count == 3)
+        let productURLs = Set(RVPWheelProduct.catalog.compactMap { $0.productURL })
+        #expect(urls.allSatisfy { $0.map { productURLs.contains($0) } == false })
     }
 
     @Test("Only well-formed https URLs with a host pass link validation")
@@ -443,8 +470,10 @@ struct FeaturedGearTests {
                 return brand.destinationURL
             }
         }
-        let all = brandURLs + RVPWheelProduct.catalog.map { $0.productURL }
-        #expect(all.count == 11)
+        let all = brandURLs
+            + [RVPSupplyDestination.homepage, RVPSupplyDestination.configurator]
+            + RVPWheelProduct.catalog.map { $0.productURL }
+        #expect(all.count == 13)
         #expect(all.allSatisfy { FeaturedBrandLink.validatedURL($0) != nil })
         // The app's own scheme would be routed back into the app by ContentView's .onOpenURL.
         #expect(all.allSatisfy { $0?.scheme?.lowercased() != "e85blends" })
@@ -506,6 +535,75 @@ struct FeaturedGearTests {
         #expect(rows.flatMap { $0 } == ids)
         #expect(rows.dropLast().allSatisfy { FeaturedGalleryLayout.padding(forRowOf: $0.count, columns: 2) == 0 })
         #expect(FeaturedGalleryLayout.padding(forRowOf: 1, columns: 2) == 1)
+    }
+
+    // MARK: - Wheel ring layout
+
+    @Test("The ring is used only at standard text sizes with enough width; otherwise the list")
+    func ringLayout_thresholds() {
+        #expect(RVPWheelRingLayout.usesRing(availableWidth: 307, isAccessibilitySize: false))
+        #expect(RVPWheelRingLayout.usesRing(availableWidth: 300, isAccessibilitySize: false))
+        #expect(RVPWheelRingLayout.usesRing(availableWidth: 299, isAccessibilitySize: false) == false)
+        #expect(RVPWheelRingLayout.usesRing(availableWidth: 400, isAccessibilitySize: true) == false)
+        #expect(RVPWheelRingLayout.usesRing(availableWidth: .nan, isAccessibilitySize: false) == false)
+    }
+
+    @Test("Ring buttons and the center action are never smaller than 44pt, and the ring is capped")
+    func ringLayout_tapTargets() {
+        for width: CGFloat in [300, 320, 343, 398, 700] {
+            let ring = RVPWheelRingLayout.ringDiameter(availableWidth: width)
+            #expect(ring <= RVPWheelRingLayout.maximumRingDiameter)
+            #expect(ring <= width)
+            #expect(RVPWheelRingLayout.wheelDiameter(ringDiameter: ring) >= 44)
+            #expect(RVPWheelRingLayout.centerDiameter(ringDiameter: ring) >= 44)
+        }
+    }
+
+    @Test("All nine wheels sit on one ring, inside its bounds, without overlapping each other or the center")
+    func ringLayout_geometry() {
+        for width: CGFloat in [300, 343, 360] {
+            let ring = RVPWheelRingLayout.ringDiameter(availableWidth: width)
+            let wheel = RVPWheelRingLayout.wheelDiameter(ringDiameter: ring)
+            let center = RVPWheelRingLayout.centerDiameter(ringDiameter: ring)
+            let points = RVPWheelRingLayout.wheelCenters(count: RVPWheelProduct.catalog.count, ringDiameter: ring)
+            #expect(points.count == 9)
+
+            let mid = CGPoint(x: ring / 2, y: ring / 2)
+            func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+
+            for point in points {
+                #expect(point.x - wheel / 2 >= -1e-6 && point.x + wheel / 2 <= ring + 1e-6)
+                #expect(point.y - wheel / 2 >= -1e-6 && point.y + wheel / 2 <= ring + 1e-6)
+                #expect(distance(point, mid) >= (wheel + center) / 2, "A wheel overlaps the center at \(width)pt")
+            }
+            for i in points.indices {
+                let next = points[(i + 1) % points.count]
+                #expect(distance(points[i], next) >= wheel, "Wheels \(i + 1) and its neighbor overlap at \(width)pt")
+            }
+            // Wheel 1 at 12 o'clock.
+            #expect(abs(points[0].x - mid.x) < 1e-6 && points[0].y < mid.y)
+        }
+        #expect(RVPWheelRingLayout.wheelCenters(count: 0, ringDiameter: 300).isEmpty)
+    }
+
+    @Test("Badges and the legend number the nine wheels 1-9 with their full names, in catalog order")
+    func ringLayout_badgesAndLegend() {
+        let products = RVPWheelProduct.catalog
+        #expect(products.indices.map(RVPWheelRingLayout.badgeNumber(forIndex:)) == Array(1...9))
+        for (index, product) in products.enumerated() {
+            #expect(RVPWheelRingLayout.legendEntry(index: index, name: product.displayName) == "\(index + 1)  \(product.displayName)")
+        }
+    }
+
+    @Test("The configurator's VoiceOver text names it and claims nothing unsupported")
+    func configurator_accessibilityCopy() {
+        #expect(RVPConfiguratorAction.accessibilityLabel == "Custom Wheels. Build your own.")
+        #expect(RVPConfiguratorAction.accessibilityHint.contains("configurator"))
+        Self.assertAvoids(
+            ["official partner", "affiliate", "exclusive", "endorse"] + Self.unsupportedClaims,
+            in: [RVPConfiguratorAction.title, RVPConfiguratorAction.subtitle,
+                 RVPConfiguratorAction.accessibilityLabel, RVPConfiguratorAction.accessibilityHint]
+        )
     }
 
     @Test("Degenerate input never traps and never drops a tile")
