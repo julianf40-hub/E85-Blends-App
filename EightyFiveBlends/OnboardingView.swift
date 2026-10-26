@@ -16,6 +16,7 @@ struct OnboardingView: View {
     @State private var disclaimerAcknowledged = false
     @State private var isShowingFullDisclaimer = false
     @State private var disclaimerGuidanceMessage: String?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ZStack {
@@ -37,7 +38,8 @@ struct OnboardingView: View {
                 .accessibilityHidden(true)
 
             // Content scrolls so every Dynamic Type size (including accessibility sizes) fits;
-            // the primary action stays pinned and always reachable below it.
+            // the primary action stays pinned below it — except at accessibility sizes, where it
+            // scrolls with the content so the pinned footer can't cover the safety note.
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
@@ -47,9 +49,15 @@ struct OnboardingView: View {
                         disclaimerCard
                     }
                     .padding(24)
+
+                    if usesStackedLayout {
+                        footer
+                    }
                 }
 
-                footer
+                if usesStackedLayout == false {
+                    footer
+                }
             }
         }
         .sheet(isPresented: $isShowingFullDisclaimer) {
@@ -156,14 +164,7 @@ struct OnboardingView: View {
                 safetyPoint("85Blends is not professional mechanical, legal, financial, or regulatory advice.")
             }
 
-            Toggle(isOn: $disclaimerAcknowledged) {
-                Text("I understand these calculations are estimates and I am responsible for verifying fuel compatibility.")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AppTheme.Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .tint(AppTheme.Colors.accentGreen)
-            .accessibilityHint("Required to start using 85Blends.")
+            acknowledgmentToggle
             .padding(14)
             .background(AppTheme.Colors.surface)
             .overlay(
@@ -211,6 +212,32 @@ struct OnboardingView: View {
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var acknowledgmentToggle: some View {
+        let label = Text("I understand these calculations are estimates and I am responsible for verifying fuel compatibility.")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(AppTheme.Colors.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if usesStackedLayout {
+            // The label gets the full card width above the switch instead of being squeezed beside
+            // it; the Toggle keeps the same label so VoiceOver reads one combined control.
+            VStack(alignment: .leading, spacing: 12) {
+                label
+                    .accessibilityHidden(true)
+                Toggle(isOn: $disclaimerAcknowledged) { label }
+                    .labelsHidden()
+                    .tint(AppTheme.Colors.accentGreen)
+                    .accessibilityHint("Required to start using 85Blends.")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Toggle(isOn: $disclaimerAcknowledged) { label }
+                .tint(AppTheme.Colors.accentGreen)
+                .accessibilityHint("Required to start using 85Blends.")
+        }
     }
 
     private var footer: some View {
@@ -264,6 +291,10 @@ struct OnboardingView: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var usesStackedLayout: Bool {
+        OnboardingQuickStart.usesStackedLayout(isAccessibilitySize: dynamicTypeSize.isAccessibilitySize)
     }
 
     private var canComplete: Bool {

@@ -146,4 +146,12 @@ struct OnboardingQuickStartTests {
         // Mirrors PreferencesView's Reset Onboarding, which sets the flag back to false.
         #expect(OnboardingQuickStart.shouldPresent(hasCompletedOnboarding: false))
     }
+
+    // MARK: Dynamic Type layout
+
+    @Test("Accessibility text sizes use the stacked, scrolling-footer layout")
+    func accessibilitySizes_useStackedLayout() {
+        #expect(OnboardingQuickStart.usesStackedLayout(isAccessibilitySize: true))
+        #expect(OnboardingQuickStart.usesStackedLayout(isAccessibilitySize: false) == false)
+    }
 }
