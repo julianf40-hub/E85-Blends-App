@@ -28,6 +28,13 @@ enum OnboardingQuickStart {
         hasCompletedOnboarding == false
     }
 
+    /// At accessibility Dynamic Type sizes the screen switches to a stacked layout: the
+    /// acknowledgment label sits above its switch, and the Start action scrolls with the content
+    /// instead of being pinned, so a tall footer can never cover the safety items.
+    static func usesStackedLayout(isAccessibilitySize: Bool) -> Bool {
+        isAccessibilitySize
+    }
+
     /// Completion requires explicit acknowledgment of the safety disclaimer. A vehicle is never
     /// required — it can be added later in Garage.
     static func canComplete(disclaimerAcknowledged: Bool) -> Bool {
