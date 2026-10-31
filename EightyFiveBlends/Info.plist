@@ -24,8 +24,6 @@
 		<string>comgooglemapsurl</string>
 		<string>waze</string>
 	</array>
-	<key>NLR_API_KEY</key>
-	<string>oZqG4yF2uqSegQ8BIJtrUFq6DbtPQjB1XG6OPrck</string>
 	<key>REVENUECAT_PUBLIC_SDK_KEY_INTERNAL</key>
 	<string>appl_dRkEJFMexFQxPbIqDKscghPEJKr</string>
 	<key>REVENUECAT_PUBLIC_SDK_KEY_PRODUCTION</key>
