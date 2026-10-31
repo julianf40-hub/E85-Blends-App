@@ -1,7 +1,9 @@
 import Foundation
 import os
 
-// Value-only boundary: the extension never opens SwiftData, CloudKit, or the network.
+// Value-only boundary: the extension never opens SwiftData or CloudKit. Its only network use is
+// the bounded NLR station search in NearbyE85WidgetRefreshCoordinator, run by the manual refresh
+// AppIntent and by the throttled, timeline-driven automatic refresh (NearbyE85AutomaticRefresh).
 nonisolated enum NearbyE85Configuration {
     static let kind = "NearbyE85"
     static var appGroup: String? {
@@ -162,9 +164,13 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
     // map needs the user's own point, not just distances relative to it.
     var userLatitude: Double? = nil
     var userLongitude: Double? = nil
+    // 85Blends 2.4.1 — when the station catalogue actually read NLR for this answer (earlier than `updatedAt`
+    // for a proxy cache hit). Provenance only: freshness, expiry and labels stay on the local `updatedAt` and
+    // `locationAt`. Optional, so snapshots written before this field decode unchanged (nil).
+    var sourceFetchedAt: Date? = nil
 
     static func make(stations: [NearbyE85Station], radiusMiles: Double, updatedAt: Date, locationAt: Date,
-                      userLatitude: Double? = nil, userLongitude: Double? = nil) -> Self {
+                      userLatitude: Double? = nil, userLongitude: Double? = nil, sourceFetchedAt: Date? = nil) -> Self {
         var seen = Set<String>()
         let nearest = stations.filter {
             !$0.id.isEmpty && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -177,7 +183,8 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
             .flatMap { StationDataValidation.isValidCoordinate(latitude: $0.0, longitude: $0.1) ? $0 : nil }
         return Self(version: schemaVersion, state: nearest.isEmpty ? .noStations : .ready,
                     stations: Array(nearest), radiusMiles: radiusMiles, updatedAt: updatedAt, locationAt: locationAt,
-                    userLatitude: validUser?.0, userLongitude: validUser?.1)
+                    userLatitude: validUser?.0, userLongitude: validUser?.1,
+                    sourceFetchedAt: sourceFetchedAt.flatMap { $0 <= updatedAt ? $0 : nil })
     }
 
     static func permissionRequired(at date: Date) -> Self {
@@ -191,6 +198,9 @@ nonisolated struct NearbyE85Snapshot: Codable, Equatable, Sendable {
     func isValid(at date: Date) -> Bool {
         guard version == Self.schemaVersion,
               StationDataValidation.isValidTimestamp(updatedAt, asOf: date),
+              // Optional catalogue provenance: when present it must be a valid time no later than the search itself,
+              // so a corrupt/future value can never win a same-query replacement decision. Missing (legacy) is fine.
+              sourceFetchedAt.map({ StationDataValidation.isValidTimestamp($0, asOf: date) && $0 <= updatedAt }) ?? true,
               radiusMiles.isFinite, radiusMiles > 0, radiusMiles <= 100,
               stations.count <= 3,
               Set(stations.map(\.id)).count == stations.count else { return false }
@@ -250,43 +260,80 @@ nonisolated struct NearbyE85Cache {
     // 85Blends 2.4.1 performance audit (Phase 2A) — signposts/logs below are purely
     // observational (see NearbyE85Diagnostics's own no-PII rule); none of them change this
     // function's control flow, return value, or the bytes it reads/writes.
+    //
+    // Reads are deliberately NOT file-coordinated: atomic replacement already guarantees a
+    // reader sees one whole snapshot, and leaving reads uncoordinated means `update` can re-read
+    // inside its own coordinated write without a nested same-path coordination (deadlock risk).
     func read(now: Date = .now) -> NearbyE85Snapshot? {
         let signpostState = NearbyE85Diagnostics.begin("Cache.read")
         defer { NearbyE85Diagnostics.end("Cache.read", signpostState) }
-        guard let fileURL,
-              let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536,
-              let data = try? Data(contentsOf: fileURL),
-              let value = try? JSONDecoder().decode(NearbyE85Snapshot.self, from: data),
-              value.isValid(at: now) else {
+        guard let fileURL, let value = Self.decode(at: fileURL, now: now) else {
             NearbyE85Diagnostics.logger.debug("Cache.read: no valid snapshot")
             return nil
         }
+        return value
+    }
+
+    private static func decode(at url: URL, now: Date) -> NearbyE85Snapshot? {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536,
+              let data = try? Data(contentsOf: url),
+              let value = try? JSONDecoder().decode(NearbyE85Snapshot.self, from: data),
+              value.isValid(at: now) else { return nil }
         NearbyE85Diagnostics.logger.debug("Cache.read: ok bytes=\(data.count, privacy: .public)")
         return value
     }
 
-    // App is the sole writer. No private-container fallback: missing entitlements must never
-    // look like successful sharing. Atomic replacement gives concurrent readers whole snapshots.
+    enum UpdateResult: Equatable { case written, unchanged, rejected }
+
+    // Writers: the app (NearbyE85Publisher) and the widget extension's own refresh
+    // (NearbyE85WidgetRefreshCoordinator). EVERY write goes through `update`, which holds one
+    // cross-process NSFileCoordinator write lock on the snapshot file across read → decide →
+    // replace, so a writer's precondition is always evaluated against the bytes it is about to
+    // replace — no lost updates between processes. (Atomic replacement alone only prevents torn
+    // bytes, not lost updates.) No private-container fallback: missing entitlements must never
+    // look like successful sharing.
     @discardableResult
     func write(_ snapshot: NearbyE85Snapshot, now: Date = .now) throws -> Bool {
+        try update(now: now) { _ in snapshot } == .written
+    }
+
+    /// Coordinated compare-and-write. `make` receives the latest valid snapshot read INSIDE the
+    /// coordinated section and returns the snapshot to store, or nil to reject the write (the
+    /// file is left untouched). Unchanged content is never rewritten.
+    func update(now: Date = .now, _ make: (NearbyE85Snapshot?) throws -> NearbyE85Snapshot?) throws -> UpdateResult {
         let signpostState = NearbyE85Diagnostics.begin("Cache.write")
         defer { NearbyE85Diagnostics.end("Cache.write", signpostState) }
         guard let fileURL else { throw CocoaError(.fileNoSuchFile) }
-        guard snapshot.isValid(at: now) else { throw CocoaError(.fileWriteInvalidFileName) }
-        if read(now: now) == snapshot {
-            NearbyE85Diagnostics.logger.debug("Cache.write: unchanged, skipped")
-            return false
-        }
-        let data = try JSONEncoder().encode(snapshot)
-        guard data.count <= 65_536 else { throw CocoaError(.fileWriteOutOfSpace) }
         var directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try directory.setResourceValues(values)
-        try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        NearbyE85Diagnostics.logger.debug("Cache.write: ok bytes=\(data.count, privacy: .public)")
-        return true
+
+        var coordinationError: NSError?
+        var result: Result<UpdateResult, Error> = .success(.rejected)
+        NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: fileURL, options: .forReplacing,
+                                                         error: &coordinationError) { url in
+            result = Result {
+                let latest = Self.decode(at: url, now: now)
+                guard let snapshot = try make(latest) else {
+                    NearbyE85Diagnostics.logger.debug("Cache.write: precondition rejected")
+                    return .rejected
+                }
+                guard snapshot.isValid(at: now) else { throw CocoaError(.fileWriteInvalidFileName) }
+                if latest == snapshot {
+                    NearbyE85Diagnostics.logger.debug("Cache.write: unchanged, skipped")
+                    return .unchanged
+                }
+                let data = try JSONEncoder().encode(snapshot)
+                guard data.count <= 65_536 else { throw CocoaError(.fileWriteOutOfSpace) }
+                try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                NearbyE85Diagnostics.logger.debug("Cache.write: ok bytes=\(data.count, privacy: .public)")
+                return .written
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        return try result.get()
     }
 }
 
