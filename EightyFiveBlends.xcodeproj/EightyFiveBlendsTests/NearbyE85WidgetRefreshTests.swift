@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import Testing
 import WidgetKit
 @testable import EightyFiveBlends
@@ -555,6 +556,61 @@ struct NearbyE85WidgetRefreshTests {
         #expect(search.calls == 0)
         #expect(h.cache.read(now: now) == seeded)
         #expect(h.requestStore.pendingRequestDate() == now)
+    }
+
+    @Test func tapAfterEveryWaiterCancelledStartsFreshAttemptInsteadOfInheritingCancellation() async throws {
+        let location = FakeLocation(fix(phoenix))
+        let search = FakeSearch()
+        search.results = [result("Phoenix E85", street: "1 Main St", at: (33.45, -112.07))]
+        search.gated = true
+        let h = harness(location: location, search: search)
+
+        // The first attempt is cancelled while its search is still unwinding (held by the gate).
+        let first = Task { await h.coordinator.refresh() }
+        while search.gate == nil { await Task.yield() }
+        let firstGate = try #require(search.gate)
+        search.gate = nil
+        search.gated = false
+        first.cancel()
+        for _ in 0..<20 { await Task.yield() }
+
+        // A new tap in that window must run its own attempt, not join the cancelled one.
+        let second = Task { await h.coordinator.refresh() }
+        for _ in 0..<200 where search.calls < 2 { await Task.yield() }
+        firstGate.resume()
+
+        #expect(await second.value == .updated)
+        #expect(search.calls == 2)
+        #expect(location.calls == 2)
+        let firstOutcome = await first.value
+        #expect(firstOutcome == .cancelled || firstOutcome == .superseded)
+        // The older attempt finishing late never overwrites the newer attempt's status.
+        #expect(h.statusStore.read()?.outcome == .updated)
+        #expect(h.cache.read(now: now)?.state == .ready)
+    }
+
+    @Test func cachedSnapshotFollowsAppPermissionNotWidgetGrant() throws {
+        let cached = NearbyE85Snapshot.make(
+            stations: [NearbyE85Station(id: "s", name: "Phoenix E85", address: "1 Main St", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 0.5, price: nil)],
+            radiusMiles: 25, updatedAt: now.addingTimeInterval(-7_200), locationAt: now.addingTimeInterval(-7_200),
+            userLatitude: phoenix.latitude, userLongitude: phoenix.longitude)
+
+        // App location allowed (2.4.0 users who have not granted widget location yet): the app-written
+        // cache stays visible, and it still reads as an older location rather than a fresh fix.
+        for status in [CLAuthorizationStatus.authorizedWhenInUse, .authorizedAlways] {
+            let shown = try #require(NearbyE85Provider.displayableSnapshot(appAuthorization: status, now: now) { cached })
+            #expect(shown == cached)
+            #expect(shown.isStale(at: now))
+        }
+        // App location denied, restricted, or never granted: cached stations are hidden and never read.
+        for status in [CLAuthorizationStatus.denied, .restricted, .notDetermined] {
+            var read = false
+            let shown = NearbyE85Provider.displayableSnapshot(appAuthorization: status, now: now) { read = true; return cached }
+            #expect(shown?.state == .permissionRequired)
+            #expect(shown?.stations.isEmpty == true)
+            #expect(read == false)
+        }
     }
 
     @Test func fixerCancelledBeforeStartNeverStartsCoreLocation() async {
