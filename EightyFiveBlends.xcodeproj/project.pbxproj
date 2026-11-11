@@ -320,6 +320,7 @@
 				2A3A1C0316C5DB80424AA1B0 /* Sources */,
 				D6711754312CFD3ABDA2FA26 /* Frameworks */,
 				DF3214010E029A560DB7B611 /* Resources */,
+				A1B2C3D4E5F60718293A4B5C /* Bundle Paused Price Alerts View Sources */,
 			);
 			buildRules = (
 			);
@@ -410,6 +411,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D4E5F60718293A4B5C /* Bundle Paused Price Alerts View Sources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/EightyFiveBlends/StationsView.swift",
+				"$(SRCROOT)/EightyFiveBlends/MoreView.swift",
+			);
+			name = "Bundle Paused Price Alerts View Sources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/PausedPriceAlertsSources/StationsView.swift.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/PausedPriceAlertsSources/MoreView.swift.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copies the two view sources PausedPriceAlertsEntryTests inspects into the test bundle, so the\n# tests read them from the bundle instead of a build-machine path that may not exist where tests run.\nset -eu\ndest=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/PausedPriceAlertsSources\"\nmkdir -p \"$dest\"\ncp \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\ncp \"${SCRIPT_INPUT_FILE_1}\" \"${SCRIPT_OUTPUT_FILE_1}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		2A3A1C0316C5DB80424AA1B0 /* Sources */ = {
