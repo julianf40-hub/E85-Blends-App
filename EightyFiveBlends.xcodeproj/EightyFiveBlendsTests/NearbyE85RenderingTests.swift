@@ -871,4 +871,53 @@ final class NearbyE85MapMarkerAnchorTests: XCTestCase {
             XCTAssertEqual(size.height, withoutBadgeSizes[0].height, accuracy: 0.5)
         }
     }
+
+    // MARK: - 2.4.1 Large ready-snapshot / no-map fallback
+
+    /// Deterministic: the "map failed" state is simply `mapRender: nil` on a ready snapshot — no
+    /// Airplane Mode or MapKit tile behavior involved. ImageRenderer output only; this is not a
+    /// WidgetKit Home Screen render.
+    func testLargeReadySnapshotWithoutMapRendersCompactFallbackWithReload() throws {
+        let now = Date.now
+        let (nearest, second, third) = phoenixStations(now: now)
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second, third], radiusMiles: 25,
+                                              updatedAt: now.addingTimeInterval(-5_220), locationAt: now.addingTimeInterval(-5_220),
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let notice = "Last refresh couldn't access location"
+        let states: [(String, NearbyE85Entry)] = [
+            ("notice", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil, refreshNotice: notice)),
+            ("plain", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil)),
+            ("refreshing", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil, isRefreshing: true)),
+        ]
+        for (name, entry) in states {
+            for scheme in [ColorScheme.light, .dark] {
+                attach(try render(entry, family: .systemLarge, size: Self.largeSize, colorScheme: scheme),
+                       name: "nearby-large-nomap-\(name)-\(scheme)")
+            }
+            attach(try render(entry, family: .systemLarge, size: Self.largeSize, renderingMode: .accented),
+                   name: "nearby-large-nomap-\(name)-accented")
+
+            // The header (title, "Map unavailable", notice, compact ages, Reload) must stay a small
+            // strip, not the 60% map area the old Spacer-filled fallback occupied.
+            for (sizeName, dynamicType, maxFraction) in [("standard", DynamicTypeSize.large, 0.35),
+                                                          ("ax3", DynamicTypeSize.accessibility3, 0.6)] {
+                let header = NearbyE85WidgetView(entry: entry, family: .systemLarge).largeNoMapHeader(snapshot)
+                    .environment(\.dynamicTypeSize, dynamicType)
+                    .frame(width: Self.largeSize.width)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(Color.white)
+                let renderer = ImageRenderer(content: header)
+                renderer.scale = 3
+                let image = try XCTUnwrap(renderer.uiImage)
+                attach(image, name: "nearby-large-nomap-header-\(name)-\(sizeName)")
+                XCTAssertLessThan(image.size.height, Self.largeSize.height * maxFraction,
+                                  "\(name)/\(sizeName): fallback header grew past a compact strip")
+                // Reload's 30pt tap target fits, so the header is never shorter than the button.
+                XCTAssertGreaterThanOrEqual(image.size.height, 30)
+            }
+        }
+        // The refreshing state reuses the shared button's existing in-progress rule.
+        XCTAssertTrue(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: true))
+        XCTAssertFalse(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: false))
+    }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import WidgetKit
+import CoreLocation
 @testable import EightyFiveBlends
 
 /// 85Blends 2.4.1 — NearbyE85WidgetRefreshCoordinator, the widget's own app-closed refresh. Every
@@ -898,5 +899,78 @@ struct NearbyE85WidgetRefreshTests {
         #expect(store.read() == nil)
         status.outcome = .updated
         #expect(store.finish(status) == false)
+    }
+
+    // MARK: - 2.4.1 Large no-map fallback and attempt-specific denied notice
+
+    private func readyPhoenixSnapshot() -> NearbyE85Snapshot {
+        NearbyE85Snapshot.make(
+            stations: [NearbyE85Station(id: "a", name: "Phoenix E85", address: "1 Main St", latitude: 33.45, longitude: -112.07,
+                                        distanceMiles: 0.4, price: NearbyE85Price(dollarsPerGallon: 4.99, reportedAt: now.addingTimeInterval(-21 * 86_400), source: .community))],
+            radiusMiles: 25, updatedAt: now.addingTimeInterval(-3_600), locationAt: now.addingTimeInterval(-3_600),
+            userLatitude: phoenix.latitude, userLongitude: phoenix.longitude)
+    }
+
+    @Test func deniedAttemptNoticeDescribesThePastAttemptNotTheCurrentPermission() {
+        let denied = NearbyE85RefreshStatus(attemptID: UUID(), attemptStartedAt: now, outcome: .locationPermissionDenied, finishedAt: now)
+        let notice = NearbyE85RefreshFeedback.notice(status: denied, now: now)
+        #expect(notice == "Last refresh couldn't access location")
+        // Still distinct from the other failure kinds.
+        for (outcome, text) in [(NearbyE85RefreshStatus.Outcome.locationUnavailable, "Couldn't get location"),
+                                (.offline, "Offline · showing saved"), (.timedOut, "Refresh timed out"),
+                                (.widgetLocationNotAuthorized, "Widget location off")] {
+            let status = NearbyE85RefreshStatus(attemptID: UUID(), attemptStartedAt: now, outcome: outcome, finishedAt: now)
+            #expect(NearbyE85RefreshFeedback.notice(status: status, now: now) == text)
+            #expect(text != notice)
+        }
+        #expect(NearbyE85WidgetRefreshCoordinator.outcome(for: CLError(.denied)) == .locationPermissionDenied)
+        #expect(NearbyE85WidgetRefreshCoordinator.outcome(for: CLError(.locationUnknown)) == .locationUnavailable)
+    }
+
+    @Test func deniedAttemptNoticeOverlaysAReadySnapshotThenExpiresOrClearsOnSuccess() async {
+        let snapshot = readyPhoenixSnapshot()
+        let denied = NearbyE85RefreshStatus(attemptID: UUID(), attemptStartedAt: now, outcome: .locationPermissionDenied, finishedAt: now)
+        let inputs = NearbyE85Provider.ProInputs(snapshot: snapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil,
+                                                 areaRelevance: inArea, refreshStatus: denied)
+        let timeline = await NearbyE85Provider.timeline(access: .pro, now: now) { inputs }
+        let first = timeline.entries.first
+        #expect(first?.snapshot?.stations.count == 1, "cached stations stay; the notice is an annotation")
+        #expect(first?.mapRender == nil)
+        #expect(first?.refreshNotice == "Last refresh couldn't access location")
+        // The report's own date is never touched by the notice or the timeline.
+        #expect(first?.snapshot?.stations.first?.price?.reportedAt == now.addingTimeInterval(-21 * 86_400))
+        let expiry = now.addingTimeInterval(NearbyE85RefreshFeedback.noticeLifetime)
+        #expect(timeline.entries.first { $0.date == expiry }?.refreshNotice == nil, "notice expires on schedule")
+
+        var succeeded = denied
+        succeeded.outcome = .updated
+        let afterSuccess = await NearbyE85Provider.timeline(access: .pro, now: now) {
+            NearbyE85Provider.ProInputs(snapshot: snapshot, zoomLevel: .default, mapRender: nil, pendingRefreshAt: nil,
+                                        areaRelevance: inArea, refreshStatus: succeeded)
+        }
+        #expect(afterSuccess.entries.allSatisfy { $0.refreshNotice == nil })
+    }
+
+    @Test func genuinePermissionDenialStillHidesCachedStations() async {
+        let denied = NearbyE85RefreshStatus(attemptID: UUID(), attemptStartedAt: now, outcome: .locationPermissionDenied, finishedAt: now)
+        let timeline = await NearbyE85Provider.timeline(access: .pro, now: now) {
+            NearbyE85Provider.ProInputs(snapshot: .permissionRequired(at: now), zoomLevel: .default, mapRender: nil,
+                                        pendingRefreshAt: nil, areaRelevance: inArea, refreshStatus: denied)
+        }
+        for entry in timeline.entries {
+            #expect(entry.snapshot?.state != .ready)
+            #expect(entry.snapshot?.stations.isEmpty ?? true)
+        }
+    }
+
+    @Test func largeNoMapFallbackAnnouncesMapUnavailableNoticeAndAges() {
+        let entry = NearbyE85Entry(date: now, snapshot: readyPhoenixSnapshot(), access: .pro, mapRender: nil,
+                                   refreshNotice: "Last refresh couldn't access location")
+        let label = NearbyE85WidgetView(entry: entry, family: .systemLarge).largeNoMapAccessibilityLabel
+        #expect(label.hasPrefix("Nearby E85. Map unavailable"))
+        #expect(label.contains("Last refresh couldn't access location"))
+        #expect(label.contains("Location from 1 hour ago"))
+        #expect(label.contains("Stations searched 1 hour ago"))
+        #expect(!label.contains("21 days"), "a price report's age is never relabeled as a refresh age")
     }
 }

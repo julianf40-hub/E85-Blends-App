@@ -205,7 +205,7 @@ nonisolated extension NearbyE85RefreshFeedback {
               now.timeIntervalSince(finishedAt) >= 0, now.timeIntervalSince(finishedAt) < noticeLifetime else { return nil }
         switch status.outcome {
         case .widgetLocationNotAuthorized: return "Widget location off"
-        case .locationPermissionDenied: return "Location access off"
+        case .locationPermissionDenied: return "Last refresh couldn't access location"
         case .locationUnavailable: return "Couldn't get location"
         case .offline: return "Offline · showing saved"
         case .networkFailed: return "Couldn't reach stations"
