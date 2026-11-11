@@ -5,12 +5,19 @@
 //  2.4.1: Station Price Alerts is paused, so its "Coming soon" / "Arrives in an upcoming Pro
 //  update" promotional cards were removed from Stations and More. SwiftUI view composition has
 //  no semantic seam to inspect without new dependencies, so this is a source-level guard that
-//  reads the view files from the repo checkout (#filePath) and asserts the teaser stays gone
-//  while Trip Planner and Advanced Fuel Analytics remain.
+//  asserts the teaser stays gone while Trip Planner and Advanced Fuel Analytics remain.
+//
+//  The view sources are copied into this test bundle at build time by the test target's
+//  "Bundle Paused Price Alerts View Sources" Run Script phase, and read from the bundle here.
+//  Reading them via #filePath failed on Xcode Cloud: #filePath is the build machine's checkout
+//  path, which does not exist where the tests run. A missing bundled copy is a test failure.
 //
 
 import Foundation
 import Testing
+
+/// Locates this test bundle (Bundle(for:) needs a class).
+private final class BundleToken {}
 
 struct PausedPriceAlertsEntryTests {
 
@@ -24,11 +31,11 @@ struct PausedPriceAlertsEntryTests {
     // Plain POSIX open/fstat/read with a finite byte cap. String(contentsOf:) stalled when the
     // Simulator-hosted bundle read host files, so this avoids Foundation file coordination.
     private static func appSource(_ fileName: String) throws -> String {
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // EightyFiveBlendsTests
-            .deletingLastPathComponent() // EightyFiveBlends.xcodeproj
-            .deletingLastPathComponent() // repo root
-        let path = repoRoot.appendingPathComponent("EightyFiveBlends").appendingPathComponent(fileName).path
+        guard let resources = Bundle(for: BundleToken.self).resourceURL else {
+            throw SourceReadError(description: "test bundle has no resource directory")
+        }
+        let path = resources.appendingPathComponent("PausedPriceAlertsSources")
+            .appendingPathComponent(fileName + ".txt").path
 
         let fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
