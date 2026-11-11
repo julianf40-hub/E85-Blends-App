@@ -18,22 +18,19 @@ import Foundation
 
 enum ReleaseNotes {
     /// The app version `currentHighlights` was written for. Not read from the bundle on purpose.
-    static let highlightsVersion = "2.4.0"
+    static let highlightsVersion = "2.4.1"
 
     /// This release's customer-facing highlights, in display order. Keep these short, concrete,
     /// and free of internal engineering/branch/build/QA language — this is shown directly to
     /// users in both AboutView and the What's New popup.
     static let currentHighlights: [String] = [
-        "New Nearby E85 Widget — see nearby E85 stations right from your Home Screen with Small, Medium, and Large layouts.",
-        "Community Ethanol Reports — share the ethanol percentage you find at the pump and see recent community readings at supported stations.",
-        "Smarter Community Price Reporting — reporting an E85 price is now faster and clearer, with improved post-trip prompts and station validation.",
-        "Referral Rewards — invite other drivers to 85Blends Pro with the new Refer & Earn program, working toward a free month of Pro with every 5 successful referrals.",
-        "More Pro Plan Options — 85Blends Pro now offers Monthly, 3 Months, and Annual billing, giving you new ways to save on Pro.",
-        "Improved Pro Experience — a refreshed upgrade and subscriber experience makes managing Pro, restoring purchases, and accessing benefits easier.",
-        "Refreshed More & Settings — important Pro, referral, preference, help, and support options are easier to find.",
-        "Review & Share 85Blends — easier ways to leave feedback on the App Store and share 85Blends with other E85 drivers.",
-        "Widget & UI Polish — improved widget layouts, map presentation, ethanol displays, and how quickly your Pro status updates.",
-        "Bug Fixes & Reliability — improvements across station reporting, referrals, subscriptions, navigation, and general app stability.",
+        "Improved Nearby E85 Widgets — refresh nearby stations without opening the app, with improved location handling, freshness information, and better readability in tinted Home Screen layouts.",
+        "Refreshed Recommended Gear — explore featured eFlexFuel products and RVP Supply wheels, including access to the custom-wheel configurator.",
+        "Easier Pro Activation — use Activate Pro after redeeming an Offer Code outside the app, with clearer purchase and Restore Purchases feedback.",
+        "More Accurate Fill-Up Logging — E85 and gasoline prices entered in At The Pump now carry into your Fuel Log.",
+        "Clearer Calculator Validation — blank or invalid numeric inputs now show a warning instead of being treated as zero.",
+        "Improved Garage Reliability — better protection against accidentally linking a new vehicle to a removed vehicle's history, plus improved save-error handling.",
+        "Simpler Getting Started — a streamlined quick-start screen with improved support for larger text.",
     ]
 
     /// "What's New in X.Y.Z" — names the version the highlights were written for, never the
