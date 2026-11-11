@@ -502,9 +502,13 @@ struct NearbyE85WidgetView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(largeNoMapAccessibilityLabel)
-            // Same AppIntent button and in-progress handling as Small/Medium. A Button(intent:)
-            // is its own tap target, so it runs the refresh instead of the widget's URL.
-            refreshButton
+            // Same AppIntent and in-progress handling as Small/Medium's refreshButton, with the
+            // same 30pt visible circle but a 44pt hit area (as Large's map controls use). A
+            // Button(intent:) is its own tap target, so it runs the refresh instead of the
+            // widget's URL; it sits inside the header strip, above the Divider and station rows.
+            nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(), renderingMode: renderingMode,
+                                isRefreshing: entry.isRefreshing, size: 30, tapTargetSize: 44, iconSize: 12,
+                                label: "Refresh Nearby E85 data")
         }
         .padding(widgetMargins)
     }
