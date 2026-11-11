@@ -800,9 +800,12 @@ final class NearbyE85RenderingTests: XCTestCase {
             return true
         }
         XCTAssertTrue(drawn)
-        // CGContext rows are bottom-up; scan from the top of the rendered widget downward.
+        // Drawing a CGImage into a bitmap context leaves the image's TOP row at the start of the
+        // buffer, so buffer row index == distance from the top. (An earlier version flipped this
+        // and scanned bottom-up, reporting 1 - the true position; see the orientation check in
+        // testDividerScannerMeasuresFromTheTop.)
         for rowFromTop in 0..<height {
-            let row = height - 1 - rowFromTop
+            let row = rowFromTop
             var marked = 0
             for x in 0..<width {
                 let o = (row * width + x) * 4
@@ -812,6 +815,22 @@ final class NearbyE85RenderingTests: XCTestCase {
             if Double(marked) / Double(width) > 0.85 { return Double(rowFromTop) / Double(height) }
         }
         return nil
+    }
+
+    /// Pins the scanner's orientation with a known image: a full-width bar 20% from the top
+    /// must measure as ~0.2, never ~0.8.
+    func testDividerScannerMeasuresFromTheTop() throws {
+        let size = CGSize(width: 100, height: 100)
+        let view = ZStack(alignment: .topLeading) {
+            Color.white
+            Color.black.frame(width: size.width, height: 1).offset(y: 20)
+        }
+        .frame(width: size.width, height: size.height)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        let image = try XCTUnwrap(renderer.uiImage)
+        let fraction = try XCTUnwrap(try dividerFraction(in: image))
+        XCTAssertEqual(fraction, 0.2, accuracy: 0.02)
     }
 
     /// Deterministic: the "map failed" state is simply `mapRender: nil` on a ready snapshot — no
