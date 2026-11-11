@@ -7,28 +7,26 @@ import WidgetKit
 /// The one shared manual-refresh action for every Nearby E85 widget family (Small/Medium/Large
 /// all use this exact intent — no per-family duplication).
 ///
-/// Widget-extension/AppIntent execution has no reliable, supported way to obtain a fresh Core
-/// Location fix: widgets get only a brief execution window per interaction, with no guarantee a
-/// CLLocationManager delegate callback (which can take an unbounded amount of time waiting on
-/// GPS) completes before that window closes, and WidgetKit's own interactivity guidance is to
-/// keep `perform()` fast and defer anything slower to the containing app. So this intent does
-/// only what's honestly possible from here: mark that a refresh was requested, and reload the
-/// timeline with whatever data is already cached — never a faked "Updated now."
-///
-/// The actual attempt to obtain a newer location happens when the app next becomes active and
-/// finds this pending request — see EightyFiveBlendsApp's scenePhase handling and
-/// NearbyE85RefreshRequestStore's own doc comment.
+/// 85Blends 2.4.1 — performs the refresh itself, so it works with the app fully closed:
+/// `perform()` awaits NearbyE85WidgetRefreshCoordinator (bounded one-shot location → new nearby
+/// search → atomic cache write) to completion before reloading and returning. The pending-request
+/// flag is still marked too, so the app's existing app-active path remains a fallback.
 struct NearbyE85RefreshIntent: AppIntent {
     static var title: LocalizedStringResource = "Refresh Nearby E85"
     static var isDiscoverable: Bool = false
 
     init() {}
 
+    @MainActor
     func perform() async throws -> some IntentResult {
-        Self.handle(access: NearbyE85WidgetAccessStore().read().status,
-                    requestStore: NearbyE85RefreshRequestStore(), now: .now) {
-            WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind)
+        let reload = { WidgetCenter.shared.reloadTimelines(ofKind: NearbyE85Configuration.kind) }
+        // Pro gate first; a non-Pro access never reaches location or network.
+        guard Self.handle(access: NearbyE85WidgetAccessStore().read().status,
+                          requestStore: NearbyE85RefreshRequestStore(), now: .now, reloadTimelines: reload) else {
+            return .result()
         }
+        _ = await NearbyE85WidgetRefreshCoordinator.shared.refresh()
+        reload()
         return .result()
     }
 

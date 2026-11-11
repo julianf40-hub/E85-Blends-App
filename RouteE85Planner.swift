@@ -341,19 +341,25 @@ struct RouteE85Planner {
         //    we only surface an error if every search failed (or all returned nothing).
         var collected: [LiveFuelStation] = []
         var sawSuccess = false
+        // Any center whose coverage couldn't be confirmed makes "no stations" unprovable for the corridor.
+        var sawIncompleteCoverage = false
         var lastError: Error?
 
-        await withTaskGroup(of: Result<[LiveFuelStation], Error>.self) { group in
+        await withTaskGroup(of: Result<StationCatalogueSearchResult, Error>.self) { group in
             for center in centers {
                 group.addTask {
                     do {
-                        let stations = try await service.fetchNearbyE85Stations(
+                        // searchRadius (20–45 mi) is served from the covering 25/50 mi bucket and filtered back to
+                        // exactly searchRadius on device. Every in-radius candidate (up to the proxy's bounded 200) is
+                        // kept: a nearest-to-CENTER prefix could drop an on-route station in dense areas before route
+                        // projection, dedup and the corridor filter below ever see it.
+                        let result = try await service.search(
                             latitude: center.latitude,
                             longitude: center.longitude,
-                            radius: searchRadius,
-                            limit: 20
+                            radiusMiles: searchRadius,
+                            limit: NLRStationService.maxCandidates
                         )
-                        return .success(stations)
+                        return .success(result)
                     } catch {
                         return .failure(error)
                     }
@@ -361,11 +367,15 @@ struct RouteE85Planner {
             }
             for await result in group {
                 switch result {
-                case .success(let stations):
+                case .success(let result):
                     sawSuccess = true
-                    collected.append(contentsOf: stations)
+                    // Partial coverage or a stale fallback (warning): candidates are usable, "none" is unprovable.
+                    if !result.coverageComplete || result.warning != nil { sawIncompleteCoverage = true }
+                    collected.append(contentsOf: result.stations)
                 case .failure(let error):
                     lastError = error
+                    // A center that failed (timeout, 429, 5xx, partial-empty…) has unknown coverage.
+                    sawIncompleteCoverage = true
                 }
             }
         }
@@ -373,17 +383,22 @@ struct RouteE85Planner {
         try Task.checkCancellation()
 
         if collected.isEmpty {
-            if sawSuccess {
+            if sawSuccess && !sawIncompleteCoverage {
                 throw RouteE85PlannerError.noStationsFound
             }
-            if let nlrError = lastError as? NLRServiceError, case .missingAPIKey = nlrError {
-                throw RouteE85PlannerError.searchUnavailable
+            if let nlrError = lastError as? NLRServiceError {
+                // Not configured / unsupported radius: search can't run. Partial coverage, rate limit or a
+                // bad answer: stations are unknown — never reported as "none along this route".
+                switch nlrError {
+                case .catalogueNotConfigured, .unsupportedRadius: throw RouteE85PlannerError.searchUnavailable
+                default: throw RouteE85PlannerError.network
+                }
             }
             if let urlError = lastError as? URLError,
                urlError.code == .notConnectedToInternet || urlError.code == .timedOut {
                 throw RouteE85PlannerError.network
             }
-            throw lastError == nil ? RouteE85PlannerError.noStationsFound : RouteE85PlannerError.network
+            throw lastError == nil && !sawIncompleteCoverage ? RouteE85PlannerError.noStationsFound : RouteE85PlannerError.network
         }
 
         // 4. De-duplicate and map each unique station onto the route corridor.
@@ -394,7 +409,7 @@ struct RouteE85Planner {
             .sorted { $0.distanceAlongRouteMiles < $1.distanceAlongRouteMiles }
 
         if routeStations.isEmpty {
-            throw RouteE85PlannerError.noStationsFound
+            throw sawIncompleteCoverage ? RouteE85PlannerError.network : RouteE85PlannerError.noStationsFound
         }
 
         // 5. Greedy stop recommendations + 6. risk scoring.

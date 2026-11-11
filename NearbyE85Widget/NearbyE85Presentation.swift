@@ -29,6 +29,10 @@ nonisolated struct NearbyE85Entry: TimelineEntry {
     // `.ready` snapshot can still be present on an entry whose `isOutOfArea` is true — every
     // render site must check this explicitly rather than trusting `snapshot.state` alone.
     var isOutOfArea: Bool = false
+    // 85Blends 2.4.1 — short, specific copy for the last failed widget refresh ("Offline ·
+    // showing saved", "Widget location off", …) — see NearbyE85RefreshFeedback.notice. An
+    // annotation only: cached stations stay visible underneath it.
+    var refreshNotice: String? = nil
 }
 
 /// 85Blends 2.4.0 widget polish — named, testable layout constants for the manual refresh
@@ -337,7 +341,7 @@ struct NearbyE85WidgetView: View {
                 // announcement beats VoiceOver reading out the name/distance/price separately
                 // and leaving the actual tap behavior unstated.
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(directionsAccessibilityLabel(for: first))
+                .accessibilityLabel(directionsAccessibilityLabel(for: first) + statusAccessibilitySuffix)
             } else {
                 fallbackBody
             }
@@ -429,8 +433,16 @@ struct NearbyE85WidgetView: View {
                     }
                 } else {
                     // No map yet — still lead with something other than blank space.
-                    HStack { header; Spacer(minLength: 0) }
-                        .padding(widgetMargins)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack { header; Spacer(minLength: 0) }
+                        if let notice = entry.refreshNotice {
+                            Text(notice).font(.caption.weight(.semibold))
+                        }
+                        ageLines(snapshot)
+                    }
+                    .padding(widgetMargins)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Nearby E85" + statusAccessibilitySuffix)
                     Spacer(minLength: 0)
                 }
                 Divider()
@@ -563,13 +575,33 @@ struct NearbyE85WidgetView: View {
             // control stack (Large) both live on the trailing side — see mediumContent/
             // largeContent — so this stays clear of both rather than overlapping either.
             .overlay(alignment: .topLeading) {
-                if snapshot.isStale(at: entry.date) {
+                if let notice = entry.refreshNotice {
+                    freshnessBadge(notice)
+                } else if snapshot.isStale(at: entry.date) {
                     freshnessBadge("Older location")
                 }
             }
+            // 85Blends 2.4.1 — location-fix age and station-search age, always distinct (and
+            // never a price/ethanol report time, which stay on each station's own line).
+            .overlay(alignment: .bottomLeading) { ageBadge(snapshot) }
     }
 
-    private var stationsAccessibilityLabel: String { "Open Nearby E85 stations" }
+    private var stationsAccessibilityLabel: String { "Open Nearby E85 stations" + statusAccessibilitySuffix }
+
+    /// 85Blends 2.4.1 — refresh feedback and location age for VoiceOver, matching what the map
+    /// badge/footer shows visually.
+    var statusAccessibilitySuffix: String {
+        var parts: [String] = []
+        if let notice = entry.refreshNotice { parts.append(notice) }
+        if let snapshot = entry.snapshot, snapshot.state == .ready, let locationAt = snapshot.locationAt {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.locale = Locale(identifier: "en_US")
+            formatter.unitsStyle = .full
+            parts.append("Location from \(formatter.localizedString(for: locationAt, relativeTo: entry.date))")
+            parts.append("Stations searched \(formatter.localizedString(for: snapshot.updatedAt, relativeTo: entry.date))")
+        }
+        return parts.isEmpty ? "" : ". " + parts.joined(separator: ". ")
+    }
 
     /// Small/Medium's standalone refresh button — Large gets the same action via
     /// NearbyE85MapControls' stack instead, alongside its zoom buttons. Tap target (`size: 30`)
@@ -736,12 +768,34 @@ struct NearbyE85WidgetView: View {
     // — see mediumContent's own comment) are a separate call site this task doesn't touch.
     private func footer(_ snapshot: NearbyE85Snapshot, staleText: String = "Older location · tap to refresh") -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(snapshot.isStale(at: entry.date) ? staleText : "Near last app location")
-            HStack(spacing: 3) {
-                Text("Updated")
-                Text(snapshot.updatedAt, style: .relative)
-            }
+            Text(entry.refreshNotice ?? (snapshot.isStale(at: entry.date) ? staleText : "Near last app location"))
+            ageLines(snapshot)
         }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+    }
+
+    /// 85Blends 2.4.1 — "Location 5 min" / "Stations 2 min": the accepted fix's own age and the
+    /// station search's own age, on separate lines so neither is ever read as the other.
+    @ViewBuilder private func ageLines(_ snapshot: NearbyE85Snapshot) -> some View {
+        if let locationAt = snapshot.locationAt {
+            HStack(spacing: 3) { Text("Location"); Text(locationAt, style: .relative) }
+        }
+        HStack(spacing: 3) { Text("Stations"); Text(snapshot.updatedAt, style: .relative) }
+    }
+
+    /// Compact single-capsule form of `ageLines` for the map (Medium/Large).
+    private func ageBadge(_ snapshot: NearbyE85Snapshot) -> some View {
+        HStack(spacing: 3) {
+            if let locationAt = snapshot.locationAt {
+                Text("Location"); Text(locationAt, style: .relative); Text("·")
+            }
+            Text("Stations"); Text(snapshot.updatedAt, style: .relative)
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .lineLimit(1)
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(.thinMaterial, in: Capsule())
+        .padding(6)
+        .accessibilityHidden(true)
     }
     // 85Blends 2.4.1 Phase 2E accessibility fix — previously had no accessibility grouping at
     // all, so VoiceOver announced the header, headline, and explanation as separate fragments
@@ -776,7 +830,8 @@ struct NearbyE85WidgetView: View {
             title = "Find nearby E85"
             body = "Open 85Blends to refresh nearby stations."
         }
-        return "Nearby E85 widget. \(title). \(body)"
+        let notice = entry.refreshNotice.map { " \($0)." } ?? ""
+        return "Nearby E85 widget. \(title). \(body)\(notice)"
     }
 
     /// "Location may be outdated. Updated 3 hours ago." / "Near last app location. Updated 5
@@ -798,6 +853,9 @@ struct NearbyE85WidgetView: View {
     private var fallbackBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
+            if let notice = entry.refreshNotice {
+                Text(notice).font(.caption.weight(.semibold)).foregroundStyle(.primary)
+            }
             if entry.isOutOfArea {
                 // 85Blends 2.4.1 — distinct from every state below: there IS a cached
                 // snapshot, and it may even still be `.ready`, but it's for a place the user

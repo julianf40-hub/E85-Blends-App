@@ -26,6 +26,14 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // from this against each entry's own `date`, exactly like `pendingRefreshAt` above is
         // never itself the `isRefreshing` flag — see entry(...)/timeline(...) below.
         let areaRelevance: NearbyE85AreaRelevanceState
+        // 85Blends 2.4.1 — the widget's own refresh attempt (see NearbyE85WidgetRefreshCoordinator).
+        // When present it drives the spinner by completion, not tap age.
+        var refreshStatus: NearbyE85RefreshStatus? = nil
+
+        func isRefreshing(at date: Date) -> Bool {
+            refreshStatus.map { NearbyE85RefreshFeedback.isRefreshing(status: $0, now: date) }
+                ?? NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date)
+        }
     }
 
     // 85Blends 2.4.0 Pro gate — the widget gallery's placeholder/preview keeps showing the widget's
@@ -70,7 +78,16 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let accessState = NearbyE85Diagnostics.begin("Provider.accessGate")
             let access = NearbyE85WidgetAccessStore().read().status
             NearbyE85Diagnostics.end("Provider.accessGate", accessState)
-            let timeline = await Self.timeline(access: access, now: now) { await proInputs(context: context) }
+            // 85Blends 2.4.1 — the automatic refresh runs only inside `timeline(...)`'s Pro branch,
+            // and is awaited before the inputs load so this timeline sees its final cache/status.
+            // getSnapshot/previews never run it.
+            let timeline = await Self.timeline(access: access, now: now, refreshIfDue: {
+                await NearbyE85AutomaticRefresh.runIfDue(
+                    access: access, now: now, locationAuthorized: NearbyE85CoreLocationFixer.widgetLocationAuthorized,
+                    cache: NearbyE85Cache(), statusStore: NearbyE85RefreshStatusStore(),
+                    areaRelevanceStore: NearbyE85AreaRelevanceStore(), attemptStore: NearbyE85AutomaticRefreshStore(),
+                    refresh: { await NearbyE85WidgetRefreshCoordinator.shared.refresh() })
+            }, currentDate: { .now }) { await proInputs(context: context) }
             NearbyE85Diagnostics.logger.debug("Provider.getTimeline: entries=\(timeline.entries.count, privacy: .public) access=\(access.rawValue, privacy: .public)")
             completion(timeline)
         }
@@ -84,21 +101,30 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
                                  loadProInputs: () async -> ProInputs) async -> NearbyE85Entry {
         guard access.permitsWidgetInteraction else { return lockedEntry(access: access, now: now) }
         let inputs = await loadProInputs()
-        let isRefreshing = NearbyE85RefreshFeedback.isRefreshing(requestedAt: inputs.pendingRefreshAt, now: now)
+        let isRefreshing = inputs.isRefreshing(at: now)
         // 85Blends 2.4.1 Phase 2F — Codex P2 finding: out-of-area presentation only ever applies
         // on top of an eligible, valid, ready snapshot (see NearbyE85AreaRelevance.appliesOutOfArea's
         // own header) — it must never override permission-required/no-stations/missing-snapshot
         // presentation just because the persisted signal is still live.
         let isOutOfArea = NearbyE85AreaRelevance.appliesOutOfArea(to: inputs.snapshot, state: inputs.areaRelevance, at: now)
         return .init(date: now, snapshot: inputs.snapshot, access: .pro, mapRender: inputs.mapRender,
-                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing, isOutOfArea: isOutOfArea)
+                     zoomLevel: inputs.zoomLevel, isRefreshing: isRefreshing, isOutOfArea: isOutOfArea,
+                     refreshNotice: NearbyE85RefreshFeedback.notice(status: inputs.refreshStatus, now: now))
     }
 
     /// getTimeline's timeline: the locked timeline for a non-Pro access, else — after loading the Pro
     /// inputs — exactly the pre-gate stale/expiry/price-day/refresh-settle scheduling.
-    @MainActor static func timeline(access: NearbyE85WidgetAccessStatus, now: Date,
+    @MainActor static func timeline(access: NearbyE85WidgetAccessStatus, now requestedAt: Date,
+                                    refreshIfDue: () async -> Void = {},
+                                    currentDate: (() -> Date)? = nil,
                                     loadProInputs: () async -> ProInputs) async -> Timeline<NearbyE85Entry> {
-        guard access.permitsWidgetInteraction else { return lockedTimeline(access: access, now: now) }
+        guard access.permitsWidgetInteraction else { return lockedTimeline(access: access, now: requestedAt) }
+        await refreshIfDue()
+        // 85Blends 2.4.1 — the due decision above used `requestedAt`; everything presented below
+        // uses the time AFTER that awaited refresh, so an attempt that finished during it is not
+        // in this timeline's future (its notice shows on the first entry and its settle date is
+        // scheduled). Never earlier than `requestedAt`.
+        let now = max(requestedAt, currentDate?() ?? requestedAt)
         let inputs = await loadProInputs()
         let snapshot = inputs.snapshot
         let zoomLevel = inputs.zoomLevel
@@ -121,7 +147,15 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // to publish (and no later WidgetCenter reload to trigger a re-render) would leave
         // the spinner showing until the next unrelated timeline boundary above, which could
         // be many minutes away.
-        if let pendingRefreshAt {
+        if let status = inputs.refreshStatus {
+            if status.outcome == .inProgress {
+                let settleDate = status.attemptStartedAt.addingTimeInterval(NearbyE85RefreshFeedback.maxInFlight)
+                if settleDate > now { dates.append(settleDate) }
+            } else if let finishedAt = status.finishedAt {
+                let noticeEnd = finishedAt.addingTimeInterval(NearbyE85RefreshFeedback.noticeLifetime)
+                if noticeEnd > now { dates.append(noticeEnd) }
+            }
+        } else if let pendingRefreshAt {
             let settleDate = pendingRefreshAt.addingTimeInterval(NearbyE85RefreshFeedback.window)
             if settleDate > now { dates.append(settleDate) }
         }
@@ -142,8 +176,9 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
             let entrySnapshot = snapshot.flatMap { $0.isValid(at: date) ? $0 : nil }
             return NearbyE85Entry(date: date, snapshot: entrySnapshot,
                           access: .pro, mapRender: mapRender, zoomLevel: zoomLevel,
-                          isRefreshing: NearbyE85RefreshFeedback.isRefreshing(requestedAt: pendingRefreshAt, now: date),
-                          isOutOfArea: NearbyE85AreaRelevance.appliesOutOfArea(to: entrySnapshot, state: areaRelevance, at: date))
+                          isRefreshing: inputs.isRefreshing(at: date),
+                          isOutOfArea: NearbyE85AreaRelevance.appliesOutOfArea(to: entrySnapshot, state: areaRelevance, at: date),
+                          refreshNotice: NearbyE85RefreshFeedback.notice(status: inputs.refreshStatus, now: date))
         }
         return Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60)))
     }
@@ -194,13 +229,15 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
         // an in-progress appearance. See NearbyE85RefreshFeedback's header.
         let pendingRefreshAt = NearbyE85RefreshRequestStore().pendingRequestDate()
         return ProInputs(snapshot: snapshot, zoomLevel: zoomLevel, mapRender: mapRender, pendingRefreshAt: pendingRefreshAt,
-                         areaRelevance: areaRelevance)
+                         areaRelevance: areaRelevance, refreshStatus: NearbyE85RefreshStatusStore().read())
     }
     @MainActor private func readAuthorizedSnapshot() -> NearbyE85Snapshot? {
         // Permission is checked again in the extension; it never requests a location or
         // claims to track travel while the app is closed. Denied access hides cached data.
-        let status = CLLocationManager().authorizationStatus
-        guard status == .authorizedAlways || status == .authorizedWhenInUse else {
+        // 85Blends 2.4.1 — the same rule the widget's own refresh uses: app location permission
+        // AND the user's widget-location choice (isAuthorizedForWidgetUpdates). Location-derived
+        // cached data is shown only when the widget itself is allowed location.
+        guard NearbyE85CoreLocationFixer.widgetLocationAuthorized() else {
             return .permissionRequired(at: .now)
         }
         return NearbyE85Cache().read()

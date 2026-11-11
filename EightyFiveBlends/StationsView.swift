@@ -2718,46 +2718,63 @@ struct StationsView: View {
 
         liveSearchTask = Task { @MainActor in
             do {
-                let results = try await service.fetchNearbyE85Stations(
+                // 85Blends 2.4.1 — proxy search: full candidate set filtered/sorted/limited on device.
+                let search = try await service.search(
                     latitude: coordinate.latitude,
                     longitude: coordinate.longitude,
-                    radius: radiusValue,
+                    radiusMiles: radiusValue,
                     limit: limit
                 )
                 guard Task.isCancelled == false else { return }
-                liveStations = results
-                // Cross-launch cache (2.3.2, PR #54, section 39) — a real, fresh network result
-                // always fully supersedes any provisional disk-restored preview; explicit here
-                // as a safety net even though every reachable path already resolves this flag
-                // before a fetch can start (see validateProvisionalPersistedPreviewIfNeeded).
-                isShowingUnvalidatedPersistedStations = false
-                if results.isEmpty {
-                    liveSearchError = "No E85 stations found within \(selectedRadius) of \(stationSearchSource.displayName). Try selecting a larger radius above."
+                let results = search.stations
+                if !Self.replacesPreviousResults(coverageComplete: search.coverageComplete, isEmpty: results.isEmpty,
+                                                 hasWarning: search.warning != nil) {
+                    // An empty answer that is incomplete or a stale fallback is "unknown": keep the current list, both
+                    // caches and the widget publisher input exactly as they were — never an authoritative "no stations".
+                    liveSearchError = Self.liveSearchMessage(coverageComplete: search.coverageComplete, isEmpty: true,
+                                                             radius: selectedRadius, place: stationSearchSource.displayName,
+                                                             hasWarning: search.warning != nil)
+                    refreshCommunityPricePreviews()
+                } else {
+                    // This device's search time. The app caches record when THIS device searched; the catalogue's own
+                    // source time (older for a proxy cache hit) is not persisted in them and is never relabeled as new.
+                    let fetchedAt = Date()
+                    liveStations = results
+                    // Cross-launch cache (2.3.2, PR #54, section 39) — a real, fresh network result
+                    // always fully supersedes any provisional disk-restored preview; explicit here
+                    // as a safety net even though every reachable path already resolves this flag
+                    // before a fetch can start (see validateProvisionalPersistedPreviewIfNeeded).
+                    isShowingUnvalidatedPersistedStations = false
+                    if let message = Self.liveSearchMessage(coverageComplete: search.coverageComplete, isEmpty: results.isEmpty,
+                                                            radius: selectedRadius, place: stationSearchSource.displayName,
+                                                            hasWarning: search.warning != nil) {
+                        liveSearchError = message
+                    }
+                    // Shares this completed search with manually opened Pump Mode, so a
+                    // station the user just found (but hasn't saved) can still be recognized
+                    // if they're standing at it — see RecentLiveStationCache/PumpStationContextResolver.
+                    // Replaces (rather than merges with) any previous search's results, and
+                    // is not persisted — see RecentLiveStationCache's own documentation.
+                    recentLiveStationCache.replace(with: results, fetchedAt: fetchedAt)
+                    // Stations instant-loading foundation (2.3.2, PR A) — a SEPARATE, Stations-only
+                    // cache from the Pump-Mode-owned RecentLiveStationCache write above; additive,
+                    // never a replacement for it. Only for current-location searches, mirroring the
+                    // cooldown-stamp guard above — a typed-location search must never poison this
+                    // cache. See StationsRecentSearchStore's own header.
+                    if isCurrentLocationSearch {
+                        stationsSearchStore.recordCurrentLocationSearchResult(
+                            stations: results,
+                            center: StationCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
+                            radiusMiles: radiusValue,
+                            fetchedAt: fetchedAt,
+                            locationAt: searchLocationAt
+                        )
+                    }
+                    refreshCommunityPricePreviews()
                 }
-                // Shares this completed search with manually opened Pump Mode, so a
-                // station the user just found (but hasn't saved) can still be recognized
-                // if they're standing at it — see RecentLiveStationCache/PumpStationContextResolver.
-                // Replaces (rather than merges with) any previous search's results, and
-                // is not persisted — see RecentLiveStationCache's own documentation.
-                recentLiveStationCache.replace(with: results, fetchedAt: Date())
-                // Stations instant-loading foundation (2.3.2, PR A) — a SEPARATE, Stations-only
-                // cache from the Pump-Mode-owned RecentLiveStationCache write above; additive,
-                // never a replacement for it. Only for current-location searches, mirroring the
-                // cooldown-stamp guard above — a typed-location search must never poison this
-                // cache. See StationsRecentSearchStore's own header.
-                if isCurrentLocationSearch {
-                    stationsSearchStore.recordCurrentLocationSearchResult(
-                        stations: results,
-                        center: StationCoordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
-                        radiusMiles: radiusValue,
-                        fetchedAt: Date(),
-                        locationAt: searchLocationAt
-                    )
-                }
-                refreshCommunityPricePreviews()
             } catch {
                 guard Task.isCancelled == false else { return }
-                if case NRELServiceError.missingAPIKey = error {
+                if case NRELServiceError.catalogueNotConfigured = error {
                     liveSearchError = "Live station search is not available right now. Saved stations still work offline."
                 } else if let urlError = error as? URLError,
                           urlError.code == .timedOut || urlError.code == .notConnectedToInternet {
@@ -2775,6 +2792,30 @@ struct StationsView: View {
             isSearchingLive = false
             liveSearchTask = nil
         }
+    }
+
+    /// Whether a search answer may replace the current results and caches: any answer with stations, or a complete
+    /// empty answer from a successful refresh. An empty answer that is incomplete or a stale fallback never does.
+    nonisolated static func replacesPreviousResults(coverageComplete: Bool, isEmpty: Bool, hasWarning: Bool = false) -> Bool {
+        !isEmpty || (coverageComplete && !hasWarning)
+    }
+
+    /// Only a complete, empty answer may say "no stations". An incomplete answer keeps whatever real stations
+    /// it found but says coverage couldn't be confirmed. nil = complete with stations (no message).
+    nonisolated static func liveSearchMessage(coverageComplete: Bool, isEmpty: Bool, radius: String, place: String,
+                                              hasWarning: Bool = false) -> String? {
+        // A stale fallback: whatever is shown is the catalogue's saved answer, and live search is temporarily down.
+        if hasWarning {
+            return isEmpty
+                ? "Live station search is temporarily unavailable. Saved stations still work offline."
+                : "Showing saved station results — live station search is temporarily unavailable."
+        }
+        if !coverageComplete {
+            return isEmpty
+                ? "Couldn't confirm E85 stations near \(place) right now. Saved stations still work offline."
+                : "Showing the E85 stations found so far — coverage near \(place) couldn't be confirmed."
+        }
+        return isEmpty ? "No E85 stations found within \(radius) of \(place). Try selecting a larger radius above." : nil
     }
 
     private func isValidCoordinate(latitude: Double, longitude: Double) -> Bool {

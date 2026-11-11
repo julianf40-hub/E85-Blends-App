@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		44AB00012F00000100A0E851 /* NearbyE85WidgetRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44AB00002F00000100A0E851 /* NearbyE85WidgetRefresh.swift */; };
+		44AB00022F00000100A0E851 /* NearbyE85WidgetRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44AB00002F00000100A0E851 /* NearbyE85WidgetRefresh.swift */; };
+		44AB00042F00000100A0E851 /* CommunityPriceEligibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44AB00032F00000100A0E851 /* CommunityPriceEligibility.swift */; };
+		44AB00052F00000100A0E851 /* NRELStationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44A838532FA1EB1100D200DA /* NRELStationService.swift */; };
 		11DBD88766C7B04F7043163A /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = B5D95B9F9BAE30DAB1CCE567 /* GoogleMobileAds */; };
 		1FD94376DFEBAF890E2BB805 /* NearbyE85Widget.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC2171CB5719C29F9BA46E78 /* NearbyE85Widget.swift */; };
 		2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */; };
@@ -86,6 +90,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		44AB00002F00000100A0E851 /* NearbyE85WidgetRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyE85WidgetRefresh.swift; sourceTree = "<group>"; };
+		44AB00032F00000100A0E851 /* CommunityPriceEligibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CommunityPriceEligibility.swift; path = EightyFiveBlends/CommunityPriceEligibility.swift; sourceTree = SOURCE_ROOT; };
 		0E64ADDC97421F09396F9DE4 /* NearbyE85Widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NearbyE85Widget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		1183F81018E00451620EF66D /* NearbyE85Widget.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = NearbyE85Widget.entitlements; sourceTree = "<group>"; };
 		44309B0A2FE7FDD500304289 /* RouteE85Planner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteE85Planner.swift; sourceTree = "<group>"; };
@@ -230,6 +236,7 @@
 				44E16BA1304D3BDC0032D909 /* NearbyE85MapRenderer.swift */,
 				44E16BB1304E6D0A0032D909 /* NearbyE85ZoomIntent.swift */,
 				44E16BB7304E81CC0032D909 /* NearbyE85RefreshIntent.swift */,
+				44AB00002F00000100A0E851 /* NearbyE85WidgetRefresh.swift */,
 			);
 			path = NearbyE85Widget;
 			sourceTree = "<group>";
@@ -247,6 +254,7 @@
 			children = (
 				B032350D5AF77F9FFE2A10D6 /* NearbyE85Snapshot.swift */,
 				71D581188C76B0EC46CA4B51 /* StationDataValidation.swift */,
+				44AB00032F00000100A0E851 /* CommunityPriceEligibility.swift */,
 				44E16B9E304D3BD30032D909 /* NearbyE85MapRegion.swift */,
 				44E16BAE304E6C180032D909 /* NearbyE85MapZoom.swift */,
 				44E16BB4304E81BE0032D909 /* NearbyE85RefreshRequest.swift */,
@@ -410,6 +418,7 @@
 			files = (
 				44E16BA2304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
 				44E16BB8304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */,
+				44AB00022F00000100A0E851 /* NearbyE85WidgetRefresh.swift in Sources */,
 				44E16BB2304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */,
 				2768D6E1F025FF9F32AAD7FE /* NearbyE85Presentation.swift in Sources */,
 				44E16BBC304E81BE0032D909 /* NearbyE85Provider.swift in Sources */,
@@ -454,6 +463,9 @@
 				44E16B9F304D3BD30032D909 /* NearbyE85MapRegion.swift in Sources */,
 				44E16BA3304D3BDC0032D909 /* NearbyE85MapRenderer.swift in Sources */,
 				44E16BB9304E81CC0032D909 /* NearbyE85RefreshIntent.swift in Sources */,
+				44AB00012F00000100A0E851 /* NearbyE85WidgetRefresh.swift in Sources */,
+				44AB00042F00000100A0E851 /* CommunityPriceEligibility.swift in Sources */,
+				44AB00052F00000100A0E851 /* NRELStationService.swift in Sources */,
 				2229CF1E35E89CB6F97A3039 /* StationDataValidation.swift in Sources */,
 				44E16BB3304E6D0A0032D909 /* NearbyE85ZoomIntent.swift in Sources */,
 				44E16BB5304E81BE0032D909 /* NearbyE85RefreshRequest.swift in Sources */,

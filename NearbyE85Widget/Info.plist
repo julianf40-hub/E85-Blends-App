@@ -11,5 +11,11 @@
 	<string>$(NEARBY_E85_APP_GROUP)</string>
 	<key>NearbyE85URLScheme</key>
 	<string>$(NEARBY_E85_URL_SCHEME)</string>
+	<key>SUPABASE_PUBLISHABLE_KEY</key>
+	<string>sb_publishable_LGN8cRrUcQJyREfCoNoTqA_nNmBqDyP</string>
+	<key>SUPABASE_URL</key>
+	<string>https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/</string>
+	<key>NSWidgetWantsLocation</key>
+	<true/>
 </dict>
 </plist>
