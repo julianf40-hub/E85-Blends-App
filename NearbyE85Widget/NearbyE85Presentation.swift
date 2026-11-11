@@ -486,16 +486,18 @@ struct NearbyE85WidgetView: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 header
+                // Wraps rather than shrinks, so the notice and ages stay readable at larger text
+                // sizes. Line caps bound the header so station rows keep most of the canvas.
                 Text(Self.largeMapUnavailableText)
                     .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 if let notice = entry.refreshNotice {
                     Text(notice).font(.caption2.weight(.semibold)).foregroundStyle(.primary)
-                        .lineLimit(2).minimumScaleFactor(0.8)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 }
                 ageLines(snapshot)
                     .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
