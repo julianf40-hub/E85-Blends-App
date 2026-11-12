@@ -5,17 +5,33 @@
     SUPABASE_SERVICE_ROLE_KEY=... python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json
 
 Steps, in order:
-  1. Read the template and the LIVE staging object (public GET, no key).
+  1. Read the template and the LIVE staging object. A dry run reads the public (CDN) URL with no
+     key. --upload reads the authenticated ORIGIN endpoint instead, so a stale CDN copy cannot make
+     the tool stamp a publication that is not newer than the real live one.
   2. Stamp a fresh `revision` and a `publishedAt` strictly newer than the live one:
-     max(now in whole seconds, live + 1), so rapid successive publishes still increase.
+     max(now in whole seconds, live + 1), so rapid successive publishes still increase. Refuse if
+     the live publishedAt is more than 5 minutes in the future (a publisher with a wrong clock).
   3. Validate the stamped document AND its succession over the live one with validate_catalog.py
      (the same rules the apps apply). Anything a device would reject stops here.
-  4. --upload only: upload with Content-Type application/json and Cache-Control max-age=60, then
-     read the public URL back and require identical bytes.
+  4. --upload only: upload with Content-Type application/json and Cache-Control max-age=60. Then
+     verify separately:
+       - ORIGIN read-back (authoritative): must hold exactly our bytes. If not, another
+         publication replaced ours: reported as CONFLICT, exit 4.
+       - PUBLIC read-back (what devices see, through the CDN): may lag by up to max-age. A lag is
+         reported as "PUBLISHED, CDN not yet updated", exit 3, never as "nothing published".
 
-Production is deliberately not supported by this tool. The service-role key is read only from
-the environment on the publishing machine; it must never be put in an app, a file in the
-repository or a browser.
+Concurrency: Supabase Storage has no conditional (compare-and-swap) write, so two people
+publishing at once cannot be prevented here, only detected after the fact (step 4). Staging
+assumes one publisher at a time; the future dashboard serializes publications with a database
+lock (docs/remote-gear/PUBLISHING_DASHBOARD.md).
+
+Credentials: the service-role key bypasses every Storage and database access rule and works from
+any machine that has it. It is not tied to a device. It is read only from the environment
+variable SUPABASE_SERVICE_ROLE_KEY, sent only in request headers, and redacted from any server
+text this tool prints. Never put it in an app, a file in the repository, a browser or a chat.
+Rotate it in the Supabase dashboard if it is ever exposed.
+
+Production is deliberately not supported by this tool.
 """
 
 from __future__ import annotations
@@ -49,6 +65,36 @@ def public_url(project_url: str = PROJECT_URL, path: str = STAGING_PATH) -> str:
 
 def upload_url(project_url: str = PROJECT_URL, path: str = STAGING_PATH) -> str:
     return f"{project_url}/storage/v1/object/{BUCKET}/{path}"
+
+
+def origin_url(project_url: str = PROJECT_URL, path: str = STAGING_PATH) -> str:
+    """Authenticated download: served by Storage itself, not the public CDN cache."""
+    return f"{project_url}/storage/v1/object/authenticated/{BUCKET}/{path}"
+
+
+MAX_FUTURE_SKEW = 300
+
+
+def redact(text: str, secret: str | None) -> str:
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
+                         public_status: int, public_bytes: bytes) -> tuple[str, int]:
+    """Classifies the post-upload checks. Returns (message, exit code).
+
+    The upload already succeeded when this is called; nothing here may say otherwise.
+    """
+    if origin_status != 200:
+        return (f"UPLOADED, but the origin read-back failed (HTTP {origin_status}); "
+                "check the object in the Supabase dashboard before publishing again", 5)
+    if origin_bytes != ours:
+        return ("CONFLICT: uploaded, but the origin now holds a different document: another "
+                "publication replaced ours. Do not publish again until you know which is live", 4)
+    if public_status == 200 and public_bytes == ours:
+        return ("PUBLISHED and verified: origin and public URL serve the new document", 0)
+    return (f"PUBLISHED (origin verified). The public URL does not serve it yet (HTTP {public_status}); "
+            f"the CDN may keep the previous copy for up to {CACHE_CONTROL}", 3)
 
 
 def classify_live_response(status: int, body: bytes) -> str:
@@ -86,8 +132,11 @@ def encode(document: dict) -> bytes:
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def fetch(url: str) -> tuple[int, bytes, dict]:
-    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
+    headers = {"Cache-Control": "no-cache"}
+    if key:
+        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             return response.status, response.read(), dict(response.headers)
@@ -101,6 +150,9 @@ def prepare(template_path: str, live_status: int, live_body: bytes, now: float) 
     live = None
     if state == "published":
         live, _ = v.validate_bytes(live_body)
+        if live["publishedAt"] > now + MAX_FUTURE_SKEW:
+            raise PublishError(f"the live publishedAt ({live['publishedAt']}) is more than "
+                               f"{MAX_FUTURE_SKEW} s in the future; a publisher's clock is wrong. Resolve that first")
     slug = pathlib.Path(template_path).stem
     document = stamp(template, live, now, slug)
     raw = encode(document)
@@ -117,13 +169,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out", help="also write the stamped document here")
     args = parser.parse_args(argv)
 
-    status, body, _ = fetch(public_url())
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip() or None
+    if args.upload and not key:
+        print("STOPPED: set SUPABASE_SERVICE_ROLE_KEY in this shell (never in the app, the repository or a chat)")
+        return 1
+    # Uploads base the stamp on the origin copy; a dry run (no key needed) uses the public URL.
+    status, body, _ = fetch(origin_url(), key) if args.upload else fetch(public_url())
     try:
         document, raw, live = prepare(args.template, status, body, time.time())
     except (PublishError, v.Invalid, v.Unsupported) as error:
-        print(f"STOPPED: {error}")
+        print(f"STOPPED: {redact(str(error), key)}")
         return 1
-    print(f"live: {'revision ' + live['revision'] + ', publishedAt ' + str(live['publishedAt']) if live else 'no staging publication yet'}")
+    print(f"live ({'origin' if args.upload else 'public URL'}): "
+          f"{'revision ' + live['revision'] + ', publishedAt ' + str(live['publishedAt']) if live else 'no staging publication yet'}")
     print(f"next: revision {document['revision']}, publishedAt {document['publishedAt']}, "
           f"{sum(1 for b in document['brands'] if not b.get('hidden'))} visible brand(s), {len(raw)} bytes")
     if args.out:
@@ -132,28 +190,29 @@ def main(argv: list[str]) -> int:
         print(f"dry run: would upload to {upload_url()} with Cache-Control {CACHE_CONTROL}")
         return 0
 
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    if not key:
-        print("STOPPED: set SUPABASE_SERVICE_ROLE_KEY in this shell (never in the app or the repository)")
-        return 1
     request = urllib.request.Request(upload_url(), data=raw, method="POST", headers={
         "Authorization": f"Bearer {key}", "apikey": key, "Content-Type": "application/json",
         "Cache-Control": CACHE_CONTROL, "x-upsert": "true",
     })
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            print(f"uploaded: HTTP {response.status}")
+            print(f"upload: HTTP {response.status}")
     except urllib.error.HTTPError as error:
-        print(f"STOPPED: upload failed: HTTP {error.code} {error.read()[:300]!r}")
+        detail = redact(error.read()[:300].decode("utf-8", "replace"), key)
+        print(f"NOT PUBLISHED: upload refused: HTTP {error.code} {detail}")
         return 1
+    except urllib.error.URLError as error:
+        print(f"UNKNOWN: the upload request did not complete ({redact(str(error.reason), key)}); "
+              "it may or may not have been stored. Check the origin before retrying")
+        return 6
 
-    status, served, headers = fetch(public_url())
-    if status != 200 or served != raw:
-        print(f"WARNING: public URL returned HTTP {status} with {'different' if served != raw else 'the same'} bytes "
-              f"(CDN may still serve the previous version for up to {CACHE_CONTROL})")
-        return 2
-    print(f"verified: public URL serves the new bytes; Cache-Control={headers.get('Cache-Control')} ETag={headers.get('ETag')}")
-    return 0
+    origin_status, origin_bytes, _ = fetch(origin_url(), key)
+    public_status, public_bytes, headers = fetch(public_url())
+    message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes)
+    print(message)
+    if code == 0:
+        print(f"public headers: Cache-Control={headers.get('Cache-Control')} ETag={headers.get('ETag')}")
+    return code
 
 
 if __name__ == "__main__":

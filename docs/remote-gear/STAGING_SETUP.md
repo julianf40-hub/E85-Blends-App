@@ -18,8 +18,13 @@ downloads. Production content is not touched. The v1 JSON contract is unchanged 
 
 One public bucket, no write policies. Public **reads** go through the `/object/public/` endpoint,
 which needs no key and no SELECT policy. With no policies on `storage.objects`, `anon` and
-`authenticated` users cannot list, upload, overwrite or delete. Only the service role (used on
-the publishing Mac, never in an app) can write.
+`authenticated` users cannot list, upload, overwrite or delete. Only a **service-role key** can write.
+
+That key is a privileged secret. It bypasses every Storage and database access rule, and it
+works from **any** machine that has it; it is not tied to a Mac. Limit who holds it. Use it only
+from a shell environment variable, never in an app, repository file, browser or chat. Rotate it
+in the Supabase dashboard if it is ever exposed. Rotating it also affects any existing server-side
+use of the same key.
 
 ```sql
 -- Proposed (NOT applied). Creates the bucket only; adds no policies.
@@ -56,16 +61,34 @@ device (publish an empty catalog to clear it).
 
 `tools/remote-gear/publish_catalog.py` is staging-only and a dry run unless `--upload`:
 
-1. Reads the live staging object (public GET).
-2. Stamps a never-used `revision` and `publishedAt = max(now, live + 1)` in whole seconds.
+1. Reads the live staging object. A dry run uses the public URL with no key. An upload uses the
+   authenticated **origin** endpoint, so a stale CDN copy cannot lead it to stamp a publication
+   that isn't newer than the real live one.
+2. Stamps a never-used `revision` and `publishedAt = max(now, live + 1)` in whole seconds. It
+   refuses if the live `publishedAt` is more than 5 minutes in the future, which means a
+   publisher's clock is wrong.
 3. Validates the document and its succession over the live one with `validate_catalog.py`,
    the same rules the apps apply.
-4. Uploads with `Content-Type: application/json` and **`Cache-Control: max-age=60`**, then reads
-   the public URL back and requires identical bytes.
+4. Uploads with `Content-Type: application/json` and **`Cache-Control: max-age=60`**, then
+   reports the upload and the read-back checks separately:
+
+| Result | Exit | Meaning |
+|---|---|---|
+| `NOT PUBLISHED` | 1 | Validation or the upload request was refused; nothing changed |
+| `PUBLISHED and verified` | 0 | The origin and the public URL serve the new document |
+| `PUBLISHED (origin verified)…` | 3 | Stored correctly; the CDN still serves the old copy (up to 60 s) |
+| `CONFLICT` | 4 | Uploaded, but the origin now holds a *different* document: someone else published |
+| `UPLOADED, but the origin read-back failed` | 5 | Stored, but unconfirmed; check the dashboard |
+| `UNKNOWN` | 6 | The request didn't complete; it may or may not be stored |
+
+**Concurrency:** Supabase Storage has no conditional (compare-and-swap) write. Two people
+publishing at the same moment can't be prevented here, only detected afterwards (exit 4). Staging
+assumes **one publisher at a time**. The future dashboard serializes publications with a database
+lock (`PUBLISHING_DASHBOARD.md`).
 
 ```sh
 python3 tools/remote-gear/publish_catalog.py docs/remote-gear/staging/publication-a.json   # dry run
-export SUPABASE_SERVICE_ROLE_KEY=...   # Supabase dashboard → Project Settings → API; this shell only
+read -rs SUPABASE_SERVICE_ROLE_KEY && export SUPABASE_SERVICE_ROLE_KEY   # paste; not echoed or kept in shell history
 python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json
 # later
 python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-b.json

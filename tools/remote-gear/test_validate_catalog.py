@@ -235,9 +235,52 @@ class StagingPublisherTests(unittest.TestCase):
         self.assertEqual(doc_b["brands"][0]["destinationURL"], "https://example.com/fuel-tools-v2")
 
     def test_live_clock_ahead_still_increases(self):
-        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=1_900_000_000)
-        doc_b, _, _ = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000)  # local clock behind
-        self.assertEqual(doc_b["publishedAt"], 1_900_000_001)
+        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=1_800_000_120)
+        doc_b, _, _ = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000)  # local clock 2 min behind
+        self.assertEqual(doc_b["publishedAt"], 1_800_000_121, "still strictly newer than the live one")
+
+    def test_uploads_read_the_origin_not_the_cdn(self):
+        self.assertIn("/object/authenticated/", self.p.origin_url())
+        self.assertNotIn("/public/", self.p.origin_url())
+
+    def test_future_live_clock_is_refused(self):
+        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=2_000_000_000)
+        with self.assertRaises(self.p.PublishError):
+            self.p.prepare(self.b, 200, raw_a, now=2_000_000_000 - 301)
+
+    def test_verification_never_reports_a_successful_upload_as_unpublished(self):
+        ours, other = b"ours", b"theirs"
+        message, code = self.p.verification_outcome(ours, 200, ours, 200, ours)
+        self.assertEqual(code, 0)
+        message, code = self.p.verification_outcome(ours, 200, ours, 200, other)  # CDN lag
+        self.assertEqual(code, 3)
+        self.assertTrue(message.startswith("PUBLISHED"))
+        message, code = self.p.verification_outcome(ours, 200, other, 200, other)  # replaced
+        self.assertEqual(code, 4)
+        self.assertIn("CONFLICT", message)
+        message, code = self.p.verification_outcome(ours, 500, b"", 200, ours)
+        self.assertEqual(code, 5)
+        self.assertTrue(message.startswith("UPLOADED"))
+        for code_message in (self.p.verification_outcome(ours, 200, ours, 404, b""),):
+            self.assertNotIn("NOT PUBLISHED", code_message[0])
+
+    def test_key_is_redacted_from_printed_server_text(self):
+        key = "service-role-secret-value"
+        self.assertEqual(self.p.redact(f"error near {key} here", key), "error near <redacted> here")
+        self.assertEqual(self.p.redact("no secret", None), "no secret")
+
+    def test_key_never_appears_in_dry_run_output_or_written_document(self):
+        import contextlib, io, os, tempfile, unittest.mock
+        key = "sk-test-should-never-be-printed"
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": key}), \
+             unittest.mock.patch.object(self.p, "fetch", return_value=(*self.missing_object, {})), \
+             contextlib.redirect_stdout(out):
+            written = pathlib.Path(tmp, "stamped.json")
+            code = self.p.main([self.a, "--out", str(written)])
+            self.assertEqual(code, 0)
+            self.assertNotIn(key, written.read_text())
+        self.assertNotIn(key, out.getvalue())
 
     def test_templates_use_only_fictional_brands_and_example_domains(self):
         for path in (self.a, self.b):
