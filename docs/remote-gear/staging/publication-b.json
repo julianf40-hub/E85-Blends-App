@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "revision": "template-b",
+  "publishedAt": 2,
+  "brands": [
+    {
+      "kind": "brand",
+      "ctaTitle": "View Example Products",
+      "id": "example-fuel-tools",
+      "name": "Example Fuel Tools",
+      "tagline": "Staging test brand",
+      "description": "A fictional brand used only to test remote Recommended Gear updates.",
+      "destinationURL": "https://example.com/fuel-tools-v2",
+      "priceText": "From $39",
+      "more": {
+        "subtitle": "Staging test card B (edited)"
+      }
+    }
+  ]
+}

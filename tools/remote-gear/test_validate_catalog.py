@@ -198,6 +198,206 @@ class StagingFixtureTests(unittest.TestCase):
                     self.assertTrue(brand["destinationURL"].startswith("https://example.com/"))
 
 
+class StagingPublisherTests(unittest.TestCase):
+    """publish_catalog.py decisions, offline (no network, no key)."""
+
+    def setUp(self):
+        import publish_catalog
+        self.p = publish_catalog
+        self.a = str(ROOT / "docs/remote-gear/staging/publication-a.json")
+        self.b = str(ROOT / "docs/remote-gear/staging/publication-b.json")
+        self.missing_object = (400, b'{"statusCode":"404","error":"not_found","message":"Object not found"}')
+        self.missing_bucket = (400, b'{"statusCode":"404","error":"Bucket not found","message":"Bucket not found","code":"NoSuchBucket"}')
+
+    def test_urls_are_storage_not_postgrest(self):
+        self.assertEqual(self.p.public_url(),
+                         "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/staging/catalog-v1.json")
+        self.assertNotIn("/rest/v1/", self.p.upload_url())
+
+    def test_missing_bucket_stops_but_missing_object_is_a_first_publication(self):
+        with self.assertRaises(self.p.PublishError):
+            self.p.classify_live_response(*self.missing_bucket)
+        self.assertEqual(self.p.classify_live_response(*self.missing_object), "absent")
+        with self.assertRaises(self.p.PublishError):
+            self.p.classify_live_response(500, b"oops")
+
+    def test_publication_a_then_b_is_a_valid_ordered_succession(self):
+        doc_a, raw_a, live = self.p.prepare(self.a, *self.missing_object, now=1_800_000_000.7)
+        self.assertIsNone(live)
+        self.assertEqual(doc_a["publishedAt"], 1_800_000_000)
+        doc_b, raw_b, live = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000.9)  # same second
+        self.assertEqual(live["revision"], doc_a["revision"])
+        self.assertEqual(doc_b["publishedAt"], 1_800_000_001, "rapid successive publishes still increase")
+        self.assertNotEqual(doc_b["revision"], doc_a["revision"])
+        b_ids = [brand["id"] for brand in doc_b["brands"]]
+        self.assertEqual(b_ids, ["example-fuel-tools"], "B removes the sensor kit")
+        self.assertEqual(doc_b["brands"][0]["priceText"], "From $39")
+        self.assertEqual(doc_b["brands"][0]["destinationURL"], "https://example.com/fuel-tools-v2")
+
+    def test_live_clock_ahead_still_increases(self):
+        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=1_800_000_120)
+        doc_b, _, _ = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000)  # local clock 2 min behind
+        self.assertEqual(doc_b["publishedAt"], 1_800_000_121, "still strictly newer than the live one")
+
+    def test_uploads_read_the_origin_not_the_cdn(self):
+        self.assertIn("/object/authenticated/", self.p.origin_url())
+        self.assertNotIn("/public/", self.p.origin_url())
+
+    def test_future_live_clock_is_refused(self):
+        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=2_000_000_000)
+        with self.assertRaises(self.p.PublishError):
+            self.p.prepare(self.b, 200, raw_a, now=2_000_000_000 - 301)
+
+    def test_verification_never_reports_a_successful_upload_as_unpublished(self):
+        ours, other = b"ours", b"theirs"
+        message, code = self.p.verification_outcome(ours, 200, ours, 200, ours)
+        self.assertEqual(code, 0)
+        message, code = self.p.verification_outcome(ours, 200, ours, 200, other)  # CDN lag
+        self.assertEqual(code, 3)
+        self.assertTrue(message.startswith("PUBLISHED"))
+        message, code = self.p.verification_outcome(ours, 200, other, 200, other)  # replaced
+        self.assertEqual(code, 4)
+        self.assertIn("CONFLICT", message)
+        message, code = self.p.verification_outcome(ours, 500, b"", 200, ours)
+        self.assertEqual(code, 5)
+        self.assertTrue(message.startswith("UPLOADED"))
+        for code_message in (self.p.verification_outcome(ours, 200, ours, 404, b""),):
+            self.assertNotIn("NOT PUBLISHED", code_message[0])
+
+    def test_key_is_redacted_from_printed_server_text(self):
+        key = "service-role-secret-value"
+        self.assertEqual(self.p.redact(f"error near {key} here", key), "error near <redacted> here")
+        self.assertEqual(self.p.redact("no secret", None), "no secret")
+
+    def test_key_never_appears_in_dry_run_output_or_written_document(self):
+        import contextlib, io, os, tempfile, unittest.mock
+        key = "sk-test-should-never-be-printed"
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": key}), \
+             unittest.mock.patch.object(self.p, "fetch", return_value=(*self.missing_object, {})), \
+             contextlib.redirect_stdout(out):
+            written = pathlib.Path(tmp, "stamped.json")
+            code = self.p.main([self.a, "--out", str(written)])
+            self.assertEqual(code, 0)
+            self.assertNotIn(key, written.read_text())
+        self.assertNotIn(key, out.getvalue())
+
+    def _run_upload(self, read_backs):
+        """main --upload with a successful upload; `read_backs` are the origin and public fetch results."""
+        import contextlib, io, os, unittest.mock, urllib.error
+        responses = [(*self.missing_object, {})] + list(read_backs)
+
+        def fake_urlopen(request, timeout=None):
+            if request.get_method() == "POST":
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            outcome = responses.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            status, body, headers = outcome
+            if status != 200:
+                raise urllib.error.HTTPError(request.full_url, status, "error", headers, io.BytesIO(body))
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.status = status
+            response.__enter__.return_value.read.return_value = body
+            response.__enter__.return_value.headers = headers
+            return response
+
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+             unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a, "--upload"])
+        return code, out.getvalue()
+
+    def test_origin_read_back_transport_failure_reports_uploaded_unverified(self):
+        import urllib.error
+        code, output = self._run_upload([urllib.error.URLError("connection reset"), (200, b"x", {})])
+        self.assertEqual(code, 5)
+        self.assertIn("UPLOADED", output)
+        self.assertNotIn("NOT PUBLISHED", output)
+
+    def test_public_read_back_transport_failure_keeps_the_origin_verification(self):
+        import urllib.error
+        captured = {}
+        real_encode = self.p.encode
+        def capture(document):
+            captured["raw"] = real_encode(document)
+            return captured["raw"]
+        import unittest.mock
+        with unittest.mock.patch.object(self.p, "encode", side_effect=capture):
+            code, output = self._run_upload_with_echo(captured, urllib.error.URLError("timed out"))
+        self.assertEqual(code, 3)
+        self.assertIn("PUBLISHED (origin verified)", output)
+
+    def _run_upload_with_echo(self, captured, public_failure):
+        import contextlib, io, os, unittest.mock
+        calls = {"get": 0}
+
+        def fake_urlopen(request, timeout=None):
+            if request.get_method() == "POST":
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            calls["get"] += 1
+            if calls["get"] == 1:  # live read before upload: nothing published yet
+                import urllib.error
+                raise urllib.error.HTTPError(request.full_url, 400, "error", {}, io.BytesIO(self.missing_object[1]))
+            if calls["get"] == 2:  # origin read-back: our bytes
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                response.__enter__.return_value.read.return_value = captured["raw"]
+                response.__enter__.return_value.headers = {}
+                return response
+            raise public_failure  # public read-back: transport failure
+
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+             unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a, "--upload"])
+        return code, out.getvalue()
+
+    def test_upload_transport_failure_is_an_unknown_outcome(self):
+        """The server may already have accepted the write, so none of these may read as
+        success or as "not published", and none may escape as a traceback."""
+        import contextlib, io, os, unittest.mock, urllib.error
+        for failure in (urllib.error.URLError("connection reset"), TimeoutError("read timed out"),
+                        ConnectionResetError(54, "reset by peer")):
+            def fake_urlopen(request, timeout=None, failure=failure):
+                if request.get_method() == "POST":
+                    raise failure
+                raise urllib.error.HTTPError(request.full_url, 400, "error", {}, io.BytesIO(self.missing_object[1]))
+            out = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test-secret"}), \
+                 unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+                 contextlib.redirect_stdout(out):
+                code = self.p.main([self.a, "--upload"])
+            with self.subTest(failure=type(failure).__name__):
+                self.assertEqual(code, 6)
+                self.assertIn("UNKNOWN", out.getvalue())
+                self.assertNotIn("NOT PUBLISHED", out.getvalue())
+                self.assertNotIn("sk-test-secret", out.getvalue())
+
+    def test_pre_upload_transport_failure_stops_without_a_traceback(self):
+        import contextlib, io, unittest.mock, urllib.error
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a])
+        self.assertEqual(code, 1)
+        self.assertIn("STOPPED", out.getvalue())
+
+    def test_templates_use_only_fictional_brands_and_example_domains(self):
+        for path in (self.a, self.b):
+            document = json.loads(pathlib.Path(path).read_text())
+            for brand in document["brands"]:
+                self.assertTrue(brand["id"].startswith("example-"))
+                self.assertEqual(brand["kind"], "brand")
+                self.assertTrue(brand["destinationURL"].startswith("https://example.com/"))
+
+
 class SeedParityTests(unittest.TestCase):
     """The seed must describe exactly what the app bundles, so first publication changes nothing."""
 

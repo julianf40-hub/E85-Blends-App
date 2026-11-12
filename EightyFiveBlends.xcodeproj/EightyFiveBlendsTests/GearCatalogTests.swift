@@ -214,6 +214,31 @@ struct GearCatalogTests {
 
     private static func pageIDs(_ content: GearContent) -> [String] { content.pages.map(\.id) }
 
+    // MARK: - Endpoint
+
+    /// Regression: SUPABASE_URL is the PostgREST URL (`.../rest/v1/`). The catalog must be read from
+    /// the project root's Storage path for every configured shape. Expected values are literals,
+    /// not recomputed with the method under test.
+    @Test(arguments: [
+        "https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/",
+        "https://zefkbtscieokkdenvnkg.supabase.co/rest/v1",
+        "https://zefkbtscieokkdenvnkg.supabase.co/",
+        "https://zefkbtscieokkdenvnkg.supabase.co"
+    ])
+    func productionCatalogURLIsTheStorageObjectForEverySupabaseURLShape(configured: String) throws {
+        let url = GearCatalogStore.storageObjectURL(from: try #require(URL(string: configured)),
+                                                    objectPath: GearCatalogSource.production.objectPath)
+        #expect(url.absoluteString == "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/catalog-v1.json")
+    }
+
+    #if DEBUG || INTERNAL_BUILD
+    @Test func stagingCatalogURLIsTheStagingStorageObject() throws {
+        let url = GearCatalogStore.storageObjectURL(from: try #require(URL(string: "https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/")),
+                                                    objectPath: GearCatalogSource.staging.objectPath)
+        #expect(url.absoluteString == "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/staging/catalog-v1.json")
+    }
+    #endif
+
     // MARK: - Lifecycle: bundled, published, empty, unreadable
 
     @Test func bundledContentUntilFirstPublication() throws {
