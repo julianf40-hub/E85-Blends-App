@@ -163,6 +163,41 @@ class ValidatorTests(unittest.TestCase):
             self.assertIn("unchanged", same.stdout)
 
 
+class StagingFixtureTests(unittest.TestCase):
+    """make_fixtures.py: every fixture is publishable and the sequence is correctly ordered."""
+
+    def test_fixture_sequence_is_valid_and_ordered(self):
+        import make_fixtures
+        documents = make_fixtures.build(now=1_800_000_000)
+        self.assertGreaterEqual(len(documents), 8)
+        previous = None
+        used = set()
+        for name, _, document in documents:
+            raw = json.dumps(document).encode()
+            v.validate_bytes(raw)
+            if previous is not None:
+                self.assertEqual(v.check_successor(previous[0], previous[1], document, raw, used), "newer", name)
+            used.add(document["revision"])
+            previous = (document, raw)
+        names = [name for name, _, _ in documents]
+        empty = dict((n, d) for n, _, d in documents)["08-empty"]
+        self.assertEqual(empty["brands"], [])
+        self.assertIn("09-rollback-to-parity", names)
+
+    def test_fixtures_use_only_fictional_new_brand_and_unchanged_partner_copy(self):
+        import make_fixtures
+        seed_brands = {b["id"]: b for b in seed()["brands"]}
+        for _, _, document in make_fixtures.build(now=1_800_000_000):
+            for brand in document["brands"]:
+                if brand["id"] in seed_brands:
+                    original = seed_brands[brand["id"]]
+                    for key in ("name", "tagline", "description", "ctaTitle", "destinationURL", "offer"):
+                        self.assertEqual(brand.get(key), original.get(key), f"{brand['id']} {key} must not change")
+                else:
+                    self.assertEqual(brand["id"], "example-fuel-tools")
+                    self.assertTrue(brand["destinationURL"].startswith("https://example.com/"))
+
+
 class SeedParityTests(unittest.TestCase):
     """The seed must describe exactly what the app bundles, so first publication changes nothing."""
 

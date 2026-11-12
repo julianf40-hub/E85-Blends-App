@@ -122,7 +122,7 @@ struct GearCatalogTests {
         func makeStore(endpoint: URL? = GearCatalogTests.endpoint) -> GearCatalogStore {
             let server = self.server
             let clock = self.clock
-            return GearCatalogStore(defaults: defaults, endpoint: endpoint,
+            return GearCatalogStore(defaults: defaults, endpoints: endpoint.map { [.production: $0] } ?? [:],
                                     fetch: { try await server.fetch($0) },
                                     now: { clock.now }, observesApplication: false)
         }

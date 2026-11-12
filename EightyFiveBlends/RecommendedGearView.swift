@@ -659,6 +659,10 @@ struct RecommendedGearView: View {
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            #if DEBUG || INTERNAL_BUILD
+            GearStagingCatalogBanner()
+            #endif
+
             Text("GEAR")
                 .font(.caption.weight(.bold))
                 .tracking(1.4)

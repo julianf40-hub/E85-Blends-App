@@ -61,6 +61,7 @@ struct PreferencesView: View {
 
                 #if DEBUG || INTERNAL_BUILD
                 subscriptionDiagnosticsCard
+                GearCatalogSourceDeveloperCard()
                 #endif
             }
             .padding(16)

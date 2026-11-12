@@ -238,56 +238,107 @@ not been told about.
    Use new file names for any new images.
 2. `python3 tools/remote-gear/validate_catalog.py --previous live.json [--previous older.json …] candidate.json`
    must print `OK`. Review any wording warnings.
-3. Preview on an Internal build pointed at a staging object before publishing.
+3. Preview it on an Internal build with the staging source (section 4a) before publishing.
 4. Upload with the headers above via the Supabase dashboard (admin login, not the app). Keep the
    previous document privately for rollback.
 5. **Rollback** = publish the previous content again with a **new** `revision` and a `publishedAt`
    newer than the live one. Re-uploading an old file unchanged is rejected by devices that
    already hold a newer publication.
 
+## 4a. Internal staging preview (DEBUG and Internal builds only)
+
+Preferences → **Recommended Gear Catalog** (beside the RevenueCat diagnostics card) chooses
+**Production** (default) or **Staging**. The control, the staging source, its object path and the
+fixture actions are compiled out of App Store (Release) builds (`#if DEBUG || INTERNAL_BUILD`).
+
+- Staging reads `recommended-gear/staging/catalog-v1.json` from the same public bucket, with the
+  same v1 contract, the same validation and no credentials. **This object does not exist yet.**
+  Until it is created, staging shows nothing and reports "Not found (HTTP 404)".
+- Each source has its **own** saved document, ETag, ordering state and revision history. A staging
+  publication with a later `publishedAt` never affects what production accepts.
+- Staging never shows bundled or production partners: with nothing received it shows the empty
+  state. While staging is selected, Recommended Gear and More show a red
+  "STAGING CATALOG · Internal preview" banner, and the card is outlined in red with
+  **Return to Production**.
+- Switching shows that source's saved content immediately (carousel reset) and refreshes it. A
+  response still in flight for the previous source is discarded when it arrives.
+- **Fixtures without a bucket:** with Staging selected, **Load Fixture from Clipboard** applies a
+  document from the clipboard to staging only, through the normal validation and ordering.
+  **Reset Staging Data** clears staging so a sequence can be replayed. Generate the sequence with
+  `python3 tools/remote-gear/make_fixtures.py <dir>`. It uses a fictional "Example Fuel Tools"
+  brand and doesn't change any real partner copy.
+
 ## 5. Verification still required on a Mac (NOT RUN in the cloud session)
 
-The cloud session that produced this had no Xcode, Swift toolchain or simulator. None of the
-following has been run.
+The cloud sessions that produced this had no Mac, Xcode, simulator or App Store Connect access.
+Their Swift results come from a Linux toolchain (logic tests only). **None of the following has
+been run.**
+
+### 5.1 Build and tests
 
 ```sh
-git fetch origin && git checkout feature/2.4.1-remote-gear
+git fetch origin && git checkout feature/2.4.1-remote-gear && git pull --ff-only
+# Simulator smoke builds of both schemes (CLAUDE.md: always allowed; never archive Release)
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
   -destination 'generic/platform=iOS Simulator' -configuration Debug build | tail -40
-xcrun simctl list devices available | grep iPhone
+xcodebuild -project EightyFiveBlends.xcodeproj -scheme "EightyFiveBlends Internal" \
+  -destination 'generic/platform=iOS Simulator' build | tail -40
+# Prove the staging preview is compiled out of Release (expect no matches)
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
-  -destination 'platform=iOS Simulator,name=<installed iPhone>' \
-  -only-testing:EightyFiveBlendsTests/GearCatalogTests \
-  -only-testing:EightyFiveBlendsTests/GearDownloadTests \
-  -only-testing:EightyFiveBlendsTests/GearImageLimitsTests \
-  -only-testing:EightyFiveBlendsTests/GearImageDecoderTests \
-  -only-testing:EightyFiveBlendsTests/FeaturedGearTests \
-  -only-testing:EightyFiveBlendsTests/FeaturedCarouselMetricsTests \
-  -only-testing:EightyFiveBlendsTests/FeaturedOfferCopyTests \
-  -only-testing:EightyFiveBlendsTests/EFlexFuelAssetTests \
-  -only-testing:EightyFiveBlendsTests/EFlexFuelHeroAssetTests \
-  -only-testing:EightyFiveBlendsTests/RVPSupplyLogoAssetTests \
-  -only-testing:EightyFiveBlendsTests/RVPSupplyLogoLayoutTests test | tail -40
-# then the full suite (drop the -only-testing flags)
+  -destination 'generic/platform=iOS Simulator' -configuration Release \
+  -derivedDataPath /tmp/gear-release build | tail -5
+strings /tmp/gear-release/Build/Products/Release-iphonesimulator/EightyFiveBlends.app/EightyFiveBlends \
+  | grep -E 'recommendedGear\.staging|staging/catalog-v1|Load Fixture from Clipboard' || echo "compiled out"
+xcrun simctl list devices available | grep iPhone
+# Full suite. Gear suites: GearCatalogTests, GearCatalogSourceTests, GearDownloadTests (including the
+# Darwin-only cachedResponsesPassTheSameLimit), GearImageLimitsTests, GearImageDecoderTests,
+# FeaturedGearTests, FeaturedCarouselMetricsTests, FeaturedOfferCopyTests, EFlexFuelAssetTests,
+# EFlexFuelHeroAssetTests, RVPSupplyLogoAssetTests, RVPSupplyLogoLayoutTests.
+xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
+  -destination 'platform=iOS Simulator,name=<installed iPhone>' test | tail -60
+xcodebuild -project EightyFiveBlends.xcodeproj -scheme "EightyFiveBlends Internal" \
+  -destination 'platform=iOS Simulator,name=<installed iPhone>' test | tail -60
 python3 -m unittest discover -s tools/remote-gear -v
 ```
 
-Manual checks (simulator first, then a device). Compare with main for:
+### 5.2 Simulator scenarios with fixtures (Internal or Debug build)
 
-- Visual parity: light, dark and OLED; iPhone SE width and Pro Max; Dynamic Type default, xxxLarge
-  and AX5; VoiceOver order on both cards and on More (no remote catalog published, i.e. bundled).
-- Opening More → eFlexFuel card lands on the eFlexFuel page. With a reordered staging catalog
-  it lands on the right page (confirms `scrollPosition` honours the initial id on first layout).
-- Against a **staging** object (an Internal build with a test `SUPABASE_URL`, or a temporary
-  debug endpoint): add, edit, reorder and remove brands; empty catalog; hidden partner disappears
-  from both screens; 0, 1, 8, 9 and 10 wheels (ring only at 9); a new remote-only wheel; a broken
-  image URL; an oversized (> 5 MB) image and a very large-dimension image (both show the fallback);
-  images loading again in airplane mode after a first online view; a remote logo with and without `darkURL`; priceText; an offer with `expiresAt` a few
-  minutes ahead (watch it disappear, including in airplane mode); removing the card currently on
-  screen while backgrounded; malformed JSON / v2 / older or equal publishedAt (no change); airplane-mode
-  relaunch after an empty publication (stays empty).
-- Live bucket checks once deployed: anonymous GET works; anonymous and ordinary-user
-  INSERT/UPDATE/DELETE fail; response headers include the expected Cache-Control and ETag.
+```sh
+python3 tools/remote-gear/make_fixtures.py /tmp/gear-fixtures   # just before testing (offer times)
+xcrun simctl pbcopy booted < /tmp/gear-fixtures/01-seed-parity.json   # then tap Load Fixture
+```
+
+Preferences → Recommended Gear Catalog → **Staging**: check the red banner on Recommended Gear and
+More, and that both are empty before any fixture. Then load each file in order, checking both
+screens after each one:
+
+| Fixture | Expect |
+|---|---|
+| 01 seed parity | Identical to production/bundled |
+| 02 add example brand | New first card: typographic name, neutral placeholder art (broken URLs), "From $49", neutral (not orange) styling; new More card |
+| 03 reorder | RVP, eFlexFuel, Example; the card you were viewing stays selected |
+| 04 edit + offer | Edited copy/price; neutral offer appears ~2 min after generation, disappears at ~5 min, also when relaunched in airplane mode |
+| 05 hide example | Gone from Recommended Gear **and** More |
+| 06 eight wheels | Ring replaced by the labeled grid |
+| 07 remove eFlexFuel | Open eFlexFuel from More first; after loading, the carousel moves to RVP and the More card disappears |
+| 08 empty | Empty state card; no partner cards on More; stays empty after an airplane-mode relaunch |
+| 09 rollback | Back to parity |
+
+Also: load 03 again after 09 (rejected as stale, nothing changes). **Return to Production**
+(production content back immediately, banner gone). Relaunch (the selection persists).
+
+### 5.3 Visual and accessibility (production/bundled and fixture 02)
+
+Light, dark and OLED; iPhone SE (3rd gen) and Pro Max; Dynamic Type default, xxxLarge and AX5;
+VoiceOver order on both cards and the More cards; More → eFlexFuel opens on the eFlexFuel page.
+Compare with main, and screenshot each combination.
+
+### 5.4 Once a staging object or the live bucket exists
+
+Anonymous GET works; anonymous and ordinary-user INSERT/UPDATE/DELETE fail; response headers
+include the expected Cache-Control and ETag. Then check an oversized (> 5 MB) image, a very large-
+dimension image, a remote logo with and without `darkURL`, and images loading again in airplane
+mode after a first online view.
 
 No production deployment, Storage bucket, version or build number change, signing or entitlement
 change, or App Store submission is part of this work.

@@ -85,8 +85,8 @@ guarantees this even for rapid successive publishes and concurrent publishers:
   inside the transaction, as a final guard.
 
 Preview: `gear-publish` with `target: "staging"` writes `staging/catalog-v1.json` instead,
-skipping the approval gate. An Internal-only developer setting in the app would read that path.
-**That client switch is not implemented yet.** It must stay out of App Store builds.
+skipping the approval gate. Internal and Debug builds read that path when the developer card's
+source is set to Staging (README §4a). The switch is compiled out of App Store builds.
 
 ## Risks and decisions for Julian
 

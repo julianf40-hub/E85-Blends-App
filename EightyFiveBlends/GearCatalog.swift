@@ -508,23 +508,73 @@ extension GearCatalog {
     }
 }
 
+// MARK: - Catalog sources
+
+/// Where the catalog is read from. App Store builds only have `.production`: the staging case, its
+/// object path and the developer selection are compiled out (`#if DEBUG || INTERNAL_BUILD`). Both
+/// sources serve the same v1 JSON contract from the same public bucket, read without credentials.
+enum GearCatalogSource: String, CaseIterable, Sendable {
+    case production
+    #if DEBUG || INTERNAL_BUILD
+    /// Internal preview of an unpublished catalog. Never falls back to bundled or production
+    /// content, so nothing on screen can be mistaken for staging data.
+    case staging
+    #endif
+
+    /// Public object path, relative to the Supabase project URL.
+    var objectPath: String {
+        switch self {
+        case .production: return "storage/v1/object/public/recommended-gear/catalog-v1.json"
+        #if DEBUG || INTERNAL_BUILD
+        case .staging: return "storage/v1/object/public/recommended-gear/staging/catalog-v1.json"
+        #endif
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .production: return "Production"
+        #if DEBUG || INTERNAL_BUILD
+        case .staging: return "Staging"
+        #endif
+        }
+    }
+
+    /// UserDefaults key prefix. Production keeps the original key names (no migration); each
+    /// other source has its own cache, ETag, ordering state and revision history.
+    fileprivate var keyPrefix: String {
+        switch self {
+        case .production: return "recommendedGear."
+        #if DEBUG || INTERNAL_BUILD
+        case .staging: return "recommendedGear.staging."
+        #endif
+        }
+    }
+
+    /// Before its first publication, production shows the bundled catalog; any other source shows
+    /// nothing.
+    fileprivate var usesBundledFallback: Bool { self == .production }
+}
+
 // MARK: - Store
 
 /// Holds the last valid publication and the content both screens render.
 ///
-/// - Before any valid publication: bundled content.
+/// - Before any valid publication: bundled content (production only; staging shows nothing).
 /// - After one: only published content, persisted across launches. A valid empty catalog is
 ///   authoritative. Invalid, unsupported or older documents never replace it.
 /// - If the saved publication becomes unreadable: empty content until the next valid download,
 ///   never the bundled items (they may have been withdrawn).
 @MainActor
 final class GearCatalogStore: ObservableObject {
-    static let shared = GearCatalogStore(endpoint: GearCatalogStore.defaultEndpoint())
+    static let shared = GearCatalogStore(endpoints: GearCatalogStore.defaultEndpoints())
 
     enum Source: Equatable { case bundled, published, unreadable }
 
     enum RefreshOutcome: Equatable {
         case updated, unchanged, notModified, throttled, inProgress, notConfigured
+        /// The selected source changed while this request was in flight; its response was discarded.
+        case superseded
         case rejected(GearCatalog.ValidationError)
         case httpStatus(Int)
         case failed
@@ -533,77 +583,106 @@ final class GearCatalogStore: ObservableObject {
     typealias Fetch = (URLRequest) async throws -> (Data, URLResponse)
 
     @Published private(set) var content: GearContent
-    /// Changes whenever the accepted publication changes (not on offer expiry).
+    /// Changes whenever the visible publication changes, including a source switch (not on offer expiry).
     @Published private(set) var generation = 0
+    /// Production in App Store builds, always.
+    @Published private(set) var activeSource: GearCatalogSource
+    /// The last refresh result for `activeSource` (cleared on a source switch). For diagnostics.
+    @Published private(set) var lastRefreshOutcome: RefreshOutcome?
     private(set) var catalog: GearCatalog?
     private(set) var source: Source
 
-    /// Public object path. The bucket allows public reads; writes are admin-only server side.
-    static let objectPath = "storage/v1/object/public/recommended-gear/catalog-v1.json"
     /// Matches the recommended 60 s Cache-Control on the published object.
     static let minimumRefreshInterval: TimeInterval = 60
     nonisolated static let requestTimeout: TimeInterval = 15
+    /// How many accepted revisions are remembered to reject reuse.
+    static let rememberedRevisionCount = 100
+    #if DEBUG || INTERNAL_BUILD
+    static let selectedSourceKey = "recommendedGear.developer.selectedSource"
+    #endif
 
     private let defaults: UserDefaults
-    private let endpoint: URL?
+    private let endpoints: [GearCatalogSource: URL]
     private let fetch: Fetch
     private let now: () -> Date
-    private var refreshInFlight = false
-    private var lastAttempt: Date?
+    private var refreshing: Set<GearCatalogSource> = []
+    private var lastAttempts: [GearCatalogSource: Date] = [:]
     private var transitionTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
 
-    private enum Key {
-        static let catalog = "recommendedGear.catalog.v1"
-        static let receivedPublication = "recommendedGear.receivedPublication"
-        static let etag = "recommendedGear.etag.v1"
-        // Ordering state, stored apart from the document so it survives an unreadable cache.
-        static let lastPublishedAt = "recommendedGear.lastPublishedAt.v1"
-        static let lastDigest = "recommendedGear.lastDigest.v1"
-        static let acceptedRevisions = "recommendedGear.acceptedRevisions.v1"
+    /// Per-source persistence keys.
+    private struct Keys {
+        let catalog, receivedPublication, etag, lastPublishedAt, lastDigest, acceptedRevisions: String
+
+        init(_ source: GearCatalogSource) {
+            let prefix = source.keyPrefix
+            catalog = prefix + "catalog.v1"
+            receivedPublication = prefix + "receivedPublication"
+            etag = prefix + "etag.v1"
+            // Ordering state, stored apart from the document so it survives an unreadable cache.
+            lastPublishedAt = prefix + "lastPublishedAt.v1"
+            lastDigest = prefix + "lastDigest.v1"
+            acceptedRevisions = prefix + "acceptedRevisions.v1"
+        }
     }
 
-    /// How many accepted revisions are remembered to reject reuse.
-    static let rememberedRevisionCount = 100
+    private var keys: Keys { Keys(activeSource) }
 
     init(
         defaults: UserDefaults = .standard,
         // No default: default arguments are evaluated outside the main actor, and reading
         // SupabaseConfig is main-actor isolated in this target.
-        endpoint: URL?,
+        endpoints: [GearCatalogSource: URL],
         fetch: @escaping Fetch = GearCatalogStore.networkFetch,
         now: @escaping () -> Date = { Date() },
         observesApplication: Bool = true
     ) {
         self.defaults = defaults
-        self.endpoint = endpoint
+        self.endpoints = endpoints
         self.fetch = fetch
         self.now = now
-
-        if let data = defaults.data(forKey: Key.catalog), let decoded = try? GearCatalog.decode(data) {
-            catalog = decoded
-            source = .published
-            if defaults.object(forKey: Key.lastPublishedAt) == nil {
-                defaults.set(decoded.publishedAt, forKey: Key.lastPublishedAt)
-                defaults.set(GearCatalogDigest.of(data), forKey: Key.lastDigest)
-                defaults.set([decoded.revision], forKey: Key.acceptedRevisions)
-            }
-        } else if defaults.bool(forKey: Key.receivedPublication) {
-            // Corrupt, or written by an app version with different rules: force a full download.
-            defaults.removeObject(forKey: Key.etag)
-            source = .unreadable
-        } else {
-            source = .bundled
-        }
+        #if DEBUG || INTERNAL_BUILD
+        activeSource = defaults.string(forKey: Self.selectedSourceKey).flatMap(GearCatalogSource.init(rawValue:)) ?? .production
+        #else
+        activeSource = .production
+        #endif
+        source = .bundled
         content = .bundled
+        loadPersistedState()
         content = resolve(at: now())
         scheduleNextTransition()
         if observesApplication { observeApplication() }
     }
 
-    static func defaultEndpoint() -> URL? {
-        guard let config = try? SupabaseConfig.load() else { return nil }
-        return config.url.appendingPathComponent(objectPath)
+    /// Reads the active source's saved publication into `catalog`/`source`.
+    private func loadPersistedState() {
+        let keys = self.keys
+        if let data = defaults.data(forKey: keys.catalog), let decoded = try? GearCatalog.decode(data) {
+            catalog = decoded
+            source = .published
+            if defaults.object(forKey: keys.lastPublishedAt) == nil {
+                defaults.set(decoded.publishedAt, forKey: keys.lastPublishedAt)
+                defaults.set(GearCatalogDigest.of(data), forKey: keys.lastDigest)
+                defaults.set([decoded.revision], forKey: keys.acceptedRevisions)
+            }
+        } else if defaults.bool(forKey: keys.receivedPublication) {
+            // Corrupt, or written by an app version with different rules: force a full download.
+            catalog = nil
+            defaults.removeObject(forKey: keys.etag)
+            source = .unreadable
+        } else {
+            catalog = nil
+            source = .bundled
+        }
+    }
+
+    static func defaultEndpoints() -> [GearCatalogSource: URL] {
+        guard let config = try? SupabaseConfig.load() else { return [:] }
+        var endpoints: [GearCatalogSource: URL] = [:]
+        for source in GearCatalogSource.allCases {
+            endpoints[source] = config.url.appendingPathComponent(source.objectPath)
+        }
+        return endpoints
     }
 
     /// An ephemeral session: no shared HTTP cache, cookies or credentials. Public read only.
@@ -625,6 +704,70 @@ final class GearCatalogStore: ObservableObject {
         return (data, response)
     }
 
+    // MARK: Developer source selection (Internal and Debug builds only)
+
+    #if DEBUG || INTERNAL_BUILD
+    /// Switches the catalog source, persisting the choice. The new source's own saved content (or
+    /// nothing, for a staging source never fetched) is shown immediately; the caller then refreshes
+    /// it (see `selectSourceAndRefresh`). An in-flight request for the previous source is discarded
+    /// when it returns.
+    func selectSource(_ newSource: GearCatalogSource) {
+        guard newSource != activeSource else { return }
+        activeSource = newSource
+        defaults.set(newSource.rawValue, forKey: Self.selectedSourceKey)
+        lastRefreshOutcome = nil
+        loadPersistedState()
+        generation += 1
+        reevaluate()
+    }
+
+    @discardableResult
+    func selectSourceAndRefresh(_ newSource: GearCatalogSource) async -> RefreshOutcome {
+        selectSource(newSource)
+        return await refresh(force: true)
+    }
+
+    /// Applies a locally supplied document (for example a fixture pasted from the clipboard) to the
+    /// STAGING source, with exactly the validation and ordering of a download. Lets Internal testers
+    /// exercise scenarios without uploading anything. Production can never be changed this way.
+    @discardableResult
+    func acceptStagingFixture(_ data: Data) throws -> Bool {
+        guard activeSource == .staging else {
+            throw GearCatalog.ValidationError.invalid("select the Staging source first")
+        }
+        let changed = try accept(data, etag: nil)
+        lastRefreshOutcome = changed ? .updated : .unchanged
+        return changed
+    }
+
+    /// Forgets everything received for staging (cache, ETag, ordering state, revisions), so a
+    /// fixture sequence can be replayed from the start. Production is untouched.
+    func resetStagingData() {
+        let keys = Keys(.staging)
+        for key in [keys.catalog, keys.receivedPublication, keys.etag, keys.lastPublishedAt, keys.lastDigest, keys.acceptedRevisions] {
+            defaults.removeObject(forKey: key)
+        }
+        lastAttempts[.staging] = nil
+        guard activeSource == .staging else { return }
+        lastRefreshOutcome = nil
+        loadPersistedState()
+        generation += 1
+        reevaluate()
+    }
+
+    /// For the developer card: what the active source currently holds.
+    var activePublicationSummary: String {
+        switch source {
+        case .published:
+            guard let catalog else { return "Published" }
+            let date = Date(timeIntervalSince1970: catalog.publishedAt)
+            return "Revision \(catalog.revision) · \(date.formatted(date: .abbreviated, time: .standard))"
+        case .unreadable: return "Saved copy unreadable; showing nothing"
+        case .bundled: return activeSource.usesBundledFallback ? "Bundled catalog (nothing published yet)" : "Nothing received yet; showing nothing"
+        }
+    }
+    #endif
+
     // MARK: Content and offer timing
 
     /// Re-resolves content for the current clock (offer start/expiry) and re-arms the single timer.
@@ -637,7 +780,7 @@ final class GearCatalogStore: ObservableObject {
         switch source {
         case .published: return catalog?.content(at: date) ?? .empty
         case .unreadable: return .empty
-        case .bundled: return .bundled
+        case .bundled: return activeSource.usesBundledFallback ? .bundled : .empty
         }
     }
 
@@ -674,24 +817,35 @@ final class GearCatalogStore: ObservableObject {
 
     // MARK: Refresh
 
-    /// Downloads the published document. Every failure keeps the last valid content. Throttled to
-    /// one attempt per `minimumRefreshInterval` unless `force` is set.
+    /// Downloads the active source's published document. Every failure keeps the last valid
+    /// content. Throttled to one attempt per source per `minimumRefreshInterval` unless `force` is
+    /// set. If the source is switched while the request is in flight, the response is discarded.
     @discardableResult
     func refresh(force: Bool = false) async -> RefreshOutcome {
-        guard let endpoint else { return .notConfigured }
-        guard refreshInFlight == false else { return .inProgress }
+        let target = activeSource
+        let outcome = await refresh(target, force: force)
+        if activeSource == target, outcome != .inProgress, outcome != .throttled {
+            lastRefreshOutcome = outcome
+        }
+        return outcome
+    }
+
+    private func refresh(_ target: GearCatalogSource, force: Bool) async -> RefreshOutcome {
+        guard let endpoint = endpoints[target] else { return .notConfigured }
+        guard refreshing.contains(target) == false else { return .inProgress }
         let started = now()
-        if force == false, let lastAttempt, started.timeIntervalSince(lastAttempt) < Self.minimumRefreshInterval {
+        if force == false, let last = lastAttempts[target], started.timeIntervalSince(last) < Self.minimumRefreshInterval {
             return .throttled
         }
-        refreshInFlight = true
-        lastAttempt = started
-        defer { refreshInFlight = false }
+        refreshing.insert(target)
+        lastAttempts[target] = started
+        defer { refreshing.remove(target) }
 
+        let keys = Keys(target)
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData,
                                  timeoutInterval: Self.requestTimeout)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if source == .published, let etag = defaults.string(forKey: Key.etag) {
+        if source == .published, let etag = defaults.string(forKey: keys.etag) {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
 
@@ -699,13 +853,14 @@ final class GearCatalogStore: ObservableObject {
         let http: HTTPURLResponse
         do {
             let (body, response) = try await fetch(request)
+            guard activeSource == target else { return .superseded }
             guard let response = response as? HTTPURLResponse else { return .failed }
             data = body
             http = response
         } catch GearDownloadError.tooLarge {
-            return .rejected(.downloadTooLarge)
+            return activeSource == target ? .rejected(.downloadTooLarge) : .superseded
         } catch {
-            return .failed // Offline, timeout, cancelled: keep what we have.
+            return activeSource == target ? .failed : .superseded // Offline, timeout, cancelled.
         }
 
         switch http.statusCode {
@@ -727,9 +882,9 @@ final class GearCatalogStore: ObservableObject {
         }
     }
 
-    /// Validates, orders and, if accepted, persists and applies a downloaded document. Returns
-    /// whether the visible publication changed. Throws, persisting nothing (document, ordering state
-    /// and ETag all unchanged), when the document is invalid or out of order:
+    /// Validates, orders and, if accepted, persists and applies a downloaded document for the
+    /// ACTIVE source. Returns whether the visible publication changed. Throws, persisting nothing
+    /// (document, ordering state and ETag all unchanged), when the document is invalid or out of order:
     ///
     /// - byte-identical to the last accepted publication: accepted, unchanged (a retry or re-upload).
     ///   Also restores a saved copy that had become unreadable.
@@ -737,36 +892,38 @@ final class GearCatalogStore: ObservableObject {
     ///   equal: `.conflict`) and `revision` must not have been accepted before (`.revisionReused`).
     ///
     /// A rollback is therefore a NEW publication of the old content, with a new revision and a newer
-    /// publishedAt.
+    /// publishedAt. Each source has its own ordering state, so a staging publication never affects
+    /// what production accepts.
     @discardableResult
     func accept(_ data: Data, etag: String? = nil) throws -> Bool {
+        let keys = self.keys
         let next = try GearCatalog.decode(data)
         let digest = GearCatalogDigest.of(data)
 
-        if digest == defaults.string(forKey: Key.lastDigest) {
-            if let etag { defaults.set(etag, forKey: Key.etag) }
+        if digest == defaults.string(forKey: keys.lastDigest) {
+            if let etag { defaults.set(etag, forKey: keys.etag) }
             guard source != .published else { return false }
             // Same publication as before, re-downloaded after the saved copy became unreadable.
-            defaults.set(data, forKey: Key.catalog)
+            defaults.set(data, forKey: keys.catalog)
             apply(next)
             return true
         }
 
-        if defaults.object(forKey: Key.lastPublishedAt) != nil {
-            let last = defaults.double(forKey: Key.lastPublishedAt)
+        if defaults.object(forKey: keys.lastPublishedAt) != nil {
+            let last = defaults.double(forKey: keys.lastPublishedAt)
             if next.publishedAt < last { throw GearCatalog.ValidationError.stale }
             if next.publishedAt == last { throw GearCatalog.ValidationError.conflict }
         }
-        var revisions = defaults.stringArray(forKey: Key.acceptedRevisions) ?? []
+        var revisions = defaults.stringArray(forKey: keys.acceptedRevisions) ?? []
         if revisions.contains(next.revision) { throw GearCatalog.ValidationError.revisionReused }
 
         revisions.append(next.revision)
-        defaults.set(Array(revisions.suffix(Self.rememberedRevisionCount)), forKey: Key.acceptedRevisions)
-        defaults.set(next.publishedAt, forKey: Key.lastPublishedAt)
-        defaults.set(digest, forKey: Key.lastDigest)
-        defaults.set(data, forKey: Key.catalog)
-        defaults.set(true, forKey: Key.receivedPublication)
-        if let etag { defaults.set(etag, forKey: Key.etag) } else { defaults.removeObject(forKey: Key.etag) }
+        defaults.set(Array(revisions.suffix(Self.rememberedRevisionCount)), forKey: keys.acceptedRevisions)
+        defaults.set(next.publishedAt, forKey: keys.lastPublishedAt)
+        defaults.set(digest, forKey: keys.lastDigest)
+        defaults.set(data, forKey: keys.catalog)
+        defaults.set(true, forKey: keys.receivedPublication)
+        if let etag { defaults.set(etag, forKey: keys.etag) } else { defaults.removeObject(forKey: keys.etag) }
         apply(next)
         return true
     }
