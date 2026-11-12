@@ -55,9 +55,43 @@ struct GearCatalogSourceTests {
         }
 
         func release(status: Int, data: Data, headers: [String: String] = [:]) {
-            let (url, continuation) = held.removeFirst()
+            release(at: 0, status: status, data: data, headers: headers)
+        }
+
+        /// Releases the held request at `index` (in the order the requests were made).
+        func release(at index: Int, status: Int, data: Data, headers: [String: String] = [:]) {
+            let (url, continuation) = held.remove(at: index)
             continuation.resume(returning: (data, HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!))
         }
+
+        func fail(at index: Int, _ error: URLError = URLError(.timedOut)) {
+            held.remove(at: index).1.resume(throwing: error)
+        }
+    }
+
+    /// Lets started refresh tasks reach the server. Deterministic: yields until the expected number
+    /// of requests is held (no sleeps), bounded so a bug fails rather than hangs.
+    private static func waitForHeld(_ server: Server, _ count: Int) async {
+        for _ in 0..<1_000 where server.heldCount < count { await Task.yield() }
+    }
+
+    /// Asserts that a new refresh reports "in progress" instead of issuing a duplicate request.
+    /// If a buggy store did issue one, it is recorded and released so the test fails, not hangs.
+    private static func expectInProgress(_ store: GearCatalogStore, _ server: Server, held: Int,
+                                         _ comment: Comment, sourceLocation: SourceLocation = #_sourceLocation) async {
+        let probe = Task { await store.refresh(force: true) }
+        await waitForHeld(server, held + 1)
+        if server.heldCount > held {
+            Issue.record("duplicate request issued: \(comment)", sourceLocation: sourceLocation)
+            server.release(at: held, status: 304, data: Data())
+        }
+        #expect(await probe.value == .inProgress, comment, sourceLocation: sourceLocation)
+    }
+
+    private static func productionETag(_ defaults: UserDefaults) -> String? { defaults.string(forKey: "recommendedGear.etag.v1") }
+    private static func productionRevisions(_ defaults: UserDefaults) -> [String] { defaults.stringArray(forKey: "recommendedGear.acceptedRevisions.v1") ?? [] }
+    private static func stagingKeysPresent(_ defaults: UserDefaults) -> [String] {
+        defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("recommendedGear.staging.") }.sorted()
     }
 
     private struct Harness {
@@ -241,6 +275,156 @@ struct GearCatalogSourceTests {
         store.selectSource(.production)
         #expect(Self.ids(store) == ["prod-brand"])
         #expect(try store.accept(Self.document(["prod-brand-2"], revision: "p2", publishedAt: 1_001)), "production ordering unaffected")
+    }
+
+    // MARK: Request invalidation (held responses, no timing)
+
+    /// Production A is held; Production -> Staging -> Production; a fresh request B starts (it is
+    /// not "in progress" because of A). B completes, then A completes: only B applies, and A
+    /// changes nothing even though its source is active again and its publishedAt is newer.
+    @Test func obsoleteProductionResponseAfterRoundTripIsDiscarded_newerFirst() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.production]
+        let store = harness.makeStore()
+
+        let requestA = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        store.selectSource(.staging)
+        store.selectSource(.production)
+        let requestB = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 2)
+        #expect(harness.server.heldCount == 2, "B started instead of returning in progress")
+
+        harness.server.release(at: 1, status: 200, data: Self.document(["brand-b"], revision: "b", publishedAt: 2_000), headers: ["ETag": "\"b\""])
+        #expect(await requestB.value == .updated)
+        harness.server.release(at: 0, status: 200, data: Self.document(["brand-a"], revision: "a", publishedAt: 9_000), headers: ["ETag": "\"a\""])
+        #expect(await requestA.value == .superseded)
+
+        #expect(Self.ids(store) == ["brand-b"])
+        #expect(Self.productionETag(harness.defaults) == "\"b\"")
+        #expect(harness.defaults.double(forKey: "recommendedGear.lastPublishedAt.v1") == 2_000)
+        #expect(Self.productionRevisions(harness.defaults) == ["b"])
+        #expect(store.lastRefreshOutcome == .updated)
+        #expect(Self.ids(harness.makeStore()) == ["brand-b"])
+    }
+
+    @Test func obsoleteProductionResponseAfterRoundTripIsDiscarded_olderFirst() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.production]
+        let store = harness.makeStore()
+
+        let requestA = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        store.selectSource(.staging)
+        store.selectSource(.production)
+        let requestB = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 2)
+
+        harness.server.release(at: 0, status: 200, data: Self.document(["brand-a"], revision: "a", publishedAt: 1_000), headers: ["ETag": "\"a\""])
+        #expect(await requestA.value == .superseded)
+        #expect(Self.ids(store) == FeaturedGearPage.catalog.map(\.id), "A changed nothing")
+        #expect(Self.productionETag(harness.defaults) == nil)
+        #expect(Self.productionRevisions(harness.defaults).isEmpty)
+        #expect(store.lastRefreshOutcome == nil)
+        await Self.expectInProgress(store, harness.server, held: 1, "A's completion did not clear B's tracking")
+
+        harness.server.release(at: 0, status: 200, data: Self.document(["brand-b"], revision: "b", publishedAt: 2_000), headers: ["ETag": "\"b\""])
+        #expect(await requestB.value == .updated)
+        #expect(Self.ids(store) == ["brand-b"])
+        #expect(Self.productionRevisions(harness.defaults) == ["b"])
+    }
+
+    @Test func stagingResetDiscardsTheInFlightStagingResponse() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.staging]
+        let store = harness.makeStore()
+        store.selectSource(.staging)
+
+        let old = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        store.resetStagingData()
+        harness.server.release(status: 200, data: Self.document(["old-staging"], revision: "s1", publishedAt: 5_000), headers: ["ETag": "\"s1\""])
+        #expect(await old.value == .superseded)
+        #expect(store.content.pages.isEmpty, "staging stays reset")
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty, "no cache, ETag, ordering or revisions written")
+        #expect(store.lastRefreshOutcome == nil)
+    }
+
+    @Test func obsoleteCompletionAfterResetDoesNotUntrackTheNewRequest() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.staging]
+        let store = harness.makeStore()
+        store.selectSource(.staging)
+
+        let old = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        store.resetStagingData()
+        let new = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 2)
+        #expect(harness.server.heldCount == 2)
+
+        harness.server.release(at: 0, status: 200, data: Self.document(["old-staging"], revision: "s1", publishedAt: 5_000))
+        #expect(await old.value == .superseded)
+        await Self.expectInProgress(store, harness.server, held: 1, "the new request is still tracked")
+
+        harness.server.release(at: 0, status: 200, data: Self.document(["new-staging"], revision: "s2", publishedAt: 6_000))
+        #expect(await new.value == .updated)
+        #expect(Self.ids(store) == ["new-staging"])
+        harness.server.gated = []
+        #expect(await store.refresh(force: true) != .inProgress, "tracking cleared once the new request finished")
+    }
+
+    @Test func loadedFixtureStaysAuthoritativeOverAnEarlierDownload() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.staging]
+        let store = harness.makeStore()
+        store.selectSource(.staging)
+
+        let download = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        #expect(try store.acceptStagingFixture(Self.document(["fixture"], revision: "f1", publishedAt: 1_000)))
+        // Newer publishedAt: only invalidation, not ordering, can keep it out.
+        harness.server.release(status: 200, data: Self.document(["downloaded"], revision: "d1", publishedAt: 9_000), headers: ["ETag": "\"d1\""])
+        #expect(await download.value == .superseded)
+        #expect(Self.ids(store) == ["fixture"])
+        #expect(store.lastRefreshOutcome == .updated, "the fixture's status, not the download's")
+        #expect(harness.defaults.string(forKey: "recommendedGear.staging.etag.v1") == nil)
+        #expect(harness.defaults.stringArray(forKey: "recommendedGear.staging.acceptedRevisions.v1") == ["f1"])
+        #expect(Self.ids(harness.makeStore()) == ["fixture"])
+    }
+
+    @Test func supersededFailuresDoNotOverwriteTheCurrentStatus() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.gated = [Self.production, Self.staging]
+        let store = harness.makeStore()
+
+        let requestA = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        store.selectSource(.staging)
+        store.selectSource(.production)
+        let requestB = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 2)
+        harness.server.release(at: 1, status: 404, data: Data())
+        #expect(await requestB.value == .httpStatus(404))
+        harness.server.fail(at: 0)
+        #expect(await requestA.value == .superseded)
+        #expect(store.lastRefreshOutcome == .httpStatus(404), "the obsolete timeout is not reported")
+
+        // Same for staging after a fixture.
+        store.selectSource(.staging)
+        let stale = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        try store.acceptStagingFixture(Self.document(["fixture"], revision: "f1", publishedAt: 1_000))
+        harness.server.fail(at: 0, URLError(.notConnectedToInternet))
+        #expect(await stale.value == .superseded)
+        #expect(store.lastRefreshOutcome == .updated)
+        #expect(Self.ids(store) == ["fixture"])
     }
 
     @Test func switchingRefreshesImmediatelyEvenWhenRecentlyRefreshed() async throws {

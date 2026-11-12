@@ -260,8 +260,12 @@ fixture actions are compiled out of App Store (Release) builds (`#if DEBUG || IN
   state. While staging is selected, Recommended Gear and More show a red
   "STAGING CATALOG · Internal preview" banner, and the card is outlined in red with
   **Return to Production**.
-- Switching shows that source's saved content immediately (carousel reset) and refreshes it. A
-  response still in flight for the previous source is discarded when it arrives.
+- Switching shows that source's saved content immediately (carousel reset) and refreshes it.
+  Every switch (for both sources), staging reset and fixture load starts a new request epoch for
+  the affected source. A response from an earlier epoch is discarded on arrival, even if its
+  source is selected again (Production → Staging → Production). It changes nothing: no content,
+  cache, ETag, ordering state, revision history or refresh status. A fresh request can start at
+  once, and an obsolete request's completion never clears a newer request's in-flight tracking.
 - **Fixtures without a bucket:** with Staging selected, **Load Fixture from Clipboard** applies a
   document from the clipboard to staging only, through the normal validation and ordering.
   **Reset Staging Data** clears staging so a sequence can be replayed. Generate the sequence with

@@ -573,7 +573,8 @@ final class GearCatalogStore: ObservableObject {
 
     enum RefreshOutcome: Equatable {
         case updated, unchanged, notModified, throttled, inProgress, notConfigured
-        /// The selected source changed while this request was in flight; its response was discarded.
+        /// Made obsolete while in flight (source switched, staging reset, fixture loaded); its
+        /// response or failure was discarded without changing anything.
         case superseded
         case rejected(GearCatalog.ValidationError)
         case httpStatus(Int)
@@ -605,8 +606,30 @@ final class GearCatalogStore: ObservableObject {
     private let endpoints: [GearCatalogSource: URL]
     private let fetch: Fetch
     private let now: () -> Date
-    private var refreshing: Set<GearCatalogSource> = []
     private var lastAttempts: [GearCatalogSource: Date] = [:]
+
+    // Request invalidation. Every event that makes a source's outstanding responses obsolete (a
+    // switch away from or to it, a staging reset, a fixture load) bumps that source's epoch. A
+    // request applies its result only if, when it returns, its source is still active AND the
+    // epoch is the one it started with. Comparing the source alone is not enough: Production ->
+    // Staging -> Production leaves the source equal while the old request is obsolete.
+    private var requestEpochs: [GearCatalogSource: Int] = [:]
+    private struct InFlightRequest { let id: Int; let epoch: Int }
+    /// At most one tracked request per source; only a request from the current epoch counts as
+    /// "in progress", and a request only ever clears its own entry.
+    private var inFlight: [GearCatalogSource: InFlightRequest] = [:]
+    private var nextRequestID = 0
+
+    /// Makes every outstanding request for `source` obsolete and lets a fresh one start at once.
+    private func invalidateRequests(for source: GearCatalogSource) {
+        requestEpochs[source, default: 0] += 1
+        inFlight[source] = nil
+        lastAttempts[source] = nil
+    }
+
+    private func isCurrent(_ target: GearCatalogSource, epoch: Int) -> Bool {
+        activeSource == target && requestEpochs[target, default: 0] == epoch
+    }
     private var transitionTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
 
@@ -709,10 +732,12 @@ final class GearCatalogStore: ObservableObject {
     #if DEBUG || INTERNAL_BUILD
     /// Switches the catalog source, persisting the choice. The new source's own saved content (or
     /// nothing, for a staging source never fetched) is shown immediately; the caller then refreshes
-    /// it (see `selectSourceAndRefresh`). An in-flight request for the previous source is discarded
-    /// when it returns.
+    /// it (see `selectSourceAndRefresh`). Requests already in flight for either source are made
+    /// obsolete and discarded when they return.
     func selectSource(_ newSource: GearCatalogSource) {
         guard newSource != activeSource else { return }
+        invalidateRequests(for: activeSource)
+        invalidateRequests(for: newSource)
         activeSource = newSource
         defaults.set(newSource.rawValue, forKey: Self.selectedSourceKey)
         lastRefreshOutcome = nil
@@ -736,6 +761,8 @@ final class GearCatalogStore: ObservableObject {
             throw GearCatalog.ValidationError.invalid("select the Staging source first")
         }
         let changed = try accept(data, etag: nil)
+        // An earlier download must not replace the fixture when it finally returns.
+        invalidateRequests(for: .staging)
         lastRefreshOutcome = changed ? .updated : .unchanged
         return changed
     }
@@ -747,7 +774,8 @@ final class GearCatalogStore: ObservableObject {
         for key in [keys.catalog, keys.receivedPublication, keys.etag, keys.lastPublishedAt, keys.lastDigest, keys.acceptedRevisions] {
             defaults.removeObject(forKey: key)
         }
-        lastAttempts[.staging] = nil
+        // A staging request still in flight must not repopulate what was just cleared.
+        invalidateRequests(for: .staging)
         guard activeSource == .staging else { return }
         lastRefreshOutcome = nil
         loadPersistedState()
@@ -819,12 +847,17 @@ final class GearCatalogStore: ObservableObject {
 
     /// Downloads the active source's published document. Every failure keeps the last valid
     /// content. Throttled to one attempt per source per `minimumRefreshInterval` unless `force` is
-    /// set. If the source is switched while the request is in flight, the response is discarded.
+    /// set. A request made obsolete while in flight (see `invalidateRequests`) returns
+    /// `.superseded` and changes nothing: no content, cache, ETag, ordering state, revision history
+    /// or diagnostics.
     @discardableResult
     func refresh(force: Bool = false) async -> RefreshOutcome {
-        let target = activeSource
-        let outcome = await refresh(target, force: force)
-        if activeSource == target, outcome != .inProgress, outcome != .throttled {
+        let outcome = await refresh(activeSource, force: force)
+        switch outcome {
+        case .inProgress, .throttled, .superseded:
+            break
+        default:
+            // Only reached with no suspension since the request was confirmed current.
             lastRefreshOutcome = outcome
         }
         return outcome
@@ -832,14 +865,18 @@ final class GearCatalogStore: ObservableObject {
 
     private func refresh(_ target: GearCatalogSource, force: Bool) async -> RefreshOutcome {
         guard let endpoint = endpoints[target] else { return .notConfigured }
-        guard refreshing.contains(target) == false else { return .inProgress }
+        let epoch = requestEpochs[target, default: 0]
+        if let running = inFlight[target], running.epoch == epoch { return .inProgress }
         let started = now()
         if force == false, let last = lastAttempts[target], started.timeIntervalSince(last) < Self.minimumRefreshInterval {
             return .throttled
         }
-        refreshing.insert(target)
+        nextRequestID += 1
+        let id = nextRequestID
+        inFlight[target] = InFlightRequest(id: id, epoch: epoch)
         lastAttempts[target] = started
-        defer { refreshing.remove(target) }
+        // Clears only this request's own entry, never a newer request's.
+        defer { if inFlight[target]?.id == id { inFlight[target] = nil } }
 
         let keys = Keys(target)
         var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData,
@@ -853,15 +890,16 @@ final class GearCatalogStore: ObservableObject {
         let http: HTTPURLResponse
         do {
             let (body, response) = try await fetch(request)
-            guard activeSource == target else { return .superseded }
+            guard isCurrent(target, epoch: epoch) else { return .superseded }
             guard let response = response as? HTTPURLResponse else { return .failed }
             data = body
             http = response
         } catch GearDownloadError.tooLarge {
-            return activeSource == target ? .rejected(.downloadTooLarge) : .superseded
+            return isCurrent(target, epoch: epoch) ? .rejected(.downloadTooLarge) : .superseded
         } catch {
-            return activeSource == target ? .failed : .superseded // Offline, timeout, cancelled.
+            return isCurrent(target, epoch: epoch) ? .failed : .superseded // Offline, timeout, cancelled.
         }
+        // No suspension point from here on, so the request stays current while it is applied.
 
         switch http.statusCode {
         case 304:
