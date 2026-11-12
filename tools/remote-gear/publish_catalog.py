@@ -20,9 +20,12 @@ Steps, in order:
        - PUBLIC read-back (what devices see, through the CDN): may lag by up to max-age. A lag is
          reported as "PUBLISHED, CDN not yet updated", exit 3, never as "nothing published".
 
-Concurrency: Supabase Storage has no conditional (compare-and-swap) write, so two people
-publishing at once cannot be prevented here, only detected after the fact (step 4). Staging
-assumes one publisher at a time; the future dashboard serializes publications with a database
+Concurrency: NOT protected. Supabase Storage has no conditional (compare-and-swap) write, so
+this tool cannot prevent two people overwriting each other. The origin read-back (step 4) catches
+only some conflicts: another upload that lands before the read-back. It misses an overwrite that
+lands afterwards, and two publishers who read the same live document and stamp the same second
+(the later write wins silently, and devices that already accepted the first reject it). Staging
+REQUIRES one publisher at a time; the future dashboard serializes publications with a database
 lock (docs/remote-gear/PUBLISHING_DASHBOARD.md).
 
 Credentials: the service-role key bypasses every Storage and database access rule and works from
@@ -86,14 +89,16 @@ def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
     The upload already succeeded when this is called; nothing here may say otherwise.
     """
     if origin_status != 200:
-        return (f"UPLOADED, but the origin read-back failed (HTTP {origin_status}); "
+        failure = "could not connect" if origin_status == 0 else f"HTTP {origin_status}"
+        return (f"UPLOADED, but the origin read-back failed ({failure}); "
                 "check the object in the Supabase dashboard before publishing again", 5)
     if origin_bytes != ours:
         return ("CONFLICT: uploaded, but the origin now holds a different document: another "
                 "publication replaced ours. Do not publish again until you know which is live", 4)
     if public_status == 200 and public_bytes == ours:
         return ("PUBLISHED and verified: origin and public URL serve the new document", 0)
-    return (f"PUBLISHED (origin verified). The public URL does not serve it yet (HTTP {public_status}); "
+    public = "could not connect" if public_status == 0 else f"HTTP {public_status}"
+    return (f"PUBLISHED (origin verified). The public URL does not serve it yet ({public}); "
             f"the CDN may keep the previous copy for up to {CACHE_CONTROL}", 3)
 
 
@@ -105,6 +110,8 @@ def classify_live_response(status: int, body: bytes) -> str:
     """
     if status == 200:
         return "published"
+    if status == 0:
+        raise PublishError(f"could not reach Storage ({body.decode('utf-8', 'replace')}); nothing was uploaded")
     try:
         error = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -133,6 +140,9 @@ def encode(document: dict) -> bytes:
 
 
 def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
+    """(HTTP status, body, headers). A transport failure (no connection, reset, timeout) returns
+    status 0 with the reason as the body, so callers report it instead of crashing; after a
+    successful upload that keeps "uploaded but unverified" distinct from "not published"."""
     headers = {"Cache-Control": "no-cache"}
     if key:
         headers.update({"Authorization": f"Bearer {key}", "apikey": key})
@@ -142,6 +152,9 @@ def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as error:
         return error.code, error.read(), dict(error.headers)
+    except (urllib.error.URLError, OSError) as error:  # includes timeouts
+        reason = getattr(error, "reason", error)
+        return 0, str(reason).encode("utf-8", "replace"), {}
 
 
 def prepare(template_path: str, live_status: int, live_body: bytes, now: float) -> tuple[dict, bytes, dict | None]:

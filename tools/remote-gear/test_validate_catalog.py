@@ -282,6 +282,92 @@ class StagingPublisherTests(unittest.TestCase):
             self.assertNotIn(key, written.read_text())
         self.assertNotIn(key, out.getvalue())
 
+    def _run_upload(self, read_backs):
+        """main --upload with a successful upload; `read_backs` are the origin and public fetch results."""
+        import contextlib, io, os, unittest.mock, urllib.error
+        responses = [(*self.missing_object, {})] + list(read_backs)
+
+        def fake_urlopen(request, timeout=None):
+            if request.get_method() == "POST":
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            outcome = responses.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            status, body, headers = outcome
+            if status != 200:
+                raise urllib.error.HTTPError(request.full_url, status, "error", headers, io.BytesIO(body))
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.status = status
+            response.__enter__.return_value.read.return_value = body
+            response.__enter__.return_value.headers = headers
+            return response
+
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+             unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a, "--upload"])
+        return code, out.getvalue()
+
+    def test_origin_read_back_transport_failure_reports_uploaded_unverified(self):
+        import urllib.error
+        code, output = self._run_upload([urllib.error.URLError("connection reset"), (200, b"x", {})])
+        self.assertEqual(code, 5)
+        self.assertIn("UPLOADED", output)
+        self.assertNotIn("NOT PUBLISHED", output)
+
+    def test_public_read_back_transport_failure_keeps_the_origin_verification(self):
+        import urllib.error
+        captured = {}
+        real_encode = self.p.encode
+        def capture(document):
+            captured["raw"] = real_encode(document)
+            return captured["raw"]
+        import unittest.mock
+        with unittest.mock.patch.object(self.p, "encode", side_effect=capture):
+            code, output = self._run_upload_with_echo(captured, urllib.error.URLError("timed out"))
+        self.assertEqual(code, 3)
+        self.assertIn("PUBLISHED (origin verified)", output)
+
+    def _run_upload_with_echo(self, captured, public_failure):
+        import contextlib, io, os, unittest.mock
+        calls = {"get": 0}
+
+        def fake_urlopen(request, timeout=None):
+            if request.get_method() == "POST":
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            calls["get"] += 1
+            if calls["get"] == 1:  # live read before upload: nothing published yet
+                import urllib.error
+                raise urllib.error.HTTPError(request.full_url, 400, "error", {}, io.BytesIO(self.missing_object[1]))
+            if calls["get"] == 2:  # origin read-back: our bytes
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                response.__enter__.return_value.read.return_value = captured["raw"]
+                response.__enter__.return_value.headers = {}
+                return response
+            raise public_failure  # public read-back: transport failure
+
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+             unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a, "--upload"])
+        return code, out.getvalue()
+
+    def test_pre_upload_transport_failure_stops_without_a_traceback(self):
+        import contextlib, io, unittest.mock, urllib.error
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main([self.a])
+        self.assertEqual(code, 1)
+        self.assertIn("STOPPED", out.getvalue())
+
     def test_templates_use_only_fictional_brands_and_example_domains(self):
         for path in (self.a, self.b):
             document = json.loads(pathlib.Path(path).read_text())

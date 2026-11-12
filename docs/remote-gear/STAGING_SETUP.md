@@ -81,10 +81,13 @@ device (publish an empty catalog to clear it).
 | `UPLOADED, but the origin read-back failed` | 5 | Stored, but unconfirmed; check the dashboard |
 | `UNKNOWN` | 6 | The request didn't complete; it may or may not be stored |
 
-**Concurrency:** Supabase Storage has no conditional (compare-and-swap) write. Two people
-publishing at the same moment can't be prevented here, only detected afterwards (exit 4). Staging
-assumes **one publisher at a time**. The future dashboard serializes publications with a database
-lock (`PUBLISHING_DASHBOARD.md`).
+**Concurrency is not protected.** Supabase Storage has no conditional (compare-and-swap) write,
+so the tool can't prevent two people overwriting each other. Its origin read-back (exit 4) catches
+**only some** conflicts: another upload that lands before the read-back. It misses an overwrite
+that lands afterwards. It also misses two publishers who read the same live document and stamp
+the same second: the later write wins silently, and devices that already accepted the first
+reject it as a conflict. **Staging requires one publisher at a time.** The future dashboard
+serializes publications with a database lock (`PUBLISHING_DASHBOARD.md`).
 
 ```sh
 python3 tools/remote-gear/publish_catalog.py docs/remote-gear/staging/publication-a.json   # dry run
