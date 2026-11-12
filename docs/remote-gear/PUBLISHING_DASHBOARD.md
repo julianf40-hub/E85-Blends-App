@@ -48,11 +48,11 @@ Status: **design only. Nothing here is built, migrated or deployed.** The mobile
 editor ── edit draft (RLS-protected table) ──► browser validator (instant)
        ── upload image ─► fn gear-upload-url (auth + role + aal2)
                            └─ signed upload URL for images/<brand>/<sha256>.<ext>
-                              (type png/jpeg/heic, ≤ 8 MB; reject overwrite)
+                              (type png/jpeg/heic, ≤ 5 MB, ≤ 8,192 px per side; reject overwrite)
 publisher ── Publish ─► fn gear-publish (auth + publisher + aal2)
    1. load draft; refuse if base revision ≠ current live revision (optimistic lock)
    2. refuse if any visible brand has approval = pending
-   3. strip dashboard-only fields; set revision = new id, publishedAt = server now
+   3. strip dashboard-only fields; set revision = new UUID, publishedAt = next timestamp (below)
    4. run the validator (TypeScript port of validate_catalog.py, same test cases)
       + successor check against the live document
    5. HEAD every referenced image (must exist, 200, image/*)
@@ -61,6 +61,28 @@ publisher ── Publish ─► fn gear-publish (auth + publisher + aal2)
    8. read the public URL back and compare bytes; record CDN check result
 publisher ── Rollback(publication X) ─► same function, with X's document as the draft
 ```
+
+### Strictly increasing `publishedAt`
+
+Devices accept a changed publication only if its `publishedAt` is **strictly** greater than the
+last one they accepted, and its revision is new (README, "Publication ordering"). The publisher
+guarantees this even for rapid successive publishes and concurrent publishers:
+
+- A single row `gear_publication_head (id = 1, revision, published_at bigint, digest)` is locked
+  with `SELECT … FOR UPDATE` inside the publish transaction, so publishes are serialized.
+- `published_at = greatest(floor(extract(epoch from clock_timestamp())), head.published_at + 1)`,
+  in whole seconds. Two publishes in the same second get t and t + 1. A server clock that moved
+  backwards still yields head + 1. Integers are exact in JSON and in a Double on both platforms.
+- `revision` is a fresh UUID with a UNIQUE constraint in `gear_catalog_publications`, so a
+  revision can never be reused.
+- The transaction inserts the history row and updates the head **before** the Storage upload. The
+  uploaded bytes are the exact bytes recorded, so a retry after a failed upload re-sends identical
+  bytes, which devices accept as "unchanged". If the upload ultimately fails, the next publish still
+  moves forward from the recorded head.
+- Rollback calls the same path with the old document as input, so it gets a new revision and the
+  next timestamp. It is never a re-upload of old bytes.
+- The validator's successor check (TypeScript port of `check_successor`) runs against the head
+  inside the transaction, as a final guard.
 
 Preview: `gear-publish` with `target: "staging"` writes `staging/catalog-v1.json` instead,
 skipping the approval gate. An Internal-only developer setting in the app would read that path.

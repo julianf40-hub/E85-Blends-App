@@ -5,78 +5,101 @@
 //  Remote product photos and logos for the Recommended Gear catalog (GearCatalog.swift).
 //
 //  Catalog image URLs are VERSIONED: replacing artwork means uploading a new file name and
-//  publishing its new URL, never overwriting an existing object. That makes every URL immutable, so
-//  this loader serves a stored copy whenever it has one (including offline) and only goes to the
-//  network for a URL it has never fetched. Failures, timeouts and undecodable data show the
-//  supplied fallback (bundled artwork, a typographic name, or a neutral placeholder), never a blank
-//  or a spinner that never ends.
+//  publishing its new URL, never overwriting an existing object. Every URL is therefore immutable,
+//  so a stored copy is served whenever one exists (offline included) and the network is used only
+//  for a URL never fetched before.
+//
+//  Memory and size safety (GearImageLimits, GearDownloading.swift):
+//  - bytes are limited during transfer, for network and cached responses alike;
+//  - the header's pixel dimensions are checked before any pixels are decoded;
+//  - images are decoded by ImageIO straight to a display-sized thumbnail, off the main thread, so a
+//    full-resolution bitmap is never created;
+//  - the memory cache is bounded by decoded bytes, and emptied on a memory warning;
+//  - at most three transfers/decodes run at once; callers for the same URL share one.
+//  Failures, timeouts, oversized or undecodable data show the supplied fallback (bundled artwork,
+//  a typographic name, or a neutral placeholder). Bundled artwork never goes through this path.
 //
 
 import SwiftUI
+import ImageIO
 #if canImport(UIKit)
 import UIKit
 #endif
 
-#if canImport(UIKit)
-/// Shared loader: an in-memory cache, a dedicated on-disk URL cache, request coalescing, a short
-/// timeout and a size limit.
-@MainActor
-final class GearImagePipeline {
-    static let shared = GearImagePipeline()
+/// A decoded, display-sized image. CGImage is immutable, so sharing it across threads is safe.
+nonisolated struct GearDecodedImage: @unchecked Sendable {
+    let cgImage: CGImage
 
-    nonisolated static let maximumBytes = 8_000_000
-    nonisolated static let requestTimeout: TimeInterval = 15
+    /// Decoded memory, for the cost-bounded cache.
+    var cost: Int { cgImage.bytesPerRow * cgImage.height }
+}
 
-    private let session: URLSession
-    private let memory = NSCache<NSURL, UIImage>()
-    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
-
-    init(session: URLSession = GearImagePipeline.makeSession()) {
-        self.session = session
-        memory.countLimit = 80
+nonisolated enum GearImageDecoder {
+    /// Reads the header, rejects oversized sources, then lets ImageIO decode directly to a thumbnail
+    /// no longer than `maxPixelSize` on its longest side (never upscaled), with EXIF orientation
+    /// applied. Returns nil for corrupt, unsupported or oversized images.
+    static func displayImage(from data: Data, maxPixelSize: Int = GearImageLimits.displayMaxPixelSize) -> GearDecodedImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, sourceOptions) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              GearImageLimits.acceptsSource(width: width, height: height) else {
+            return nil
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize)
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            return nil
+        }
+        return GearDecodedImage(cgImage: image)
     }
+}
 
-    nonisolated static func makeSession() -> URLSession {
+/// The shared image loader used by every remote catalog image.
+enum GearImagePipeline {
+    private static var observers: [NSObjectProtocol] = []
+
+    static let shared: GearAssetLoader<GearDecodedImage> = {
+        let loader = GearAssetLoader<GearDecodedImage>(
+            downloader: GearBoundedDownloader(configuration: makeConfiguration()),
+            maximumConcurrentLoads: GearImageLimits.maximumConcurrentLoads,
+            byteLimit: GearImageLimits.maximumBytes,
+            timeout: GearImageLimits.requestTimeout,
+            costLimit: GearImageLimits.memoryCostLimit,
+            countLimit: GearImageLimits.memoryCountLimit,
+            cost: { $0.cost },
+            decode: { GearImageDecoder.displayImage(from: $0) }
+        )
+        #if canImport(UIKit)
+        observers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { loader.removeAllCached() }
+        })
+        #endif
+        return loader
+    }()
+
+    nonisolated static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appendingPathComponent("RecommendedGearImages", isDirectory: true)
-        configuration.urlCache = URLCache(memoryCapacity: 4_000_000, diskCapacity: 60_000_000, directory: directory)
-        // Versioned URLs never change content, so any stored copy is valid, even an "expired" one.
+        configuration.urlCache = URLCache(memoryCapacity: 0, diskCapacity: GearImageLimits.diskCacheBytes, directory: directory)
         configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.timeoutIntervalForRequest = requestTimeout
-        configuration.timeoutIntervalForResource = requestTimeout * 2
+        configuration.timeoutIntervalForRequest = GearImageLimits.requestTimeout
+        configuration.timeoutIntervalForResource = GearImageLimits.requestTimeout * 2
         configuration.waitsForConnectivity = false
         configuration.httpCookieStorage = nil
-        return URLSession(configuration: configuration)
-    }
-
-    func cachedImage(for url: URL) -> UIImage? {
-        memory.object(forKey: url as NSURL)
-    }
-
-    func image(for url: URL) async -> UIImage? {
-        if let cached = cachedImage(for: url) { return cached }
-        if let running = inFlight[url] { return await running.value }
-
-        let session = self.session
-        let task = Task.detached(priority: .utility) { () -> UIImage? in
-            guard let (data, response) = try? await session.data(from: url),
-                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  data.isEmpty == false, data.count <= GearImagePipeline.maximumBytes,
-                  let image = UIImage(data: data) else {
-                return nil
-            }
-            // Decode off the main thread so scrolling the carousel never stalls on a large photo.
-            return image.preparingForDisplay() ?? image
-        }
-        inFlight[url] = task
-        let image = await task.value
-        inFlight[url] = nil
-        if let image { memory.setObject(image, forKey: url as NSURL) }
-        return image
+        configuration.httpMaximumConnectionsPerHost = GearImageLimits.maximumConcurrentLoads
+        return configuration
     }
 }
-#endif
 
 /// A remote catalog image, aspect-fit, with `fallback` shown while it loads and if it can't.
 /// Callers apply their own clip shapes, frames and accessibility (these images are decorative).
@@ -84,21 +107,18 @@ struct GearRemoteImage<Fallback: View>: View {
     let url: URL?
     let fallback: () -> Fallback
 
+    @State private var loaded: GearDecodedImage?
+    @State private var loadedURL: URL?
+
     init(url: URL?, @ViewBuilder fallback: @escaping () -> Fallback) {
         self.url = url
         self.fallback = fallback
     }
 
-    #if canImport(UIKit)
-    @State private var loaded: UIImage?
-    @State private var loadedURL: URL?
-    #endif
-
     var body: some View {
-        #if canImport(UIKit)
         Group {
             if let loaded, loadedURL == url {
-                Image(uiImage: loaded)
+                Image(decorative: loaded.cgImage, scale: 1)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
@@ -112,19 +132,16 @@ struct GearRemoteImage<Fallback: View>: View {
                 loadedURL = nil
                 return
             }
-            if let cached = GearImagePipeline.shared.cachedImage(for: url) {
+            if let cached = GearImagePipeline.shared.cachedValue(for: url) {
                 loaded = cached
                 loadedURL = url
                 return
             }
-            let image = await GearImagePipeline.shared.image(for: url)
+            let image = await GearImagePipeline.shared.load(url)
             guard Task.isCancelled == false else { return }
             loaded = image
             loadedURL = image == nil ? nil : url
         }
-        #else
-        fallback()
-        #endif
     }
 }
 

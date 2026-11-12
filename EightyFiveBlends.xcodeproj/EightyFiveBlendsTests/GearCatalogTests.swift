@@ -219,18 +219,114 @@ struct GearCatalogTests {
         #expect(Self.pageIDs(harness.makeStore().content) == ["new-brand"])
     }
 
-    @Test func olderPublicationFromStaleCDNIsIgnored() throws {
+    // MARK: - Publication ordering
+
+    /// The withdrawal regression: once a removal is accepted, no older or equal-timestamp document
+    /// (a stale CDN edge, a cached copy, a mistaken re-upload) can bring the removed item back,
+    /// including after an offline restart.
+    @Test func withdrawalCannotBeUndoneByOlderOrEqualTimestampDocuments() throws {
         let harness = try Harness()
         defer { harness.tearDown() }
         let store = harness.makeStore()
-        try store.accept(Self.document([], revision: "remove-all", publishedAt: 2_000))
-        #expect(throws: GearCatalog.ValidationError.stale) {
-            try store.accept(Self.document([Self.neutralBrand()], revision: "old", publishedAt: 1_000))
+        try store.accept(Self.document([Self.neutralBrand()], revision: "with-brand", publishedAt: 1_000), etag: "\"a\"")
+        try store.accept(Self.document([], revision: "withdrawn", publishedAt: 2_000), etag: "\"b\"")
+        #expect(store.content.pages.isEmpty)
+
+        let older = Self.document([Self.neutralBrand()], revision: "with-brand", publishedAt: 1_000)
+        let equalTimestamp = Self.document([Self.neutralBrand()], revision: "other", publishedAt: 2_000)
+        #expect(throws: GearCatalog.ValidationError.stale) { try store.accept(older, etag: "\"a\"") }
+        #expect(throws: GearCatalog.ValidationError.conflict) { try store.accept(equalTimestamp, etag: "\"c\"") }
+        #expect(store.content.pages.isEmpty)
+        #expect(harness.defaults.string(forKey: "recommendedGear.etag.v1") == "\"b\"", "a rejected document never changes the ETag")
+
+        let relaunchedOffline = harness.makeStore()
+        #expect(relaunchedOffline.content.pages.isEmpty)
+        #expect(throws: GearCatalog.ValidationError.stale) { try relaunchedOffline.accept(older) }
+        #expect(throws: GearCatalog.ValidationError.conflict) { try relaunchedOffline.accept(equalTimestamp) }
+        #expect(harness.makeStore().content.pages.isEmpty)
+    }
+
+    @Test func staleDocumentsFromRefreshKeepContentAndETag() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        harness.server.replies = [
+            .status(200, Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000), ["ETag": "\"r1\""]),
+            .status(200, Self.document([], revision: "r2", publishedAt: 2_000), ["ETag": "\"r2\""]),
+            .status(200, Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000), ["ETag": "\"r1\""]),
+            .status(200, Self.document([Self.neutralBrand()], revision: "r3", publishedAt: 2_000), ["ETag": "\"r3\""]),
+            .status(304, Data(), [:])
+        ]
+        #expect(await store.refresh(force: true) == .updated)
+        #expect(await store.refresh(force: true) == .updated)
+        #expect(await store.refresh(force: true) == .rejected(.stale))
+        #expect(await store.refresh(force: true) == .rejected(.conflict))
+        #expect(store.content.pages.isEmpty)
+        #expect(await store.refresh(force: true) == .notModified)
+        #expect(harness.server.requests.last?.value(forHTTPHeaderField: "If-None-Match") == "\"r2\"")
+    }
+
+    @Test func identicalRetryIsAcceptedAsUnchanged() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        let publication = Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000)
+        #expect(try store.accept(publication, etag: "\"one\""))
+        let generation = store.generation
+        #expect(try store.accept(publication, etag: "\"two\"") == false)
+        #expect(store.generation == generation)
+        #expect(harness.defaults.string(forKey: "recommendedGear.etag.v1") == "\"two\"", "same bytes, refreshed ETag")
+        #expect(try harness.makeStore().accept(publication) == false)
+    }
+
+    @Test func reusedRevisionWithChangedContentIsRejected() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        try store.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000))
+        try store.accept(Self.document([], revision: "r2", publishedAt: 2_000))
+        #expect(throws: GearCatalog.ValidationError.revisionReused) {
+            try store.accept(Self.document([Self.neutralBrand()], revision: "r2", publishedAt: 3_000))
+        }
+        #expect(throws: GearCatalog.ValidationError.revisionReused) {
+            try store.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 3_000))
         }
         #expect(store.content.pages.isEmpty)
-        // Same timestamp (a re-upload) is accepted; rollbacks republish with a new publishedAt.
-        try store.accept(Self.document([Self.neutralBrand()], revision: "rollback", publishedAt: 2_000))
+    }
+
+    @Test func rollbackIsANewPublication() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        try store.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000))
+        try store.accept(Self.document([], revision: "r2", publishedAt: 2_000))
+        // Re-uploading r1 unchanged is ignored; republishing its content as r3 with a newer time works.
+        #expect(throws: GearCatalog.ValidationError.stale) {
+            try store.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000))
+        }
+        #expect(try store.accept(Self.document([Self.neutralBrand()], revision: "r3-rollback-of-r1", publishedAt: 2_001)))
         #expect(Self.pageIDs(store.content) == ["new-brand"])
+    }
+
+    @Test func orderingSurvivesAnUnreadableSavedCopy() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let withdrawal = Self.document([], revision: "withdrawn", publishedAt: 2_000)
+        let store = harness.makeStore()
+        try store.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000))
+        try store.accept(withdrawal)
+        harness.defaults.set(Data("{corrupt".utf8), forKey: "recommendedGear.catalog.v1")
+
+        let relaunched = harness.makeStore()
+        #expect(relaunched.source == .unreadable)
+        #expect(throws: GearCatalog.ValidationError.stale) {
+            try relaunched.accept(Self.document([Self.neutralBrand()], revision: "r1", publishedAt: 1_000))
+        }
+        #expect(relaunched.content.pages.isEmpty)
+        // Re-downloading the same publication restores it.
+        #expect(try relaunched.accept(withdrawal))
+        #expect(relaunched.source == .published)
+        #expect(harness.makeStore().source == .published)
     }
 
     @Test func identicalDocumentDoesNotBumpGeneration() throws {

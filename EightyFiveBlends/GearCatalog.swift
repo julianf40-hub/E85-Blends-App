@@ -28,13 +28,14 @@ import UIKit
 /// removes it everywhere. Unknown keys are ignored, so optional fields can be added within v1.
 struct GearCatalog: Decodable {
     static let supportedSchemaVersion = 1
-    static let maximumBytes = 512_000
+    nonisolated static let maximumBytes = 512_000
 
     let schemaVersion: Int
     /// Changes on every publication, including a rollback.
     let revision: String
-    /// UTC Unix seconds set by the publisher. A device never accepts a document older than the one
-    /// it already holds, so a stale CDN edge cannot resurrect removed items.
+    /// UTC Unix seconds set by the publisher, strictly increasing across publications. A device only
+    /// accepts a changed document whose publishedAt is strictly newer than the last one it accepted,
+    /// so a stale CDN edge or cached copy cannot resurrect removed items (see `GearCatalogStore.accept`).
     let publishedAt: Double
     let brands: [BrandEntry]
 
@@ -139,8 +140,15 @@ struct GearCatalog: Decodable {
         case tooLarge
         case unsupportedSchema(Int)
         case invalid(String)
-        /// Older than the publication already held (for example a stale CDN edge).
+        /// Older than the last accepted publication (for example a stale CDN edge).
         case stale
+        /// Same publishedAt as the last accepted publication but different bytes. Publications must
+        /// have strictly increasing timestamps, so this is never a legitimate update.
+        case conflict
+        /// A revision already accepted earlier, with different bytes.
+        case revisionReused
+        /// The download exceeded `maximumBytes` while it was being received.
+        case downloadTooLarge
     }
 
     static func decode(_ data: Data) throws -> GearCatalog {
@@ -322,6 +330,20 @@ nonisolated enum GearCatalogValidation {
     }
 
     static func timestamp(_ value: Double) -> Bool { value.isFinite && value > 0 }
+}
+
+/// A stable fingerprint of a publication's exact bytes (64-bit FNV-1a plus length), used to tell a
+/// harmless retry of the same publication from a different document. Not a security boundary: only
+/// the trusted publisher can write the object.
+nonisolated enum GearCatalogDigest {
+    static func of(_ data: Data) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return String(hash, radix: 16) + "-" + String(data.count)
+    }
 }
 
 // MARK: - Bundled artwork (iOS mapping of stable IDs)
@@ -526,7 +548,6 @@ final class GearCatalogStore: ObservableObject {
     private let endpoint: URL?
     private let fetch: Fetch
     private let now: () -> Date
-    private var cachedData: Data?
     private var refreshInFlight = false
     private var lastAttempt: Date?
     private var transitionTask: Task<Void, Never>?
@@ -536,7 +557,14 @@ final class GearCatalogStore: ObservableObject {
         static let catalog = "recommendedGear.catalog.v1"
         static let receivedPublication = "recommendedGear.receivedPublication"
         static let etag = "recommendedGear.etag.v1"
+        // Ordering state, stored apart from the document so it survives an unreadable cache.
+        static let lastPublishedAt = "recommendedGear.lastPublishedAt.v1"
+        static let lastDigest = "recommendedGear.lastDigest.v1"
+        static let acceptedRevisions = "recommendedGear.acceptedRevisions.v1"
     }
+
+    /// How many accepted revisions are remembered to reject reuse.
+    static let rememberedRevisionCount = 100
 
     init(
         defaults: UserDefaults = .standard,
@@ -554,8 +582,12 @@ final class GearCatalogStore: ObservableObject {
 
         if let data = defaults.data(forKey: Key.catalog), let decoded = try? GearCatalog.decode(data) {
             catalog = decoded
-            cachedData = data
             source = .published
+            if defaults.object(forKey: Key.lastPublishedAt) == nil {
+                defaults.set(decoded.publishedAt, forKey: Key.lastPublishedAt)
+                defaults.set(GearCatalogDigest.of(data), forKey: Key.lastDigest)
+                defaults.set([decoded.revision], forKey: Key.acceptedRevisions)
+            }
         } else if defaults.bool(forKey: Key.receivedPublication) {
             // Corrupt, or written by an app version with different rules: force a full download.
             defaults.removeObject(forKey: Key.etag)
@@ -575,7 +607,9 @@ final class GearCatalogStore: ObservableObject {
     }
 
     /// An ephemeral session: no shared HTTP cache, cookies or credentials. Public read only.
-    nonisolated static let networkSession: URLSession = {
+    /// Enforces `GearCatalog.maximumBytes` while the body is received (Content-Length is not
+    /// trusted), cancelling the transfer as soon as it is exceeded.
+    nonisolated static let downloader: GearBoundedDownloader = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
@@ -583,11 +617,12 @@ final class GearCatalogStore: ObservableObject {
         configuration.timeoutIntervalForRequest = requestTimeout
         configuration.timeoutIntervalForResource = requestTimeout * 2
         configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        return GearBoundedDownloader(configuration: configuration)
     }()
 
     nonisolated static func networkFetch(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        try await networkSession.data(for: request)
+        let (data, response) = try await downloader.data(for: request, limit: GearCatalog.maximumBytes)
+        return (data, response)
     }
 
     // MARK: Content and offer timing
@@ -667,6 +702,8 @@ final class GearCatalogStore: ObservableObject {
             guard let response = response as? HTTPURLResponse else { return .failed }
             data = body
             http = response
+        } catch GearDownloadError.tooLarge {
+            return .rejected(.downloadTooLarge)
         } catch {
             return .failed // Offline, timeout, cancelled: keep what we have.
         }
@@ -690,24 +727,54 @@ final class GearCatalogStore: ObservableObject {
         }
     }
 
-    /// Validates and, if newer or equal, persists and applies a downloaded document. Returns
-    /// whether the visible publication changed.
+    /// Validates, orders and, if accepted, persists and applies a downloaded document. Returns
+    /// whether the visible publication changed. Throws, persisting nothing (document, ordering state
+    /// and ETag all unchanged), when the document is invalid or out of order:
+    ///
+    /// - byte-identical to the last accepted publication: accepted, unchanged (a retry or re-upload).
+    ///   Also restores a saved copy that had become unreadable.
+    /// - otherwise `publishedAt` must be strictly newer than the last accepted one (older: `.stale`,
+    ///   equal: `.conflict`) and `revision` must not have been accepted before (`.revisionReused`).
+    ///
+    /// A rollback is therefore a NEW publication of the old content, with a new revision and a newer
+    /// publishedAt.
     @discardableResult
     func accept(_ data: Data, etag: String? = nil) throws -> Bool {
         let next = try GearCatalog.decode(data)
-        if source == .published, let current = catalog, next.publishedAt < current.publishedAt {
-            throw GearCatalog.ValidationError.stale
+        let digest = GearCatalogDigest.of(data)
+
+        if digest == defaults.string(forKey: Key.lastDigest) {
+            if let etag { defaults.set(etag, forKey: Key.etag) }
+            guard source != .published else { return false }
+            // Same publication as before, re-downloaded after the saved copy became unreadable.
+            defaults.set(data, forKey: Key.catalog)
+            apply(next)
+            return true
         }
+
+        if defaults.object(forKey: Key.lastPublishedAt) != nil {
+            let last = defaults.double(forKey: Key.lastPublishedAt)
+            if next.publishedAt < last { throw GearCatalog.ValidationError.stale }
+            if next.publishedAt == last { throw GearCatalog.ValidationError.conflict }
+        }
+        var revisions = defaults.stringArray(forKey: Key.acceptedRevisions) ?? []
+        if revisions.contains(next.revision) { throw GearCatalog.ValidationError.revisionReused }
+
+        revisions.append(next.revision)
+        defaults.set(Array(revisions.suffix(Self.rememberedRevisionCount)), forKey: Key.acceptedRevisions)
+        defaults.set(next.publishedAt, forKey: Key.lastPublishedAt)
+        defaults.set(digest, forKey: Key.lastDigest)
         defaults.set(data, forKey: Key.catalog)
         defaults.set(true, forKey: Key.receivedPublication)
         if let etag { defaults.set(etag, forKey: Key.etag) } else { defaults.removeObject(forKey: Key.etag) }
+        apply(next)
+        return true
+    }
 
-        let changed = source != .published || cachedData != data
+    private func apply(_ next: GearCatalog) {
         catalog = next
-        cachedData = data
         source = .published
-        if changed { generation += 1 }
+        generation += 1
         reevaluate()
-        return changed
     }
 }

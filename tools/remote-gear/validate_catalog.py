@@ -7,6 +7,10 @@ is simply ignored by them, which leaves devices on the previous publication).
 
     python3 tools/remote-gear/validate_catalog.py docs/remote-gear/catalog-v1.json
     python3 tools/remote-gear/validate_catalog.py --previous live.json candidate.json
+    python3 tools/remote-gear/validate_catalog.py --previous live.json --previous older.json candidate.json
+
+`--previous` may be repeated with earlier publications; the one with the newest publishedAt is the
+live document, and every listed revision counts as already used.
 
 Exit status 0 = publishable. Uses only the Python standard library.
 """
@@ -226,33 +230,57 @@ def validate_bytes(raw: bytes) -> tuple[dict, list[str]]:
     return document, validate(document)
 
 
-def check_successor(previous: dict, candidate: dict) -> None:
-    """Rules for publishing `candidate` over the live `previous` document."""
-    if candidate["publishedAt"] < previous["publishedAt"]:
+def check_successor(live: dict, live_bytes: bytes, candidate: dict, candidate_bytes: bytes,
+                    used_revisions: set[str] | None = None) -> str:
+    """Ordering rules, identical to GearCatalogStore.accept on the devices.
+
+    Returns "unchanged" for a byte-identical retry of the live publication, "newer" for a valid new
+    publication. Raises Invalid for anything a device that holds `live` would reject:
+    an older or EQUAL publishedAt with different bytes, or a revision already used.
+    A rollback is a new publication: new revision, publishedAt newer than the live one.
+    """
+    if candidate_bytes == live_bytes:
+        return "unchanged"
+    if candidate["publishedAt"] < live["publishedAt"]:
         raise Invalid("publishedAt is older than the live publication; devices would ignore it")
-    if candidate["revision"] == previous["revision"]:
-        raise Invalid("revision must change on every publication, including a rollback")
+    if candidate["publishedAt"] == live["publishedAt"]:
+        raise Invalid("publishedAt equals the live publication but the content differs; "
+                      "publishedAt must strictly increase")
+    used = set(used_revisions or ()) | {live["revision"]}
+    if candidate["revision"] in used:
+        raise Invalid("revision was already used; every publication, including a rollback, needs a new one")
+    return "newer"
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("catalog")
-    parser.add_argument("--previous", help="the currently published document")
+    parser.add_argument("--previous", action="append", default=[],
+                        help="a previously published document (repeatable; newest is the live one)")
     args = parser.parse_args(argv)
     try:
         with open(args.catalog, "rb") as handle:
             document, warnings = validate_bytes(handle.read())
+        with open(args.catalog, "rb") as handle:
+            candidate_bytes = handle.read()
+        ordering = None
         if args.previous:
-            with open(args.previous, "rb") as handle:
-                previous, _ = validate_bytes(handle.read())
-            check_successor(previous, document)
+            history = []
+            for path in args.previous:
+                with open(path, "rb") as handle:
+                    raw = handle.read()
+                history.append((validate_bytes(raw)[0], raw))
+            live, live_bytes = max(history, key=lambda item: item[0]["publishedAt"])
+            ordering = check_successor(live, live_bytes, document, candidate_bytes,
+                                       {doc["revision"] for doc, _ in history})
     except (Invalid, Unsupported) as error:
         print(f"REJECTED: {error}")
         return 1
     for warning in warnings:
         print(f"warning: {warning}")
     brands = [b for b in document["brands"] if not b.get("hidden")]
-    print(f"OK: revision {document['revision']}, {len(brands)} visible brand(s)")
+    note = " (identical to the live publication: devices treat it as unchanged)" if ordering == "unchanged" else ""
+    print(f"OK: revision {document['revision']}, {len(brands)} visible brand(s){note}")
     return 0
 
 

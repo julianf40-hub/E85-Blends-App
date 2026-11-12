@@ -75,8 +75,28 @@ A document is accepted only if **all** of these hold. Otherwise the client keeps
    "affiliate" or "endorse".
 5. `rvp_wheels` carries no brand-only fields. Each wheel has `imageURL` **or** a bundled wheel ID.
 6. An offer has `startsAt < expiresAt` when both are set.
-7. `publishedAt` is not older than the publication the device already holds. This stops a stale
-   CDN edge from resurrecting removed items.
+7. It is correctly ordered relative to the last publication the device accepted (see below).
+
+### Publication ordering
+
+Each device remembers the last accepted publication's `publishedAt`, a digest of its exact
+bytes, and the last 100 accepted revisions. It keeps these separately from the cached document,
+so they survive an unreadable cache.
+
+| Downloaded document | Result |
+|---|---|
+| Byte-identical to the last accepted publication | Accepted as **unchanged** (a retry or re-upload). Also restores an unreadable saved copy. |
+| Different bytes, `publishedAt` **strictly newer**, revision never used | Accepted. |
+| Different bytes, `publishedAt` **older** | Rejected (`stale`). |
+| Different bytes, `publishedAt` **equal** | Rejected (`conflict`). Equal timestamps are never a legitimate update. |
+| Different bytes, revision already accepted | Rejected (`revisionReused`). |
+
+A rejected document changes nothing on the device: not the saved content, the ordering state
+or the stored ETag. So a stale CDN edge or cached copy can never bring back an item that a newer
+publication withdrew, including after an offline restart. **A rollback is a new publication**
+of the old content, with a new `revision` and a `publishedAt` newer than the live one.
+`validate_catalog.py --previous …` applies exactly these rules before publishing. The
+publisher's guarantee of strictly increasing timestamps is described in `PUBLISHING_DASHBOARD.md`.
 
 Unknown keys are ignored. That allows optional fields to be added within v1. **Unknown `kind`
 values are skipped, not rejected**: a new layout added later is invisible to older apps, but the
@@ -106,12 +126,28 @@ rest of the document (including withdrawals) still applies to them.
   neutral theme styling, its own remote logo or a typographic name, and no artwork panel unless it
   supplies `heroImageURL`.
 
+### Download and memory limits (iOS)
+
+Byte limits are enforced **while the body is received**: 512,000 bytes for the catalog and
+5,000,000 per image. `Content-Length` is used only to refuse an obviously oversized response
+early. A missing or misleading header can't get past the running count, and the transfer is
+cancelled the moment the limit is exceeded. Responses served from the image disk cache go through
+the same path and limits, and only complete, in-limit 2xx bodies are stored.
+
+Images: the header's pixel size is checked before any pixels are decoded (each side ≤ 8,192 px
+and ≤ 40 MP in total). ImageIO then decodes straight to a thumbnail of at most 1,600 px on the
+longest side, off the main thread, so a full-resolution bitmap is never created. The in-memory
+cache is bounded by decoded bytes (32 MB, 120 entries, least-recently-used) and is emptied on a
+memory warning. At most three image transfers/decodes run at once, and concurrent requests for
+the same URL share one transfer. Bundled artwork never goes through this path.
+
 ### Images
 
 - **Use versioned, immutable URLs** (e.g. `gear/eflexfuel/hero-2026-11-12.png`). To change a
   picture, upload a new file and publish its new URL. Never overwrite an object in place: clients
   treat image URLs as immutable and serve any stored copy, offline included.
-- PNG/JPEG/HEIF ≤ 8 MB (aim for ≤ 400 KB). Wheels square; logos transparent, about 4:1, legible
+- PNG/JPEG/HEIF ≤ 5 MB (aim for ≤ 400 KB), each side ≤ 8,192 px and ≤ 40 MP in total (about
+  2,000 px on the longest side is plenty). Wheels square; logos transparent, about 4:1, legible
   on white (light) and near-black (dark/OLED). Supply `darkURL` when the light logo is dark.
 - While an image loads, or if it fails or times out (15 s), the client shows bundled artwork,
   the typographic brand name, or a neutral placeholder. It never shows another brand's artwork.
@@ -156,7 +192,7 @@ test suite.
   Throttled to once per 60 s. 15 s request timeout, ephemeral session (no cookies, cache or
   credentials), conditional `If-None-Match` with the stored ETag.
 - **Failures keep the last valid content:** offline, timeout, any non-200 including 404, invalid
-  JSON, unsupported version, failed validation, or an older `publishedAt`. A deleted object never
+  JSON, unsupported version, failed validation, an older `publishedAt`, an equal one with different bytes, a reused revision, or a body over the byte limit. A deleted object never
   clears the catalog. **Publish an empty catalog to withdraw everything.**
 - **Offer timing:** a single timer wakes at the next offer start/expiry (no per-second polling),
   and content is re-resolved on foregrounding and on system clock changes.
@@ -197,16 +233,17 @@ not been told about.
 
 ## 4. Operator workflow until the dashboard exists
 
-1. Edit a copy of the live document. Bump `revision`, set `publishedAt` to the current UTC time,
-   and use new file names for any new images.
-2. `python3 tools/remote-gear/validate_catalog.py --previous live.json candidate.json` must print
-   `OK`. Review any wording warnings.
+1. Edit a copy of the live document. Set a new, never-used `revision` and a `publishedAt`
+   strictly greater than the live one (current UTC seconds, or live + 1 if that isn't greater).
+   Use new file names for any new images.
+2. `python3 tools/remote-gear/validate_catalog.py --previous live.json [--previous older.json …] candidate.json`
+   must print `OK`. Review any wording warnings.
 3. Preview on an Internal build pointed at a staging object before publishing.
 4. Upload with the headers above via the Supabase dashboard (admin login, not the app). Keep the
    previous document privately for rollback.
-5. **Rollback** = publish the previous content again with a **new** `revision` and **current**
-   `publishedAt`. Re-uploading an old file unchanged is ignored by devices that already have a
-   newer publication.
+5. **Rollback** = publish the previous content again with a **new** `revision` and a `publishedAt`
+   newer than the live one. Re-uploading an old file unchanged is rejected by devices that
+   already hold a newer publication.
 
 ## 5. Verification still required on a Mac (NOT RUN in the cloud session)
 
@@ -221,6 +258,9 @@ xcrun simctl list devices available | grep iPhone
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
   -destination 'platform=iOS Simulator,name=<installed iPhone>' \
   -only-testing:EightyFiveBlendsTests/GearCatalogTests \
+  -only-testing:EightyFiveBlendsTests/GearDownloadTests \
+  -only-testing:EightyFiveBlendsTests/GearImageLimitsTests \
+  -only-testing:EightyFiveBlendsTests/GearImageDecoderTests \
   -only-testing:EightyFiveBlendsTests/FeaturedGearTests \
   -only-testing:EightyFiveBlendsTests/FeaturedCarouselMetricsTests \
   -only-testing:EightyFiveBlendsTests/FeaturedOfferCopyTests \
@@ -241,9 +281,10 @@ Manual checks (simulator first, then a device). Compare with main for:
 - Against a **staging** object (an Internal build with a test `SUPABASE_URL`, or a temporary
   debug endpoint): add, edit, reorder and remove brands; empty catalog; hidden partner disappears
   from both screens; 0, 1, 8, 9 and 10 wheels (ring only at 9); a new remote-only wheel; a broken
-  image URL; a remote logo with and without `darkURL`; priceText; an offer with `expiresAt` a few
+  image URL; an oversized (> 5 MB) image and a very large-dimension image (both show the fallback);
+  images loading again in airplane mode after a first online view; a remote logo with and without `darkURL`; priceText; an offer with `expiresAt` a few
   minutes ahead (watch it disappear, including in airplane mode); removing the card currently on
-  screen while backgrounded; malformed JSON / v2 / older publishedAt (no change); airplane-mode
+  screen while backgrounded; malformed JSON / v2 / older or equal publishedAt (no change); airplane-mode
   relaunch after an empty publication (stays empty).
 - Live bucket checks once deployed: anonymous GET works; anonymous and ordinary-user
   INSERT/UPDATE/DELETE fail; response headers include the expected Cache-Control and ETag.

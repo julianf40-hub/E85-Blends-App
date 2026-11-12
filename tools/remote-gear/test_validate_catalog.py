@@ -116,12 +116,51 @@ class ValidatorTests(unittest.TestCase):
             v.validate_bytes(b" " * (v.MAXIMUM_BYTES + 1))
 
     def test_successor_rules(self):
+        def raw(document):
+            return json.dumps(document, sort_keys=True).encode()
         live = doc(revision="a", publishedAt=200)
-        v.check_successor(live, doc(revision="b", publishedAt=200))
+        newer = doc(revision="b", publishedAt=201)
+        self.assertEqual(v.check_successor(live, raw(live), live, raw(live)), "unchanged")
+        self.assertEqual(v.check_successor(live, raw(live), newer, raw(newer)), "newer")
+        for candidate in (doc(revision="b", publishedAt=200),       # equal timestamp, different bytes
+                          doc(revision="b", publishedAt=100),       # older
+                          doc(neutral(), revision="a", publishedAt=300)):  # reused live revision
+            with self.assertRaises(v.Invalid):
+                v.check_successor(live, raw(live), candidate, raw(candidate))
+        reused = doc(revision="old", publishedAt=300)
         with self.assertRaises(v.Invalid):
-            v.check_successor(live, doc(revision="b", publishedAt=100))
-        with self.assertRaises(v.Invalid):
-            v.check_successor(live, doc(revision="a", publishedAt=300))
+            v.check_successor(live, raw(live), reused, raw(reused), {"old"})
+
+    def test_withdrawal_cannot_be_undone(self):
+        """Mirrors GearCatalogTests.withdrawalCannotBeUndoneByOlderOrEqualTimestampDocuments."""
+        def raw(document):
+            return json.dumps(document, sort_keys=True).encode()
+        withdrawn = doc(revision="withdrawn", publishedAt=2_000)
+        for resurrection in (doc(neutral(), revision="with-brand", publishedAt=1_000),
+                             doc(neutral(), revision="other", publishedAt=2_000)):
+            with self.assertRaises(v.Invalid):
+                v.check_successor(withdrawn, raw(withdrawn), resurrection, raw(resurrection), {"with-brand"})
+
+    def test_cli_rollback_flow(self):
+        import subprocess, sys, tempfile
+        script = pathlib.Path(v.__file__)
+        with tempfile.TemporaryDirectory() as tmp:
+            def write(name, document):
+                path = pathlib.Path(tmp, name)
+                path.write_text(json.dumps(document))
+                return str(path)
+            first = write("r1.json", doc(neutral(), revision="r1", publishedAt=1_000))
+            second = write("r2.json", doc(revision="r2", publishedAt=2_000))
+            reupload = write("r1-again.json", doc(neutral(), revision="r1", publishedAt=1_000))
+            rollback = write("r3.json", doc(neutral(), revision="r3", publishedAt=2_001))
+
+            def run(*args):
+                return subprocess.run([sys.executable, "-I", str(script), *args], capture_output=True, text=True)
+            self.assertEqual(run("--previous", first, "--previous", second, reupload).returncode, 1)
+            self.assertEqual(run("--previous", first, "--previous", second, rollback).returncode, 0)
+            same = run("--previous", second, second)
+            self.assertEqual(same.returncode, 0)
+            self.assertIn("unchanged", same.stdout)
 
 
 class SeedParityTests(unittest.TestCase):
