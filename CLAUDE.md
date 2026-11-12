@@ -4,16 +4,17 @@ Project quick facts:
 
 - **Xcode project:** `EightyFiveBlends.xcodeproj` (no `.xcworkspace`; open the `.xcodeproj` directly)
 - **App target / product name:** `EightyFiveBlends` (Bundle ID `com.e85blends.app.ios`)
-- **Internal target:** shares the same `EightyFiveBlends` PBX native target with the `EightyFiveBlends Internal` scheme (Bundle ID `com.e85blends.app.ios.internal`)
+- **Internal configuration (retired for distribution):** the `EightyFiveBlends Internal` scheme and `Internal` configuration (Bundle ID `com.e85blends.app.ios.internal`) still exist on the same `EightyFiveBlends` PBX native target, but the separate **85Blends Internal** App Store Connect app is retired. Testers use the normal app through TestFlight. Don't recreate the Internal app or ask for its App Store Connect setup.
 - **Schemes (shared):** `EightyFiveBlends`, `EightyFiveBlends Internal`
 - **iOS deployment target:** 17.6 (App Store), 26.4 (Internal)
-- **Xcode Cloud config:** present at `EightyFiveBlends.xcodeproj/xcshareddata/xcodecloud/manifest.json` (workflow ID `7dd08a73-3551-4068-8509-7fe8d370bf4d`, workflow target label `85Blends`). Xcode Cloud triggers off pushes to the branch(es) configured in App Store Connect — this repo does **not** hold the trigger rules. See **Xcode Cloud Workflows** below for the Internal vs Production split.
+- **Xcode Cloud config:** present at `EightyFiveBlends.xcodeproj/xcshareddata/xcodecloud/manifest.json` (workflow ID `7dd08a73-3551-4068-8509-7fe8d370bf4d`, workflow target label `85Blends`). Start conditions are configured in App Store Connect; this repo does **not** hold them, so never assume a push starts a build. See **Xcode Cloud Workflows** below.
 - **Tests:** unit-test target `EightyFiveBlendsTests` (sources in the synced folder `EightyFiveBlends.xcodeproj/EightyFiveBlendsTests/`, hosted by the app) is a Testable in both shared schemes, so `xcodebuild test` runs it. Swift Testing (`import Testing`, `@Test`) is used in nearly every test file; XCTest is used only in `NativeAdTextLayoutTests.swift` and `NearbyE85RenderingTests.swift`.
 
-## Default Rule: Internal Builds Only
+## Default Rule: Claude Never Archives or Uploads
 
-- **Claude's default workflow is Internal only.** Every beta update, fix, hotfix, or TestFlight validation build goes to the **85Blends Internal** App Store Connect app (`com.e85blends.app.ios.internal`) via the `EightyFiveBlends Internal` scheme and `Internal` configuration.
-- **Never archive or upload production** — the `EightyFiveBlends` scheme, `Release` configuration, or `com.e85blends.app.ios` — unless Julian explicitly says **"prepare production release."** A merged fix, a green build, or an urgent-sounding bug is not permission; the exact phrase is.
+- **Testing uses the normal app through TestFlight.** Beta builds are the production-bundle 85Blends app (`com.e85blends.app.ios`, `EightyFiveBlends` scheme, `Release` configuration) delivered to TestFlight by the Xcode Cloud **Default** workflow, which Julian runs. Claude does not start distribution builds.
+- **Never archive or upload** anything yourself unless Julian explicitly says **"prepare production release."** A merged fix, a green build, or an urgent-sounding bug is not permission; the exact phrase is.
+- TestFlight builds are Release builds: neither `DEBUG` nor `INTERNAL_BUILD` is set. Tester-only behavior in them must be a runtime check scoped to that feature (for example `GearCatalogPreviewEligibility`, from StoreKit's verified `AppTransaction` environment), never a globally enabled compiler flag.
 - Simulator smoke builds of either scheme are always fine — the rule is about archiving and uploading.
 
 ## Product Policy: Cloud Sync Is Free, Not Pro
@@ -27,24 +28,18 @@ CloudKit/SwiftData sync is a **core 85Blends capability available to every user,
 
 ## Xcode Cloud Workflows
 
-Two separate workflows in App Store Connect keep Internal and Production builds from crossing over. The trigger/branch rules live in ASC, not this repo — this table is the source of truth for what each workflow must be set to.
+Workflows and their start conditions live in App Store Connect, not this repo. Only what has been observed is recorded here; don't infer other trigger rules or settings.
 
-| Setting | 85Blends Internal | 85Blends Production |
-|---|---|---|
-| Workflow name | `85Blends Internal` | `85Blends Production` |
-| Scheme (Archive action) | `EightyFiveBlends Internal` | `EightyFiveBlends` |
-| Archive configuration | `Internal` (pinned by the scheme) | `Release` (pinned by the scheme) |
-| Bundle ID produced | `com.e85blends.app.ios.internal` | `com.e85blends.app.ios` |
-| Uploads to (ASC app) | 85Blends Internal | 85Blends (production) |
-| TestFlight destination | Internal Testing | External / App Store release candidates |
-| Start condition | Branch changes: `internal/beta`, `claude/*`, `fix/*`, `feature/*` | `main` only — prefer **manual start** |
-| Purpose | Beta updates, fixes, hotfixes, TestFlight validation | Public App Store / release candidates only |
+| Workflow | What is known |
+|---|---|
+| **Default** | Archives the normal app (`EightyFiveBlends` scheme, `Release`, `com.e85blends.app.ios`) and delivers it to TestFlight. Build 293 archived and completed TestFlight delivery from `main` commit `0955482`. This is the path to TestFlight. |
+| **85Blends Internal** | Manual start, test-only: no Archive action and no post-actions, so it delivers nothing. |
 
-Why the bundle IDs can't cross over: both configs live on the single `EightyFiveBlends` target, and `PRODUCT_BUNDLE_IDENTIFIER` is set **per configuration** (`Internal` → `.internal`, `Debug`/`Release` → production). Each shared scheme pins its Archive action to one configuration, so archiving the Internal scheme can only ever produce the internal bundle ID, and archiving the main scheme can only produce the production one.
+Configuration notes (from the project file): `PRODUCT_BUNDLE_IDENTIFIER` is set **per configuration** on the single `EightyFiveBlends` target (`Internal` → `.internal`, `Debug`/`Release` → production), and each shared scheme pins its Archive action to one configuration.
 
 Guardrails:
 
-- The `85Blends Internal` workflow must never reference the `EightyFiveBlends` scheme, and `85Blends Production` must never reference `EightyFiveBlends Internal`. If a workflow shows the wrong scheme, stop and tell Julian — don't "fix" it by editing the workflow yourself.
+- Don't edit workflows. If one looks wrong, stop and tell Julian.
 - Never pass `-configuration` to `xcodebuild archive` to override a scheme's pinned archive configuration — that is the one local path that could mismatch scheme and bundle ID.
 - Internal build numbers (`CURRENT_PROJECT_VERSION` in the `Internal` configuration) are bumped independently of Debug/Release; bumping Internal must not touch the other two.
 
@@ -114,7 +109,7 @@ Do **not** use `git add -A` or `git add .` — `Website Heros/` and various loca
 git push -u origin fix/<short-slug>
 ```
 
-Xcode Cloud picks up the push based on the workflow's branch rules in App Store Connect. To reach TestFlight the push usually needs to land on the branch the workflow watches (commonly the release branch, not the fix branch) — open a PR from the fix branch into that base, merge, and Xcode Cloud will build and upload to TestFlight from the merge commit.
+Don't assume the push starts Xcode Cloud: start conditions are set in App Store Connect and aren't recorded here. The known path to TestFlight is a PR from the fix branch into `main`, merged with Julian's approval, then the **Default** workflow building that `main` commit (as with Build 293).
 
 Never `git push --force` to `main` or a release branch. Force-push only your own fix branch, and only when you understand why.
 

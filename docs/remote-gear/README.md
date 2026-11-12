@@ -238,27 +238,50 @@ not been told about.
    Use new file names for any new images.
 2. `python3 tools/remote-gear/validate_catalog.py --previous live.json [--previous older.json …] candidate.json`
    must print `OK`. Review any wording warnings.
-3. Preview it on an Internal build with the staging source (section 4a) before publishing.
+3. Preview it on a TestFlight build with the staging source (section 4a) before publishing.
 4. Upload with the headers above via the Supabase dashboard (admin login, not the app). Keep the
    previous document privately for rollback.
 5. **Rollback** = publish the previous content again with a **new** `revision` and a `publishedAt`
    newer than the live one. Re-uploading an old file unchanged is rejected by devices that
    already hold a newer publication.
 
-## 4a. Internal staging preview (DEBUG and Internal builds only)
+## 4a. Staging preview (TestFlight, Xcode and Debug installs only)
 
-Preferences → **Recommended Gear Catalog** (beside the RevenueCat diagnostics card) chooses
-**Production** (default) or **Staging**. The control, the staging source, its object path and the
-fixture actions are compiled out of App Store (Release) builds (`#if DEBUG || INTERNAL_BUILD`).
+Preferences → **Recommended Gear Catalog** chooses **Production** (default) or **Staging**. The
+code is compiled into every build, including the App Store one, but is dormant unless the store's
+`previewEligibility` is `.eligible`:
 
+| Installation | How it is known | Eligibility | Catalog |
+|---|---|---|---|
+| TestFlight (the normal app, Release) | verified `AppTransaction`, environment `sandbox` | eligible | Production until Staging is chosen |
+| Run from Xcode (development-signed) | verified `AppTransaction`, environment `xcode` (or a Debug/Internal build, which skips the check) | eligible | same |
+| App Store | verified `AppTransaction`, environment `production` | ineligible | Production only; saved staging state is deleted |
+| Not yet known | no verified answer within 5 s (offline, not signed in to the App Store, unverified) | unknown | Production only; retried on returning to the foreground |
+
+- The signal is the same verified-only, 5-second-bounded StoreKit check the referral flow uses
+  (`StoreKitReferralRevenueEnvironmentProvider`). Apple documents that apps downloaded from
+  TestFlight always run in the sandbox environment, and that `AppTransaction.shared` throws if the
+  user isn't authenticated with the App Store and may need network connectivity.
+- Limitations: until StoreKit answers (normally within seconds of launch; longer offline), a
+  TestFlight install shows Production and no catalog card, and a saved Staging selection takes
+  effect once the answer arrives. A development-signed build run from Xcode also counts as
+  eligible. The workflow name and the TestFlight tester group are not visible to the app and play
+  no part. No compiler flag is changed: `DEBUG`/`INTERNAL_BUILD` still only gate their own code.
+- Enforcement is in `GearCatalogStore`, not the UI: an ineligible or unknown store starts on
+  Production whatever was saved, and rejects selecting Staging (`selectSource` returns false,
+  `selectSourceAndRefresh` returns `.previewUnavailable`), staging refreshes, fixtures (throws) and
+  staging resets. An App Store install replacing a TestFlight one (same bundle ID, same saved
+  data) never displays cached staging content, and deletes it once StoreKit confirms production.
+  Eligibility is decided once per launch and never saved.
 - Staging reads `recommended-gear/staging/catalog-v1.json` from the same public bucket, with the
-  same v1 contract, the same validation and no credentials. **Neither the bucket nor the object exists yet** (see `STAGING_SETUP.md` for the proposed setup and phone test).
-  Until it is created, staging shows nothing and the card reports "HTTP 400" (Supabase Storage answers a missing bucket or object with 400).
+  same v1 contract, the same validation and no credentials. The `recommended-gear` bucket exists
+  and is empty: until a staging publication is uploaded, staging shows nothing and the card reports
+  "HTTP 400" (Supabase Storage answers a missing object with 400). See `STAGING_SETUP.md`.
 - Each source has its **own** saved document, ETag, ordering state and revision history. A staging
   publication with a later `publishedAt` never affects what production accepts.
 - Staging never shows bundled or production partners: with nothing received it shows the empty
   state. While staging is selected, Recommended Gear and More show a red
-  "STAGING CATALOG · Internal preview" banner, and the card is outlined in red with
+  "STAGING CATALOG · Test preview" banner, and the card is outlined in red with
   **Return to Production**.
 - Switching shows that source's saved content immediately (carousel reset) and refreshes it.
   Every switch (for both sources), staging reset and fixture load starts a new request epoch for
@@ -281,18 +304,13 @@ been run.**
 ### 5.1 Build and tests
 
 ```sh
-git fetch origin && git checkout feature/2.4.1-remote-gear && git pull --ff-only
-# Simulator smoke builds of both schemes (CLAUDE.md: always allowed; never archive Release)
+git fetch origin && git checkout feature/2.4.1-testflight-catalog-preview && git pull --ff-only
+# Simulator smoke builds (CLAUDE.md: always allowed; never archive). Release is the configuration
+# TestFlight and the App Store use: the staging preview is compiled in and gated at runtime.
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
   -destination 'generic/platform=iOS Simulator' -configuration Debug build | tail -40
-xcodebuild -project EightyFiveBlends.xcodeproj -scheme "EightyFiveBlends Internal" \
-  -destination 'generic/platform=iOS Simulator' build | tail -40
-# Prove the staging preview is compiled out of Release (expect no matches)
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
-  -destination 'generic/platform=iOS Simulator' -configuration Release \
-  -derivedDataPath /tmp/gear-release build | tail -5
-strings /tmp/gear-release/Build/Products/Release-iphonesimulator/EightyFiveBlends.app/EightyFiveBlends \
-  | grep -E 'recommendedGear\.staging|staging/catalog-v1|Load Fixture from Clipboard' || echo "compiled out"
+  -destination 'generic/platform=iOS Simulator' -configuration Release build | tail -40
 xcrun simctl list devices available | grep iPhone
 # Full suite. Gear suites: GearCatalogTests, GearCatalogSourceTests, GearDownloadTests (including the
 # Darwin-only cachedResponsesPassTheSameLimit), GearImageLimitsTests, GearImageDecoderTests,
@@ -300,12 +318,10 @@ xcrun simctl list devices available | grep iPhone
 # EFlexFuelHeroAssetTests, RVPSupplyLogoAssetTests, RVPSupplyLogoLayoutTests.
 xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
   -destination 'platform=iOS Simulator,name=<installed iPhone>' test | tail -60
-xcodebuild -project EightyFiveBlends.xcodeproj -scheme "EightyFiveBlends Internal" \
-  -destination 'platform=iOS Simulator,name=<installed iPhone>' test | tail -60
 python3 -m unittest discover -s tools/remote-gear -v
 ```
 
-### 5.2 Simulator scenarios with fixtures (Internal or Debug build)
+### 5.2 Simulator scenarios with fixtures (Debug build, or a TestFlight build on a device)
 
 ```sh
 python3 tools/remote-gear/make_fixtures.py /tmp/gear-fixtures   # just before testing (offer times)

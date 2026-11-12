@@ -61,8 +61,10 @@ struct PreferencesView: View {
 
                 #if DEBUG || INTERNAL_BUILD
                 subscriptionDiagnosticsCard
-                GearCatalogSourceDeveloperCard()
                 #endif
+                // Outside the compile-time guard on purpose: renders only when the store says this
+                // installation may preview staging (TestFlight, Xcode, Debug); never on App Store installs.
+                GearCatalogSourceDeveloperCard()
             }
             .padding(16)
         }

@@ -46,9 +46,7 @@ struct MoreView: View {
                     // RVP Supply sponsor — returned to premium top-of-page placement (Pass 5),
                     // directly below the header and before Pro / Referral. Same compact
                     // horizontal card introduced in Pass 4; only the position changed.
-                    #if DEBUG || INTERNAL_BUILD
                     GearStagingCatalogBanner()
-                    #endif
 
                     // Shown only while the catalog places the sponsor on More.
                     if let sponsor = gearStore.content.moreSponsor {

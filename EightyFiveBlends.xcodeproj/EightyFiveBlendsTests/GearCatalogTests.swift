@@ -231,13 +231,11 @@ struct GearCatalogTests {
         #expect(url.absoluteString == "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/catalog-v1.json")
     }
 
-    #if DEBUG || INTERNAL_BUILD
     @Test func stagingCatalogURLIsTheStagingStorageObject() throws {
         let url = GearCatalogStore.storageObjectURL(from: try #require(URL(string: "https://zefkbtscieokkdenvnkg.supabase.co/rest/v1/")),
                                                     objectPath: GearCatalogSource.staging.objectPath)
         #expect(url.absoluteString == "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/staging/catalog-v1.json")
     }
-    #endif
 
     // MARK: - Lifecycle: bundled, published, empty, unreadable
 

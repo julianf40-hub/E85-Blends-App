@@ -11,7 +11,7 @@ Status: **design only. Nothing here is built, migrated or deployed.** The mobile
 | Private editor | Web app behind Supabase Auth. Only allowlisted administrators see anything. |
 | Edit text, links, prices, offers, order, hide/remove | Form generated from `catalog-v1.schema.json`, with drag-to-reorder, a per-item hidden toggle, and character counters at the client limits. |
 | Image uploads | Server-issued signed upload URLs to content-addressed (immutable) paths, with type and size checks. |
-| Draft preview | Web preview of both screens (light/dark, narrow/wide, large text) plus an optional **staging object** an Internal build can be pointed at. |
+| Draft preview | Web preview of both screens (light/dark, narrow/wide, large text) plus an optional **staging object** a TestFlight build can be pointed at. |
 | Validation | Same rules as the apps, run in the browser (fast feedback) **and again on the server** (authoritative). |
 | Publish | One server action: validate, stamp `publishedAt`, record history, upload the public object. |
 | Rollback | Re-publish any history entry as a **new** publication. |
@@ -85,8 +85,9 @@ guarantees this even for rapid successive publishes and concurrent publishers:
   inside the transaction, as a final guard.
 
 Preview: `gear-publish` with `target: "staging"` writes `staging/catalog-v1.json` instead,
-skipping the approval gate. Internal and Debug builds read that path when the developer card's
-source is set to Staging (README §4a). The switch is compiled out of App Store builds.
+skipping the approval gate. TestFlight, Xcode and Debug installs read that path when the catalog
+card's source is set to Staging (README §4a). App Store installs can never select it: the store
+rejects staging unless StoreKit verifies a sandbox environment.
 
 ## Risks and decisions for Julian
 

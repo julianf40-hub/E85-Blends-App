@@ -510,33 +510,28 @@ extension GearCatalog {
 
 // MARK: - Catalog sources
 
-/// Where the catalog is read from. App Store builds only have `.production`: the staging case, its
-/// object path and the developer selection are compiled out (`#if DEBUG || INTERNAL_BUILD`). Both
-/// sources serve the same v1 JSON contract from the same public bucket, read without credentials.
+/// Where the catalog is read from. Both sources serve the same v1 JSON contract from the same
+/// public bucket, read without credentials. `.staging` is compiled into every build but can only
+/// become active where `GearCatalogStore.previewEligibility` is `.eligible` (TestFlight, Xcode and
+/// Debug builds); everywhere else the store stays on `.production`.
 enum GearCatalogSource: String, CaseIterable, Sendable {
     case production
-    #if DEBUG || INTERNAL_BUILD
-    /// Internal preview of an unpublished catalog. Never falls back to bundled or production
+    /// Tester preview of an unpublished catalog. Never falls back to bundled or production
     /// content, so nothing on screen can be mistaken for staging data.
     case staging
-    #endif
 
     /// Public object path, relative to the Supabase project URL.
     var objectPath: String {
         switch self {
         case .production: return "storage/v1/object/public/recommended-gear/catalog-v1.json"
-        #if DEBUG || INTERNAL_BUILD
         case .staging: return "storage/v1/object/public/recommended-gear/staging/catalog-v1.json"
-        #endif
         }
     }
 
     var displayName: String {
         switch self {
         case .production: return "Production"
-        #if DEBUG || INTERNAL_BUILD
         case .staging: return "Staging"
-        #endif
         }
     }
 
@@ -545,15 +540,48 @@ enum GearCatalogSource: String, CaseIterable, Sendable {
     fileprivate var keyPrefix: String {
         switch self {
         case .production: return "recommendedGear."
-        #if DEBUG || INTERNAL_BUILD
         case .staging: return "recommendedGear.staging."
-        #endif
         }
     }
 
     /// Before its first publication, production shows the bundled catalog; any other source shows
     /// nothing.
     fileprivate var usesBundledFallback: Bool { self == .production }
+}
+
+/// Whether this installation may preview the staging catalog. Decided per process, never
+/// persisted, so a new install (an App Store build replacing a TestFlight one) always starts again
+/// from `.unknown`.
+///
+/// - `.eligible`: a verified `AppTransaction` signed in the sandbox environment (TestFlight, or a
+///   development-signed build run from Xcode), or a Debug/Internal build.
+/// - `.ineligible`: a verified `AppTransaction` signed in the production environment (an App Store
+///   install). Final for the process; any saved staging state is deleted.
+/// - `.unknown`: no authoritative signal yet (offline, not signed in to the App Store, unverified,
+///   timed out). Behaves exactly like `.ineligible` for display; saved staging data is kept, unseen,
+///   and the check is retried when the app returns to the foreground.
+enum GearCatalogPreviewEligibility: Equatable, Sendable {
+    case unknown, eligible, ineligible
+
+    /// Maps the referral flow's verified-only StoreKit signal (`.sandbox` covers both the sandbox
+    /// and Xcode environments; `nil` is "no authoritative answer").
+    nonisolated static func from(_ environment: ReferralRevenueEnvironment?) -> GearCatalogPreviewEligibility {
+        switch environment {
+        case .sandbox: return .eligible
+        case .production: return .ineligible
+        case nil: return .unknown
+        }
+    }
+
+    /// Debug and Internal builds are never App Store installs, so they need no StoreKit check.
+    /// Every other build (Release: TestFlight and App Store) starts unknown and asks StoreKit.
+    nonisolated static var compiledDefault: GearCatalogPreviewEligibility {
+        #if DEBUG || INTERNAL_BUILD
+        return .eligible
+        #else
+        return .unknown
+        #endif
+    }
 }
 
 // MARK: - Store
@@ -567,7 +595,10 @@ enum GearCatalogSource: String, CaseIterable, Sendable {
 ///   never the bundled items (they may have been withdrawn).
 @MainActor
 final class GearCatalogStore: ObservableObject {
-    static let shared = GearCatalogStore(endpoints: GearCatalogStore.defaultEndpoints())
+    static let shared = GearCatalogStore(
+        endpoints: GearCatalogStore.defaultEndpoints(),
+        environmentProvider: StoreKitReferralRevenueEnvironmentProvider()
+    )
 
     enum Source: Equatable { case bundled, published, unreadable }
 
@@ -576,6 +607,9 @@ final class GearCatalogStore: ObservableObject {
         /// Made obsolete while in flight (source switched, staging reset, fixture loaded); its
         /// response or failure was discarded without changing anything.
         case superseded
+        /// Staging was requested but this installation is not eligible for the preview (see
+        /// `GearCatalogPreviewEligibility`). Nothing was requested or changed.
+        case previewUnavailable
         case rejected(GearCatalog.ValidationError)
         case httpStatus(Int)
         case failed
@@ -589,8 +623,11 @@ final class GearCatalogStore: ObservableObject {
     @Published private(set) var content: GearContent
     /// Changes whenever the visible publication changes, including a source switch (not on offer expiry).
     @Published private(set) var generation = 0
-    /// Production in App Store builds, always.
+    /// The source whose content is shown. Always `.production` unless `previewEligibility` is
+    /// `.eligible` and the tester explicitly selected `.staging`.
     @Published private(set) var activeSource: GearCatalogSource
+    /// Only `.unknown -> .eligible` and `.unknown -> .ineligible` ever happen.
+    @Published private(set) var previewEligibility: GearCatalogPreviewEligibility
     /// The last refresh result for `activeSource` (cleared on a source switch). For diagnostics.
     @Published private(set) var lastRefreshOutcome: RefreshOutcome?
     private(set) var catalog: GearCatalog?
@@ -601,15 +638,17 @@ final class GearCatalogStore: ObservableObject {
     nonisolated static let requestTimeout: TimeInterval = 15
     /// How many accepted revisions are remembered to reject reuse.
     static let rememberedRevisionCount = 100
-    #if DEBUG || INTERNAL_BUILD
+    /// The tester's saved choice. Read only while eligible; deleted once the install is known to
+    /// be an App Store one.
     static let selectedSourceKey = "recommendedGear.developer.selectedSource"
-    #endif
 
     private let defaults: UserDefaults
     private let endpoints: [GearCatalogSource: URL]
     private let fetch: Fetch
     private let now: () -> Date
     private let sleep: Sleep
+    private let environmentProvider: (any ReferralRevenueEnvironmentProviding)?
+    private var isResolvingEligibility = false
     private var lastAttempts: [GearCatalogSource: Date] = [:]
 
     // Request invalidation. Every event that makes a source's outstanding responses obsolete (a
@@ -632,7 +671,12 @@ final class GearCatalogStore: ObservableObject {
     }
 
     private func isCurrent(_ target: GearCatalogSource, epoch: Int) -> Bool {
-        activeSource == target && requestEpochs[target, default: 0] == epoch
+        activeSource == target && requestEpochs[target, default: 0] == epoch && isAllowed(target)
+    }
+
+    /// The single eligibility rule every staging path checks.
+    private func isAllowed(_ source: GearCatalogSource) -> Bool {
+        source == .production || previewEligibility == .eligible
     }
     private var transitionTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
@@ -663,6 +707,9 @@ final class GearCatalogStore: ObservableObject {
         fetch: @escaping Fetch = GearCatalogStore.networkFetch,
         now: @escaping () -> Date = { Date() },
         sleep: @escaping Sleep = { try await Task.sleep(for: .seconds($0)) },
+        previewEligibility: GearCatalogPreviewEligibility = .compiledDefault,
+        // Consulted only while eligibility is `.unknown`; nil keeps it as given.
+        environmentProvider: (any ReferralRevenueEnvironmentProviding)? = nil,
         observesApplication: Bool = true
     ) {
         self.defaults = defaults
@@ -670,17 +717,97 @@ final class GearCatalogStore: ObservableObject {
         self.fetch = fetch
         self.now = now
         self.sleep = sleep
-        #if DEBUG || INTERNAL_BUILD
-        activeSource = defaults.string(forKey: Self.selectedSourceKey).flatMap(GearCatalogSource.init(rawValue:)) ?? .production
-        #else
-        activeSource = .production
-        #endif
+        self.environmentProvider = environmentProvider
+        self.previewEligibility = previewEligibility
+        // A saved Staging selection is honoured only when already known to be eligible. Unknown
+        // starts on production, so an App Store install never shows cached staging content, not
+        // even before StoreKit answers.
+        activeSource = previewEligibility == .eligible ? (Self.savedSelection(in: defaults) ?? .production) : .production
         source = .bundled
         content = .bundled
+        if previewEligibility == .ineligible { purgePreviewState() }
         loadPersistedState()
         content = resolve(at: now())
         scheduleNextTransition()
-        if observesApplication { observeApplication() }
+        if observesApplication {
+            observeApplication()
+            if previewEligibility == .unknown, environmentProvider != nil {
+                Task { await self.resolvePreviewEligibilityAndRefresh() }
+            }
+        }
+    }
+
+    private static func savedSelection(in defaults: UserDefaults) -> GearCatalogSource? {
+        defaults.string(forKey: selectedSourceKey).flatMap(GearCatalogSource.init(rawValue:))
+    }
+
+    // MARK: Preview eligibility
+
+    /// Asks the environment provider (StoreKit's verified `AppTransaction`, bounded to 5 s) while
+    /// eligibility is unknown, and applies the answer. Returns whether the active source changed
+    /// (a saved Staging selection taking effect). A nil answer keeps `.unknown`, to be retried.
+    @discardableResult
+    func resolvePreviewEligibility() async -> Bool {
+        guard previewEligibility == .unknown, let provider = environmentProvider, isResolvingEligibility == false else {
+            return false
+        }
+        isResolvingEligibility = true
+        defer { isResolvingEligibility = false }
+        let resolved = GearCatalogPreviewEligibility.from(await provider.currentEnvironment())
+        // Re-checked after the suspension: eligibility is only ever decided once.
+        guard previewEligibility == .unknown else { return false }
+        return applyPreviewEligibility(resolved)
+    }
+
+    private func resolvePreviewEligibilityAndRefresh() async {
+        if await resolvePreviewEligibility() { await refresh(force: true) }
+    }
+
+    /// Returns whether the active source changed.
+    private func applyPreviewEligibility(_ resolved: GearCatalogPreviewEligibility) -> Bool {
+        switch resolved {
+        case .unknown:
+            return false
+        case .ineligible:
+            previewEligibility = .ineligible
+            // activeSource is already production (unknown never activates staging); this is the
+            // App Store install replacing a TestFlight one: forget the tester's staging state.
+            purgePreviewState()
+            guard activeSource != .production else { return false }
+            switchActiveSource(to: .production)
+            return true
+        case .eligible:
+            previewEligibility = .eligible
+            guard let saved = Self.savedSelection(in: defaults), saved != activeSource else { return false }
+            switchActiveSource(to: saved)
+            return true
+        }
+    }
+
+    /// Deletes the saved selection and every staging key, and makes staging requests obsolete.
+    private func purgePreviewState() {
+        defaults.removeObject(forKey: Self.selectedSourceKey)
+        removeStoredState(for: .staging)
+        invalidateRequests(for: .staging)
+    }
+
+    private func removeStoredState(for source: GearCatalogSource) {
+        let keys = Keys(source)
+        for key in [keys.catalog, keys.receivedPublication, keys.etag, keys.lastPublishedAt, keys.lastDigest, keys.acceptedRevisions] {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// Shows `newSource`'s own saved content immediately; outstanding requests for both sources
+    /// become obsolete.
+    private func switchActiveSource(to newSource: GearCatalogSource) {
+        invalidateRequests(for: activeSource)
+        invalidateRequests(for: newSource)
+        activeSource = newSource
+        lastRefreshOutcome = nil
+        loadPersistedState()
+        generation += 1
+        reevaluate()
     }
 
     /// Reads the active source's saved publication into `catalog`/`source`.
@@ -747,36 +874,36 @@ final class GearCatalogStore: ObservableObject {
         return (data, response)
     }
 
-    // MARK: Developer source selection (Internal and Debug builds only)
+    // MARK: Tester source selection (eligible installations only)
 
-    #if DEBUG || INTERNAL_BUILD
     /// Switches the catalog source, persisting the choice. The new source's own saved content (or
     /// nothing, for a staging source never fetched) is shown immediately; the caller then refreshes
     /// it (see `selectSourceAndRefresh`). Requests already in flight for either source are made
-    /// obsolete and discarded when they return.
-    func selectSource(_ newSource: GearCatalogSource) {
-        guard newSource != activeSource else { return }
-        invalidateRequests(for: activeSource)
-        invalidateRequests(for: newSource)
-        activeSource = newSource
+    /// obsolete and discarded when they return. Returns false, changing nothing, when Staging is
+    /// requested by an installation that is not eligible.
+    @discardableResult
+    func selectSource(_ newSource: GearCatalogSource) -> Bool {
+        guard isAllowed(newSource) else { return false }
+        guard newSource != activeSource else { return true }
         defaults.set(newSource.rawValue, forKey: Self.selectedSourceKey)
-        lastRefreshOutcome = nil
-        loadPersistedState()
-        generation += 1
-        reevaluate()
+        switchActiveSource(to: newSource)
+        return true
     }
 
     @discardableResult
     func selectSourceAndRefresh(_ newSource: GearCatalogSource) async -> RefreshOutcome {
-        selectSource(newSource)
+        guard selectSource(newSource) else { return .previewUnavailable }
         return await refresh(force: true)
     }
 
     /// Applies a locally supplied document (for example a fixture pasted from the clipboard) to the
-    /// STAGING source, with exactly the validation and ordering of a download. Lets Internal testers
+    /// STAGING source, with exactly the validation and ordering of a download. Lets testers
     /// exercise scenarios without uploading anything. Production can never be changed this way.
     @discardableResult
     func acceptStagingFixture(_ data: Data) throws -> Bool {
+        guard isAllowed(.staging) else {
+            throw GearCatalog.ValidationError.invalid("the staging preview is not available in this installation")
+        }
         guard activeSource == .staging else {
             throw GearCatalog.ValidationError.invalid("select the Staging source first")
         }
@@ -788,22 +915,23 @@ final class GearCatalogStore: ObservableObject {
     }
 
     /// Forgets everything received for staging (cache, ETag, ordering state, revisions), so a
-    /// fixture sequence can be replayed from the start. Production is untouched.
-    func resetStagingData() {
-        let keys = Keys(.staging)
-        for key in [keys.catalog, keys.receivedPublication, keys.etag, keys.lastPublishedAt, keys.lastDigest, keys.acceptedRevisions] {
-            defaults.removeObject(forKey: key)
-        }
+    /// fixture sequence can be replayed from the start. Production is untouched. Returns false,
+    /// changing nothing, in an installation that is not eligible.
+    @discardableResult
+    func resetStagingData() -> Bool {
+        guard isAllowed(.staging) else { return false }
+        removeStoredState(for: .staging)
         // A staging request still in flight must not repopulate what was just cleared.
         invalidateRequests(for: .staging)
-        guard activeSource == .staging else { return }
+        guard activeSource == .staging else { return true }
         lastRefreshOutcome = nil
         loadPersistedState()
         generation += 1
         reevaluate()
+        return true
     }
 
-    /// For the developer card: what the active source currently holds.
+    /// For the tester card: what the active source currently holds.
     var activePublicationSummary: String {
         switch source {
         case .published:
@@ -814,7 +942,6 @@ final class GearCatalogStore: ObservableObject {
         case .bundled: return activeSource.usesBundledFallback ? "Bundled catalog (nothing published yet)" : "Nothing received yet; showing nothing"
         }
     }
-    #endif
 
     // MARK: Content and offer timing
 
@@ -857,7 +984,12 @@ final class GearCatalogStore: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.reevaluate()
-                Task { await self.refresh() }
+                Task {
+                    // Retries an unanswered eligibility check first, so a saved Staging selection
+                    // takes effect before (not after) this refresh.
+                    await self.resolvePreviewEligibility()
+                    await self.refresh()
+                }
             }
         })
         observers.append(center.addObserver(forName: UIApplication.significantTimeChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -887,6 +1019,7 @@ final class GearCatalogStore: ObservableObject {
     }
 
     private func refresh(_ target: GearCatalogSource, force: Bool) async -> RefreshOutcome {
+        guard isAllowed(target) else { return .previewUnavailable }
         guard let endpoint = endpoints[target] else { return .notConfigured }
         let epoch = requestEpochs[target, default: 0]
         if let running = inFlight[target], running.epoch == epoch { return .inProgress }
