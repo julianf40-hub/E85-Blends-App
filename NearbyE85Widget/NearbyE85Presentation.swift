@@ -432,18 +432,11 @@ struct NearbyE85WidgetView: View {
                             .padding(.trailing, NearbyE85WidgetLayout.largeControlsTrailingInset)
                     }
                 } else {
-                    // No map yet — still lead with something other than blank space.
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack { header; Spacer(minLength: 0) }
-                        if let notice = entry.refreshNotice {
-                            Text(notice).font(.caption.weight(.semibold))
-                        }
-                        ageLines(snapshot)
-                    }
-                    .padding(widgetMargins)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Nearby E85" + statusAccessibilitySuffix)
-                    Spacer(minLength: 0)
+                    // 85Blends 2.4.1 — ready cached stations but no map render: a compact header
+                    // (no zoom controls, since there is no map) with its own Reload, then the
+                    // station list directly below. No Spacer here — the outer frame's `.top`
+                    // alignment sends any leftover height below the list, not above it.
+                    largeNoMapHeader(snapshot)
                 }
                 Divider()
                 largeStationList(snapshot)
@@ -475,6 +468,49 @@ struct NearbyE85WidgetView: View {
         } else {
             smallContent
         }
+    }
+
+    /// 85Blends 2.4.1 — what Large shows in place of the map when a ready snapshot has no map
+    /// render (MKMapSnapshotter failed or returned nothing). States plainly that only the MAP is
+    /// missing; the cached stations below are unaffected.
+    static let largeMapUnavailableText = "Map unavailable · saved stations below"
+
+    /// VoiceOver label for the fallback's text block. Reload is a separate element beside it, so
+    /// `children: .ignore` on the text never hides the button.
+    var largeNoMapAccessibilityLabel: String {
+        "Nearby E85. \(Self.largeMapUnavailableText)" + statusAccessibilitySuffix
+    }
+
+    /// Large's no-map header. Internal (not private) so rendering tests can measure it directly.
+    func largeNoMapHeader(_ snapshot: NearbyE85Snapshot) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                header
+                // Wraps rather than shrinks, so the notice and ages stay readable at larger text
+                // sizes. Line caps bound the header so station rows keep most of the canvas.
+                Text(Self.largeMapUnavailableText)
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                if let notice = entry.refreshNotice {
+                    Text(notice).font(.caption2.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
+                ageLines(snapshot)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(largeNoMapAccessibilityLabel)
+            // Same AppIntent and in-progress handling as Small/Medium's refreshButton, with the
+            // same 30pt visible circle but a 44pt hit area (as Large's map controls use). A
+            // Button(intent:) is its own tap target, so it runs the refresh instead of the
+            // widget's URL; it sits inside the header strip, above the Divider and station rows.
+            nearbyE85IconButton(systemImage: "arrow.clockwise", intent: NearbyE85RefreshIntent(), renderingMode: renderingMode,
+                                isRefreshing: entry.isRefreshing, size: 30, tapTargetSize: 44, iconSize: 12,
+                                label: "Refresh Nearby E85 data")
+        }
+        .padding(widgetMargins)
     }
 
     private func largeStationList(_ snapshot: NearbyE85Snapshot) -> some View {

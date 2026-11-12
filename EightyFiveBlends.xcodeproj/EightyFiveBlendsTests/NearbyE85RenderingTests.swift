@@ -781,6 +781,107 @@ final class NearbyE85RenderingTests: XCTestCase {
         XCTAssertNil(sharedMarker.priceBadgeLabel(at: baseDate.addingTimeInterval(86400)),
                     "One day later (8 days old) the price has crossed into check-price — the SAME marker's badge must disappear")
     }
+
+    // MARK: - 2.4.1 Large ready-snapshot / no-map fallback
+
+    /// Fraction (0...1) of the image height at which the first near-full-width horizontal line
+    /// appears — in the Large layout that is the Divider between the header and the station
+    /// list (nothing else in the no-map layout spans the width). nil if none is found.
+    private func dividerFraction(in image: UIImage) throws -> Double? {
+        let cg = try XCTUnwrap(image.cgImage)
+        let width = cg.width, height = cg.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let space = CGColorSpaceCreateDeviceRGB()
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        // Drawing a CGImage into a bitmap context leaves the image's TOP row at the start of the
+        // buffer, so buffer row index == distance from the top. (An earlier version flipped this
+        // and scanned bottom-up, reporting 1 - the true position; see the orientation check in
+        // testDividerScannerMeasuresFromTheTop.)
+        for rowFromTop in 0..<height {
+            let row = rowFromTop
+            var marked = 0
+            for x in 0..<width {
+                let o = (row * width + x) * 4
+                let lum = (Int(pixels[o]) + Int(pixels[o + 1]) + Int(pixels[o + 2])) / 3
+                if lum < 245 { marked += 1 }
+            }
+            if Double(marked) / Double(width) > 0.85 { return Double(rowFromTop) / Double(height) }
+        }
+        return nil
+    }
+
+    /// Pins the scanner's orientation with a known image: a full-width bar 20% from the top
+    /// must measure as ~0.2, never ~0.8.
+    func testDividerScannerMeasuresFromTheTop() throws {
+        let size = CGSize(width: 100, height: 100)
+        let view = ZStack(alignment: .topLeading) {
+            Color.white
+            Color.black.frame(width: size.width, height: 1).offset(y: 20)
+        }
+        .frame(width: size.width, height: size.height)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 3
+        let image = try XCTUnwrap(renderer.uiImage)
+        let fraction = try XCTUnwrap(try dividerFraction(in: image))
+        XCTAssertEqual(fraction, 0.2, accuracy: 0.02)
+    }
+
+    /// Deterministic: the "map failed" state is simply `mapRender: nil` on a ready snapshot — no
+    /// Airplane Mode or MapKit tile behavior involved. These are ImageRenderer captures, not
+    /// WidgetKit Home Screen renders; the accented capture is not proof of real tinted rendering.
+    func testLargeReadySnapshotWithoutMapRendersCompactFallbackWithReload() throws {
+        let now = Date.now
+        let (nearest, second, third) = phoenixStations(now: now)
+        let snapshot = NearbyE85Snapshot.make(stations: [nearest, second, third], radiusMiles: 25,
+                                              updatedAt: now.addingTimeInterval(-5_220), locationAt: now.addingTimeInterval(-5_220),
+                                              userLatitude: Self.phoenixUser.latitude, userLongitude: Self.phoenixUser.longitude)
+        let notice = "Last refresh couldn't access location"
+        let states: [(String, NearbyE85Entry)] = [
+            ("notice", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil, refreshNotice: notice)),
+            ("plain", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil)),
+            ("refreshing", NearbyE85Entry(date: now, snapshot: snapshot, access: .pro, mapRender: nil, isRefreshing: true)),
+        ]
+        for (name, entry) in states {
+            for scheme in [ColorScheme.light, .dark] {
+                attach(try render(entry, family: .systemLarge, size: Self.largeSize, colorScheme: scheme),
+                       name: "nearby-large-nomap-\(name)-\(scheme)")
+            }
+            attach(try render(entry, family: .systemLarge, size: Self.largeSize, renderingMode: .accented),
+                   name: "nearby-large-nomap-\(name)-accented")
+
+            // The original defect: a Spacer between the header and the list pushed the Divider
+            // (and every station row) to the bottom. At standard size with 3 rows that puts the
+            // Divider near 60% of the height, versus roughly 25% for the compact header, so the
+            // 0.35 bound is the regression check for the gap. At ax3 the rows grow too, so a
+            // Spacer would no longer be distinguishable; that case only checks the wrapped header
+            // still leaves room for station rows. Measured on rendered pixels, not view structure.
+            for (sizeName, dynamicType, maxFraction) in [("standard", DynamicTypeSize.large, 0.35),
+                                                          ("ax3", DynamicTypeSize.accessibility3, 0.65)] {
+                let view = NearbyE85WidgetView(entry: entry, family: .systemLarge).content
+                    .environment(\.dynamicTypeSize, dynamicType)
+                    .frame(width: Self.largeSize.width, height: Self.largeSize.height)
+                    .background(Color.white)
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 3
+                let image = try XCTUnwrap(renderer.uiImage)
+                attach(image, name: "nearby-large-nomap-\(name)-\(sizeName)")
+                let divider = try XCTUnwrap(try dividerFraction(in: image), "\(name)/\(sizeName): no divider found")
+                XCTAssertLessThan(divider, maxFraction, "\(name)/\(sizeName): gap between header and station rows")
+                // Reload's 30pt target fits above the divider.
+                XCTAssertGreaterThan(divider * Self.largeSize.height, 30)
+            }
+        }
+        // The refreshing state reuses the shared button's existing in-progress rule.
+        XCTAssertTrue(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: true))
+        XCTAssertFalse(NearbyE85IconButtonInteractivity.shouldActuallyDisable(isRefreshing: false))
+    }
 }
 
 /// `NearbyE85MapView.markerView` — the geographic-anchor fix. `.position(marker.point)` centers
