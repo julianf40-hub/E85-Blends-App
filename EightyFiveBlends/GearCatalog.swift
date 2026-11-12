@@ -709,9 +709,23 @@ final class GearCatalogStore: ObservableObject {
         guard let config = try? SupabaseConfig.load() else { return [:] }
         var endpoints: [GearCatalogSource: URL] = [:]
         for source in GearCatalogSource.allCases {
-            endpoints[source] = config.url.appendingPathComponent(source.objectPath)
+            endpoints[source] = storageObjectURL(from: config.url, objectPath: source.objectPath)
         }
         return endpoints
+    }
+
+    /// SUPABASE_URL is configured as PostgREST's endpoint (`https://<ref>.supabase.co/rest/v1/`),
+    /// but Storage lives at the project root (`/storage/v1/...`). Appending to the configured URL
+    /// as-is produced `.../rest/v1/storage/v1/object/...`, which PostgREST answers with 401, so no
+    /// catalog could ever load. This strips a trailing `rest/v1` (with or without a trailing slash)
+    /// back to the project root first, the same rule as `ReferralAPIService.edgeFunctionURL`; a
+    /// bare project-root URL is left unchanged.
+    nonisolated static func storageObjectURL(from configuredURL: URL, objectPath: String) -> URL {
+        let pathComponents = configuredURL.pathComponents.filter { $0 != "/" }
+        let projectBaseURL = pathComponents.suffix(2) == ["rest", "v1"]
+            ? configuredURL.deletingLastPathComponent().deletingLastPathComponent()
+            : configuredURL
+        return projectBaseURL.appending(path: objectPath)
     }
 
     /// An ephemeral session: no shared HTTP cache, cookies or credentials. Public read only.
