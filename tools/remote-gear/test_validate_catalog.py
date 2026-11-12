@@ -359,6 +359,27 @@ class StagingPublisherTests(unittest.TestCase):
             code = self.p.main([self.a, "--upload"])
         return code, out.getvalue()
 
+    def test_upload_transport_failure_is_an_unknown_outcome(self):
+        """The server may already have accepted the write, so none of these may read as
+        success or as "not published", and none may escape as a traceback."""
+        import contextlib, io, os, unittest.mock, urllib.error
+        for failure in (urllib.error.URLError("connection reset"), TimeoutError("read timed out"),
+                        ConnectionResetError(54, "reset by peer")):
+            def fake_urlopen(request, timeout=None, failure=failure):
+                if request.get_method() == "POST":
+                    raise failure
+                raise urllib.error.HTTPError(request.full_url, 400, "error", {}, io.BytesIO(self.missing_object[1]))
+            out = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test-secret"}), \
+                 unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+                 contextlib.redirect_stdout(out):
+                code = self.p.main([self.a, "--upload"])
+            with self.subTest(failure=type(failure).__name__):
+                self.assertEqual(code, 6)
+                self.assertIn("UNKNOWN", out.getvalue())
+                self.assertNotIn("NOT PUBLISHED", out.getvalue())
+                self.assertNotIn("sk-test-secret", out.getvalue())
+
     def test_pre_upload_transport_failure_stops_without_a_traceback(self):
         import contextlib, io, unittest.mock, urllib.error
         out = io.StringIO()

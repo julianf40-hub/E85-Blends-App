@@ -214,8 +214,11 @@ def main(argv: list[str]) -> int:
         detail = redact(error.read()[:300].decode("utf-8", "replace"), key)
         print(f"NOT PUBLISHED: upload refused: HTTP {error.code} {detail}")
         return 1
-    except urllib.error.URLError as error:
-        print(f"UNKNOWN: the upload request did not complete ({redact(str(error.reason), key)}); "
+    except (urllib.error.URLError, OSError) as error:
+        # Includes timeouts and resets raised directly while reading the response: the server may
+        # already have stored the document, so this is neither success nor "not published".
+        reason = getattr(error, "reason", error)
+        print(f"UNKNOWN: the upload request did not complete ({redact(str(reason), key)}); "
               "it may or may not have been stored. Check the origin before retrying")
         return 6
 
