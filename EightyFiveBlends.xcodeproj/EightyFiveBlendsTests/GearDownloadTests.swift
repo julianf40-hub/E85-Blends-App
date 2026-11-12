@@ -5,8 +5,16 @@
 //  Bounded downloads, concurrency limiting, the cost-bounded cache and request coalescing
 //  (GearDownloading.swift). PORTABLE: Foundation only, no UIKit/ImageIO, so these also run outside
 //  Apple platforms. Transfers go through the real URLSession data-task path with a scripted
-//  URLProtocol stub (no network): headers, chunking, delays and cancellation are all controlled.
-//  ImageIO decoding has its own Apple-only suite (GearImageDecoderTests.swift).
+//  URLProtocol stub (no network). ImageIO decoding has its own Apple-only suite
+//  (GearImageDecoderTests.swift).
+//
+//  The stub does not rely on timing. Each script says how many body chunks go out as soon as
+//  loading starts; the rest are held until the test calls `release`. "The transfer ended while the
+//  body was still held" is therefore proof that the downloader cancelled it, independent of how
+//  quickly URLSession later delivers `stopLoading`. On Apple platforms every URLProtocolClient call
+//  is made on the thread `startLoading` ran on (the URL loading system's contract for custom
+//  protocols, and the thread `stopLoading` arrives on). Cache hits offered by the loading system
+//  (`cachedResponse`) are served the way the built-in HTTP protocol serves them.
 //
 
 import Foundation
@@ -18,8 +26,8 @@ import Testing
 
 // MARK: - Scripted URLProtocol
 
-/// Lets the stub hand itself to its own delivery queue. URLProtocol instances are driven by
-/// URLSession's loader; the stub's mutable state is guarded by `lock`.
+/// Lets the stub hand values to blocks run on its client thread. URLProtocol instances are driven
+/// by URLSession's loader; the stub's mutable state is guarded by `lock`.
 nonisolated struct GearUncheckedBox<Value>: @unchecked Sendable {
     let value: Value
 }
@@ -29,13 +37,20 @@ nonisolated final class GearStubProtocol: URLProtocol {
         var status = 200
         var headers: [String: String] = [:]
         var chunks: [Data] = []
-        var chunkDelay: TimeInterval = 0.005
+        /// Chunks sent as soon as loading starts. The rest wait for `release(_:)`. When every chunk
+        /// has been sent the load finishes.
+        var initialChunks = Int.max
     }
 
     final class Record {
-        var requests = 0
+        /// Loads that used the script (the "network").
+        var networkRequests = 0
+        /// Loads answered from the `cachedResponse` the loading system offered.
+        var cacheHits = 0
         var deliveredChunks = 0
+        /// `stopLoading` arrived before the load finished.
         var stopped = false
+        var finished = false
         var active = 0
         var maximumActive = 0
     }
@@ -45,8 +60,9 @@ nonisolated final class GearStubProtocol: URLProtocol {
     private static var records: [String: Record] = [:]
     /// Concurrency is tracked per group (the URL's host), across URLs.
     private static var groups: [String: Record] = [:]
+    private static var live: [String: GearStubProtocol] = [:]
 
-    /// Not reentrant: never call `record`, `group` or `register` inside `locked`.
+    /// Not reentrant: never call `record`, `group`, `register` or `release` inside `locked`.
     static func locked<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
@@ -73,69 +89,120 @@ nonisolated final class GearStubProtocol: URLProtocol {
         }
     }
 
+    /// Sends the held chunks of the load currently running for `url`, then finishes it.
+    static func release(_ url: URL) {
+        guard let stub = locked({ live[url.absoluteString] }) else { return }
+        stub.onClientThread { stub.sendRemaining() }
+    }
+
+    private var script = Script()
+    private var record = Record()
+    private var nextChunk = 0
     private var isStopped = false
     private var isDone = false
     private var group: Record?
-    private let queue = DispatchQueue(label: "GearStubProtocol")
-
-    /// Leaves the concurrency group exactly once, on finish or on stop.
-    private func markDone() {
-        Self.locked {
-            guard isDone == false else { return }
-            isDone = true
-            group?.active -= 1
-        }
-    }
+    #if canImport(Darwin)
+    private var clientRunLoop: CFRunLoop?
+    #endif
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    /// Runs `body` on the thread that called `startLoading` (Apple platforms), where client calls
+    /// belong and where `stopLoading` is delivered. Elsewhere it runs immediately.
+    private func onClientThread(_ body: @escaping () -> Void) {
+        #if canImport(Darwin)
+        guard let runLoop = locked({ clientRunLoop }) else { return }
+        let box = GearUncheckedBox(value: body)
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) { box.value() }
+        CFRunLoopWakeUp(runLoop)
+        #else
+        body()
+        #endif
+    }
+
+    private func locked<T>(_ body: () -> T) -> T { Self.locked(body) }
 
     override func startLoading() {
         let key = request.url!.absoluteString
         let host = request.url!.host ?? ""
         let group = Self.group(host)
-        let (script, record): (Script?, Record?) = Self.locked {
-            let record = Self.records[key]
-            record?.requests += 1
+        #if canImport(Darwin)
+        let runLoop = CFRunLoopGetCurrent()
+        #endif
+        let offeredCache = cachedResponse
+        let found: (Script, Record)? = locked {
+            #if canImport(Darwin)
+            clientRunLoop = runLoop
+            #endif
+            guard let script = Self.scripts[key], let record = Self.records[key] else { return nil }
+            if offeredCache != nil { record.cacheHits += 1 } else { record.networkRequests += 1 }
+            self.script = script
+            self.record = record
             self.group = group
             group.active += 1
             group.maximumActive = max(group.maximumActive, group.active)
-            return (Self.scripts[key], record)
+            Self.live[key] = self
+            return (script, record)
         }
-        guard let script, let record else {
-            markDone()
+        guard found != nil else {
             client?.urlProtocol(self, didFailWithError: URLError(.fileDoesNotExist))
             return
         }
+
+        if let offeredCache {
+            // How the built-in HTTP protocol answers from URLCache: the stored response and body,
+            // through the same client (and so the same delegate) calls as a network load.
+            client?.urlProtocol(self, didReceive: offeredCache.response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: offeredCache.data)
+            finish()
+            return
+        }
+
         let response = HTTPURLResponse(url: request.url!, statusCode: script.status, httpVersion: "HTTP/1.1", headerFields: script.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        deliver(script, index: 0, record: record, group: group)
+        send(upTo: script.initialChunks)
     }
 
-    private func deliver(_ script: Script, index: Int, record: Record, group: Record) {
-        let box = GearUncheckedBox(value: (self, record, group))
-        queue.asyncAfter(deadline: .now() + script.chunkDelay) {
-            let (stub, record, group) = box.value
-            let stopped = Self.locked { stub.isStopped }
-            if stopped { return }
-            if index < script.chunks.count {
-                Self.locked { record.deliveredChunks += 1 }
-                stub.client?.urlProtocol(stub, didLoad: script.chunks[index])
-                stub.deliver(script, index: index + 1, record: record, group: group)
-            } else {
-                stub.markDone()
-                stub.client?.urlProtocolDidFinishLoading(stub)
+    /// Sends chunks while not stopped, up to `limit` in total; finishes when all are sent.
+    private func send(upTo limit: Int) {
+        while true {
+            let next: Data? = locked {
+                guard isStopped == false, isDone == false, nextChunk < script.chunks.count, nextChunk < limit else { return nil }
+                defer { nextChunk += 1 }
+                record.deliveredChunks += 1
+                return script.chunks[nextChunk]
             }
+            guard let next else { break }
+            client?.urlProtocol(self, didLoad: next)
         }
+        if locked({ isStopped == false && nextChunk >= script.chunks.count }) { finish() }
+    }
+
+    private func sendRemaining() { send(upTo: Int.max) }
+
+    private func finish() {
+        let shouldFinish: Bool = locked {
+            guard isDone == false, isStopped == false else { return false }
+            isDone = true
+            record.finished = true
+            group?.active -= 1
+            Self.live[request.url!.absoluteString] = nil
+            return true
+        }
+        if shouldFinish { client?.urlProtocolDidFinishLoading(self) }
     }
 
     override func stopLoading() {
-        let key = request.url!.absoluteString
-        Self.locked {
-            if isDone == false { Self.records[key]?.stopped = true }
+        locked {
+            if isDone == false {
+                record.stopped = true
+                isDone = true
+                group?.active -= 1
+                Self.live[request.url!.absoluteString] = nil
+            }
             isStopped = true
         }
-        markDone()
     }
 }
 
@@ -159,10 +226,50 @@ struct GearDownloadTests {
         (0..<count).map { Data(repeating: UInt8($0 % 250), count: size) }
     }
 
+    /// Waits for an event, bounded (5 s) so a missing event fails the test instead of hanging it.
     private static func waitUntil(_ condition: () -> Bool) async {
-        for _ in 0..<200 where condition() == false {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while condition() == false, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    struct WatchdogExpired: Error {}
+
+    /// `downloader.data`, but abandoned by a 10 s watchdog. With the body held by the stub, a
+    /// downloader that failed to cancel on its own would otherwise wait forever, or (since the
+    /// failure is recorded first) still report tooLarge once something else cancelled it. A
+    /// watchdog expiry therefore throws `WatchdogExpired`, which fails the expectation: the
+    /// downloader must end the transfer itself, promptly.
+    private static func download(_ downloader: GearBoundedDownloader, _ request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
+        final class Flag: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            func set() { lock.lock(); value = true; lock.unlock() }
+            var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let expired = Flag()
+        let transfer = Task { try await downloader.data(for: request, limit: limit) }
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(10))
+            guard Task.isCancelled == false else { return }
+            expired.set()
+            transfer.cancel()
+        }
+        defer { watchdog.cancel() }
+        let result = await transfer.result
+        if expired.isSet { throw WatchdogExpired() }
+        return try result.get()
+    }
+
+    /// Network loads for `url` (reads the record outside the lock it takes).
+    private static func networkRequests(_ url: URL) -> Int {
+        let record = GearStubProtocol.record(url)
+        return GearStubProtocol.locked { record.networkRequests }
+    }
+
+    private static func stub(_ record: GearStubProtocol.Record) -> (delivered: Int, stopped: Bool, finished: Bool) {
+        GearStubProtocol.locked { (record.deliveredChunks, record.stopped, record.finished) }
     }
 
     // MARK: Byte budget (pure)
@@ -183,19 +290,51 @@ struct GearDownloadTests {
 
     // MARK: Bounded downloader
 
+    /// No Content-Length; three 1,000-byte chunks are sent and seventeen are held. The third chunk
+    /// crosses the 2,500-byte limit. The call must fail with tooLarge while the rest of the body is
+    /// still held: the transfer ended because the downloader cancelled it, not because the body was
+    /// complete.
     @Test func chunkedResponseWithoutLengthIsCancelledAtTheLimit() async throws {
         let url = Self.url("chunked")
-        GearStubProtocol.register(url, .init(chunks: Self.chunks(20, size: 1_000), chunkDelay: 0.01))
+        GearStubProtocol.register(url, .init(chunks: Self.chunks(20, size: 1_000), initialChunks: 3))
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
 
         await #expect(throws: GearDownloadError.tooLarge) {
-            _ = try await downloader.data(for: URLRequest(url: url), limit: 2_500)
+            _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
         }
         let record = GearStubProtocol.record(url)
-        await Self.waitUntil { GearStubProtocol.locked { record.stopped } }
-        #expect(GearStubProtocol.locked { record.stopped }, "the transfer is cancelled")
-        #expect(GearStubProtocol.locked { record.deliveredChunks } < 20, "the rest of the body is never read")
+        let state = Self.stub(record)
+        #expect(state.delivered == 3, "only the chunks the stub chose to send were read")
+        #expect(state.finished == false, "the body was never completed; the downloader ended the transfer")
+        #expect(downloader.cancellationLog.map(\.reason) == [.bodyOverLimit])
+        #expect(downloader.cancellationLog.first?.retainedBytes == 2_000, "never more than the limit retained")
+
+        // The cancellation then reaches the protocol. Asserted separately (bounded), since its
+        // delivery time belongs to the URL loading system.
+        await Self.waitUntil { Self.stub(record).stopped }
+        #expect(Self.stub(record).stopped, "URLSession stopped the protocol after the cancellation")
+        GearStubProtocol.release(url)
+        #expect(Self.stub(record).delivered == 3, "nothing more is sent once stopped")
+    }
+
+    /// Everything is sent at once, so data keeps arriving after the limit is crossed (already
+    /// buffered by the loading system). It is discarded: retained bytes stay within the limit.
+    @Test func bufferedDataAfterTheLimitIsDiscarded() async throws {
+        let url = Self.url("burst")
+        GearStubProtocol.register(url, .init(chunks: Self.chunks(6, size: 1_000)))
+        let downloader = Self.downloader()
+        defer { downloader.invalidate() }
+
+        await #expect(throws: GearDownloadError.tooLarge) {
+            _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
+        }
+        let log = downloader.cancellationLog
+        #expect(log.count == 1, "one cancellation, however much data was already in flight")
+        #expect(log.first?.reason == .bodyOverLimit)
+        #expect(log.first?.retainedBytes == 2_000)
+        let ignored = log.first?.ignoredBytes ?? -1
+        #expect(ignored >= 0 && ignored <= 3_000, "later chunks, if delivered at all, were ignored")
     }
 
     @Test func misleadingContentLengthDoesNotBypassTheLimit() async throws {
@@ -204,20 +343,29 @@ struct GearDownloadTests {
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
         await #expect(throws: GearDownloadError.tooLarge) {
-            _ = try await downloader.data(for: URLRequest(url: url), limit: 2_500)
+            _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
         }
+        #expect(downloader.cancellationLog.map(\.reason) == [.bodyOverLimit], "caught by the running count, not the header")
+        #expect((downloader.cancellationLog.first?.retainedBytes ?? .max) <= 2_500)
     }
 
+    /// Content-Length 50,000 against a 2,500-byte limit, with the whole body held. The call must
+    /// fail before a single body byte is sent.
     @Test func declaredOversizeIsRefusedBeforeTheBody() async throws {
         let url = Self.url("declared")
-        GearStubProtocol.register(url, .init(headers: ["Content-Length": "50000"], chunks: Self.chunks(50, size: 1_000), chunkDelay: 0.02))
+        GearStubProtocol.register(url, .init(headers: ["Content-Length": "50000"], chunks: Self.chunks(50, size: 1_000), initialChunks: 0))
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
         await #expect(throws: GearDownloadError.tooLarge) {
-            _ = try await downloader.data(for: URLRequest(url: url), limit: 2_500)
+            _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
         }
         let record = GearStubProtocol.record(url)
-        #expect(GearStubProtocol.locked { record.deliveredChunks } <= 1)
+        #expect(Self.stub(record).delivered == 0, "refused from the header, with no body read")
+        #expect(Self.stub(record).finished == false)
+        #expect(downloader.cancellationLog.map(\.reason) == [.declaredLengthOverLimit])
+        #expect(downloader.cancellationLog.first?.retainedBytes == 0)
+        await Self.waitUntil { Self.stub(record).stopped }
+        #expect(Self.stub(record).stopped)
     }
 
     @Test func bodyWithinLimitAndAnyStatusAreReturned() async throws {
@@ -228,48 +376,60 @@ struct GearDownloadTests {
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
 
-        let (data, response) = try await downloader.data(for: URLRequest(url: ok), limit: 2_500)
+        let (data, response) = try await Self.download(downloader, URLRequest(url: ok), limit: 2_500)
         #expect(data.count == 2_500, "exactly at the limit is allowed")
         #expect(response.statusCode == 200)
-        let (_, notFound) = try await downloader.data(for: URLRequest(url: missing), limit: 2_500)
+        let (_, notFound) = try await Self.download(downloader, URLRequest(url: missing), limit: 2_500)
         #expect(notFound.statusCode == 404)
+        #expect(downloader.cancellationLog.isEmpty)
     }
 
     @Test func cancellingTheCallerCancelsTheTransfer() async throws {
         let url = Self.url("slow")
-        GearStubProtocol.register(url, .init(chunks: Self.chunks(100, size: 10), chunkDelay: 0.05))
+        GearStubProtocol.register(url, .init(chunks: Self.chunks(100, size: 10), initialChunks: 2))
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
 
+        let record = GearStubProtocol.record(url)
         let task = Task { try await downloader.data(for: URLRequest(url: url), limit: 1_000_000) }
-        try await Task.sleep(for: .milliseconds(120))
+        await Self.waitUntil { Self.stub(record).delivered == 2 }
         task.cancel()
         await #expect(throws: (any Error).self) { _ = try await task.value }
-        let record = GearStubProtocol.record(url)
-        await Self.waitUntil { GearStubProtocol.locked { record.stopped } }
-        #expect(GearStubProtocol.locked { record.stopped })
-        #expect(GearStubProtocol.locked { record.deliveredChunks } < 100)
+        #expect(Self.stub(record).finished == false)
+        await Self.waitUntil { Self.stub(record).stopped }
+        #expect(Self.stub(record).stopped)
+        #expect(Self.stub(record).delivered == 2)
     }
 
     #if canImport(Darwin)
-    /// Apple Foundation serves URLCache hits through the same delegate path, so a cached body
-    /// larger than the limit is refused too. (Not asserted on other Foundations, whose URLCache
-    /// integration differs.)
+    /// A body served from URLCache passes the same limit. The cache entry is preloaded (and
+    /// checked), the request allows cached data, and the URL loading system offers it to the
+    /// protocol as `cachedResponse`; the stub serves it like the built-in HTTP protocol does,
+    /// without touching its scripted "network" body. Apple-only: other Foundations integrate
+    /// URLCache with custom protocols differently.
     @Test func cachedResponsesPassTheSameLimit() async throws {
         let url = Self.url("cached")
         GearStubProtocol.register(url, .init(chunks: [Data("small".utf8)]))
         let cache = URLCache(memoryCapacity: 10_000_000, diskCapacity: 0, directory: nil)
         let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad)
         let cachedResponse = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
-                                             headerFields: ["Cache-Control": "max-age=31536000"])!
-        cache.storeCachedResponse(CachedURLResponse(response: cachedResponse, data: Data(count: 5_000)), for: request)
+                                             headerFields: ["Cache-Control": "max-age=31536000",
+                                                            "Content-Type": "application/octet-stream"])!
+        cache.storeCachedResponse(CachedURLResponse(response: cachedResponse, data: Data(count: 5_000),
+                                                    userInfo: nil, storagePolicy: .allowedInMemoryOnly),
+                                  for: request)
+        #expect(cache.cachedResponse(for: request)?.data.count == 5_000, "precondition: the oversized entry is cached")
         let downloader = Self.downloader(cache: cache)
         defer { downloader.invalidate() }
 
         await #expect(throws: GearDownloadError.tooLarge) {
-            _ = try await downloader.data(for: request, limit: 2_500)
+            _ = try await Self.download(downloader, request, limit: 2_500)
         }
-        #expect(GearStubProtocol.record(url).requests == 0, "served from the cache, still limited")
+        let record = GearStubProtocol.record(url)
+        #expect(GearStubProtocol.locked { record.cacheHits } == 1, "the loading system offered the cached response")
+        #expect(GearStubProtocol.locked { record.networkRequests } == 0, "no network load")
+        #expect(downloader.cancellationLog.map(\.reason) == [.bodyOverLimit])
+        #expect(downloader.cancellationLog.first?.retainedBytes == 0, "the oversized cached body was not kept")
     }
     #endif
 
@@ -347,22 +507,27 @@ struct GearDownloadTests {
         )
     }
 
+    /// Both callers ask while the body is held, so they are concurrent by construction.
     @Test func sameURLRequestsAreCoalescedAndCached() async throws {
         let url = Self.url("coalesce")
-        GearStubProtocol.register(url, .init(chunks: [Data("hello".utf8)], chunkDelay: 0.05))
+        GearStubProtocol.register(url, .init(chunks: [Data("hello".utf8)], initialChunks: 0))
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
         let loader = Self.stringLoader(downloader: downloader)
+        let record = GearStubProtocol.record(url)
 
         async let first = loader.load(url)
         async let second = loader.load(url)
+        await Self.waitUntil { GearStubProtocol.locked { record.networkRequests } == 1 }
+        #expect(loader.inFlightCount == 1)
+        GearStubProtocol.release(url)
         let results = await [first, second]
         #expect(results == ["hello", "hello"])
-        #expect(GearStubProtocol.record(url).requests == 1, "one transfer for both callers")
+        #expect(GearStubProtocol.locked { record.networkRequests } == 1, "one transfer for both callers")
 
         #expect(loader.cachedValue(for: url) == "hello")
         #expect(await loader.load(url) == "hello")
-        #expect(GearStubProtocol.record(url).requests == 1, "served from memory")
+        #expect(GearStubProtocol.locked { record.networkRequests } == 1, "served from memory")
         #expect(loader.inFlightCount == 0)
     }
 
@@ -381,7 +546,7 @@ struct GearDownloadTests {
         #expect(await loader.load(oversized) == nil)
         #expect(await loader.load(missing) == nil)
         #expect(await loader.load(corrupt) == nil)
-        #expect(GearStubProtocol.record(corrupt).requests == 2, "a failure is retried next time, not cached")
+        #expect(Self.networkRequests(corrupt) == 2, "a failure is retried next time, not cached")
         #expect(loader.cachedCost == 0)
     }
 
@@ -401,21 +566,45 @@ struct GearDownloadTests {
         #expect(loader.cachedValue(for: second) == "abcdef")
     }
 
+    /// Six loads with a limit of two, every body held: exactly two transfers start, the others
+    /// wait; releasing a running transfer lets the next one in. Nothing depends on timing.
     @Test func loaderBoundsConcurrentTransfers() async throws {
         let host = "gear-concurrency-\(UUID().uuidString.lowercased()).test"
         let urls = (0..<6).map { Self.url("item\($0)", host: host) }
-        for url in urls { GearStubProtocol.register(url, .init(chunks: [Data("x".utf8), Data("y".utf8)], chunkDelay: 0.03)) }
+        for url in urls { GearStubProtocol.register(url, .init(chunks: [Data("x".utf8), Data("y".utf8)], initialChunks: 0)) }
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
         let loader = Self.stringLoader(downloader: downloader, concurrent: 2)
-
-        await withTaskGroup(of: String?.self) { group in
-            for url in urls { group.addTask { await loader.load(url) } }
-            for await value in group { #expect(value == "xy") }
-        }
         let group = GearStubProtocol.group(host)
-        let maximum = GearStubProtocol.locked { group.maximumActive }
-        #expect(maximum <= 2)
-        #expect(maximum >= 1)
+        func started() -> [URL] { urls.filter { Self.networkRequests($0) > 0 } }
+        func finished() -> [URL] { urls.filter { Self.stub(GearStubProtocol.record($0)).finished } }
+
+        let loads = Task {
+            await withTaskGroup(of: String?.self) { tasks in
+                for url in urls { tasks.addTask { await loader.load(url) } }
+                var values: [String?] = []
+                for await value in tasks { values.append(value) }
+                return values
+            }
+        }
+
+        await Self.waitUntil { started().count == 2 }
+        #expect(started().count == 2, "only two transfers start")
+        var released: Set<URL> = []
+        while finished().count < urls.count {
+            let running = started().filter { released.contains($0) == false }
+            guard running.isEmpty == false else {
+                Issue.record("no transfer to release; \(finished().count) of \(urls.count) finished")
+                break
+            }
+            for url in running {
+                released.insert(url)
+                GearStubProtocol.release(url)
+            }
+            await Self.waitUntil { finished().count == released.count && (started().count > released.count || released.count == urls.count) }
+        }
+        let values = await loads.value
+        #expect(values.count == 6 && values.allSatisfy { $0 == "xy" })
+        #expect(GearStubProtocol.locked { group.maximumActive } == 2, "the limit was reached and never exceeded")
     }
 }

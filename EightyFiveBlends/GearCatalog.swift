@@ -582,6 +582,9 @@ final class GearCatalogStore: ObservableObject {
     }
 
     typealias Fetch = (URLRequest) async throws -> (Data, URLResponse)
+    /// Suspends for the given number of seconds (throws when cancelled). Injected so offer timing
+    /// can be tested deterministically; production uses `Task.sleep`.
+    typealias Sleep = (TimeInterval) async throws -> Void
 
     @Published private(set) var content: GearContent
     /// Changes whenever the visible publication changes, including a source switch (not on offer expiry).
@@ -606,6 +609,7 @@ final class GearCatalogStore: ObservableObject {
     private let endpoints: [GearCatalogSource: URL]
     private let fetch: Fetch
     private let now: () -> Date
+    private let sleep: Sleep
     private var lastAttempts: [GearCatalogSource: Date] = [:]
 
     // Request invalidation. Every event that makes a source's outstanding responses obsolete (a
@@ -658,12 +662,14 @@ final class GearCatalogStore: ObservableObject {
         endpoints: [GearCatalogSource: URL],
         fetch: @escaping Fetch = GearCatalogStore.networkFetch,
         now: @escaping () -> Date = { Date() },
+        sleep: @escaping Sleep = { try await Task.sleep(for: .seconds($0)) },
         observesApplication: Bool = true
     ) {
         self.defaults = defaults
         self.endpoints = endpoints
         self.fetch = fetch
         self.now = now
+        self.sleep = sleep
         #if DEBUG || INTERNAL_BUILD
         activeSource = defaults.string(forKey: Self.selectedSourceKey).flatMap(GearCatalogSource.init(rawValue:)) ?? .production
         #else
@@ -821,8 +827,11 @@ final class GearCatalogStore: ObservableObject {
         guard let next = catalog?.nextOfferTransition(after: current) else { return }
         // Wake at the transition, but at least daily, so a long sleep is never the only safeguard.
         let delay = min(max(next.timeIntervalSince(current), 0.25), 86_400)
+        let sleep = self.sleep
         transitionTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            do { try await sleep(delay) } catch { return }
+            // A timer replaced while it was waking must not act.
+            guard Task.isCancelled == false else { return }
             self?.reevaluate()
         }
     }

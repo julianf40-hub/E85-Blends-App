@@ -88,6 +88,84 @@ struct GearCatalogTests {
         var now = Date(timeIntervalSince1970: 1_800_000_000)
     }
 
+    /// Stands in for `Task.sleep`: records each requested delay and suspends until the test fires
+    /// it. Honours cancellation (a replaced timer), including cancellation before registration.
+    nonisolated final class ManualScheduler: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiters: [(id: Int, continuation: CheckedContinuation<Void, Error>)] = []
+        private var cancelledBeforeRegistration: Set<Int> = []
+        private var nextID = 0
+        private var requested: [TimeInterval] = []
+        private var pending: [Int: TimeInterval] = [:]
+        private(set) var cancelledCount = 0
+
+        private func locked<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+
+        var requestedDelays: [TimeInterval] { locked { requested } }
+        /// Delays of the sleeps still waiting, oldest first.
+        var pendingDelays: [TimeInterval] { locked { waiters.compactMap { pending[$0.id] } } }
+
+        func sleep(_ delay: TimeInterval) async throws {
+            let id: Int = locked {
+                nextID += 1
+                requested.append(delay)
+                pending[nextID] = delay
+                return nextID
+            }
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    let alreadyCancelled: Bool = locked {
+                        if cancelledBeforeRegistration.remove(id) != nil { pending[id] = nil; return true }
+                        waiters.append((id, continuation))
+                        return false
+                    }
+                    if alreadyCancelled { continuation.resume(throwing: CancellationError()) }
+                }
+            } onCancel: {
+                let continuation: CheckedContinuation<Void, Error>? = locked {
+                    cancelledCount += 1
+                    pending[id] = nil
+                    guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+                        cancelledBeforeRegistration.insert(id)
+                        return nil
+                    }
+                    return waiters.remove(at: index).continuation
+                }
+                continuation?.resume(throwing: CancellationError())
+            }
+        }
+
+        /// Wakes the oldest waiting sleep as if its delay had elapsed. Returns false if none waits.
+        @discardableResult
+        func fireNext() -> Bool {
+            let continuation: CheckedContinuation<Void, Error>? = locked {
+                guard waiters.isEmpty == false else { return nil }
+                let waiter = waiters.removeFirst()
+                pending[waiter.id] = nil
+                return waiter.continuation
+            }
+            continuation?.resume()
+            return continuation != nil
+        }
+    }
+
+    /// Lets the store's woken timer task run on the main actor. Deterministic: yields (no sleeps),
+    /// bounded so a missing transition fails rather than hangs.
+    private static func yieldUntil(_ condition: () -> Bool) async {
+        for _ in 0..<1_000 where condition() == false { await Task.yield() }
+    }
+
+    private static func offerCode(_ store: GearCatalogStore, brand id: String) -> String? {
+        for page in store.content.pages {
+            if case .brand(let brand) = page, brand.id == id { return brand.offer?.code }
+        }
+        return nil
+    }
+
     /// Records requests and returns queued responses (or throws), like a tiny URL protocol.
     private final class FakeServer {
         enum Reply { case status(Int, Data, [String: String]), error(URLError) }
@@ -112,6 +190,7 @@ struct GearCatalogTests {
         let suite: String
         let clock = Clock()
         let server = FakeServer()
+        let scheduler = ManualScheduler()
 
         init() throws {
             suite = "GearCatalogTests.\(UUID().uuidString)"
@@ -122,9 +201,12 @@ struct GearCatalogTests {
         func makeStore(endpoint: URL? = GearCatalogTests.endpoint) -> GearCatalogStore {
             let server = self.server
             let clock = self.clock
+            let scheduler = self.scheduler
             return GearCatalogStore(defaults: defaults, endpoints: endpoint.map { [.production: $0] } ?? [:],
                                     fetch: { try await server.fetch($0) },
-                                    now: { clock.now }, observesApplication: false)
+                                    now: { clock.now },
+                                    sleep: { try await scheduler.sleep($0) },
+                                    observesApplication: false)
         }
 
         func tearDown() { defaults.removePersistentDomain(forName: suite) }
@@ -532,21 +614,89 @@ struct GearCatalogTests {
         #expect(harness.server.requests.isEmpty)
     }
 
-    @Test func singleTimerRemovesOfferAtExpiryWithoutPolling() async throws {
+    /// Deterministic: the store asks the scheduler for exactly one sleep, until the first offer
+    /// transition. Firing it (with the clock advanced) makes the store re-resolve content and re-arm
+    /// for the next transition by itself; the test never calls reevaluate().
+    @Test func scheduledTransitionsApplyOfferExpiryAndStartOnTheirOwn() async throws {
         let harness = try Harness()
         defer { harness.tearDown() }
         let store = harness.makeStore()
-        let expiry = harness.clock.now.addingTimeInterval(0.3)
+        let start = harness.clock.now
         try store.accept(Self.document([
-            Self.neutralBrand(["offer": Self.offer(["expiresAt": expiry.timeIntervalSince1970])])
+            Self.neutralBrand(id: "ending", ["offer": Self.offer(["code": "ENDING", "expiresAt": start.timeIntervalSince1970 + 3_600])]),
+            Self.neutralBrand(id: "starting", ["offer": Self.offer(["code": "STARTING", "startsAt": start.timeIntervalSince1970 + 7_200])])
         ]))
-        guard case .brand(let before) = store.content.pages[0] else { Issue.record("brand"); return }
-        #expect(before.offer != nil)
+        #expect(Self.offerCode(store, brand: "ending") == "ENDING")
+        #expect(Self.offerCode(store, brand: "starting") == nil)
+        // The timer task has to run up to its sleep before there is anything to fire.
+        await Self.yieldUntil { harness.scheduler.pendingDelays.isEmpty == false }
+        #expect(harness.scheduler.pendingDelays == [3_600], "one timer, for the next transition only")
 
-        harness.clock.now = expiry
-        try await Task.sleep(for: .seconds(1))
-        guard case .brand(let after) = store.content.pages[0] else { Issue.record("brand"); return }
-        #expect(after.offer == nil, "the scheduled transition re-resolves content on its own")
+        harness.clock.now = start.addingTimeInterval(3_600)
+        #expect(harness.scheduler.fireNext())
+        await Self.yieldUntil { Self.offerCode(store, brand: "ending") == nil }
+        #expect(Self.offerCode(store, brand: "ending") == nil, "expired offer removed by the timer")
+        #expect(Self.offerCode(store, brand: "starting") == nil)
+        await Self.yieldUntil { harness.scheduler.pendingDelays == [3_600] }
+        #expect(harness.scheduler.pendingDelays == [3_600], "re-armed for the start, 1 h later")
+
+        harness.clock.now = start.addingTimeInterval(7_200)
+        #expect(harness.scheduler.fireNext())
+        await Self.yieldUntil { Self.offerCode(store, brand: "starting") == "STARTING" }
+        #expect(Self.offerCode(store, brand: "starting") == "STARTING", "scheduled offer started by the timer")
+        await Task.yield()
+        #expect(harness.scheduler.pendingDelays.isEmpty, "no transitions left, no timer")
+        #expect(harness.scheduler.requestedDelays == [3_600, 3_600])
+    }
+
+    @Test func distantTransitionsWakeAtLeastDailyAndReplacedTimersAreCancelled() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        let start = harness.clock.now
+        let tenDays = 10 * 86_400.0
+        try store.accept(Self.document([
+            Self.neutralBrand(["offer": Self.offer(["expiresAt": start.timeIntervalSince1970 + tenDays])])
+        ], revision: "r1", publishedAt: 1_000))
+        await Self.yieldUntil { harness.scheduler.pendingDelays.isEmpty == false }
+        #expect(harness.scheduler.pendingDelays == [86_400], "capped at one day")
+
+        harness.clock.now = start.addingTimeInterval(86_400)
+        #expect(harness.scheduler.fireNext())
+        // fireNext removed the old waiter, so this waits for the store to re-arm.
+        await Self.yieldUntil { harness.scheduler.pendingDelays == [86_400] }
+        #expect(harness.scheduler.pendingDelays == [86_400], "still more than a day away: re-armed")
+        #expect(Self.offerCode(store, brand: "new-brand") == "SAVE25", "not expired yet")
+
+        // A new publication replaces the pending timer; the old one is cancelled, not fired.
+        try store.accept(Self.document([
+            Self.neutralBrand(["offer": Self.offer(["expiresAt": start.timeIntervalSince1970 + 86_400 + 600])])
+        ], revision: "r2", publishedAt: 2_000))
+        await Self.yieldUntil { harness.scheduler.cancelledCount == 1 && harness.scheduler.pendingDelays == [600] }
+        #expect(harness.scheduler.cancelledCount == 1)
+        #expect(harness.scheduler.pendingDelays == [600])
+    }
+
+    /// Native integration check with the REAL scheduler and clock (Task.sleep, Date): an offer
+    /// 0.3 s from expiry disappears on its own. Bounded by a generous deadline rather than a fixed
+    /// sleep, so a busy CI main actor delays the assertion instead of failing it.
+    @Test func realTimerRemovesExpiredOfferWithinADeadline() async throws {
+        let suite = "GearCatalogTests.real.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = GearCatalogStore(defaults: defaults, endpoints: [:], observesApplication: false)
+        let accepted = ContinuousClock.now
+        try store.accept(Self.document([
+            Self.neutralBrand(["offer": Self.offer(["expiresAt": Date().timeIntervalSince1970 + 0.3])])
+        ]))
+        #expect(Self.offerCode(store, brand: "new-brand") == "SAVE25")
+
+        let deadline = accepted + .seconds(15)
+        while Self.offerCode(store, brand: "new-brand") != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(Self.offerCode(store, brand: "new-brand") == nil, "the real timer removed the offer")
+        #expect(ContinuousClock.now - accepted >= .milliseconds(250), "removed by the timer, not immediately")
     }
 
     // MARK: - Refresh

@@ -52,11 +52,25 @@ nonisolated struct GearByteBudget {
 /// URLSession data tasks with a hard per-request byte limit. One instance owns one session and is
 /// its delegate; delegate callbacks run on a private serial queue.
 nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    /// Why and when a transfer was cancelled, for diagnostics and tests. `retainedBytes` is what
+    /// the transfer held when cancellation was requested (never more than the limit);
+    /// `ignoredBytes` counts data that still arrived afterwards (already buffered by the loading
+    /// system) and was discarded.
+    struct Cancellation: Equatable {
+        enum Reason: Equatable { case declaredLengthOverLimit, bodyOverLimit, invalidResponse }
+        let url: URL?
+        let reason: Reason
+        let limit: Int
+        let retainedBytes: Int
+        var ignoredBytes = 0
+    }
+
     private final class Transfer {
         var budget: GearByteBudget
         let continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>
         var response: HTTPURLResponse?
         var failure: Error?
+        var cancellationIndex: Int?
 
         init(limit: Int, continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) {
             budget = GearByteBudget(limit: limit)
@@ -67,6 +81,17 @@ nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate,
     private let lock = NSLock()
     private var transfers: [Int: Transfer] = [:]
     private var session: URLSession!
+    private var cancellations: [Cancellation] = []
+
+    /// Every cancellation this downloader has requested, oldest first.
+    var cancellationLog: [Cancellation] { locked { cancellations } }
+
+    /// Records a cancellation (call with the lock held).
+    private func recordCancellation(_ transfer: Transfer, _ reason: Cancellation.Reason, url: URL?) {
+        transfer.cancellationIndex = cancellations.count
+        cancellations.append(Cancellation(url: url, reason: reason, limit: transfer.budget.limit,
+                                          retainedBytes: transfer.budget.data.count))
+    }
 
     init(configuration: URLSessionConfiguration) {
         super.init()
@@ -114,28 +139,36 @@ nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate,
             guard let transfer = transfers[dataTask.taskIdentifier] else { return false }
             guard let http = response as? HTTPURLResponse else {
                 transfer.failure = GearDownloadError.invalidResponse
+                recordCancellation(transfer, .invalidResponse, url: response.url)
                 return false
             }
             guard transfer.budget.allows(expectedLength: response.expectedContentLength) else {
                 transfer.failure = GearDownloadError.tooLarge
+                recordCancellation(transfer, .declaredLengthOverLimit, url: response.url)
                 return false
             }
             transfer.response = http
             return true
         }
-        // A refused response is cancelled the same way as an over-limit body (the failure is already
-        // recorded, so any bytes that still arrive are ignored). The `.cancel` disposition alone is
-        // not relied on: in testing, a Foundation implementation kept reading the whole body after it
-        // (GearDownloadTests.declaredOversizeIsRefusedBeforeTheBody).
-        completionHandler(.allow)
+        // A refused response gets the documented `.cancel` disposition AND an explicit cancel: on
+        // Apple platforms `.cancel` is equivalent to cancelling the task; in testing, another
+        // Foundation implementation kept reading the body after `.cancel` alone. The failure is
+        // already recorded, so any bytes that still arrive are ignored.
+        completionHandler(allow ? .allow : .cancel)
         if allow == false { dataTask.cancel() }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         let exceeded: Bool = locked {
-            guard let transfer = transfers[dataTask.taskIdentifier], transfer.failure == nil else { return false }
+            guard let transfer = transfers[dataTask.taskIdentifier] else { return false }
+            guard transfer.failure == nil else {
+                // Already cancelled: data the loading system had buffered is discarded.
+                if let index = transfer.cancellationIndex { cancellations[index].ignoredBytes += data.count }
+                return false
+            }
             if transfer.budget.append(data) { return false }
             transfer.failure = GearDownloadError.tooLarge
+            recordCancellation(transfer, .bodyOverLimit, url: dataTask.originalRequest?.url)
             return true
         }
         if exceeded { dataTask.cancel() }
