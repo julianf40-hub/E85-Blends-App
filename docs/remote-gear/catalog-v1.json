@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "revision": "initial-2.4.1",
+  "brands": [
+    {
+      "id": "eflexfuel",
+      "name": "eFlexFuel",
+      "tagline": "Flex-fuel conversion & ethanol monitoring",
+      "description": "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
+      "ctaTitle": "View eFlexFuel Products",
+      "destinationURL": "https://eflexfuel.com/us#vehicle-selection",
+      "wordmarkAssetName": "EFlexFuelWordmark",
+      "kind": "brand",
+      "offer": {
+        "eligibleProducts": "eligible eFlexFuel Auto or Moto conversion kits",
+        "code": "E85BLENDS",
+        "terms": "Offer terms are determined by eFlexFuel at checkout.",
+        "disclosure": "85Blends may earn a commission on qualifying purchases.",
+        "amountOff": 100
+      }
+    },
+    {
+      "id": "rvp-supply-oem-beadlocks",
+      "name": "RVP Supply",
+      "tagline": "OEM+ Beadlock Wheels",
+      "description": "Nine OEM-style beadlock designs for supported fitments, or build your own.",
+      "ctaTitle": "View All RVP Wheels",
+      "destinationURL": "https://rvpsupply.com/collections/wheels-1",
+      "wordmarkAssetName": null,
+      "kind": "rvp_wheels"
+    }
+  ],
+  "wheels": [
+    {
+      "id": "oem-hellcat",
+      "displayName": "OEM Hellcat Style",
+      "assetName": "RVPWheelOEMHellcat",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-8",
+      "accessibilityName": "OEM Hellcat Style beadlock wheel"
+    },
+    {
+      "id": "oem-hellcat-v2",
+      "displayName": "OEM Hellcat Style V2",
+      "assetName": "RVPWheelOEMHellcatV2",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-4",
+      "accessibilityName": "OEM Hellcat Style V2 beadlock wheel"
+    },
+    {
+      "id": "oem-hellcat-redeye",
+      "displayName": "OEM Hellcat Redeye Style",
+      "assetName": "RVPWheelOEMHellcatRedeye",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-9",
+      "accessibilityName": "OEM Hellcat Redeye Style beadlock wheel"
+    },
+    {
+      "id": "5-spoke-hellcat",
+      "displayName": "5 Spoke Hellcat Style",
+      "assetName": "RVPWheel5SpokeHellcat",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-3",
+      "accessibilityName": "5 Spoke Hellcat Style beadlock wheel"
+    },
+    {
+      "id": "5-spoke-hellcat-v2",
+      "displayName": "5 Spoke Hellcat Style V2",
+      "assetName": "RVPWheel5SpokeHellcatV2",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-1",
+      "accessibilityName": "5 Spoke Hellcat Style V2 beadlock wheel"
+    },
+    {
+      "id": "oem-demon",
+      "displayName": "OEM Demon Style",
+      "assetName": "RVPWheelOEMDemon",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-7",
+      "accessibilityName": "OEM Demon Style beadlock wheel"
+    },
+    {
+      "id": "hollow-5-spoke",
+      "displayName": "Hollow 5 Spoke Style",
+      "assetName": "RVPWheelHollow5Spoke",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-5",
+      "accessibilityName": "Hollow 5 Spoke Style beadlock wheel"
+    },
+    {
+      "id": "chrome-oem-hellcat",
+      "displayName": "Chrome OEM Hellcat Style",
+      "assetName": "RVPWheelChromeOEMHellcat",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-2",
+      "accessibilityName": "Chrome OEM Hellcat Style beadlock wheel"
+    },
+    {
+      "id": "oem-widebody",
+      "displayName": "OEM Widebody Style",
+      "assetName": "RVPWheelOEMWidebody",
+      "productURL": "https://rvpsupply.com/products/oem-beadlock-style-6",
+      "accessibilityName": "OEM Widebody Style beadlock wheel"
+    }
+  ],
+  "configuratorURL": "https://customize.rvpsupply.com/"
+}

@@ -22,7 +22,7 @@ import UIKit
 // price, discount, or performance or compatibility claim.
 //
 // These are presentation data only: no `Color`s (AppTheme tokens are dynamic and must be resolved
-// inside `body`, never cached), no remote configuration. They are not `private` solely so
+// inside `body`, never cached). The remote catalog maps into these same models. They are not `private` solely so
 // EightyFiveBlendsTests can pin the catalog, the copy, and the link rules.
 
 /// A brand card in the Featured Brands carousel.
@@ -39,6 +39,8 @@ struct FeaturedBrand: Identifiable {
     var wordmarkAssetName: String? = nil
     /// A promotion shown on the brand's card, when one has been approved. Only eFlexFuel has one.
     var offer: FeaturedOffer? = nil
+    var heroImageURL: URL? = nil
+    var priceText: String? = nil
 }
 
 extension FeaturedBrand {
@@ -186,6 +188,7 @@ struct RVPWheelProduct: Identifiable {
     let assetName: String
     let productURL: URL?
     let accessibilityName: String
+    var imageURL: URL? = nil
 }
 
 extension RVPWheelProduct {
@@ -547,7 +550,10 @@ struct RecommendedGearView: View {
     @State private var furthestScrollProgress: CGFloat = 0
     @State private var scrollProgressIsTrusted = true
 
-    private let pages = FeaturedGearPage.catalog
+    @ObservedObject private var gearStore = GearCatalogStore.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var currentDate = Date()
+    private var pages: [FeaturedGearPage] { gearStore.pages(at: currentDate) }
 
     // Each card fills the full width between the carousel's content margins, so a settled page is
     // centered with equal pageMargin left and right and neither neighbor peeks in. `contentMargins`
@@ -605,6 +611,24 @@ struct RecommendedGearView: View {
             .animation(reduceMotion || carouselFollowsSwipe ? nil : .easeInOut(duration: 0.25), value: currentPageIndex)
         }
         .background(AppTheme.Colors.charcoal)
+        .task { await gearStore.refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await gearStore.refresh() } }
+        }
+        .task {
+            while !Task.isCancelled {
+                currentDate = Date()
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+        .onChange(of: gearStore.catalog?.revision) { _, _ in
+            pageHeights = []
+            scrollProgress = nil
+            furthestScrollProgress = 0
+            scrollProgressIsTrusted = true
+            linkMessages = [:]
+            if !pages.contains(where: { $0.id == selectedPageID }) { selectedPageID = pages.first?.id }
+        }
         .navigationTitle("Recommended Gear")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -636,7 +660,13 @@ struct RecommendedGearView: View {
                 .accessibilityAddTraits(.isHeader)
                 .padding(.horizontal, Self.pageMargin)
 
-            carousel
+            if pages.isEmpty {
+                Text("No recommended gear is available right now.")
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .padding(.horizontal, Self.pageMargin)
+            } else {
+                carousel
+            }
 
             if pages.count > 1 {
                 FeaturedPageIndicator(count: pages.count, currentIndex: currentPageIndex)
@@ -739,7 +769,7 @@ struct RecommendedGearView: View {
         case .sponsor(let brand):
             FeaturedSponsorCard(
                 brand: brand,
-                products: RVPWheelProduct.catalog,
+                products: gearStore.products,
                 position: position,
                 total: pages.count,
                 statusMessage: linkMessages[brand.id],
@@ -821,7 +851,7 @@ struct RecommendedGearView: View {
     private func openRVPConfigurator(sponsor brand: FeaturedBrand) {
         linkMessages[brand.id] = nil
 
-        guard let url = FeaturedBrandLink.validatedURL(RVPSupplyDestination.configurator) else {
+        guard let url = FeaturedBrandLink.validatedURL(gearStore.configuratorURL) else {
             showLinkMessage("The \(brand.name) wheel configurator link is unavailable right now.", for: brand)
             return
         }
@@ -864,7 +894,7 @@ private struct FeaturedBrandCard: View {
                     // Decorative only, and dropped at accessibility text sizes so the copy and
                     // the call to action get the room instead.
                     if dynamicTypeSize.isAccessibilitySize == false {
-                        FeaturedBrandArtwork()
+                        FeaturedBrandArtwork(brand: brand)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -891,6 +921,14 @@ private struct FeaturedBrandCard: View {
             .accessibilityLabel(brand.brandCardAccessibilityLabel(position: position, total: total))
             .accessibilityHint("Opens the \(brand.name) website in your browser.")
             .accessibilityAddTraits(.isButton)
+
+            if let price = brand.priceText {
+                Text(price)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 14)
+            }
 
             if let offer = brand.offer {
                 FeaturedOfferSection(offer: offer)
@@ -1093,7 +1131,7 @@ private struct FeaturedSponsorCard: View {
 
     private var usesRing: Bool {
         guard let contentWidth else { return false }
-        return RVPWheelRingLayout.usesRing(
+        return products.count == 9 && RVPWheelRingLayout.usesRing(
             availableWidth: contentWidth,
             isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
         )
@@ -1293,10 +1331,7 @@ private struct FeaturedWheelRingButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(product.assetName)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
+            GearCatalogImage(remoteURL: product.imageURL, assetName: product.assetName)
                 .clipShape(Circle())
                 .padding(3)
                 .frame(width: diameter, height: diameter)
@@ -1411,10 +1446,7 @@ private struct FeaturedWheelTile: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                Image(product.assetName)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
+                GearCatalogImage(remoteURL: product.imageURL, assetName: product.assetName)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -1619,7 +1651,7 @@ private struct FeaturedBrandWordmark: View {
 // Taller (200pt, was 120pt) and with a tight inset so the photo reads considerably larger and more
 // prominent, closer to the approved design reference.
 private struct FeaturedBrandArtwork: View {
-    private static let assetName = "EFlexFuelAutoKitHero"
+    let brand: FeaturedBrand
 
     var body: some View {
         RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1631,10 +1663,7 @@ private struct FeaturedBrandArtwork: View {
                 )
             )
             .overlay(
-                Image(Self.assetName)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
+                GearCatalogImage(remoteURL: brand.heroImageURL, assetName: brand.id == "eflexfuel" ? "EFlexFuelAutoKitHero" : "")
                     .padding(6)
             )
             .overlay(
@@ -1705,4 +1734,32 @@ private extension View {
     }
     .preferredColorScheme(.dark)
     .dynamicTypeSize(.accessibility5)
+}
+
+/// Version image URLs when replacing artwork so caches cannot serve an older photograph.
+private struct GearCatalogImage: View {
+    let remoteURL: URL?
+    let assetName: String
+
+    var body: some View {
+        if let remoteURL {
+            AsyncImage(url: remoteURL) { phase in
+                if let image = phase.image {
+                    image.resizable().interpolation(.high).scaledToFit()
+                } else {
+                    fallback
+                }
+            }
+        } else {
+            fallback
+        }
+    }
+
+    @ViewBuilder private var fallback: some View {
+        if !assetName.isEmpty {
+            Image(assetName).resizable().interpolation(.high).scaledToFit()
+        } else {
+            Image(systemName: "photo").font(.largeTitle).foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+    }
 }
