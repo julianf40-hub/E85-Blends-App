@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "revision": "template-a",
+  "publishedAt": 1,
+  "brands": [
+    {
+      "kind": "brand",
+      "ctaTitle": "View Example Products",
+      "id": "example-fuel-tools",
+      "name": "Example Fuel Tools",
+      "tagline": "Staging test brand",
+      "description": "A fictional brand used only to test remote Recommended Gear updates.",
+      "destinationURL": "https://example.com/fuel-tools",
+      "priceText": "From $49",
+      "more": {
+        "subtitle": "Staging test card A"
+      }
+    },
+    {
+      "kind": "brand",
+      "ctaTitle": "View Sensor Kit",
+      "id": "example-sensor-kit",
+      "name": "Example Sensor Kit",
+      "tagline": "Second staging test brand",
+      "description": "A fictional product removed by publication B.",
+      "destinationURL": "https://example.com/sensor-kit",
+      "priceText": "From $129",
+      "more": {}
+    }
+  ]
+}

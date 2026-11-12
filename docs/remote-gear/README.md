@@ -252,8 +252,8 @@ Preferences → **Recommended Gear Catalog** (beside the RevenueCat diagnostics 
 fixture actions are compiled out of App Store (Release) builds (`#if DEBUG || INTERNAL_BUILD`).
 
 - Staging reads `recommended-gear/staging/catalog-v1.json` from the same public bucket, with the
-  same v1 contract, the same validation and no credentials. **This object does not exist yet.**
-  Until it is created, staging shows nothing and reports "Not found (HTTP 404)".
+  same v1 contract, the same validation and no credentials. **Neither the bucket nor the object exists yet** (see `STAGING_SETUP.md` for the proposed setup and phone test).
+  Until it is created, staging shows nothing and the card reports "HTTP 400" (Supabase Storage answers a missing bucket or object with 400).
 - Each source has its **own** saved document, ETag, ordering state and revision history. A staging
   publication with a later `publishedAt` never affects what production accepts.
 - Staging never shows bundled or production partners: with nothing received it shows the empty

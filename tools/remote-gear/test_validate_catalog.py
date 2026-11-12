@@ -198,6 +198,56 @@ class StagingFixtureTests(unittest.TestCase):
                     self.assertTrue(brand["destinationURL"].startswith("https://example.com/"))
 
 
+class StagingPublisherTests(unittest.TestCase):
+    """publish_catalog.py decisions, offline (no network, no key)."""
+
+    def setUp(self):
+        import publish_catalog
+        self.p = publish_catalog
+        self.a = str(ROOT / "docs/remote-gear/staging/publication-a.json")
+        self.b = str(ROOT / "docs/remote-gear/staging/publication-b.json")
+        self.missing_object = (400, b'{"statusCode":"404","error":"not_found","message":"Object not found"}')
+        self.missing_bucket = (400, b'{"statusCode":"404","error":"Bucket not found","message":"Bucket not found","code":"NoSuchBucket"}')
+
+    def test_urls_are_storage_not_postgrest(self):
+        self.assertEqual(self.p.public_url(),
+                         "https://zefkbtscieokkdenvnkg.supabase.co/storage/v1/object/public/recommended-gear/staging/catalog-v1.json")
+        self.assertNotIn("/rest/v1/", self.p.upload_url())
+
+    def test_missing_bucket_stops_but_missing_object_is_a_first_publication(self):
+        with self.assertRaises(self.p.PublishError):
+            self.p.classify_live_response(*self.missing_bucket)
+        self.assertEqual(self.p.classify_live_response(*self.missing_object), "absent")
+        with self.assertRaises(self.p.PublishError):
+            self.p.classify_live_response(500, b"oops")
+
+    def test_publication_a_then_b_is_a_valid_ordered_succession(self):
+        doc_a, raw_a, live = self.p.prepare(self.a, *self.missing_object, now=1_800_000_000.7)
+        self.assertIsNone(live)
+        self.assertEqual(doc_a["publishedAt"], 1_800_000_000)
+        doc_b, raw_b, live = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000.9)  # same second
+        self.assertEqual(live["revision"], doc_a["revision"])
+        self.assertEqual(doc_b["publishedAt"], 1_800_000_001, "rapid successive publishes still increase")
+        self.assertNotEqual(doc_b["revision"], doc_a["revision"])
+        b_ids = [brand["id"] for brand in doc_b["brands"]]
+        self.assertEqual(b_ids, ["example-fuel-tools"], "B removes the sensor kit")
+        self.assertEqual(doc_b["brands"][0]["priceText"], "From $39")
+        self.assertEqual(doc_b["brands"][0]["destinationURL"], "https://example.com/fuel-tools-v2")
+
+    def test_live_clock_ahead_still_increases(self):
+        doc_a, raw_a, _ = self.p.prepare(self.a, *self.missing_object, now=1_900_000_000)
+        doc_b, _, _ = self.p.prepare(self.b, 200, raw_a, now=1_800_000_000)  # local clock behind
+        self.assertEqual(doc_b["publishedAt"], 1_900_000_001)
+
+    def test_templates_use_only_fictional_brands_and_example_domains(self):
+        for path in (self.a, self.b):
+            document = json.loads(pathlib.Path(path).read_text())
+            for brand in document["brands"]:
+                self.assertTrue(brand["id"].startswith("example-"))
+                self.assertEqual(brand["kind"], "brand")
+                self.assertTrue(brand["destinationURL"].startswith("https://example.com/"))
+
+
 class SeedParityTests(unittest.TestCase):
     """The seed must describe exactly what the app bundles, so first publication changes nothing."""
 
