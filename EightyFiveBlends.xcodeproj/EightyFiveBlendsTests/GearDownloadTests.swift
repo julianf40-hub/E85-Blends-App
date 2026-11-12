@@ -16,6 +16,13 @@
 //  protocols, and the thread `stopLoading` arrives on). Cache hits offered by the loading system
 //  (`cachedResponse`) are served the way the built-in HTTP protocol serves them.
 //
+//  Chunk boundaries are NOT preserved: Xcode Cloud Build 288 showed Darwin URLSession delivering
+//  several stub chunks in one `didReceive data` callback (retainedBytes was 0, so the first callback
+//  alone exceeded the 2,500-byte limit). These tests therefore check "never more than the limit
+//  retained" and "cancelled before the body completed", not exact byte counts; exact accounting
+//  lives in the deterministic GearByteBudget tests. Real HTTP behaviour (Content-Length, chunked
+//  encoding, the client closing the connection) is covered by GearLoopbackHTTPTests.
+//
 
 import Foundation
 #if canImport(FoundationNetworking)
@@ -246,7 +253,7 @@ struct GearDownloadTests {
     /// failure is recorded first) still report tooLarge once something else cancelled it. A
     /// watchdog expiry therefore throws `WatchdogExpired`, which fails the expectation: the
     /// downloader must end the transfer itself, promptly.
-    private static func download(_ downloader: GearBoundedDownloader, _ request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
+    static func download(_ downloader: GearBoundedDownloader, _ request: URLRequest, limit: Int) async throws -> (Data, HTTPURLResponse) {
         final class Flag: @unchecked Sendable {
             private let lock = NSLock()
             private var value = false
@@ -293,6 +300,23 @@ struct GearDownloadTests {
         #expect(budget.data.count == 10)
     }
 
+    /// What the downloader keeps when one callback carries several network chunks: a callback that
+    /// would cross the limit is refused whole, so what is retained never exceeds the limit and is
+    /// exactly the bytes of the callbacks accepted before it.
+    @Test func byteBudgetRefusesAnOversizedCallbackWhole() {
+        var coalesced = GearByteBudget(limit: 2_500)
+        let single = coalesced.append(Data(count: 3_000))
+        #expect(single == false)
+        #expect(coalesced.data.isEmpty, "a 3,000-byte callback against 2,500 keeps nothing")
+
+        var split = GearByteBudget(limit: 2_500)
+        let first = split.append(Data(count: 2_000))
+        let second = split.append(Data(count: 1_000))
+        #expect(first)
+        #expect(second == false)
+        #expect(split.data.count == 2_000, "the accepted prefix of callbacks, never more than the limit")
+    }
+
     // MARK: Bounded downloader
 
     /// No Content-Length; three 1,000-byte chunks are sent and seventeen are held. The third chunk
@@ -313,7 +337,9 @@ struct GearDownloadTests {
         #expect(state.delivered == 3, "only the chunks the stub chose to send were read")
         #expect(state.finished == false, "the body was never completed; the downloader ended the transfer")
         #expect(downloader.cancellationLog.map(\.reason) == [.bodyOverLimit])
-        #expect(downloader.cancellationLog.first?.retainedBytes == 2_000, "never more than the limit retained")
+        // URLSession may combine chunks, so the exact figure depends on callback boundaries (0 or
+        // 2,000 here); it can never exceed the limit.
+        #expect((downloader.cancellationLog.first?.retainedBytes ?? .max) <= 2_500, "never more than the limit retained")
 
         // The cancellation then reaches the protocol. Asserted separately (bounded), since its
         // delivery time belongs to the URL loading system.
@@ -337,9 +363,10 @@ struct GearDownloadTests {
         let log = downloader.cancellationLog
         #expect(log.count == 1, "one cancellation, however much data was already in flight")
         #expect(log.first?.reason == .bodyOverLimit)
-        #expect(log.first?.retainedBytes == 2_000)
+        let retained = log.first?.retainedBytes ?? .max
         let ignored = log.first?.ignoredBytes ?? -1
-        #expect(ignored >= 0 && ignored <= 3_000, "later chunks, if delivered at all, were ignored")
+        #expect(retained <= 2_500, "never more than the limit retained, however the data was batched")
+        #expect(ignored >= 0 && retained + ignored <= 6_000, "data after the limit, if delivered at all, was ignored")
     }
 
     @Test func misleadingContentLengthDoesNotBypassTheLimit() async throws {
@@ -354,23 +381,80 @@ struct GearDownloadTests {
         #expect((downloader.cancellationLog.first?.retainedBytes ?? .max) <= 2_500)
     }
 
-    /// Content-Length 50,000 against a 2,500-byte limit, with the whole body held. The call must
-    /// fail before a single body byte is sent.
+    /// Content-Length 50,000 against a 2,500-byte limit. Build 288 showed that with the WHOLE body
+    /// held and no Content-Type, the downloader never saw the response at all (empty cancellation
+    /// log, watchdog expired), so the response had not reached the delegate. Hypothesis: Darwin
+    /// withholds the response for content-type sniffing until body bytes arrive. The stub therefore
+    /// declares a Content-Type and sends one 1,000-byte chunk (below the limit, and enough for any
+    /// sniffing), holding the rest. The response must then be refused from its declared length:
+    /// no body byte accepted, and the transfer ended by the downloader. The same requirement is
+    /// tested against a real HTTP server in GearLoopbackHTTPTests.
     @Test func declaredOversizeIsRefusedBeforeTheBody() async throws {
         let url = Self.url("declared")
-        GearStubProtocol.register(url, .init(headers: ["Content-Length": "50000"], chunks: Self.chunks(50, size: 1_000), initialChunks: 0))
+        GearStubProtocol.register(url, .init(headers: ["Content-Length": "50000", "Content-Type": "application/json"],
+                                             chunks: Self.chunks(50, size: 1_000), initialChunks: 1))
         let downloader = Self.downloader()
         defer { downloader.invalidate() }
         await #expect(throws: GearDownloadError.tooLarge) {
             _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
         }
         let record = GearStubProtocol.record(url)
-        #expect(Self.stub(record).delivered == 0, "refused from the header, with no body read")
-        #expect(Self.stub(record).finished == false)
+        #expect(Self.stub(record).delivered == 1, "the held body was never sent")
+        #expect(Self.stub(record).finished == false, "the downloader ended the transfer")
         #expect(downloader.cancellationLog.map(\.reason) == [.declaredLengthOverLimit])
-        #expect(downloader.cancellationLog.first?.retainedBytes == 0)
+        #expect(downloader.cancellationLog.first?.retainedBytes == 0, "no body data accepted")
         await Self.waitUntil { Self.stub(record).stopped }
         #expect(Self.stub(record).stopped)
+    }
+
+    /// Native diagnostic for the Build 288 hypotheses: with a plain URLSession and a recording
+    /// delegate, does a stub response's declared length reach the delegate, and does the response
+    /// arrive with the body held? Asserts only what the downloader relies on (the declared length);
+    /// the observed callback batching is printed for the build log.
+    @Test func stubResponseMetadataReachesTheDelegate() async throws {
+        final class Recorder: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+            let lock = NSLock()
+            var expectedLength: Int64?
+            var dataSizes: [Int] = []
+            var responseSeen: CheckedContinuation<Void, Never>?
+            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+                let waiter: CheckedContinuation<Void, Never>? = { lock.lock(); defer { lock.unlock() }
+                    expectedLength = response.expectedContentLength
+                    let w = responseSeen; responseSeen = nil; return w }()
+                completionHandler(.allow)
+                waiter?.resume()
+            }
+            func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+                lock.lock(); dataSizes.append(data.count); lock.unlock()
+            }
+            /// Also resumes the waiter, so a response that never arrives ends the test (via the
+            /// watchdog's cancel) instead of hanging it.
+            func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+                let waiter: CheckedContinuation<Void, Never>? = { lock.lock(); defer { lock.unlock() }
+                    let w = responseSeen; responseSeen = nil; return w }()
+                waiter?.resume()
+            }
+        }
+        let url = Self.url("metadata")
+        GearStubProtocol.register(url, .init(headers: ["Content-Length": "3000", "Content-Type": "application/json"],
+                                             chunks: Self.chunks(3, size: 1_000), initialChunks: 1))
+        let recorder = Recorder()
+        let session = URLSession(configuration: Self.stubConfiguration(), delegate: recorder, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        let task = session.dataTask(with: URLRequest(url: url))
+        let watchdog = Task { try? await Task.sleep(for: .seconds(10)); task.cancel() }
+        defer { watchdog.cancel() }
+        await withCheckedContinuation { continuation in
+            recorder.lock.lock(); recorder.responseSeen = continuation; recorder.lock.unlock()
+            task.resume()
+        }
+        let (length, sizes): (Int64?, [Int]) = { recorder.lock.lock(); defer { recorder.lock.unlock() }
+            return (recorder.expectedLength, recorder.dataSizes) }()
+        print("GearStubProtocol diagnostic: expectedContentLength=\(String(describing: length)) dataCallbacksBeforeRelease=\(sizes)")
+        #expect(length == 3_000, "the declared Content-Length reaches the delegate")
+        GearStubProtocol.release(url)
     }
 
     @Test func bodyWithinLimitAndAnyStatusAreReturned() async throws {
@@ -439,7 +523,7 @@ struct GearDownloadTests {
         let log = downloader.cancellationLog
         #expect(log.count == 2, "bounded by the opted-in capacity")
         #expect(log.map(\.url) == Array(urls.suffix(2)), "oldest evicted first; order kept")
-        #expect(log.allSatisfy { $0.reason == .bodyOverLimit && $0.retainedBytes == 2_000 })
+        #expect(log.allSatisfy { $0.reason == .bodyOverLimit && $0.retainedBytes <= 2_500 })
     }
 
     @Test func logCapacityIsClampedAndZeroDisables() {
