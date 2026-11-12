@@ -14,6 +14,9 @@ struct MoreView: View {
     @AppStorage(AppPreferenceKey.appExperienceMode) private var appExperienceModeRaw = AppExperienceMode.normal.rawValue
 
     @State private var sponsorLinkMessage: String?
+    // The same catalog Recommended Gear uses (GearCatalog.swift), so a partner removed or hidden
+    // remotely disappears from both screens together.
+    @ObservedObject private var gearStore = GearCatalogStore.shared
     @State private var supportContactMessage: String?
     @State private var rateAppStoreMessage: String?
 
@@ -43,12 +46,21 @@ struct MoreView: View {
                     // RVP Supply sponsor — returned to premium top-of-page placement (Pass 5),
                     // directly below the header and before Pro / Referral. Same compact
                     // horizontal card introduced in Pass 4; only the position changed.
-                    sponsorCard
+                    #if DEBUG || INTERNAL_BUILD
+                    GearStagingCatalogBanner()
+                    #endif
 
-                    // eFlexFuel featured-brand card, directly under the sponsor card. Deliberately
-                    // worded neutrally ("Featured Brand"): it is not a sponsorship, partnership, or
-                    // paid placement.
-                    MoreFeaturedBrandCard()
+                    // Shown only while the catalog places the sponsor on More.
+                    if let sponsor = gearStore.content.moreSponsor {
+                        sponsorCard(sponsor)
+                    }
+
+                    // Featured-brand cards (eFlexFuel in the bundled catalog), directly under the
+                    // sponsor card, in catalog order. Deliberately worded neutrally ("Featured
+                    // Brand"): not a sponsorship, partnership, or paid placement.
+                    ForEach(gearStore.content.moreFeaturedBrands) { brand in
+                        MoreFeaturedBrandCard(brand: brand)
+                    }
 
                     VStack(spacing: 16) {
                         // Pro / Referral — no separate section header: the page header above
@@ -233,6 +245,7 @@ struct MoreView: View {
             }
             .background(AppTheme.Colors.charcoal)
             .navigationBarHidden(true)
+            .task { await gearStore.refresh() }
         }
         .background(AppTheme.Colors.charcoal.ignoresSafeArea())
     }
@@ -364,9 +377,9 @@ struct MoreView: View {
     // The logo is the transparent RVP Supply artwork on its own dark plate (see
     // FeaturedSponsorLogoPlate), sized from the width of the scroll view (108-132pt) so the
     // wordmark is readable.
-    private var sponsorCard: some View {
+    private func sponsorCard(_ sponsor: MoreSponsorBanner) -> some View {
         Button {
-            openSponsorLink()
+            openSponsorLink(sponsor)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 // From xxxLarge up (every accessibility size included) the logo moves above the text
@@ -382,13 +395,13 @@ struct MoreView: View {
                             sponsorLinkIcon
                         }
 
-                        sponsorText
+                        sponsorText(sponsor)
                     }
                 } else {
                     HStack(spacing: 14) {
                         sponsorLogo
 
-                        sponsorText
+                        sponsorText(sponsor)
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         sponsorLinkIcon
@@ -413,7 +426,7 @@ struct MoreView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Opens the RVP Supply website")
+        .accessibilityHint(sponsor.accessibilityHint)
     }
 
     private var sponsorLogo: some View {
@@ -423,15 +436,15 @@ struct MoreView: View {
             }
     }
 
-    private var sponsorText: some View {
+    private func sponsorText(_ sponsor: MoreSponsorBanner) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Sponsored by RVP Supply")
+            Text(sponsor.title)
                 .font(.headline)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Performance parts & gear")
+            Text(sponsor.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .multilineTextAlignment(.leading)
@@ -446,10 +459,10 @@ struct MoreView: View {
             .accessibilityHidden(true)
     }
 
-    private func openSponsorLink() {
+    private func openSponsorLink(_ sponsor: MoreSponsorBanner) {
         sponsorLinkMessage = nil
 
-        guard let url = FeaturedBrandLink.validatedURL(RVPSupplyDestination.homepage) else {
+        guard let url = FeaturedBrandLink.validatedURL(sponsor.homepageURL) else {
             showSponsorLinkMessage("Shop link is unavailable right now.")
             return
         }
@@ -635,21 +648,22 @@ private struct MoreActionRow: View {
     }
 }
 
-// A compact "Featured Brand" card that pushes Recommended Gear, whose carousel always opens on
-// the eFlexFuel page, so no routing state is needed. It leads with eFlexFuel's official wordmark
-// (an adaptive light/dark asset) and is visually distinct from the sponsor card above it: a green
+// A compact "Featured Brand" card that pushes Recommended Gear opened on this brand's page. It leads
+// with the brand's wordmark (eFlexFuel's official one in the bundled catalog, a remote logo, or the
+// typographic name) and is visually distinct from the sponsor card above it: a green
 // outline instead of the sponsor's logo plate and yellow outline, and a chevron (navigates inside
 // the app) instead of the external-link arrow.
 private struct MoreFeaturedBrandCard: View {
     // Copy comes from the same model the Recommended Gear carousel uses, so the wording guards in
-    // FeaturedGearTests cover this card too.
-    private let brand = FeaturedBrand.eFlexFuel
+    // FeaturedGearTests (and the catalog's neutral-wording validation) cover this card too.
+    let brand: FeaturedBrand
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         NavigationLink {
-            RecommendedGearView()
+            RecommendedGearView(initialPageID: brand.id)
         } label: {
             content
                 .padding(.horizontal, 18)
@@ -716,8 +730,25 @@ private struct MoreFeaturedBrandCard: View {
 
     // 175-205pt wide where the screen allows (see FeaturedWordmarkLayout), aspect-fit and uncropped; the
     // asset is adaptive, so light mode gets the charcoal-and-orange logo and dark and OLED the white one.
+    // A remote logo shows once loaded (height-capped, since its aspect ratio is unknown); until then,
+    // or if it fails, the bundled wordmark or the typographic name.
     @ViewBuilder
     private var wordmark: some View {
+        if let remote = brand.remoteLogoURL(isDark: colorScheme == .dark) {
+            GearRemoteImage(url: remote) { bundledWordmark }
+                .frame(maxHeight: FeaturedWordmarkLayout.remoteMaxHeight, alignment: .leading)
+                .containerRelativeFrame(.horizontal) { length, _ in
+                    FeaturedWordmarkLayout.moreWidth(containerWidth: length)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+        } else {
+            bundledWordmark
+        }
+    }
+
+    @ViewBuilder
+    private var bundledWordmark: some View {
         if let assetName = brand.wordmarkAssetName {
             Image(assetName)
                 .resizable()
@@ -736,7 +767,7 @@ private struct MoreFeaturedBrandCard: View {
     }
 
     private var subtitle: some View {
-        Text(brand.tagline)
+        Text(brand.moreSubtitle ?? brand.tagline)
             .font(.subheadline)
             .foregroundStyle(AppTheme.Colors.textSecondary)
             .multilineTextAlignment(.leading)
