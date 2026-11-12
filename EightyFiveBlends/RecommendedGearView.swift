@@ -22,8 +22,9 @@ import UIKit
 // price, discount, or performance or compatibility claim.
 //
 // These are presentation data only: no `Color`s (AppTheme tokens are dynamic and must be resolved
-// inside `body`, never cached). The remote catalog maps into these same models. They are not `private` solely so
-// EightyFiveBlendsTests can pin the catalog, the copy, and the link rules.
+// inside `body`, never cached). They are the BUNDLED catalog: shown only until the first valid remote
+// publication arrives (GearCatalog.swift), which maps into these same models. They are not `private`
+// solely so EightyFiveBlendsTests can pin the catalog, the copy, and the link rules.
 
 /// A brand card in the Featured Brands carousel.
 struct FeaturedBrand: Identifiable {
@@ -37,10 +38,28 @@ struct FeaturedBrand: Identifiable {
     /// The brand's official wordmark in the asset catalog (adaptive: one image for light, one for
     /// dark and OLED), when it has one.
     var wordmarkAssetName: String? = nil
-    /// A promotion shown on the brand's card, when one has been approved. Only eFlexFuel has one.
+    /// A promotion shown on the brand's card, when one has been approved. In the bundled catalog only
+    /// eFlexFuel has one; remote offers are validated and expire on the device clock (GearCatalog).
     var offer: FeaturedOffer? = nil
+    /// Bundled hero photo, resolved from the brand's stable ID (only eFlexFuel has one). A brand with
+    /// neither this nor `heroImageURL` shows no artwork panel at all.
+    var heroAssetName: String? = nil
+    /// Remote hero photo (a versioned URL). Shown once loaded; the bundled photo, if any, until then.
     var heroImageURL: URL? = nil
+    /// Remote wordmark for light, and for dark and OLED. Shown once loaded; the bundled wordmark or
+    /// the typographic name until then, and if it cannot load.
+    var logoURL: URL? = nil
+    var logoDarkURL: URL? = nil
+    /// A short price line from the catalog (for example "From $499"). Neutral brand cards only: the
+    /// sponsor card never carries a price.
     var priceText: String? = nil
+    /// The More card's second line. Defaults to `tagline`.
+    var moreSubtitle: String? = nil
+
+    /// The remote wordmark for the current appearance, if the catalog supplied one.
+    func remoteLogoURL(isDark: Bool) -> URL? {
+        isDark ? (logoDarkURL ?? logoURL) : logoURL
+    }
 }
 
 extension FeaturedBrand {
@@ -59,7 +78,7 @@ extension FeaturedBrand {
     }
 
     /// The compact More-screen card that opens Recommended Gear.
-    var compactCardAccessibilityLabel: String { "\(name). Featured brand. \(tagline)." }
+    var compactCardAccessibilityLabel: String { "\(name). Featured brand. \(moreSubtitle ?? tagline)." }
     var compactCardAccessibilityHint: String { "Opens Recommended Gear with \(name) featured." }
 }
 
@@ -76,7 +95,8 @@ extension FeaturedBrand {
         destinationURL: URL(string: "https://eflexfuel.com/us#vehicle-selection"),
         accessibilityDescription: "Flex-fuel conversion kits and real-time ethanol content monitoring through the eFlexApp.",
         wordmarkAssetName: "EFlexFuelWordmark",
-        offer: .eFlexFuel
+        offer: .eFlexFuel,
+        heroAssetName: "EFlexFuelAutoKitHero"
     )
 }
 
@@ -342,6 +362,8 @@ nonisolated enum RVPWheelRingLayout {
     /// The center action's diameter as a share of the ring diameter (never below `minimumTapTarget`).
     static let centerFraction: CGFloat = 0.36
     static let minimumTapTarget: CGFloat = 44
+    /// The ring's geometry and legend are designed for exactly this many wheels.
+    static let designedWheelCount = 9
 
     /// Ring only at standard (non-accessibility) text sizes with enough width.
     static func usesRing(availableWidth: CGFloat, isAccessibilitySize: Bool) -> Bool {
@@ -398,6 +420,8 @@ nonisolated enum FeaturedWordmarkLayout {
 
     /// The most the Recommended Gear card's wordmark grows; it shrinks to the card's width below that.
     static let cardMaxWidth: CGFloat = 260
+    /// Remote logos have no known aspect ratio, so they are also capped in height.
+    static let remoteMaxHeight: CGFloat = 64
 }
 
 /// Sizing rules for the RVP Supply logo, which sits on a dark plate in two places: the More screen
@@ -550,10 +574,15 @@ struct RecommendedGearView: View {
     @State private var furthestScrollProgress: CGFloat = 0
     @State private var scrollProgressIsTrusted = true
 
+    // Remote catalog (or the bundled one before the first publication). The store re-resolves offer
+    // start/expiry itself with a single timer and on foregrounding, so this view needs no clock.
     @ObservedObject private var gearStore = GearCatalogStore.shared
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var currentDate = Date()
-    private var pages: [FeaturedGearPage] { gearStore.pages(at: currentDate) }
+    private var pages: [FeaturedGearPage] { gearStore.content.pages }
+
+    /// `initialPageID` opens the carousel on that page (the More screen's Featured Brand cards).
+    init(initialPageID: String? = nil) {
+        _selectedPageID = State(initialValue: initialPageID)
+    }
 
     // Each card fills the full width between the carousel's content margins, so a settled page is
     // centered with equal pageMargin left and right and neither neighbor peeks in. `contentMargins`
@@ -612,22 +641,17 @@ struct RecommendedGearView: View {
         }
         .background(AppTheme.Colors.charcoal)
         .task { await gearStore.refresh() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await gearStore.refresh() } }
-        }
-        .task {
-            while !Task.isCancelled {
-                currentDate = Date()
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-            }
-        }
-        .onChange(of: gearStore.catalog?.revision) { _, _ in
+        .onAppear(perform: normalizeSelection)
+        .onChange(of: gearStore.generation) { _, _ in
+            // A new publication can add, remove, reorder or resize cards: drop the measurements taken
+            // for the old set so the carousel re-measures, clear link errors about cards that may be
+            // gone, and never leave the selection on a card that no longer exists.
             pageHeights = []
             scrollProgress = nil
             furthestScrollProgress = 0
             scrollProgressIsTrusted = true
             linkMessages = [:]
-            if !pages.contains(where: { $0.id == selectedPageID }) { selectedPageID = pages.first?.id }
+            normalizeSelection()
         }
         .navigationTitle("Recommended Gear")
         .navigationBarTitleDisplayMode(.inline)
@@ -661,8 +685,15 @@ struct RecommendedGearView: View {
                 .padding(.horizontal, Self.pageMargin)
 
             if pages.isEmpty {
-                Text("No recommended gear is available right now.")
+                // A valid empty publication (or an unreadable saved one) shows this, never the
+                // bundled brands.
+                Text("No featured brands are available right now. Check back soon.")
+                    .font(.subheadline)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                    .gearCardChrome()
                     .padding(.horizontal, Self.pageMargin)
             } else {
                 carousel
@@ -742,6 +773,13 @@ struct RecommendedGearView: View {
         .contentMargins(.horizontal, Self.pageMargin, for: .scrollContent)
     }
 
+    // The selected card can disappear (removed or hidden remotely, or an initial page that isn't
+    // published). Fall back to the first card; nil also means the first card.
+    private func normalizeSelection() {
+        guard let selectedPageID, pages.contains(where: { $0.id == selectedPageID }) == false else { return }
+        self.selectedPageID = pages.first?.id
+    }
+
     // Runs when the snapped page changes. (nil is the first page, so the id first being filled in at
     // launch is not a page change.)
     private func verifyScrollProgress(from old: String?, to new: String?) {
@@ -769,7 +807,8 @@ struct RecommendedGearView: View {
         case .sponsor(let brand):
             FeaturedSponsorCard(
                 brand: brand,
-                products: gearStore.products,
+                products: gearStore.content.products,
+                footnote: gearStore.content.sponsorFootnote,
                 position: position,
                 total: pages.count,
                 statusMessage: linkMessages[brand.id],
@@ -851,7 +890,7 @@ struct RecommendedGearView: View {
     private func openRVPConfigurator(sponsor brand: FeaturedBrand) {
         linkMessages[brand.id] = nil
 
-        guard let url = FeaturedBrandLink.validatedURL(gearStore.configuratorURL) else {
+        guard let url = FeaturedBrandLink.validatedURL(gearStore.content.configuratorURL) else {
             showLinkMessage("The \(brand.name) wheel configurator link is unavailable right now.", for: brand)
             return
         }
@@ -893,7 +932,9 @@ private struct FeaturedBrandCard: View {
 
                     // Decorative only, and dropped at accessibility text sizes so the copy and
                     // the call to action get the room instead.
-                    if dynamicTypeSize.isAccessibilitySize == false {
+                    // A brand with no photo (bundled or remote) gets no empty panel.
+                    if dynamicTypeSize.isAccessibilitySize == false,
+                       brand.heroImageURL != nil || brand.heroAssetName != nil {
                         FeaturedBrandArtwork(brand: brand)
                     }
 
@@ -922,16 +963,23 @@ private struct FeaturedBrandCard: View {
             .accessibilityHint("Opens the \(brand.name) website in your browser.")
             .accessibilityAddTraits(.isButton)
 
+            // Catalog price line, outside the website button so it is read on its own.
             if let price = brand.priceText {
                 Text(price)
                     .font(.headline)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 18)
                     .padding(.top, 14)
+                    .accessibilityLabel("Price: \(price)")
             }
 
             if let offer = brand.offer {
-                FeaturedOfferSection(offer: offer)
+                FeaturedOfferSection(
+                    offer: offer,
+                    usesBrandStyle: GearBundledArtwork.usesEFlexFuelOfferStyle(brandID: brand.id)
+                )
                     .padding(.horizontal, 18)
                     .padding(.top, 14)
             }
@@ -973,6 +1021,9 @@ private struct FeaturedBrandCard: View {
 /// shows "Copied" for two seconds.
 private struct FeaturedOfferSection: View {
     let offer: FeaturedOffer
+    /// eFlexFuel's orange is reserved for eFlexFuel. Every other brand's offer uses neutral theme
+    /// colors, so a new brand never inherits eFlexFuel's look.
+    let usesBrandStyle: Bool
 
     @State private var copyState = FeaturedOfferCopyState()
     @Environment(\.colorScheme) private var colorScheme
@@ -985,7 +1036,11 @@ private struct FeaturedOfferSection: View {
 
     // Text, glyphs and borders: the deeper orange in light mode, where the brand orange is only about
     // 3:1 on the panel's tint; the brand orange itself in dark and OLED.
-    private var accent: Color { FeaturedOfferStyle.accent(isDark: colorScheme == .dark) }
+    private var accent: Color {
+        usesBrandStyle ? FeaturedOfferStyle.accent(isDark: colorScheme == .dark) : AppTheme.Colors.textPrimary
+    }
+
+    private var tint: Color { usesBrandStyle ? FeaturedOfferStyle.brandOrange : AppTheme.Colors.textPrimary }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -1024,7 +1079,7 @@ private struct FeaturedOfferSection: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(FeaturedOfferStyle.brandOrange.opacity(0.06), in: shape)
+        .background(tint.opacity(0.06), in: shape)
         .overlay(shape.strokeBorder(accent.opacity(0.55), lineWidth: 1))
     }
 
@@ -1069,7 +1124,7 @@ private struct FeaturedOfferSection: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minWidth: copyButtonMinWidth, minHeight: controlMinHeight)
-            .background(FeaturedOfferStyle.brandOrange.opacity(0.12), in: shape)
+            .background(tint.opacity(0.12), in: shape)
             .overlay(shape.strokeBorder(accent, lineWidth: 1.5))
             .contentShape(shape)
         }
@@ -1118,6 +1173,7 @@ private enum FeaturedOfferStyle {
 private struct FeaturedSponsorCard: View {
     let brand: FeaturedBrand
     let products: [RVPWheelProduct]
+    let footnote: String
     let position: Int
     let total: Int
     let statusMessage: String?
@@ -1131,7 +1187,9 @@ private struct FeaturedSponsorCard: View {
 
     private var usesRing: Bool {
         guard let contentWidth else { return false }
-        return products.count == 9 && RVPWheelRingLayout.usesRing(
+        // The ring is designed for exactly nine wheels; any other published count uses the labeled
+        // grid (configurator first), which handles every count including zero.
+        return products.count == RVPWheelRingLayout.designedWheelCount && RVPWheelRingLayout.usesRing(
             availableWidth: contentWidth,
             isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
         )
@@ -1166,7 +1224,7 @@ private struct FeaturedSponsorCard: View {
                     }
                 )
 
-                FeaturedClaimPill(text: RVPWheelProduct.footnote)
+                FeaturedClaimPill(text: footnote)
 
                 Button(action: openCollection) {
                     FeaturedCallToAction(title: brand.ctaTitle)
@@ -1331,7 +1389,7 @@ private struct FeaturedWheelRingButton: View {
 
     var body: some View {
         Button(action: action) {
-            GearCatalogImage(remoteURL: product.imageURL, assetName: product.assetName)
+            GearRemoteImage(url: product.imageURL) { GearBundledImage(assetName: product.assetName) }
                 .clipShape(Circle())
                 .padding(3)
                 .frame(width: diameter, height: diameter)
@@ -1446,7 +1504,7 @@ private struct FeaturedWheelTile: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                GearCatalogImage(remoteURL: product.imageURL, assetName: product.assetName)
+                GearRemoteImage(url: product.imageURL) { GearBundledImage(assetName: product.assetName) }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -1616,7 +1674,23 @@ private struct FeaturedBadge: View {
 private struct FeaturedBrandWordmark: View {
     let brand: FeaturedBrand
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    // A remote logo (unknown aspect ratio) is also capped in height so a square mark can't dominate
+    // the card. Until it loads, or if it fails, the bundled wordmark or the typographic name shows.
     var body: some View {
+        if let remote = brand.remoteLogoURL(isDark: colorScheme == .dark) {
+            GearRemoteImage(url: remote) { bundled }
+                .frame(maxWidth: FeaturedWordmarkLayout.cardMaxWidth, maxHeight: FeaturedWordmarkLayout.remoteMaxHeight, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+        } else {
+            bundled
+        }
+    }
+
+    @ViewBuilder
+    private var bundled: some View {
         if let assetName = brand.wordmarkAssetName {
             Image(assetName)
                 .resizable()
@@ -1663,7 +1737,7 @@ private struct FeaturedBrandArtwork: View {
                 )
             )
             .overlay(
-                GearCatalogImage(remoteURL: brand.heroImageURL, assetName: brand.id == "eflexfuel" ? "EFlexFuelAutoKitHero" : "")
+                GearRemoteImage(url: brand.heroImageURL) { GearBundledImage(assetName: brand.heroAssetName ?? "") }
                     .padding(6)
             )
             .overlay(
@@ -1734,32 +1808,4 @@ private extension View {
     }
     .preferredColorScheme(.dark)
     .dynamicTypeSize(.accessibility5)
-}
-
-/// Version image URLs when replacing artwork so caches cannot serve an older photograph.
-private struct GearCatalogImage: View {
-    let remoteURL: URL?
-    let assetName: String
-
-    var body: some View {
-        if let remoteURL {
-            AsyncImage(url: remoteURL) { phase in
-                if let image = phase.image {
-                    image.resizable().interpolation(.high).scaledToFit()
-                } else {
-                    fallback
-                }
-            }
-        } else {
-            fallback
-        }
-    }
-
-    @ViewBuilder private var fallback: some View {
-        if !assetName.isEmpty {
-            Image(assetName).resizable().interpolation(.high).scaledToFit()
-        } else {
-            Image(systemName: "photo").font(.largeTitle).foregroundStyle(AppTheme.Colors.textSecondary)
-        }
-    }
 }

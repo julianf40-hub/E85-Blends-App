@@ -1,59 +1,252 @@
-# Remote Recommended Gear — 2.4.1 first implementation
+# Remote Recommended Gear — 2.4.1
 
-Status: draft client implementation. Not deployed, not Xcode-verified, not release ready.
+Status: **iOS client complete, not yet built or tested in Xcode. Not deployed. Not release ready.**
 
-## Publication contract shared with Android
+One published JSON document drives Recommended Gear **and** the More screen's partner
+placements. That lets us add, remove, reorder, hide and edit brands, wheels, links, prices,
+product images, logos and offers without shipping a new app version. Layout, colors, bundled
+artwork and accessibility stay native on each platform.
 
-A public Supabase Storage bucket named `recommended-gear` serves `catalog-v1.json`.
-The iOS client uses the existing Supabase project URL; no new API key is required.
-The included JSON mirrors the bundled two-brand / nine-wheel catalog from main.
-It is a seed, not authorization to publish eFlexFuel content before brand approval.
+| File | Purpose |
+|---|---|
+| `catalog-v1.json` | Seed. Exactly what the app bundles today (two brands, nine wheels). Publishing it changes nothing visible. |
+| `catalog-v1.schema.json` | Structural JSON Schema for the dashboard form and Android models. |
+| `../../tools/remote-gear/validate_catalog.py` | Reference validator that mirrors the client rules. It must pass before any publication. |
+| `PUBLISHING_DASHBOARD.md` | Proposed private editor: authentication, admin authorization, publish and rollback. |
+| `EightyFiveBlends/GearCatalog.swift` | iOS decoding, validation, store, offer timing and refresh. |
+| `EightyFiveBlends/GearRemoteImage.swift` | iOS remote image loading and caching. |
 
-Schema version 1 uses camelCase JSON, stable string IDs, ordered arrays and UTC Unix
-seconds for optional offer expiry. `brand` cards accept new products/brands, optional
-priceText, heroImageURL and a dollar-off offer. `rvp_wheels` is reserved for the
-existing RVP sponsor. Remote wheel images use imageURL; bundled assetName identifiers
-are iOS fallbacks and Android must explicitly map them to its resources. More than or
-fewer than nine wheels use the accessible grid instead of the ring.
+The seed's eFlexFuel entry mirrors what main already ships. It is **not** authorization to publish
+new eFlexFuel content while eFlexFuel's approval is pending.
 
-Each publication replaces the whole catalog, including removals. Empty brands means
-intentionally empty, not fallback. Invalid snapshots preserve the last valid one.
-Before the first successful publication, the bundled catalog remains available.
-Offers expire on the device clock, checked every second while the screen is open.
-Offline clients cannot discover withdrawals until they reconnect; use expiry dates
-for time-limited offers. The native screen refreshes on opening and foregrounding.
+## 1. Delivery
 
-## Initial operator workflow (private dashboard still to build)
+- Public Supabase Storage bucket `recommended-gear`, object `catalog-v1.json`.
+- Clients GET `<SUPABASE_URL>/storage/v1/object/public/recommended-gear/catalog-v1.json`
+  with **no** API key or Authorization header. iOS reuses the existing `SUPABASE_URL`, so no new
+  key or Info.plist change is needed.
+- Each publication replaces the whole document. There are no partial patches.
+- A future incompatible format is published at `catalog-v2.json` **alongside** v1. Older apps keep
+  reading v1, so v1 must stay published (and keep being updated, including withdrawals) until no
+  supported app version reads it.
 
-1. Configure the public bucket through Supabase Storage. Public download does NOT
-   imply public upload: do not add INSERT/UPDATE/DELETE policies for anon or ordinary
-   authenticated users. Only trusted dashboard administrators publish initially.
-2. Upload artwork under immutable/versioned filenames. Validate and preview the JSON
-   in a development build before publication. Change `revision` for every publish,
-   including a rollback. Preserve the prior JSON privately for rollback.
-3. Upload the approved catalog as `catalog-v1.json` with application/json content type
-   and short Cache-Control (60 seconds). Verify CDN freshness and real device refresh;
-   the client bypasses its own HTTP cache, not the CDN cache.
-4. Confirm anonymous downloads work and anonymous/non-admin writes fail. Never put a
-   service-role key in either mobile app or a browser dashboard.
+## 2. Contract (schema version 1)
 
-The private editor, draft/preview/publish workflow, automatic history, remote logos,
-remote More-screen placements/homepage link and Android client integration remain
-follow-up work. This first slice changes Recommended Gear only. More currently retains
-its bundled partner banners, so a whole-partner removal is NOT yet consistent across
-both screens. Resolve this before claiming complete remote partner management.
+camelCase keys. Timestamps are UTC Unix seconds. IDs match `^[a-z0-9-]{1,64}$` and are stable
+forever: they key bundled artwork, analytics and the selected card. Array order is display order.
 
-## Required verification before merging
+```text
+{ schemaVersion: 1, revision: string, publishedAt: number, brands: [Brand] }
 
-- Build and run the native unit suite, including GearCatalogTests and existing gear,
-  carousel, copy, ring, image and accessibility tests using Xcode on a Mac.
-- Compare light/dark/OLED, narrow widths, Dynamic Type and VoiceOver to main.
-- Test add/edit/remove/reorder, zero/one/many brands, wheel counts other than nine,
-  malformed JSON/unsupported version, timeout, cache persistence, image failure,
-  expired offers, returning from background, and removal of the selected carousel page.
-- Deploy only after reviewing bucket permissions; run live read/write-denial checks.
-- Finish the publishing UI and cross-screen partner handling before release sign-off.
+Brand (all kinds)
+  id, kind, name, tagline, description, ctaTitle, destinationURL (https)
+  accessibilityDescription?   VoiceOver/TalkBack text (defaults to description)
+  hidden?                     true = withdrawn from EVERY screen
+  more?: { subtitle? }        present = also placed on More (default subtitle: tagline)
 
-No production deployment, version bump, signing change or App Store submission is
-part of this draft. Existing docs/PRE_RELEASE_SUPABASE_CHECKLIST.md still contains
-separate release checks; this feature does not resolve or waive them.
+kind "brand"        neutral Featured Brand card (never a sponsor)
+  logo?: { url, darkURL? }    transparent wordmark; darkURL used in dark and OLED
+  heroImageURL?               product photo (no photo = no artwork panel)
+  priceText?                  short free text, e.g. "From $499"
+  offer?: { amountOff (whole USD 1-10000), eligibleProducts, code (no spaces), terms,
+            disclosure, startsAt?, expiresAt? }
+
+kind "rvp_wheels"   RVP Supply sponsor card. id must be "rvp-supply-oem-beadlocks"; at most one.
+  homepageURL, configuratorURL (https, required)   More banner / ring centre action
+  footnote?                    claim pill under the wheels
+  wheels?: [{ id, displayName, accessibilityName, productURL, imageURL?, hidden? }]
+  (no offer, priceText, logo or heroImageURL: the sponsor card carries no price or discount)
+```
+
+Text limits (characters): name 60, tagline 120, description 500, ctaTitle 60,
+accessibility text 500, priceText 60, more.subtitle 120, footnote 160, offer code 40, other
+offer text 300, revision 200. Document ≤ 512,000 bytes, ≤ 30 brands, ≤ 24 wheels.
+
+### Acceptance rules (both clients, and the validator)
+
+A document is accepted only if **all** of these hold. Otherwise the client keeps what it has.
+
+1. `schemaVersion == 1`. Any other version is reported as unsupported.
+2. It is well-formed, within the size, count and text limits, and every URL is https with a host
+   and no credentials.
+3. Brand and wheel IDs are valid and unique, and there is at most one `rvp_wheels`.
+4. A `brand` doesn't use the RVP id or sponsor-only fields, and its copy (name, tagline,
+   description, CTA, accessibility text, More subtitle) doesn't contain "sponsor", "partner",
+   "affiliate" or "endorse".
+5. `rvp_wheels` carries no brand-only fields. Each wheel has `imageURL` **or** a bundled wheel ID.
+6. An offer has `startsAt < expiresAt` when both are set.
+7. `publishedAt` is not older than the publication the device already holds. This stops a stale
+   CDN edge from resurrecting removed items.
+
+Unknown keys are ignored. That allows optional fields to be added within v1. **Unknown `kind`
+values are skipped, not rejected**: a new layout added later is invisible to older apps, but the
+rest of the document (including withdrawals) still applies to them.
+
+### Display semantics
+
+- **Featured Brand vs Sponsor.** A `brand` always renders as the neutral "Featured Brand" card,
+  and on More as a compact Featured Brand card. Only `rvp_wheels` renders as "Sponsor". The More
+  banner's "Sponsored by {name}" disclosure is fixed app copy; only its subtitle and link are
+  editable.
+- **RVP Supply destinations stay separate.** `homepageURL` is the More banner,
+  `destinationURL` is "View All RVP Wheels" (collection), `configuratorURL` is the ring centre /
+  "Custom Wheels", and each wheel opens its own `productURL`.
+- **Wheel layout.** Exactly nine visible wheels use the ring at standard text sizes on a wide
+  enough card. Any other count, accessibility text sizes and narrow cards use the labeled grid,
+  with the configurator first. Edit the sponsor `description` ("Nine OEM-style…") when the count
+  changes.
+- **Offers** are shown only while `startsAt ≤ now < expiresAt` on the device clock, offline
+  included. Expiry removes the offer, not the brand.
+- **Removal.** Omitting an entry or setting `hidden: true` removes it from Recommended Gear **and**
+  More at the same time. If the card a user is viewing disappears, the carousel moves to the first
+  card. An empty `brands` array is a valid, authoritative "show nothing".
+- **Branding isolation.** Bundled artwork is chosen from stable IDs, never from asset names in
+  the JSON. eFlexFuel's wordmark, hero photo and orange offer styling apply only to id
+  `eflexfuel`; RVP Supply's logo plate applies only to the sponsor card. Every other brand gets
+  neutral theme styling, its own remote logo or a typographic name, and no artwork panel unless it
+  supplies `heroImageURL`.
+
+### Images
+
+- **Use versioned, immutable URLs** (e.g. `gear/eflexfuel/hero-2026-11-12.png`). To change a
+  picture, upload a new file and publish its new URL. Never overwrite an object in place: clients
+  treat image URLs as immutable and serve any stored copy, offline included.
+- PNG/JPEG/HEIF ≤ 8 MB (aim for ≤ 400 KB). Wheels square; logos transparent, about 4:1, legible
+  on white (light) and near-black (dark/OLED). Supply `darkURL` when the light logo is dark.
+- While an image loads, or if it fails or times out (15 s), the client shows bundled artwork,
+  the typographic brand name, or a neutral placeholder. It never shows another brand's artwork.
+
+### Bundled artwork mapping (Android must mirror this by ID)
+
+| Stable ID | iOS asset | Android resource (to create) |
+|---|---|---|
+| brand `eflexfuel` wordmark | `EFlexFuelWordmark` (light/dark variants) | `eflexfuel_wordmark` (+ `-night`) |
+| brand `eflexfuel` hero | `EFlexFuelAutoKitHero` | `eflexfuel_autokit_hero` |
+| `rvp-supply-oem-beadlocks` logo | `RVPSupplyLogo` (on dark plate) | `rvp_supply_logo` |
+| wheel `oem-hellcat` | `RVPWheelOEMHellcat` | `rvp_wheel_oem_hellcat` |
+| wheel `oem-hellcat-v2` | `RVPWheelOEMHellcatV2` | `rvp_wheel_oem_hellcat_v2` |
+| wheel `oem-hellcat-redeye` | `RVPWheelOEMHellcatRedeye` | `rvp_wheel_oem_hellcat_redeye` |
+| wheel `5-spoke-hellcat` | `RVPWheel5SpokeHellcat` | `rvp_wheel_5_spoke_hellcat` |
+| wheel `5-spoke-hellcat-v2` | `RVPWheel5SpokeHellcatV2` | `rvp_wheel_5_spoke_hellcat_v2` |
+| wheel `oem-demon` | `RVPWheelOEMDemon` | `rvp_wheel_oem_demon` |
+| wheel `hollow-5-spoke` | `RVPWheelHollow5Spoke` | `rvp_wheel_hollow_5_spoke` |
+| wheel `chrome-oem-hellcat` | `RVPWheelChromeOEMHellcat` | `rvp_wheel_chrome_oem_hellcat` |
+| wheel `oem-widebody` | `RVPWheelOEMWidebody` | `rvp_wheel_oem_widebody` |
+
+Android names are proposals (Android resource names can't contain hyphens or start with a digit).
+Adding a bundled ID requires an app release on **both** platforms; until then, use `imageURL`.
+
+### Android compatibility requirements (no Android changes made in this assignment)
+
+An Android client must implement the same acceptance rules, persistence states, ordering check,
+unknown-kind skipping, offer window and branding isolation as iOS. It must use the same
+endpoint without credentials, and render with Android-native components (Compose), not a web
+view. `validate_catalog.py` and its tests are the executable spec. Port its cases to the Android
+test suite.
+
+## 3. Client lifecycle and resilience (iOS)
+
+| State | Shown |
+|---|---|
+| Never received a valid publication | Bundled content (the current two brands, nine wheels) |
+| Received one | The last valid publication, persisted across launches, offline included |
+| Saved publication unreadable (corrupt, or stricter rules after an app update) | **Nothing** until the next valid download. Never bundled content, which might include withdrawn items |
+
+- **Refresh:** when Recommended Gear or More appears, and on every return to the foreground.
+  Throttled to once per 60 s. 15 s request timeout, ephemeral session (no cookies, cache or
+  credentials), conditional `If-None-Match` with the stored ETag.
+- **Failures keep the last valid content:** offline, timeout, any non-200 including 404, invalid
+  JSON, unsupported version, failed validation, or an older `publishedAt`. A deleted object never
+  clears the catalog. **Publish an empty catalog to withdraw everything.**
+- **Offer timing:** a single timer wakes at the next offer start/expiry (no per-second polling),
+  and content is re-resolved on foregrounding and on system clock changes.
+- **Carousel:** a new publication resets the carousel's measurements, clears stale link errors and
+  moves the selection off a removed card. Reordering keeps the selected card when it still exists.
+
+### Known limitation: offline withdrawals
+
+**A device that is offline cannot learn about a withdrawal until it reconnects and refreshes.**
+Until then it keeps showing the last publication it received (only expired offers disappear on
+their own). A device that has never been online since installing 2.4.1 shows the bundled catalog.
+Mitigations: put `expiresAt` on every time-limited offer, and keep withdrawals in the published
+document rather than relying on deleting objects. Nothing in the client can remove content it has
+not been told about.
+
+### CDN caching
+
+- Upload `catalog-v1.json` with `Content-Type: application/json` and
+  `Cache-Control: max-age=60` (Supabase's upload default is 3600 s; set it explicitly). The
+  client bypasses its own HTTP cache but not the CDN, so worst-case propagation is about the CDN
+  TTL plus the 60 s client throttle. **Verify on the live project** whether Supabase Smart CDN
+  invalidation applies to this plan before relying on faster updates.
+- Never re-use an image file name (see Images). Catalog edits are visible only after the CDN TTL;
+  the `publishedAt` check keeps a lagging edge from rolling a device back.
+
+### Security
+
+- The app contains no service-role key, admin credential or write path. Catalog reads send no
+  key at all.
+- Public read **does not** imply public write. The bucket must have **no** INSERT/UPDATE/DELETE
+  policies for `anon` or ordinary `authenticated` users. Only the publishing backend writes (see
+  `PUBLISHING_DASHBOARD.md`).
+- Destinations are https-only and pass `FeaturedBrandLink` again before `openURL`. The app's
+  own `e85blends://` scheme, `http`, `javascript:`, `mailto:` and credentials-in-URL are rejected.
+- Add a row for the `recommended-gear` bucket's policies to
+  `docs/PRE_RELEASE_SUPABASE_CHECKLIST.md` once it exists. That checklist's existing items are
+  unaffected by this feature and still apply.
+
+## 4. Operator workflow until the dashboard exists
+
+1. Edit a copy of the live document. Bump `revision`, set `publishedAt` to the current UTC time,
+   and use new file names for any new images.
+2. `python3 tools/remote-gear/validate_catalog.py --previous live.json candidate.json` must print
+   `OK`. Review any wording warnings.
+3. Preview on an Internal build pointed at a staging object before publishing.
+4. Upload with the headers above via the Supabase dashboard (admin login, not the app). Keep the
+   previous document privately for rollback.
+5. **Rollback** = publish the previous content again with a **new** `revision` and **current**
+   `publishedAt`. Re-uploading an old file unchanged is ignored by devices that already have a
+   newer publication.
+
+## 5. Verification still required on a Mac (NOT RUN in the cloud session)
+
+The cloud session that produced this had no Xcode, Swift toolchain or simulator. None of the
+following has been run.
+
+```sh
+git fetch origin && git checkout feature/2.4.1-remote-gear
+xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
+  -destination 'generic/platform=iOS Simulator' -configuration Debug build | tail -40
+xcrun simctl list devices available | grep iPhone
+xcodebuild -project EightyFiveBlends.xcodeproj -scheme EightyFiveBlends \
+  -destination 'platform=iOS Simulator,name=<installed iPhone>' \
+  -only-testing:EightyFiveBlendsTests/GearCatalogTests \
+  -only-testing:EightyFiveBlendsTests/FeaturedGearTests \
+  -only-testing:EightyFiveBlendsTests/FeaturedCarouselMetricsTests \
+  -only-testing:EightyFiveBlendsTests/FeaturedOfferCopyTests \
+  -only-testing:EightyFiveBlendsTests/EFlexFuelAssetTests \
+  -only-testing:EightyFiveBlendsTests/EFlexFuelHeroAssetTests \
+  -only-testing:EightyFiveBlendsTests/RVPSupplyLogoAssetTests \
+  -only-testing:EightyFiveBlendsTests/RVPSupplyLogoLayoutTests test | tail -40
+# then the full suite (drop the -only-testing flags)
+python3 -m unittest discover -s tools/remote-gear -v
+```
+
+Manual checks (simulator first, then a device). Compare with main for:
+
+- Visual parity: light, dark and OLED; iPhone SE width and Pro Max; Dynamic Type default, xxxLarge
+  and AX5; VoiceOver order on both cards and on More (no remote catalog published, i.e. bundled).
+- Opening More → eFlexFuel card lands on the eFlexFuel page. With a reordered staging catalog
+  it lands on the right page (confirms `scrollPosition` honours the initial id on first layout).
+- Against a **staging** object (an Internal build with a test `SUPABASE_URL`, or a temporary
+  debug endpoint): add, edit, reorder and remove brands; empty catalog; hidden partner disappears
+  from both screens; 0, 1, 8, 9 and 10 wheels (ring only at 9); a new remote-only wheel; a broken
+  image URL; a remote logo with and without `darkURL`; priceText; an offer with `expiresAt` a few
+  minutes ahead (watch it disappear, including in airplane mode); removing the card currently on
+  screen while backgrounded; malformed JSON / v2 / older publishedAt (no change); airplane-mode
+  relaunch after an empty publication (stays empty).
+- Live bucket checks once deployed: anonymous GET works; anonymous and ordinary-user
+  INSERT/UPDATE/DELETE fail; response headers include the expected Cache-Control and ETag.
+
+No production deployment, Storage bucket, version or build number change, signing or entitlement
+change, or App Store submission is part of this work.
