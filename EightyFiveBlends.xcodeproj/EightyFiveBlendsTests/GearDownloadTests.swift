@@ -214,12 +214,17 @@ struct GearDownloadTests {
         URL(string: "https://\(host)/\(name)-\(UUID().uuidString)")!
     }
 
-    private static func downloader(cache: URLCache? = nil) -> GearBoundedDownloader {
+    private static func stubConfiguration(cache: URLCache? = nil) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [GearStubProtocol.self]
         configuration.urlCache = cache
         configuration.requestCachePolicy = cache == nil ? .reloadIgnoringLocalCacheData : .returnCacheDataElseLoad
-        return GearBoundedDownloader(configuration: configuration)
+        return configuration
+    }
+
+    /// Test downloaders opt in to cancellation diagnostics explicitly (production ones don't).
+    private static func downloader(cache: URLCache? = nil, cancellationLogCapacity: Int = 16) -> GearBoundedDownloader {
+        GearBoundedDownloader(configuration: stubConfiguration(cache: cache), cancellationLogCapacity: cancellationLogCapacity)
     }
 
     private static func chunks(_ count: Int, size: Int) -> [Data] {
@@ -399,6 +404,71 @@ struct GearDownloadTests {
         await Self.waitUntil { Self.stub(record).stopped }
         #expect(Self.stub(record).stopped)
         #expect(Self.stub(record).delivered == 2)
+    }
+
+    // MARK: Cancellation diagnostics (opt-in, bounded)
+
+    @Test func cancellationDiagnosticsAreOffByDefault() async throws {
+        let url = Self.url("default-off")
+        GearStubProtocol.register(url, .init(chunks: Self.chunks(5, size: 1_000)))
+        let downloader = GearBoundedDownloader(configuration: Self.stubConfiguration())
+        defer { downloader.invalidate() }
+
+        #expect(downloader.keepsCancellationLog == false)
+        await #expect(throws: GearDownloadError.tooLarge) {
+            _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
+        }
+        #expect(downloader.cancellationLog.isEmpty, "the limit is enforced, but nothing (no URL) is retained")
+    }
+
+    @Test func productionCatalogDownloaderKeepsNoDiagnostics() {
+        #expect(GearCatalogStore.downloader.keepsCancellationLog == false)
+        #expect(GearCatalogStore.downloader.cancellationLog.isEmpty)
+    }
+
+    @Test func enabledCancellationLogKeepsOnlyTheMostRecentEntries() async throws {
+        let downloader = Self.downloader(cancellationLogCapacity: 2)
+        defer { downloader.invalidate() }
+        let urls = (0..<4).map { Self.url("bounded\($0)") }
+        for url in urls {
+            GearStubProtocol.register(url, .init(chunks: Self.chunks(5, size: 1_000)))
+            await #expect(throws: GearDownloadError.tooLarge) {
+                _ = try await Self.download(downloader, URLRequest(url: url), limit: 2_500)
+            }
+        }
+        let log = downloader.cancellationLog
+        #expect(log.count == 2, "bounded by the opted-in capacity")
+        #expect(log.map(\.url) == Array(urls.suffix(2)), "oldest evicted first; order kept")
+        #expect(log.allSatisfy { $0.reason == .bodyOverLimit && $0.retainedBytes == 2_000 })
+    }
+
+    @Test func logCapacityIsClampedAndZeroDisables() {
+        #expect(GearCancellationLog(capacity: 1_000_000).capacity == GearCancellationLog.maximumCapacity)
+        var disabled = GearCancellationLog(capacity: -5)
+        #expect(disabled.isEnabled == false)
+        let none = disabled.record(url: nil, reason: .bodyOverLimit, limit: 1, retainedBytes: 0)
+        #expect(none == nil)
+        #expect(disabled.snapshot.isEmpty)
+    }
+
+    /// Deterministic: a transfer keeps a reference to its own entry. After the log evicts it, late
+    /// buffered data for that transfer updates only that (now unlogged) entry; it can never be
+    /// counted against the entry that replaced it.
+    @Test func lateDataAfterEvictionIsNeverAttributedToAnotherTransfer() throws {
+        var log = GearCancellationLog(capacity: 1)
+        let firstEntry = log.record(url: URL(string: "https://a.test/first"), reason: .bodyOverLimit, limit: 10, retainedBytes: 8)
+        let secondEntry = log.record(url: URL(string: "https://a.test/second"), reason: .declaredLengthOverLimit, limit: 10, retainedBytes: 0)
+        let first = try #require(firstEntry)
+        let second = try #require(secondEntry)
+        #expect(log.snapshot.map(\.url?.lastPathComponent) == ["second"], "first evicted")
+
+        first.ignoredBytes += 500 // late callback for the evicted transfer
+        #expect(log.snapshot.first?.ignoredBytes == 0, "the replacing entry is untouched")
+        #expect(first.snapshot.ignoredBytes == 500)
+
+        second.ignoredBytes += 7
+        #expect(log.snapshot == [GearBoundedDownloader.Cancellation(url: URL(string: "https://a.test/second"), reason: .declaredLengthOverLimit,
+                                                                    limit: 10, retainedBytes: 0, ignoredBytes: 7)])
     }
 
     #if canImport(Darwin)

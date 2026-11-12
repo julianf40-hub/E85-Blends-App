@@ -49,10 +49,63 @@ nonisolated struct GearByteBudget {
     }
 }
 
+/// A bounded, oldest-first record of cancellations, for diagnostics and tests. Disabled (capacity
+/// 0) unless a caller opts in, so production downloaders retain nothing, URLs included.
+///
+/// Entries are reference objects. A transfer keeps a reference to its OWN entry and updates it
+/// directly when late data arrives, so there are no positions to go stale: evicting an entry only
+/// drops the log's reference, and a late update then touches an object the log no longer holds,
+/// never another transfer's entry.
+nonisolated struct GearCancellationLog {
+    /// Upper bound for any opted-in capacity.
+    static let maximumCapacity = 256
+
+    final class Entry {
+        let url: URL?
+        let reason: GearBoundedDownloader.Cancellation.Reason
+        let limit: Int
+        let retainedBytes: Int
+        var ignoredBytes = 0
+
+        init(url: URL?, reason: GearBoundedDownloader.Cancellation.Reason, limit: Int, retainedBytes: Int) {
+            self.url = url
+            self.reason = reason
+            self.limit = limit
+            self.retainedBytes = retainedBytes
+        }
+
+        var snapshot: GearBoundedDownloader.Cancellation {
+            GearBoundedDownloader.Cancellation(url: url, reason: reason, limit: limit,
+                                              retainedBytes: retainedBytes, ignoredBytes: ignoredBytes)
+        }
+    }
+
+    let capacity: Int
+    private(set) var entries: [Entry] = []
+
+    init(capacity: Int) {
+        self.capacity = min(max(0, capacity), Self.maximumCapacity)
+    }
+
+    var isEnabled: Bool { capacity > 0 }
+
+    /// Adds an entry and evicts the oldest beyond `capacity`. Returns nil (recording nothing) when
+    /// disabled.
+    mutating func record(url: URL?, reason: GearBoundedDownloader.Cancellation.Reason, limit: Int, retainedBytes: Int) -> Entry? {
+        guard isEnabled else { return nil }
+        let entry = Entry(url: url, reason: reason, limit: limit, retainedBytes: retainedBytes)
+        entries.append(entry)
+        if entries.count > capacity { entries.removeFirst(entries.count - capacity) }
+        return entry
+    }
+
+    var snapshot: [GearBoundedDownloader.Cancellation] { entries.map(\.snapshot) }
+}
+
 /// URLSession data tasks with a hard per-request byte limit. One instance owns one session and is
 /// its delegate; delegate callbacks run on a private serial queue.
 nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    /// Why and when a transfer was cancelled, for diagnostics and tests. `retainedBytes` is what
+    /// Why and when a transfer was cancelled (opt-in diagnostics; see `GearCancellationLog`). `retainedBytes` is what
     /// the transfer held when cancellation was requested (never more than the limit);
     /// `ignoredBytes` counts data that still arrived afterwards (already buffered by the loading
     /// system) and was discarded.
@@ -70,7 +123,8 @@ nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate,
         let continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>
         var response: HTTPURLResponse?
         var failure: Error?
-        var cancellationIndex: Int?
+        /// This transfer's own diagnostic entry, when diagnostics are enabled.
+        var cancellation: GearCancellationLog.Entry?
 
         init(limit: Int, continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) {
             budget = GearByteBudget(limit: limit)
@@ -81,19 +135,25 @@ nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate,
     private let lock = NSLock()
     private var transfers: [Int: Transfer] = [:]
     private var session: URLSession!
-    private var cancellations: [Cancellation] = []
+    private var cancellations: GearCancellationLog
 
-    /// Every cancellation this downloader has requested, oldest first.
-    var cancellationLog: [Cancellation] { locked { cancellations } }
+    /// The most recent cancellations, oldest first (empty unless diagnostics were enabled).
+    var cancellationLog: [Cancellation] { locked { cancellations.snapshot } }
 
-    /// Records a cancellation (call with the lock held).
+    /// Whether this downloader keeps cancellation diagnostics at all.
+    var keepsCancellationLog: Bool { locked { cancellations.isEnabled } }
+
+    /// Records a cancellation (call with the lock held). A no-op when diagnostics are disabled.
     private func recordCancellation(_ transfer: Transfer, _ reason: Cancellation.Reason, url: URL?) {
-        transfer.cancellationIndex = cancellations.count
-        cancellations.append(Cancellation(url: url, reason: reason, limit: transfer.budget.limit,
-                                          retainedBytes: transfer.budget.data.count))
+        transfer.cancellation = cancellations.record(url: url, reason: reason, limit: transfer.budget.limit,
+                                                     retainedBytes: transfer.budget.data.count)
     }
 
-    init(configuration: URLSessionConfiguration) {
+    /// `cancellationLogCapacity` opts in to keeping that many recent cancellations (capped at
+    /// `GearCancellationLog.maximumCapacity`). The default, 0, keeps none: production callers
+    /// should not pass it.
+    init(configuration: URLSessionConfiguration, cancellationLogCapacity: Int = 0) {
+        cancellations = GearCancellationLog(capacity: cancellationLogCapacity)
         super.init()
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
@@ -163,7 +223,8 @@ nonisolated final class GearBoundedDownloader: NSObject, URLSessionDataDelegate,
             guard let transfer = transfers[dataTask.taskIdentifier] else { return false }
             guard transfer.failure == nil else {
                 // Already cancelled: data the loading system had buffered is discarded.
-                if let index = transfer.cancellationIndex { cancellations[index].ignoredBytes += data.count }
+                // Updates this transfer's own entry, even if the log has since evicted it.
+                transfer.cancellation?.ignoredBytes += data.count
                 return false
             }
             if transfer.budget.append(data) { return false }
