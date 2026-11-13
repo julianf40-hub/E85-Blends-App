@@ -15,8 +15,11 @@ Steps, in order:
      (the same rules the apps apply). Anything a device would reject stops here.
   4. --upload only: upload with Content-Type application/json and Cache-Control max-age=60. Then
      verify separately:
-       - ORIGIN read-back (authoritative): must hold exactly our bytes. If not, another
-         publication replaced ours: reported as CONFLICT, exit 4.
+       - ORIGIN read-back (authoritative): must hold exactly our bytes. Storage can briefly
+         serve the previous object after an overwrite, so a failed or still-previous read-back
+         is retried for about 10 s. Still the previous document after that: exit 7 (unconfirmed,
+         read back before publishing again). A third document: another publication replaced
+         ours, reported as CONFLICT, exit 4.
        - PUBLIC read-back (what devices see, through the CDN): may lag by up to max-age. A lag is
          reported as "PUBLISHED, CDN not yet updated", exit 3, never as "nothing published".
 
@@ -82,16 +85,40 @@ def redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "<redacted>") if secret else text
 
 
+# Storage can serve the previous object for a moment right after an overwrite, so a read-back that
+# still shows the pre-upload document is retried before anything is concluded (about 10 s in all).
+READBACK_DELAYS = (0, 1, 2, 3, 4)
+
+
+def read_back_origin(fetch_origin, ours: bytes, previous: bytes | None,
+                     delays=READBACK_DELAYS, sleep=None) -> tuple[int, bytes]:
+    """(status, body) of the origin once it settles. Retries while the origin fails or still serves
+    `previous`; stops at once on our bytes or on a third document (another publication)."""
+    sleep = sleep or time.sleep
+    status, body = 0, b""
+    for delay in delays:
+        sleep(delay)
+        status, body, _ = fetch_origin()
+        if status == 200 and (body == ours or body != previous):
+            break
+    return status, body
+
+
 def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
-                         public_status: int, public_bytes: bytes) -> tuple[str, int]:
+                         public_status: int, public_bytes: bytes,
+                         previous: bytes | None = None) -> tuple[str, int]:
     """Classifies the post-upload checks. Returns (message, exit code).
 
     The upload already succeeded when this is called; nothing here may say otherwise.
+    `previous` is the live document read before the upload (None for a first publication).
     """
     if origin_status != 200:
         failure = "could not connect" if origin_status == 0 else f"HTTP {origin_status}"
         return (f"UPLOADED, but the origin read-back failed ({failure}); "
                 "check the object in the Supabase dashboard before publishing again", 5)
+    if origin_bytes != ours and previous is not None and origin_bytes == previous:
+        return ("UPLOADED, but the origin still serves the previous publication after retrying; "
+                "Storage may not be consistent yet. Read the object back before publishing again", 7)
     if origin_bytes != ours:
         return ("CONFLICT: uploaded, but the origin now holds a different document: another "
                 "publication replaced ours. Do not publish again until you know which is live", 4)
@@ -222,9 +249,11 @@ def main(argv: list[str]) -> int:
               "it may or may not have been stored. Check the origin before retrying")
         return 6
 
-    origin_status, origin_bytes, _ = fetch(origin_url(), key)
+    previous = body if live is not None else None
+    origin_status, origin_bytes = read_back_origin(lambda: fetch(origin_url(), key), raw, previous)
     public_status, public_bytes, headers = fetch(public_url())
-    message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes)
+    message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes,
+                                         previous)
     print(message)
     if code == 0:
         print(f"public headers: Cache-Control={headers.get('Cache-Control')} ETag={headers.get('ETag')}")

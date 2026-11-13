@@ -264,6 +264,53 @@ class StagingPublisherTests(unittest.TestCase):
         for code_message in (self.p.verification_outcome(ours, 200, ours, 404, b""),):
             self.assertNotIn("NOT PUBLISHED", code_message[0])
 
+    def readback(self, responses, ours, previous):
+        """read_back_origin over scripted origin responses; returns (status, body, fetch count)."""
+        replies, waits = list(responses), []
+        def fetch_origin():
+            status, body = replies.pop(0) if replies else responses[-1]
+            return status, body, {}
+        status, body = self.p.read_back_origin(fetch_origin, ours, previous, sleep=waits.append)
+        return status, body, len(waits)
+
+    def test_stale_origin_then_ours_is_published_not_conflict(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(200, previous), (200, previous), (200, ours)], ours, previous)
+        self.assertEqual((status, body, fetches), (200, ours, 3))
+        message, code = self.p.verification_outcome(ours, status, body, 200, ours, previous)
+        self.assertEqual(code, 0)
+
+    def test_origin_stale_throughout_is_unconfirmed_not_conflict(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(200, previous)], ours, previous)
+        self.assertEqual(fetches, len(self.p.READBACK_DELAYS), "retried every attempt")
+        self.assertLessEqual(sum(self.p.READBACK_DELAYS), 15, "bounded wait")
+        message, code = self.p.verification_outcome(ours, status, body, 200, previous, previous)
+        self.assertEqual(code, 7)
+        self.assertTrue(message.startswith("UPLOADED"))
+        self.assertNotIn("CONFLICT", message)
+
+    def test_third_document_is_conflict_without_waiting(self):
+        ours, previous, theirs = b"ours", b"previous", b"theirs"
+        status, body, fetches = self.readback([(200, theirs)], ours, previous)
+        self.assertEqual((body, fetches), (theirs, 1))
+        message, code = self.p.verification_outcome(ours, status, body, 200, theirs, previous)
+        self.assertEqual(code, 4)
+        self.assertIn("CONFLICT", message)
+
+    def test_failed_origin_reads_are_retried(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(0, b"reset"), (503, b""), (200, ours)], ours, previous)
+        self.assertEqual((status, body, fetches), (200, ours, 3))
+        status, _, _ = self.readback([(0, b"reset")], ours, previous)
+        self.assertEqual(self.p.verification_outcome(ours, status, b"", 200, ours, previous)[1], 5)
+
+    def test_first_publication_has_no_previous_to_mistake_for_staleness(self):
+        ours, theirs = b"ours", b"theirs"
+        status, body, fetches = self.readback([(200, theirs)], ours, None)
+        self.assertEqual(fetches, 1)
+        self.assertEqual(self.p.verification_outcome(ours, status, body, 200, theirs, None)[1], 4)
+
     def test_key_is_redacted_from_printed_server_text(self):
         key = "service-role-secret-value"
         self.assertEqual(self.p.redact(f"error near {key} here", key), "error near <redacted> here")
@@ -307,13 +354,15 @@ class StagingPublisherTests(unittest.TestCase):
         out = io.StringIO()
         with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
              unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             unittest.mock.patch.object(self.p.time, "sleep"), \
              contextlib.redirect_stdout(out):
             code = self.p.main([self.a, "--upload"])
         return code, out.getvalue()
 
     def test_origin_read_back_transport_failure_reports_uploaded_unverified(self):
         import urllib.error
-        code, output = self._run_upload([urllib.error.URLError("connection reset"), (200, b"x", {})])
+        failures = [urllib.error.URLError("connection reset")] * len(self.p.READBACK_DELAYS)
+        code, output = self._run_upload([*failures, (200, b"x", {})])
         self.assertEqual(code, 5)
         self.assertIn("UPLOADED", output)
         self.assertNotIn("NOT PUBLISHED", output)
