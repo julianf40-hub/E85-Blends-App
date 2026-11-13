@@ -2,14 +2,14 @@
 //  GearCatalogSourceTests.swift
 //  EightyFiveBlendsTests
 //
-//  The Internal-only staging catalog preview (GearCatalogSource / GearCatalogStore.selectSource):
-//  default and persisted selection, per-source cache/ETag/ordering isolation, switching during an
-//  in-flight request, unavailable staging, and production updates after a newer staging
-//  publication. Local fixtures and injected networking only: no bucket, no upload.
-//  Compiled only where the feature exists (DEBUG or INTERNAL_BUILD), like the feature itself.
+//  The staging catalog preview (GearCatalogSource / GearCatalogStore.selectSource): default and
+//  persisted selection, per-source cache/ETag/ordering isolation, switching during an in-flight
+//  request, unavailable staging, production updates after a newer staging publication, and the
+//  preview eligibility gate (TestFlight/Xcode eligible, App Store and unknown on production).
+//  Local fixtures, injected networking and an injected environment provider only: no bucket, no
+//  upload, no StoreKit. Compiled into every configuration, like the feature itself.
 //
 
-#if DEBUG || INTERNAL_BUILD
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -94,6 +94,32 @@ struct GearCatalogSourceTests {
         defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("recommendedGear.staging.") }.sorted()
     }
 
+    /// Stands in for StoreKit's verified AppTransaction environment. Answers from `answers` in
+    /// order (nil once exhausted), or, when `gated`, holds each call until `release`.
+    private final class EnvironmentProvider: ReferralRevenueEnvironmentProviding, @unchecked Sendable {
+        var answers: [ReferralRevenueEnvironment?]
+        var gated = false
+        private(set) var calls = 0
+        private var held: [CheckedContinuation<ReferralRevenueEnvironment?, Never>] = []
+        var heldCount: Int { held.count }
+
+        init(_ answers: [ReferralRevenueEnvironment?] = []) { self.answers = answers }
+
+        func currentEnvironment() async -> ReferralRevenueEnvironment? {
+            calls += 1
+            if gated { return await withCheckedContinuation { held.append($0) } }
+            return answers.isEmpty ? nil : answers.removeFirst()
+        }
+
+        func release(_ environment: ReferralRevenueEnvironment?) {
+            held.removeFirst().resume(returning: environment)
+        }
+    }
+
+    private static func waitForHeld(_ provider: EnvironmentProvider, _ count: Int) async {
+        for _ in 0..<1_000 where provider.heldCount < count { await Task.yield() }
+    }
+
     private struct Harness {
         let suite = "GearCatalogSourceTests.\(UUID().uuidString)"
         let defaults: UserDefaults
@@ -104,12 +130,18 @@ struct GearCatalogSourceTests {
         }
 
         @MainActor
-        func makeStore(stagingConfigured: Bool = true) -> GearCatalogStore {
+        /// Eligible by default (the TestFlight case), explicitly, so these tests behave the same in
+        /// Debug and Release builds of the test target.
+        func makeStore(stagingConfigured: Bool = true,
+                       eligibility: GearCatalogPreviewEligibility = .eligible,
+                       provider: EnvironmentProvider? = nil) -> GearCatalogStore {
             let server = self.server
             var endpoints: [GearCatalogSource: URL] = [.production: GearCatalogSourceTests.production]
             if stagingConfigured { endpoints[.staging] = GearCatalogSourceTests.staging }
             return GearCatalogStore(defaults: defaults, endpoints: endpoints,
-                                    fetch: { try await server.fetch($0) }, observesApplication: false)
+                                    fetch: { try await server.fetch($0) },
+                                    previewEligibility: eligibility, environmentProvider: provider,
+                                    observesApplication: false)
         }
 
         func tearDown() { defaults.removePersistentDomain(forName: suite) }
@@ -442,5 +474,180 @@ struct GearCatalogSourceTests {
         #expect(await store.selectSourceAndRefresh(.production) == .notModified)
         #expect(harness.server.requests.map(\.url) == [Self.production, Self.staging, Self.production])
     }
+
+    // MARK: - Preview eligibility (TestFlight vs App Store)
+
+    /// A TestFlight session that selected Staging and holds a staging publication.
+    private static func seedStagingPreview(_ harness: Harness) throws {
+        let store = harness.makeStore()
+        #expect(store.selectSource(.staging))
+        #expect(try store.acceptStagingFixture(Self.document(["staging-brand"], revision: "s1", publishedAt: 5_000)))
+    }
+
+    @Test func eligibilityFollowsTheVerifiedStoreEnvironment() {
+        #expect(GearCatalogPreviewEligibility.from(.sandbox) == .eligible, "TestFlight and Xcode builds")
+        #expect(GearCatalogPreviewEligibility.from(.production) == .ineligible, "App Store installs")
+        #expect(GearCatalogPreviewEligibility.from(nil) == .unknown, "unverified, offline, timed out")
+        #if DEBUG || INTERNAL_BUILD
+        #expect(GearCatalogPreviewEligibility.compiledDefault == .eligible)
+        #else
+        #expect(GearCatalogPreviewEligibility.compiledDefault == .unknown, "Release builds must ask StoreKit")
+        #endif
+    }
+
+    @Test func eligibleInstallDefaultsToProductionUntilStagingIsChosen() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let provider = EnvironmentProvider([.sandbox])
+        let store = harness.makeStore(eligibility: .unknown, provider: provider)
+        #expect(await store.resolvePreviewEligibility() == false, "no saved selection: nothing switches")
+        #expect(store.previewEligibility == .eligible)
+        #expect(store.activeSource == .production)
+        #expect(Self.ids(store) == FeaturedGearPage.catalog.map(\.id))
+        #expect(harness.server.requests.isEmpty)
+        #expect(harness.defaults.string(forKey: GearCatalogStore.selectedSourceKey) == nil)
+
+        // Explicit opt-in, then the empty staging state (nothing published yet).
+        harness.server.replies[Self.staging] = [(400, Data(#"{"error":"not_found"}"#.utf8), [:])]
+        #expect(await store.selectSourceAndRefresh(.staging) == .httpStatus(400))
+        #expect(store.activeSource == .staging)
+        #expect(store.content.pages.isEmpty)
+        #expect(harness.defaults.string(forKey: GearCatalogStore.selectedSourceKey) == "staging")
+    }
+
+    @Test func unknownEnvironmentStaysOnProductionAndRejectsEveryStagingOperation() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try Self.seedStagingPreview(harness)
+        let seeded = Self.stagingKeysPresent(harness.defaults)
+
+        let store = harness.makeStore(eligibility: .unknown)
+        #expect(store.activeSource == .production, "a saved Staging selection is ignored")
+        #expect(Self.ids(store) == FeaturedGearPage.catalog.map(\.id), "cached staging content is never shown")
+
+        #expect(store.selectSource(.staging) == false)
+        #expect(await store.selectSourceAndRefresh(.staging) == .previewUnavailable)
+        #expect(throws: GearCatalog.ValidationError.self) {
+            try store.acceptStagingFixture(Self.document(["fixture"], revision: "f9", publishedAt: 9_000))
+        }
+        #expect(store.resetStagingData() == false)
+        #expect(store.activeSource == .production)
+        #expect(Self.ids(store) == FeaturedGearPage.catalog.map(\.id))
+        #expect(harness.server.requests.isEmpty, "no staging request was made")
+        #expect(Self.stagingKeysPresent(harness.defaults) == seeded, "kept, unseen, until the environment is known")
+        #expect(harness.defaults.string(forKey: GearCatalogStore.selectedSourceKey) == "staging")
+        // Selecting production is always allowed (and here already active).
+        #expect(store.selectSource(.production))
+    }
+
+    @Test func confirmedTestFlightRestoresTheSavedStagingSelection() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try Self.seedStagingPreview(harness)
+        let provider = EnvironmentProvider([nil, .sandbox])
+        let store = harness.makeStore(eligibility: .unknown, provider: provider)
+        let generation = store.generation
+
+        #expect(await store.resolvePreviewEligibility() == false, "no answer yet (offline at launch)")
+        #expect(store.previewEligibility == .unknown)
+        #expect(store.activeSource == .production)
+
+        #expect(await store.resolvePreviewEligibility(), "retried, e.g. on returning to the foreground")
+        #expect(store.previewEligibility == .eligible)
+        #expect(store.activeSource == .staging)
+        #expect(Self.ids(store) == ["staging-brand"], "staging's own cache, shown immediately")
+        #expect(store.generation > generation)
+        #expect(provider.calls == 2)
+        #expect(await store.resolvePreviewEligibility() == false)
+        #expect(provider.calls == 2, "decided once per launch")
+    }
+
+    @Test func appStoreInstallReplacingTestFlightForgetsStagingAndStaysOnProduction() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        harness.server.replies[Self.production] = [(200, Self.document(["prod-brand"], revision: "p1", publishedAt: 1_000), ["ETag": "\"p1\""])]
+        #expect(await harness.makeStore().refresh() == .updated)
+        try Self.seedStagingPreview(harness)
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty == false)
+
+        // Same bundle ID, same defaults: the App Store build launches over the TestFlight data.
+        let provider = EnvironmentProvider([.production, .sandbox])
+        let store = harness.makeStore(eligibility: .unknown, provider: provider)
+        #expect(store.activeSource == .production)
+        #expect(Self.ids(store) == ["prod-brand"], "never the cached staging content, even before StoreKit answers")
+
+        #expect(await store.resolvePreviewEligibility() == false)
+        #expect(store.previewEligibility == .ineligible)
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty, "staging cache, ETag and ordering state deleted")
+        #expect(harness.defaults.string(forKey: GearCatalogStore.selectedSourceKey) == nil)
+        #expect(Self.ids(store) == ["prod-brand"])
+        #expect(Self.productionRevisions(harness.defaults) == ["p1"], "production state untouched")
+        #expect(Self.productionETag(harness.defaults) == "\"p1\"")
+
+        #expect(store.selectSource(.staging) == false)
+        #expect(await store.selectSourceAndRefresh(.staging) == .previewUnavailable)
+        #expect(throws: GearCatalog.ValidationError.self) {
+            try store.acceptStagingFixture(Self.document(["fixture"], revision: "f1", publishedAt: 9_000))
+        }
+        #expect(store.resetStagingData() == false)
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty)
+        #expect(await store.resolvePreviewEligibility() == false)
+        #expect(store.previewEligibility == .ineligible, "a later answer cannot re-enable the preview")
+        #expect(provider.calls == 1)
+    }
+
+    @Test func ineligibleAtLaunchPurgesSavedStagingState() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try Self.seedStagingPreview(harness)
+        let store = harness.makeStore(eligibility: .ineligible)
+        #expect(store.activeSource == .production)
+        #expect(Self.ids(store) == FeaturedGearPage.catalog.map(\.id))
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty)
+        #expect(harness.defaults.string(forKey: GearCatalogStore.selectedSourceKey) == nil)
+    }
+
+    @Test func productionResponseInFlightWhenTestFlightIsConfirmedIsDiscarded() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try Self.seedStagingPreview(harness)
+        harness.server.gated = [Self.production]
+        let provider = EnvironmentProvider()
+        provider.gated = true
+        let store = harness.makeStore(eligibility: .unknown, provider: provider)
+
+        let productionRequest = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        let resolution = Task { await store.resolvePreviewEligibility() }
+        await Self.waitForHeld(provider, 1)
+        #expect(await store.resolvePreviewEligibility() == false, "a concurrent check does not start a second one")
+        provider.release(.sandbox)
+        #expect(await resolution.value)
+        #expect(store.activeSource == .staging)
+
+        harness.server.release(status: 200, data: Self.document(["prod-brand"], revision: "p1", publishedAt: 1_000), headers: ["ETag": "\"p1\""])
+        #expect(await productionRequest.value == .superseded)
+        #expect(Self.ids(store) == ["staging-brand"])
+        #expect(Self.productionRevisions(harness.defaults).isEmpty, "the obsolete production response wrote nothing")
+        #expect(Self.productionETag(harness.defaults) == nil)
+        #expect(provider.calls == 1)
+    }
+
+    @Test func productionResponseInFlightWhenAppStoreIsConfirmedStillApplies() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try Self.seedStagingPreview(harness)
+        harness.server.gated = [Self.production]
+        let provider = EnvironmentProvider([.production])
+        let store = harness.makeStore(eligibility: .unknown, provider: provider)
+
+        let productionRequest = Task { await store.refresh(force: true) }
+        await Self.waitForHeld(harness.server, 1)
+        #expect(await store.resolvePreviewEligibility() == false)
+        #expect(store.previewEligibility == .ineligible)
+        harness.server.release(status: 200, data: Self.document(["prod-brand"], revision: "p1", publishedAt: 1_000))
+        #expect(await productionRequest.value == .updated, "production was the active source throughout")
+        #expect(Self.ids(store) == ["prod-brand"])
+        #expect(Self.stagingKeysPresent(harness.defaults).isEmpty)
+    }
 }
-#endif

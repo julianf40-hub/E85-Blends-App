@@ -2,13 +2,13 @@
 //  GearCatalogDeveloperViews.swift
 //  EightyFiveBlends
 //
-//  Internal/Debug-only controls for previewing a staging Recommended Gear catalog. The whole file
-//  is compiled out of App Store (Release) builds, together with the staging source itself
-//  (GearCatalogSource in GearCatalog.swift). Nothing here holds or sends credentials: staging is a
-//  public object in the same bucket, read exactly like production.
+//  Tester controls for previewing a staging Recommended Gear catalog. Compiled into every build,
+//  but rendered only while GearCatalogStore.previewEligibility is .eligible (TestFlight, Xcode and
+//  Debug builds); the store itself rejects every staging operation otherwise, so hiding the UI is
+//  not the protection. Nothing here holds or sends credentials: staging is a public object in the
+//  same bucket, read exactly like production.
 //
 
-#if DEBUG || INTERNAL_BUILD
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -24,6 +24,7 @@ extension GearCatalogStore.RefreshOutcome {
         case .inProgress: return "In progress"
         case .notConfigured: return "Not configured (no Supabase URL)"
         case .superseded: return "Discarded (source switched)"
+        case .previewUnavailable: return "Staging preview not available in this installation"
         case .rejected(let reason): return "Rejected: \(reason)"
         case .httpStatus(let code): return code == 404 ? "Not found (HTTP 404)" : "HTTP \(code)"
         case .failed: return "Failed (offline or timed out)"
@@ -34,6 +35,7 @@ extension GearCatalogStore.RefreshOutcome {
 /// Preferences card: choose Production or Staging, see what the active source holds, refresh, and
 /// return to Production. Production is the default; staging is styled as a warning so a lingering
 /// staging selection is impossible to miss (same convention as the Developer Pro Override).
+/// Renders nothing unless the installation is eligible for the preview.
 struct GearCatalogSourceDeveloperCard: View {
     @ObservedObject private var store = GearCatalogStore.shared
     @State private var isRefreshing = false
@@ -42,10 +44,16 @@ struct GearCatalogSourceDeveloperCard: View {
     private var isStaging: Bool { store.activeSource != .production }
 
     var body: some View {
+        if store.previewEligibility == .eligible {
+            card
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(
                 title: "Recommended Gear Catalog",
-                subtitle: "Developer/Internal builds — compiled out in App Store release."
+                subtitle: "TestFlight and developer builds only. App Store installs always use Production."
             )
 
             if isStaging {
@@ -97,8 +105,9 @@ struct GearCatalogSourceDeveloperCard: View {
                     Button("Load Fixture from Clipboard", action: loadFixtureFromClipboard)
                     Spacer()
                     Button("Reset Staging Data") {
-                        store.resetStagingData()
-                        fixtureMessage = "Staging data cleared."
+                        fixtureMessage = store.resetStagingData()
+                            ? "Staging data cleared."
+                            : GearCatalogStore.RefreshOutcome.previewUnavailable.developerDescription
                     }
                     .foregroundStyle(AppTheme.Colors.warningRed)
                 }
@@ -175,7 +184,7 @@ struct GearStagingCatalogBanner: View {
 
     var body: some View {
         if store.activeSource != .production {
-            Label("STAGING CATALOG · Internal preview", systemImage: "flask.fill")
+            Label("STAGING CATALOG · Test preview", systemImage: "flask.fill")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(AppTheme.Colors.warningRed)
                 .padding(.horizontal, 12)
@@ -184,8 +193,7 @@ struct GearStagingCatalogBanner: View {
                 .overlay(Capsule().strokeBorder(AppTheme.Colors.warningRed.opacity(0.5), lineWidth: 1))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Staging catalog. Internal preview.")
+                .accessibilityLabel("Staging catalog. Test preview.")
         }
     }
 }
-#endif

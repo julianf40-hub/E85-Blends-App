@@ -1,9 +1,12 @@
-# Staging catalog setup — proposal for review (nothing here has been applied)
+# Staging catalog setup and phone test
+
+Status: the bucket (§1) and the Storage URL fix (PR #147) are applied. The bucket is empty: no
+catalog has been published. Testing uses the normal 85Blends app through TestFlight (§4).
 
 Goal: prove remote Recommended Gear updates on an iPhone using the **staging** catalog, with real
 downloads. Production content is not touched. The v1 JSON contract is unchanged (Android-compatible).
 
-## 0. Findings (read-only inspection)
+## 0. Findings before setup (read-only inspection, kept for the record)
 
 | Item | Finding |
 |---|---|
@@ -14,7 +17,7 @@ downloads. Production content is not touched. The v1 JSON contract is unchanged 
 | Corrected URLs | `…/storage/v1/object/public/recommended-gear/catalog-v1.json` and `…/staging/catalog-v1.json` → Storage `400 NoSuchBucket` today |
 | Installed Build 290 | Default workflow, Release configuration (no `INTERNAL_BUILD`, so no catalog controls), bundle `com.e85blends.app.ios` |
 
-## 1. Backend change (to apply after review)
+## 1. Backend change (applied: bucket created, no policies)
 
 One public bucket, no write policies. Public **reads** go through the `/object/public/` endpoint,
 which needs no key and no SELECT policy. With no policies on `storage.objects`, `anon` and
@@ -27,7 +30,7 @@ in the Supabase dashboard if it is ever exposed. Rotating it also affects any ex
 use of the same key.
 
 ```sql
--- Proposed (NOT applied). Creates the bucket only; adds no policies.
+-- Applied. Creates the bucket only; adds no policies.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('recommended-gear', 'recommended-gear', true, 5242880,
         array['application/json', 'image/png', 'image/jpeg', 'image/heic', 'image/heif']);
@@ -118,34 +121,29 @@ publish a document with `"brands": []`.
 
 ## 4. Getting a build with the staging controls
 
-The controls exist only in the **Internal** configuration (`INTERNAL_BUILD`). Only the
-`EightyFiveBlends Internal` scheme archives with it:
-- bundle `com.e85blends.app.ios.internal` (widget `com.e85blends.app.ios.internal.NearbyE85Widget`);
-- separate entitlements (`iCloud.com.e85blends.app.ios.internal`, `group.com.e85blends.app.ios.internal`);
-- iOS **26.4** minimum;
-- display name "85Blends". It installs beside the normal app as a separate app.
+Use the normal app (`com.e85blends.app.ios`) through TestFlight. The separate "85Blends Internal"
+app is retired; nothing in this test needs it.
 
-Build 290's TestFlight **Internal Testing** group belongs to the normal app, and its archive used
-Release. TestFlight "Internal Testing" is a distribution group, not a build configuration.
+- Builds reach TestFlight through the Xcode Cloud **Default** workflow, which archives the
+  `EightyFiveBlends` scheme (Release). Build 293 was archived and delivered this way from `main`
+  commit `0955482`, including the Storage URL fix.
+- The "85Blends Internal" workflow is manual-start and test-only, with no Archive action and no
+  post-actions. It delivers nothing.
+- TestFlight builds are Release builds (no `DEBUG`, no `INTERNAL_BUILD`). The catalog controls
+  appear because the app verifies, at runtime, that StoreKit signed its install in the sandbox
+  environment, which Apple documents for every TestFlight download (README §4a). App Store
+  installs never show them and always use production.
+- The controls ship in the first TestFlight build made after this change reaches `main`. Earlier
+  builds, including 293, don't have them.
 
-Required Xcode Cloud setup (for you to make; I don't edit workflows):
-1. An App Store Connect app record for `com.e85blends.app.ios.internal` ("85Blends Internal").
-2. An Xcode Cloud workflow **attached to that app**:
-   - **Archive** action with scheme **`EightyFiveBlends Internal`** (configuration Internal, pinned by the scheme);
-   - **Deployment preparation**: TestFlight (Internal Testing Only);
-   - **Post-action**: TestFlight Internal Testing → your tester group;
-   - **Start condition**: manual (or the `fix/*`, `feature/*` rules).
-3. Run it on the branch carrying the URL fix (once merged, on `main`).
+## 5. iPhone test (real downloads; needs a TestFlight build with the controls, §4)
 
-All Xcode Cloud runs so far report to app record `6762037468`, the app Build 290 was delivered
-to. An Xcode Cloud product distributes to its own app record. So the existing
-"85Blends Internal" workflow can run tests, but may be unable to deliver an Internal-bundle
-archive. Screenshots will settle this (§6).
-
-## 5. iPhone test (real downloads; needs §1, the URL fix, and an Internal build)
-
-1. Open the Internal app → Preferences → **Recommended Gear Catalog** → **Staging**.
-   - Expect the red banner, "Not found" or "HTTP 400" (nothing published yet), and empty Recommended Gear and More.
+1. Install the TestFlight build and open it once while online (StoreKit confirms the TestFlight
+   environment, normally within seconds). Preferences → **Recommended Gear Catalog** shows
+   **Production** selected. Choose **Staging**.
+   - Expect the red banner, "HTTP 400" (nothing published yet), and empty Recommended Gear and More.
+   - If the card is missing, background and reopen the app while online; it appears once the
+     environment is confirmed.
 2. **Initial fetch:** upload publication A, then wait about 2 minutes. Tap **Refresh Now**, or background and reopen.
    - Expect *Example Fuel Tools* ("From $49") and *Example Sensor Kit* ("From $129") on Recommended Gear.
    - Both More cards appear.
