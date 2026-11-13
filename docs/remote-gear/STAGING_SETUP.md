@@ -100,13 +100,22 @@ the same second: the later write wins silently, and devices that already accepte
 reject it as a conflict. **Staging requires one publisher at a time.** The future dashboard
 serializes publications with a database lock (`PUBLISHING_DASHBOARD.md`).
 
+Use a **secret key** (`sb_secret_…`) created for this publisher only (Settings → API Keys), so it
+can be deleted on its own if it is ever exposed. The tool sends it only as the `apikey` header
+and refuses a publishable key. The legacy service-role JWT (`SUPABASE_SERVICE_ROLE_KEY`) still
+works until the legacy keys are disabled.
+
+Copy the key in the dashboard, then run the tool in a subshell that takes the key from the
+clipboard and clears it, so the key is never typed, pasted at a prompt or kept in history:
+
 ```sh
-python3 tools/remote-gear/publish_catalog.py docs/remote-gear/staging/publication-a.json   # dry run
-read -rs SUPABASE_SERVICE_ROLE_KEY && export SUPABASE_SERVICE_ROLE_KEY   # paste; not echoed or kept in shell history
-python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json
-# later
-python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-b.json
+python3 tools/remote-gear/publish_catalog.py docs/remote-gear/staging/publication-a.json   # dry run, no key
+( SUPABASE_SECRET_KEY="$(pbpaste)"; pbcopy </dev/null; export SUPABASE_SECRET_KEY
+  python3 tools/remote-gear/publish_catalog.py --verify-key docs/remote-gear/staging/publication-a.json &&
+  python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json )
 ```
+
+`--verify-key` makes one authenticated read of the staging object and uploads nothing.
 
 Caching:
 - The object's `max-age=60` bounds CDN staleness. The app refreshes on opening the screen and
