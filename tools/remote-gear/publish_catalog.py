@@ -2,7 +2,8 @@
 """Publish a Recommended Gear catalog to the STAGING object, safely. Dry run unless --upload.
 
     python3 tools/remote-gear/publish_catalog.py docs/remote-gear/staging/publication-a.json
-    SUPABASE_SERVICE_ROLE_KEY=... python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json
+    SUPABASE_SECRET_KEY=... python3 tools/remote-gear/publish_catalog.py --verify-key docs/remote-gear/staging/publication-a.json
+    SUPABASE_SECRET_KEY=... python3 tools/remote-gear/publish_catalog.py --upload docs/remote-gear/staging/publication-a.json
 
 Steps, in order:
   1. Read the template and the LIVE staging object. A dry run reads the public (CDN) URL with no
@@ -32,11 +33,13 @@ lands afterwards, and two publishers who read the same live document and stamp t
 REQUIRES one publisher at a time; the future dashboard serializes publications with a database
 lock (docs/remote-gear/PUBLISHING_DASHBOARD.md).
 
-Credentials: the service-role key bypasses every Storage and database access rule and works from
-any machine that has it. It is not tied to a device. It is read only from the environment
-variable SUPABASE_SERVICE_ROLE_KEY, sent only in request headers, and redacted from any server
-text this tool prints. Never put it in an app, a file in the repository, a browser or a chat.
-Rotate it in the Supabase dashboard if it is ever exposed.
+Credentials: a secret key (`sb_secret_…`, preferred) or the legacy service-role JWT bypasses
+every Storage and database access rule and works from any machine that has it. It is not tied to
+a device. It is read only from the environment variable SUPABASE_SECRET_KEY (or the legacy
+SUPABASE_SERVICE_ROLE_KEY), sent only in request headers (a secret key only as `apikey`, never as
+a Bearer token), and redacted from any server text this tool prints. A publishable key is
+refused. Never put a key in an app, a file in the repository, a browser or a chat. Use a secret
+key dedicated to this publisher, so it can be deleted on its own if it is ever exposed.
 
 Production is deliberately not supported by this tool.
 """
@@ -197,13 +200,43 @@ def encode(document: dict) -> bytes:
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+KEY_ENV_VARS = ("SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY")
+
+
+def read_key(environ) -> tuple[str | None, str | None]:
+    """(key, name of the variable it came from). SUPABASE_SECRET_KEY wins over the legacy name."""
+    for name in KEY_ENV_VARS:
+        value = environ.get(name, "").strip()
+        if value:
+            return value, name
+    return None, None
+
+
+def auth_headers(key: str) -> dict:
+    """Request headers for a privileged key. Raises PublishError (never quoting the key) otherwise.
+
+    - `sb_secret_…` (new secret key): sent ONLY as `apikey`. It is not a JWT; the Supabase gateway
+      turns it into a service-role request. Storage rejects a non-JWT Bearer token
+      ("Invalid Compact JWS"), so it must not be sent as one.
+    - `eyJ…` (legacy service_role JWT): `apikey` and `Authorization: Bearer`, as before.
+    """
+    if key.startswith("sb_secret_"):
+        return {"apikey": key}
+    if key.startswith("eyJ"):
+        return {"apikey": key, "Authorization": f"Bearer {key}"}
+    if key.startswith("sb_publishable_"):
+        raise PublishError("the key is a publishable (public) key, which cannot write to Storage; "
+                           "use a secret key (sb_secret_…)")
+    raise PublishError("the key is neither a secret key (sb_secret_…) nor a legacy service-role JWT")
+
+
 def fetch(url: str, key: str | None = None, timeout: float = 20) -> tuple[int, bytes, dict]:
     """(HTTP status, body, headers). A transport failure (no connection, reset, timeout) returns
     status 0 with the reason as the body, so callers report it instead of crashing; after a
     successful upload that keeps "uploaded but unverified" distinct from "not published"."""
     headers = {"Cache-Control": "no-cache"}
     if key:
-        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
+        headers.update(auth_headers(key))
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -238,11 +271,29 @@ def main(argv: list[str]) -> int:
     parser.add_argument("template")
     parser.add_argument("--upload", action="store_true", help="actually upload (default: dry run)")
     parser.add_argument("--out", help="also write the stamped document here")
+    parser.add_argument("--verify-key", action="store_true",
+                        help="only check that the key can read the staging origin (no upload)")
     args = parser.parse_args(argv)
 
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip() or None
-    if args.upload and not key:
-        print("STOPPED: set SUPABASE_SERVICE_ROLE_KEY in this shell (never in the app, the repository or a chat)")
+    key, key_source = read_key(os.environ)
+    if (args.upload or args.verify_key) and not key:
+        print("STOPPED: set SUPABASE_SECRET_KEY (or the legacy SUPABASE_SERVICE_ROLE_KEY) in this shell "
+              "(never in the app, the repository or a chat)")
+        return 1
+    if args.upload or args.verify_key:
+        try:
+            auth_headers(key)
+        except PublishError as error:
+            print(f"STOPPED: {key_source}: {error}")
+            return 1
+    if args.verify_key:
+        kind = "secret key" if key.startswith("sb_secret_") else "legacy service-role JWT"
+        status, body, _ = fetch(origin_url(), key)
+        if status == 200 or origin_object_missing(status, body):
+            print(f"key accepted ({kind} from {key_source}): origin read HTTP {status}")
+            return 0
+        failure = "could not connect" if status == 0 else f"HTTP {status}"
+        print(f"key NOT accepted ({kind} from {key_source}): origin read {failure}")
         return 1
     # Uploads base the stamp on the origin copy; a dry run (no key needed) uses the public URL.
     status, body, _ = fetch(origin_url(), key) if args.upload else fetch(public_url())
@@ -262,7 +313,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     request = urllib.request.Request(upload_url(), data=raw, method="POST", headers={
-        "Authorization": f"Bearer {key}", "apikey": key, "Content-Type": "application/json",
+        **auth_headers(key), "Content-Type": "application/json",
         "Cache-Control": CACHE_CONTROL, "x-upsert": "true",
     })
     try:
