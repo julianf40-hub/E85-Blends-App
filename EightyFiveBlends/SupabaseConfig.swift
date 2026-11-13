@@ -37,11 +37,9 @@ enum SupabaseConfigError: LocalizedError {
 
 struct SupabaseConfig {
     let url: URL
-    /// The legacy anon JWT — remains the compatibility key CommunityPriceService's and
-    /// AnalyticsService's existing PostgREST clients depend on, in BOTH their `apikey` and
-    /// `Authorization: Bearer` headers. A modern publishable key (below) is NOT a JWT and must
-    /// never be substituted into that Bearer flow without its own separate audit — migrating those
-    /// two REST clients to the modern key model is explicitly a separate future task, not this one.
+    /// The legacy anon JWT. Now only a fallback for CommunityPriceService/AnalyticsService (see
+    /// `publicRESTHeaders`) when no publishable key is configured, and for `referralClientAPIKey`.
+    /// A modern publishable key (below) is NOT a JWT and is never sent as a Bearer token.
     let anonKey: String
     /// The modern Supabase publishable client key (`sb_publishable_...`), read from
     /// SUPABASE_PUBLISHABLE_KEY — `nil` if that key is missing/blank in Info.plist (tests, internal
@@ -68,6 +66,30 @@ struct SupabaseConfig {
     /// AnalyticsService continue reading `anonKey` directly and are unaffected by this property.
     var referralClientAPIKey: String {
         publishableKey ?? anonKey
+    }
+
+    /// Headers for the public PostgREST clients (CommunityPriceService, AnalyticsService).
+    ///
+    /// - With a modern publishable key (`sb_publishable_…`): `apikey` only. The publishable key is
+    ///   NOT a JWT, so it is never sent as a Bearer token; the Supabase gateway runs the request as
+    ///   the `anon` role, the same role the legacy anon JWT carried (the RLS policies on these
+    ///   tables are granted to `anon, authenticated` and read no JWT claims).
+    /// - `userAccessToken`: a signed-in user's session JWT, when a caller has one, is preserved as
+    ///   `Authorization: Bearer <token>` so the request keeps that user's identity. These clients
+    ///   have no user sessions today, so they pass nil.
+    /// - Without a publishable key: the legacy anon JWT in both headers, exactly as before, so a
+    ///   configuration that lacks SUPABASE_PUBLISHABLE_KEY keeps working.
+    func publicRESTHeaders(userAccessToken: String? = nil) -> [String: String] {
+        var headers: [String: String]
+        if let key = publishableKey, key.hasPrefix("sb_publishable_") {
+            headers = ["apikey": key]
+        } else {
+            headers = ["apikey": anonKey, "Authorization": "Bearer \(anonKey)"]
+        }
+        if let token = userAccessToken, token.isEmpty == false {
+            headers["Authorization"] = "Bearer \(token)"
+        }
+        return headers
     }
 
     static func load() throws -> SupabaseConfig {

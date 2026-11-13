@@ -53,4 +53,43 @@ struct SupabaseConfigTests {
         #expect(config.publishableKey == nil)
         #expect(config.referralClientAPIKey == "legacy-anon-jwt")
     }
+
+    // MARK: 5. Public REST headers (CommunityPriceService, AnalyticsService)
+
+    @Test("With a publishable key, REST headers send it as apikey only, never as a Bearer token")
+    func publicRESTHeaders_publishableKey_hasNoBearer() {
+        let config = SupabaseConfig(url: Self.testURL, anonKey: "legacy-anon-jwt", publishableKey: "sb_publishable_test")
+        #expect(config.publicRESTHeaders() == ["apikey": "sb_publishable_test"])
+    }
+
+    @Test("A signed-in user's access token is preserved as the Bearer token alongside the publishable apikey")
+    func publicRESTHeaders_preservesUserAccessToken() {
+        let config = SupabaseConfig(url: Self.testURL, anonKey: "legacy-anon-jwt", publishableKey: "sb_publishable_test")
+        #expect(config.publicRESTHeaders(userAccessToken: "user-session-jwt")
+                == ["apikey": "sb_publishable_test", "Authorization": "Bearer user-session-jwt"])
+        #expect(config.publicRESTHeaders(userAccessToken: "") == ["apikey": "sb_publishable_test"])
+    }
+
+    @Test("Without a publishable key, REST headers keep the legacy anon JWT in both headers")
+    func publicRESTHeaders_legacyFallback() {
+        let config = SupabaseConfig(url: Self.testURL, anonKey: "legacy-anon-jwt")
+        #expect(config.publicRESTHeaders()
+                == ["apikey": "legacy-anon-jwt", "Authorization": "Bearer legacy-anon-jwt"])
+    }
+
+    @Test("A non-publishable value in the publishable slot (secret key, JWT) is never sent; legacy fallback applies")
+    func publicRESTHeaders_rejectsNonPublishableValues() {
+        for wrong in ["sb_secret_fixture", "eyJfixture"] {
+            let config = SupabaseConfig(url: Self.testURL, anonKey: "legacy-anon-jwt", publishableKey: wrong)
+            #expect(config.publicRESTHeaders()["apikey"] == "legacy-anon-jwt")
+            #expect(config.publicRESTHeaders().values.contains { $0.contains(wrong) } == false)
+        }
+    }
+
+    @Test("The shipped Info.plist resolves REST headers to the publishable key with no Bearer token")
+    func publicRESTHeaders_shippedConfiguration() throws {
+        let headers = try SupabaseConfig.load().publicRESTHeaders()
+        #expect(headers["apikey"]?.hasPrefix("sb_publishable_") == true)
+        #expect(headers["Authorization"] == nil)
+    }
 }

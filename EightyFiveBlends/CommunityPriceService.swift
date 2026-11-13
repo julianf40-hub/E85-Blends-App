@@ -453,8 +453,7 @@ struct CommunityPriceService {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(config.anonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(config.anonKey)", forHTTPHeaderField: "Authorization")
+        config.publicRESTHeaders().forEach { request.setValue($1, forHTTPHeaderField: $0) }
         extraHeaders.forEach { request.setValue($1, forHTTPHeaderField: $0) }
 
         var debugPayloadKeys: [String] = []
