@@ -267,7 +267,7 @@ class StagingPublisherTests(unittest.TestCase):
     def readback(self, responses, ours, previous):
         """read_back_origin over scripted origin responses; returns (status, body, fetch count)."""
         replies, waits = list(responses), []
-        def fetch_origin():
+        def fetch_origin(timeout):
             status, body = replies.pop(0) if replies else responses[-1]
             return status, body, {}
         status, body = self.p.read_back_origin(fetch_origin, ours, previous, sleep=waits.append)
@@ -304,6 +304,93 @@ class StagingPublisherTests(unittest.TestCase):
         self.assertEqual((status, body, fetches), (200, ours, 3))
         status, _, _ = self.readback([(0, b"reset")], ours, previous)
         self.assertEqual(self.p.verification_outcome(ours, status, b"", 200, ours, previous)[1], 5)
+
+    def test_read_back_total_time_is_bounded_including_request_timeouts(self):
+        now = [0.0]
+        timeouts = []
+        def fetch_origin(timeout):  # every read hangs until its timeout, then fails
+            timeouts.append(timeout)
+            now[0] += timeout
+            return 0, b"timed out", {}
+        def sleep(seconds):
+            now[0] += seconds
+        status, _ = self.p.read_back_origin(fetch_origin, b"ours", b"previous",
+                                            sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(status, 0)
+        self.assertLessEqual(now[0], self.p.READBACK_BUDGET, "waits + timeouts stay within budget")
+        self.assertTrue(all(0 < t <= self.p.READBACK_REQUEST_TIMEOUT for t in timeouts))
+        self.assertGreaterEqual(len(timeouts), 2, "still retries a failed read")
+
+    def test_matching_requires_exact_bytes_not_just_the_revision(self):
+        ours = self.p.encode({"revision": "r1", "publishedAt": 5, "brands": []})
+        same_revision = self.p.encode({"revision": "r1", "publishedAt": 5, "brands": [{"id": "x"}]})
+        status, body, _ = self.readback([(200, same_revision)], ours, b"previous")
+        message, code = self.p.verification_outcome(ours, status, body, 200, same_revision, b"previous")
+        self.assertEqual(code, 4)
+
+    def test_exhausted_reads_name_missing_object_and_transport_failure_apart(self):
+        ours, previous = b"ours", b"previous"
+        missing = b'{"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}'
+        status, body, fetches = self.readback([(400, missing)], ours, previous)
+        self.assertEqual(fetches, len(self.p.READBACK_DELAYS))
+        message, code = self.p.verification_outcome(ours, status, body, 200, ours, previous)
+        self.assertEqual(code, 5)
+        self.assertIn("no object", message)
+        message, code = self.p.verification_outcome(ours, 0, b"reset", 200, ours, previous)
+        self.assertEqual(code, 5)
+        self.assertIn("could not connect", message)
+        self.assertNotIn("no object", message)
+        message, code = self.p.verification_outcome(ours, 200, previous, 200, previous, previous)
+        self.assertEqual(code, 7)
+
+    def test_conflict_reports_observed_content_without_claiming_a_publisher(self):
+        message, code = self.p.verification_outcome(b"ours", 200, b"theirs", 200, b"theirs", b"previous")
+        self.assertEqual(code, 4)
+        self.assertIn("neither our upload nor", message)
+        self.assertNotIn("replaced ours", message)
+
+    def test_key_is_never_printed_on_any_upload_error_path(self):
+        import contextlib, io, os, unittest.mock, urllib.error
+        key = "eyJ-test-service-role-never-print"
+        echo = f'{{"message":"bad token {key}"}}'.encode()
+
+        def run(script):
+            calls = list(script)
+            def fake_urlopen(request, timeout=None):
+                outcome = calls.pop(0) if calls else calls_tail[0]
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                status, body = outcome
+                if status != 200:
+                    raise urllib.error.HTTPError(request.full_url, status, "error", {}, io.BytesIO(body))
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = status
+                response.__enter__.return_value.read.return_value = body
+                response.__enter__.return_value.headers = {}
+                return response
+            calls_tail = [script[-1]]
+            out = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": key}), \
+                 unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+                 unittest.mock.patch.object(self.p.time, "sleep"), \
+                 contextlib.redirect_stdout(out):
+                code = self.p.main([self.a, "--upload"])
+            return code, out.getvalue()
+
+        paths = {
+            "live read refused": [(403, echo)],
+            "live read transport": [urllib.error.URLError(f"reset {key}")],
+            "upload refused": [self.missing_object, (403, echo)],
+            "upload transport": [self.missing_object, urllib.error.URLError(f"reset {key}")],
+            "origin read-back refused": [self.missing_object, (200, b"{}"), (403, echo)],
+            "origin read-back transport": [self.missing_object, (200, b"{}"), urllib.error.URLError(f"reset {key}")],
+            "conflict": [self.missing_object, (200, b"{}"), (200, echo)],
+        }
+        for name, script in paths.items():
+            with self.subTest(name):
+                code, output = run(script)
+                self.assertNotEqual(code, 0)
+                self.assertNotIn(key, output)
 
     def test_first_publication_has_no_previous_to_mistake_for_staleness(self):
         ours, theirs = b"ours", b"theirs"

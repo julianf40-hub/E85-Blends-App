@@ -17,9 +17,10 @@ Steps, in order:
      verify separately:
        - ORIGIN read-back (authoritative): must hold exactly our bytes. Storage can briefly
          serve the previous object after an overwrite, so a failed or still-previous read-back
-         is retried for about 10 s. Still the previous document after that: exit 7 (unconfirmed,
-         read back before publishing again). A third document: another publication replaced
-         ours, reported as CONFLICT, exit 4.
+         is retried (reads only; at most 30 s including request timeouts). Still the previous
+         document after that: exit 7 (unconfirmed, read back before publishing again). Still
+         failing or missing: exit 5. Any other document: CONFLICT, exit 4 (content we did not
+         write is live; the tool cannot tell who wrote it).
        - PUBLIC read-back (what devices see, through the CDN): may lag by up to max-age. A lag is
          reported as "PUBLISHED, CDN not yet updated", exit 3, never as "nothing published".
 
@@ -86,22 +87,46 @@ def redact(text: str, secret: str | None) -> str:
 
 
 # Storage can serve the previous object for a moment right after an overwrite, so a read-back that
-# still shows the pre-upload document is retried before anything is concluded (about 10 s in all).
+# fails or still shows the pre-upload document is retried (GETs only; the upload is never repeated).
+# The whole read-back, waits AND request timeouts, is bounded by READBACK_BUDGET seconds.
 READBACK_DELAYS = (0, 1, 2, 3, 4)
+READBACK_BUDGET = 30.0
+READBACK_REQUEST_TIMEOUT = 10.0
 
 
 def read_back_origin(fetch_origin, ours: bytes, previous: bytes | None,
-                     delays=READBACK_DELAYS, sleep=None) -> tuple[int, bytes]:
-    """(status, body) of the origin once it settles. Retries while the origin fails or still serves
-    `previous`; stops at once on our bytes or on a third document (another publication)."""
-    sleep = sleep or time.sleep
-    status, body = 0, b""
+                     delays=READBACK_DELAYS, budget: float = READBACK_BUDGET,
+                     sleep=None, clock=None) -> tuple[int, bytes]:
+    """(status, body) of the origin once it settles, within `budget` seconds in all.
+
+    `fetch_origin(timeout)` performs one read and returns (status, body, headers). Retries while
+    the origin fails or still serves `previous`; stops at once on our exact bytes or on any other
+    200 document. Each request's timeout is capped by the time left, so a hanging read cannot
+    push the total past the budget.
+    """
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    deadline = clock() + budget
+    status, body = 0, b"no read-back attempted"
     for delay in delays:
+        if clock() + delay >= deadline:
+            break
         sleep(delay)
-        status, body, _ = fetch_origin()
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        status, body, _ = fetch_origin(min(READBACK_REQUEST_TIMEOUT, remaining))
         if status == 200 and (body == ours or body != previous):
             break
     return status, body
+
+
+def origin_object_missing(status: int, body: bytes) -> bool:
+    if status not in (400, 404):
+        return False
+    try:
+        return classify_live_response(status, body) == "absent"
+    except PublishError:
+        return False
 
 
 def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
@@ -113,15 +138,21 @@ def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
     `previous` is the live document read before the upload (None for a first publication).
     """
     if origin_status != 200:
-        failure = "could not connect" if origin_status == 0 else f"HTTP {origin_status}"
-        return (f"UPLOADED, but the origin read-back failed ({failure}); "
+        if origin_object_missing(origin_status, origin_bytes):
+            failure = "the origin reports no object at this path"
+        elif origin_status == 0:
+            failure = "could not connect"
+        else:
+            failure = f"HTTP {origin_status}"
+        return (f"UPLOADED, but the origin read-back failed after retrying ({failure}); "
                 "check the object in the Supabase dashboard before publishing again", 5)
     if origin_bytes != ours and previous is not None and origin_bytes == previous:
         return ("UPLOADED, but the origin still serves the previous publication after retrying; "
                 "Storage may not be consistent yet. Read the object back before publishing again", 7)
     if origin_bytes != ours:
-        return ("CONFLICT: uploaded, but the origin now holds a different document: another "
-                "publication replaced ours. Do not publish again until you know which is live", 4)
+        return ("CONFLICT: uploaded, but the origin serves content that is neither our upload nor "
+                "the publication live before it. The cause is not known (possibly another "
+                "publisher). Do not publish again until you know which document is live", 4)
     if public_status == 200 and public_bytes == ours:
         return ("PUBLISHED and verified: origin and public URL serve the new document", 0)
     public = "could not connect" if public_status == 0 else f"HTTP {public_status}"
@@ -166,7 +197,7 @@ def encode(document: dict) -> bytes:
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
+def fetch(url: str, key: str | None = None, timeout: float = 20) -> tuple[int, bytes, dict]:
     """(HTTP status, body, headers). A transport failure (no connection, reset, timeout) returns
     status 0 with the reason as the body, so callers report it instead of crashing; after a
     successful upload that keeps "uploaded but unverified" distinct from "not published"."""
@@ -175,7 +206,7 @@ def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
         headers.update({"Authorization": f"Bearer {key}", "apikey": key})
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as error:
         return error.code, error.read(), dict(error.headers)
@@ -250,7 +281,8 @@ def main(argv: list[str]) -> int:
         return 6
 
     previous = body if live is not None else None
-    origin_status, origin_bytes = read_back_origin(lambda: fetch(origin_url(), key), raw, previous)
+    origin_status, origin_bytes = read_back_origin(lambda timeout: fetch(origin_url(), key, timeout),
+                                                   raw, previous)
     public_status, public_bytes, headers = fetch(public_url())
     message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes,
                                          previous)
