@@ -7,12 +7,16 @@
 
 import Foundation
 
-enum SupabaseConfigError: LocalizedError {
+enum SupabaseConfigError: LocalizedError, Equatable {
+    /// SUPABASE_URL is missing, blank, or not an https URL with a host.
     case missingConfiguration
+    /// SUPABASE_PUBLISHABLE_KEY is missing, blank, or not a publishable key (`sb_publishable_…`).
+    /// A legacy anon JWT, a secret key or anything else is rejected, never used in its place.
+    case missingPublishableKey
 
     var errorDescription: String? {
         switch self {
-        case .missingConfiguration:
+        case .missingConfiguration, .missingPublishableKey:
             return "Community price sync is not configured yet."
         }
     }
@@ -20,96 +24,81 @@ enum SupabaseConfigError: LocalizedError {
 
 // MARK: - Key Safety Notes
 //
-// SUPABASE_ANON_KEY is the project's *anon* (public) JWT — role:"anon".
-// It is intentionally embedded in the client binary and safe for App Store distribution.
+// SUPABASE_PUBLISHABLE_KEY (`sb_publishable_…`) is the project's public client key. It is
+// intentionally embedded in the client binary and safe for App Store distribution. It is NOT a
+// JWT: it is sent only as the `apikey` header, and the Supabase gateway runs the request as the
+// `anon` role. It cannot bypass Row Level Security.
 //
-// The anon key is NOT the service_role key; it cannot bypass Row Level Security.
-// Safety of client-side writes (community_stations, e85_price_reports) depends entirely
-// on Supabase RLS policies being enabled and correctly scoped on those tables.
+// The legacy SUPABASE_ANON_KEY (an anon JWT) is no longer read by the app. Supabase is retiring
+// the legacy anon/service_role keys, so nothing here falls back to it: a configuration without a
+// valid publishable key fails to load instead of sending a key that may already be revoked.
 //
-// Required before public App Store release:
-//   • Confirm RLS is ENABLED on community_stations and e85_price_reports.
-//   • Confirm INSERT policies for anon role are scoped to prevent mass-write abuse
-//     (e.g., per-reporter rate limiting, server-side validation of price range).
-//   • Confirm no DELETE or UPDATE policies are granted to the anon role.
+// Safety of client-side writes (community_stations, e85_price_reports, e85_ethanol_reports,
+// e85_analytics_events) depends entirely on RLS being enabled and correctly scoped on those tables:
+//   • RLS ENABLED on each table.
+//   • INSERT policies for the anon role scoped to prevent mass-write abuse (server-side validation).
+//   • No DELETE or UPDATE policies granted to the anon role.
 //
 // SUPABASE_URL is the project's public REST endpoint — not a secret.
 
 struct SupabaseConfig {
     let url: URL
-    /// The legacy anon JWT. Now only a fallback for CommunityPriceService/AnalyticsService (see
-    /// `publicRESTHeaders`) when no publishable key is configured, and for `referralClientAPIKey`.
-    /// A modern publishable key (below) is NOT a JWT and is never sent as a Bearer token.
-    let anonKey: String
-    /// The modern Supabase publishable client key (`sb_publishable_...`), read from
-    /// SUPABASE_PUBLISHABLE_KEY — `nil` if that key is missing/blank in Info.plist (tests, internal
-    /// configurations, and older config fixtures may not set it). Exists so the referral Edge
-    /// Function client (see `referralClientAPIKey` below) can use the modern key Supabase's current
-    /// client-key model prefers for mobile/public callers, while leaving `anonKey` and every
-    /// existing REST client completely untouched.
-    let publishableKey: String?
+    /// The Supabase publishable client key (`sb_publishable_…`), read from SUPABASE_PUBLISHABLE_KEY.
+    /// `load()` guarantees the prefix. This is the only client key the app sends.
+    let publishableKey: String
 
-    /// Explicit (not the auto-synthesized memberwise) initializer, specifically so any existing or
-    /// future 2-argument `SupabaseConfig(url:anonKey:)` call site keeps compiling unchanged —
-    /// `publishableKey` defaults to `nil`.
-    init(url: URL, anonKey: String, publishableKey: String? = nil) {
+    init(url: URL, publishableKey: String) {
         self.url = url
-        self.anonKey = anonKey
         self.publishableKey = publishableKey
     }
 
-    /// The API key ReferralAPIService's `apikey` header should send: the modern publishable key
-    /// when one is configured, falling back to the legacy anon key only so a configuration that
-    /// hasn't set SUPABASE_PUBLISHABLE_KEY yet (tests, an older fixture) doesn't immediately break.
-    /// Production Info.plist ships SUPABASE_PUBLISHABLE_KEY, so this deterministically resolves to
-    /// the modern key on-device. Used ONLY by ReferralAPIService — CommunityPriceService and
-    /// AnalyticsService continue reading `anonKey` directly and are unaffected by this property.
+    /// The API key ReferralAPIService's `apikey` header sends: the publishable key.
     var referralClientAPIKey: String {
-        publishableKey ?? anonKey
+        publishableKey
     }
 
     /// Headers for the public PostgREST clients (CommunityPriceService, AnalyticsService).
     ///
-    /// - With a modern publishable key (`sb_publishable_…`): `apikey` only. The publishable key is
-    ///   NOT a JWT, so it is never sent as a Bearer token; the Supabase gateway runs the request as
-    ///   the `anon` role, the same role the legacy anon JWT carried (the RLS policies on these
-    ///   tables are granted to `anon, authenticated` and read no JWT claims).
+    /// - `apikey`: the publishable key. Never sent as a Bearer token (it is not a JWT); the gateway
+    ///   runs the request as the `anon` role, which the RLS policies on these tables are granted to
+    ///   (they read no JWT claims).
     /// - `userAccessToken`: a signed-in user's session JWT, when a caller has one, is preserved as
     ///   `Authorization: Bearer <token>` so the request keeps that user's identity. These clients
     ///   have no user sessions today, so they pass nil.
-    /// - Without a publishable key: the legacy anon JWT in both headers, exactly as before, so a
-    ///   configuration that lacks SUPABASE_PUBLISHABLE_KEY keeps working.
     func publicRESTHeaders(userAccessToken: String? = nil) -> [String: String] {
-        var headers: [String: String]
-        if let key = publishableKey, key.hasPrefix("sb_publishable_") {
-            headers = ["apikey": key]
-        } else {
-            headers = ["apikey": anonKey, "Authorization": "Bearer \(anonKey)"]
-        }
+        var headers = ["apikey": publishableKey]
         if let token = userAccessToken, token.isEmpty == false {
             headers["Authorization"] = "Bearer \(token)"
         }
         return headers
     }
 
-    static func load() throws -> SupabaseConfig {
+    /// Reads SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY from Info.plist (or, in tests, from
+    /// `value`). Both are required; SUPABASE_ANON_KEY is not read, so it may be absent or blank.
+    static func load(
+        _ value: (String) -> Any? = { Bundle.main.object(forInfoDictionaryKey: $0) }
+    ) throws -> SupabaseConfig {
+        func trimmed(_ key: String) -> String? {
+            let text = (value(key) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (text?.isEmpty == false) ? text : nil
+        }
+
         guard
-            let rawURL = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
-            rawURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            let rawURL = trimmed("SUPABASE_URL"),
             let url = URL(string: rawURL),
-            let anonKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String,
-            anonKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            url.scheme?.lowercased() == "https",
+            url.host?.isEmpty == false
         else {
             throw SupabaseConfigError.missingConfiguration
         }
 
-        // Not part of the guard above — SUPABASE_PUBLISHABLE_KEY is deliberately NOT required yet,
-        // since CommunityPriceService/AnalyticsService still depend on the legacy config loading
-        // successfully without it. Missing/blank both trim to nil, never an empty string.
-        let trimmedPublishableKey = (Bundle.main.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let publishableKey = (trimmedPublishableKey?.isEmpty == false) ? trimmedPublishableKey : nil
+        guard let publishableKey = trimmed("SUPABASE_PUBLISHABLE_KEY"),
+              publishableKey.hasPrefix("sb_publishable_"),
+              publishableKey.count > "sb_publishable_".count
+        else {
+            throw SupabaseConfigError.missingPublishableKey
+        }
 
-        return SupabaseConfig(url: url, anonKey: anonKey, publishableKey: publishableKey)
+        return SupabaseConfig(url: url, publishableKey: publishableKey)
     }
 }

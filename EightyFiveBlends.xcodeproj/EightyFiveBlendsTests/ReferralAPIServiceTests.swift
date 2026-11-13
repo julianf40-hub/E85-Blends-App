@@ -124,10 +124,8 @@ struct ReferralAPIServiceTests {
     // Production's real, currently-configured SUPABASE_PUBLISHABLE_KEY — an independently
     // hand-written literal, not derived from config.publishableKey/referralClientAPIKey, so this
     // fails loudly if Info.plist's value ever changes rather than silently agreeing with whatever
-    // the implementation computes. referralClientAPIKey's own fallback-to-anonKey behavior (when no
-    // publishable key is configured) is exhaustively covered in SupabaseConfigTests.swift instead —
-    // that scenario can't be produced here, since this test uses the real, now-populated Info.plist
-    // via SupabaseConfig.load().
+    // the implementation computes. Loading without a valid publishable key (which fails; there is
+    // no legacy anon-key fallback) is covered in SupabaseConfigTests.swift.
 
     @Test("Every request sends the modern Supabase publishable key — never the legacy anon key — as the apikey header")
     func request_sendsPublishableKeyAsApiKeyHeader() async throws {
@@ -142,7 +140,7 @@ struct ReferralAPIServiceTests {
 
         #expect(apiKeyHeader == "sb_publishable_LGN8cRrUcQJyREfCoNoTqA_nNmBqDyP")
         #expect(apiKeyHeader == config.referralClientAPIKey)
-        #expect(apiKeyHeader != config.anonKey)
+        #expect(apiKeyHeader.hasPrefix("eyJ") == false, "never a legacy JWT key")
     }
 
     // MARK: 13. Correct referral-api Edge Function URL
