@@ -17,7 +17,8 @@ Steps, in order:
      verify separately:
        - ORIGIN read-back (authoritative): must hold exactly our bytes. Storage can briefly
          serve the previous object after an overwrite, so a failed or still-previous read-back
-         is retried (reads only; at most 30 s including request timeouts). Still the previous
+         is retried (reads only). All verification reads share one 30 s wall-clock deadline that
+         cuts off slow connects, headers and bodies, and closes the connection. Still the previous
          document after that: exit 7 (unconfirmed, read back before publishing again). Still
          failing or missing: exit 5. Any other document: CONFLICT, exit 4 (content we did not
          write is live; the tool cannot tell who wrote it).
@@ -44,12 +45,16 @@ Production is deliberately not supported by this tool.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import pathlib
+import socket
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -86,35 +91,115 @@ def redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "<redacted>") if secret else text
 
 
-# Storage can serve the previous object for a moment right after an overwrite, so a read-back that
-# fails or still shows the pre-upload document is retried (GETs only; the upload is never repeated).
-# The whole read-back, waits AND request timeouts, is bounded by READBACK_BUDGET seconds.
+# Verification after an upload (origin read-back with retries, then the public read) runs under ONE
+# wall-clock deadline: VERIFY_BUDGET seconds in all, of which the last PUBLIC_READ_RESERVE seconds
+# are kept for the public read. Every read is a GET (the upload is never repeated) and is cut off
+# at its deadline whatever the server does: slow connect, trickled headers, or a trickled success
+# or error body. Storage can serve the previous object for a moment right after an overwrite, so
+# a read-back that fails or still shows the pre-upload document is retried within that budget.
+VERIFY_BUDGET = 30.0
+PUBLIC_READ_RESERVE = 10.0
 READBACK_DELAYS = (0, 1, 2, 3, 4)
-READBACK_BUDGET = 30.0
 READBACK_REQUEST_TIMEOUT = 10.0
+DEADLINE_EXCEEDED = b"verification deadline reached"
 
 
-def read_back_origin(fetch_origin, ours: bytes, previous: bytes | None,
-                     delays=READBACK_DELAYS, budget: float = READBACK_BUDGET,
-                     sleep=None, clock=None) -> tuple[int, bytes]:
-    """(status, body) of the origin once it settles, within `budget` seconds in all.
+def request_headers(key: str | None) -> dict:
+    headers = {"Cache-Control": "no-cache"}
+    if key:
+        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
+    return headers
 
-    `fetch_origin(timeout)` performs one read and returns (status, body, headers). Retries while
-    the origin fails or still serves `previous`; stops at once on our exact bytes or on any other
-    200 document. Each request's timeout is capped by the time left, so a hanging read cannot
-    push the total past the budget.
+
+def bounded_fetch(url: str, key: str | None, deadline: float, clock=None) -> tuple[int, bytes, dict]:
+    """GET `url`, returning by `deadline` (a `time.monotonic()` value) whatever the server does.
+
+    The request runs on a worker thread with its own connection. The caller waits only until the
+    deadline; if the worker is still busy (connecting, waiting for headers, or reading a success
+    or error body), the socket is shut down and the connection closed, which unblocks and ends
+    the worker, and (0, DEADLINE_EXCEEDED, {}) is returned. A transport failure returns status 0
+    with the reason as the body, like `fetch`. Only a DNS lookup cannot be interrupted; it is
+    abandoned (daemon thread) and never sends a request.
+    """
+    clock = clock or time.monotonic
+    parts = urllib.parse.urlsplit(url)
+    connection_class = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    target = parts.path + (f"?{parts.query}" if parts.query else "")
+    state = {"connection": None, "result": None}
+    stop = threading.Event()
+
+    def work():
+        connection = None
+        try:
+            remaining = deadline - clock()
+            if remaining <= 0 or stop.is_set():
+                return
+            connection = connection_class(parts.hostname, parts.port,
+                                          timeout=min(READBACK_REQUEST_TIMEOUT, remaining))
+            state["connection"] = connection
+            connection.connect()
+            if stop.is_set():
+                return
+            connection.request("GET", target, headers=request_headers(key))
+            response = connection.getresponse()
+            body = response.read()
+            if not stop.is_set():
+                state["result"] = (response.status, body, dict(response.getheaders()))
+        except Exception as error:  # noqa: BLE001 - socket timeouts, resets, HTTP errors, and
+            # whatever http.client raises once the caller has shut the socket down
+            if not stop.is_set():
+                state["result"] = (0, str(error).encode("utf-8", "replace"), {})
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    worker = threading.Thread(target=work, name="publisher-bounded-fetch", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - clock()))
+    if worker.is_alive() or state["result"] is None:
+        stop.set()
+        # Shutting the socket down unblocks a read in progress; the worker then closes its own
+        # connection. Closing it from here is only a fallback for a worker that did not exit.
+        connection = state["connection"]
+        sock = connection.sock if connection is not None else None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        worker.join(1.0)
+        if worker.is_alive() and connection is not None:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return 0, DEADLINE_EXCEEDED, {}
+    return state["result"]
+
+
+def read_back_origin(fetch_origin, ours: bytes, previous: bytes | None, deadline: float,
+                     delays=None, sleep=None, clock=None) -> tuple[int, bytes]:
+    """(status, body) of the origin once it settles, by `deadline` (a `clock()` value).
+
+    `fetch_origin(attempt_deadline)` performs one read that must return by `attempt_deadline`
+    (see `bounded_fetch`) and returns (status, body, headers). Retries while the origin fails or
+    still serves `previous`; stops at once on our exact bytes or on any other 200 document. Each
+    attempt gets at most READBACK_REQUEST_TIMEOUT seconds, so one hanging read leaves time for a
+    retry, and no attempt or wait goes past `deadline`.
     """
     sleep, clock = sleep or time.sleep, clock or time.monotonic
-    deadline = clock() + budget
     status, body = 0, b"no read-back attempted"
-    for delay in delays:
+    for delay in READBACK_DELAYS if delays is None else delays:
         if clock() + delay >= deadline:
             break
         sleep(delay)
-        remaining = deadline - clock()
-        if remaining <= 0:
+        now = clock()
+        if now >= deadline:
             break
-        status, body, _ = fetch_origin(min(READBACK_REQUEST_TIMEOUT, remaining))
+        status, body, _ = fetch_origin(min(deadline, now + READBACK_REQUEST_TIMEOUT))
         if status == 200 and (body == ours or body != previous):
             break
     return status, body
@@ -140,6 +225,8 @@ def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
     if origin_status != 200:
         if origin_object_missing(origin_status, origin_bytes):
             failure = "the origin reports no object at this path"
+        elif origin_status == 0 and origin_bytes == DEADLINE_EXCEEDED:
+            failure = "timed out: verification deadline reached"
         elif origin_status == 0:
             failure = "could not connect"
         else:
@@ -155,7 +242,12 @@ def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
                 "publisher). Do not publish again until you know which document is live", 4)
     if public_status == 200 and public_bytes == ours:
         return ("PUBLISHED and verified: origin and public URL serve the new document", 0)
-    public = "could not connect" if public_status == 0 else f"HTTP {public_status}"
+    if public_status == 0 and public_bytes == DEADLINE_EXCEEDED:
+        public = "timed out: verification deadline reached"
+    elif public_status == 0:
+        public = "could not connect"
+    else:
+        public = f"HTTP {public_status}"
     return (f"PUBLISHED (origin verified). The public URL does not serve it yet ({public}); "
             f"the CDN may keep the previous copy for up to {CACHE_CONTROL}", 3)
 
@@ -201,10 +293,7 @@ def fetch(url: str, key: str | None = None, timeout: float = 20) -> tuple[int, b
     """(HTTP status, body, headers). A transport failure (no connection, reset, timeout) returns
     status 0 with the reason as the body, so callers report it instead of crashing; after a
     successful upload that keeps "uploaded but unverified" distinct from "not published"."""
-    headers = {"Cache-Control": "no-cache"}
-    if key:
-        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(url, headers=request_headers(key))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read(), dict(response.headers)
@@ -281,9 +370,11 @@ def main(argv: list[str]) -> int:
         return 6
 
     previous = body if live is not None else None
-    origin_status, origin_bytes = read_back_origin(lambda timeout: fetch(origin_url(), key, timeout),
-                                                   raw, previous)
-    public_status, public_bytes, headers = fetch(public_url())
+    verify_deadline = time.monotonic() + VERIFY_BUDGET
+    origin_status, origin_bytes = read_back_origin(
+        lambda attempt_deadline: bounded_fetch(origin_url(), key, attempt_deadline),
+        raw, previous, deadline=verify_deadline - PUBLIC_READ_RESERVE)
+    public_status, public_bytes, headers = bounded_fetch(public_url(), None, verify_deadline)
     message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes,
                                          previous)
     print(message)
