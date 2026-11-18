@@ -119,14 +119,15 @@ struct AnalyticsServiceTests {
         )
     }
 
-    @Test("send sets the anon apikey/Authorization headers and a JSON POST")
+    @Test("send uses the publishable apikey with no Bearer token, and a JSON POST")
     func send_setsExpectedHeaders() async throws {
         AnalyticsMockURLProtocol.requestHandler = { request in
             #expect(request.httpMethod == "POST")
             #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
             let apiKey = request.value(forHTTPHeaderField: "apikey")
-            #expect(apiKey?.isEmpty == false)
-            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(apiKey ?? "")")
+            #expect(apiKey?.hasPrefix("sb_publishable_") == true, "the shipped Info.plist's publishable key")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil,
+                    "a publishable key is not a JWT and must not be sent as a Bearer token")
             return (200, Data())
         }
 
