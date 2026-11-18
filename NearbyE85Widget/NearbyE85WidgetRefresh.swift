@@ -95,7 +95,7 @@ final class NearbyE85WidgetRefreshCoordinator {
     /// The shared attempt plus how many callers are still waiting on it. The attempt is only
     /// cancelled once every waiter has been cancelled — one caller can never cancel work another
     /// caller still awaits.
-    private var inFlight: (task: Task<NearbyE85RefreshStatus.Outcome, Never>, waiters: Int)?
+    private var inFlight: (id: UUID, task: Task<NearbyE85RefreshStatus.Outcome, Never>, waiters: Int)?
 
     init(location: NearbyE85LocationFixing, search: NearbyE85StationSearching,
          cache: NearbyE85Cache = NearbyE85Cache(), statusStore: NearbyE85RefreshStatusStore = NearbyE85RefreshStatusStore(),
@@ -119,16 +119,21 @@ final class NearbyE85WidgetRefreshCoordinator {
     /// caller's timeline reload sees the final cache/status.
     func refresh() async -> NearbyE85RefreshStatus.Outcome {
         let task: Task<NearbyE85RefreshStatus.Outcome, Never>
-        if let current = inFlight {
+        // An attempt whose every waiter was cancelled is already cancelled and only unwinding: a new
+        // tap starts a fresh attempt (generation fencing supersedes the old one) instead of joining
+        // it and inheriting `.cancelled`.
+        if let current = inFlight, current.waiters > 0 {
             task = current.task
-            inFlight = (task, current.waiters + 1)
+            inFlight = (current.id, task, current.waiters + 1)
         } else {
+            let id = UUID()
             task = Task {
                 let outcome = await self.run()
-                self.inFlight = nil
+                // Only the attempt that still owns the slot clears it, never a newer one.
+                if self.inFlight?.id == id { self.inFlight = nil }
                 return outcome
             }
-            inFlight = (task, 1)
+            inFlight = (id, task, 1)
         }
         return await withTaskCancellationHandler { await task.value } onCancel: {
             Task { @MainActor in self.waiterCancelled(task) }
@@ -138,7 +143,7 @@ final class NearbyE85WidgetRefreshCoordinator {
     private func waiterCancelled(_ task: Task<NearbyE85RefreshStatus.Outcome, Never>) {
         guard let current = inFlight, current.task == task else { return }
         let remaining = current.waiters - 1
-        inFlight = (task, remaining)
+        inFlight = (current.id, task, remaining)
         if remaining <= 0 { task.cancel() }
     }
 
@@ -409,7 +414,8 @@ final class NearbyE85CoreLocationFixer: NSObject, NearbyE85LocationFixing, CLLoc
 
     func isAuthorizedForWidgetUpdates() -> Bool { Self.widgetLocationAuthorized() }
 
-    /// The one rule both the refresh and NearbyE85Provider's privacy gate use.
+    /// The rule for the widget's own location work (manual and automatic refresh). Showing the
+    /// app-written cache needs only app permission — see NearbyE85Provider.displayableSnapshot.
     static func widgetLocationAuthorized() -> Bool {
         let manager = CLLocationManager()
         let status = manager.authorizationStatus

@@ -232,15 +232,23 @@ nonisolated struct NearbyE85Provider: TimelineProvider {
                          areaRelevance: areaRelevance, refreshStatus: NearbyE85RefreshStatusStore().read())
     }
     @MainActor private func readAuthorizedSnapshot() -> NearbyE85Snapshot? {
-        // Permission is checked again in the extension; it never requests a location or
-        // claims to track travel while the app is closed. Denied access hides cached data.
-        // 85Blends 2.4.1 — the same rule the widget's own refresh uses: app location permission
-        // AND the user's widget-location choice (isAuthorizedForWidgetUpdates). Location-derived
-        // cached data is shown only when the widget itself is allowed location.
-        guard NearbyE85CoreLocationFixer.widgetLocationAuthorized() else {
-            return .permissionRequired(at: .now)
+        Self.displayableSnapshot(appAuthorization: CLLocationManager().authorizationStatus, now: .now) {
+            NearbyE85Cache().read()
         }
-        return NearbyE85Cache().read()
+    }
+    /// Permission is checked again in the extension; it never requests a location or claims to
+    /// track travel while the app is closed. Denied, restricted, or never-granted APP location
+    /// access hides cached data. 85Blends 2.4.1 — the widget's own location grant
+    /// (isAuthorizedForWidgetUpdates) gates only the widget's own refresh, not this cache: the
+    /// cache was written from the app's location, exactly as 2.4.0 showed it, and keeps its
+    /// "last app location" / "Older location" labels and 24-hour expiry. Without this, users
+    /// updating from 2.4.0 who have not yet granted widget location lose their stations.
+    @MainActor static func displayableSnapshot(appAuthorization: CLAuthorizationStatus, now: Date,
+                                               readCache: () -> NearbyE85Snapshot?) -> NearbyE85Snapshot? {
+        guard appAuthorization == .authorizedAlways || appAuthorization == .authorizedWhenInUse else {
+            return .permissionRequired(at: now)
+        }
+        return readCache()
     }
     // Medium is map-only (full-bleed); large reserves its bottom portion for a station list.
     // Small keeps its existing text-only layout and never renders a map. Medium always renders
