@@ -83,6 +83,14 @@ device (publish an empty catalog to clear it).
 | `CONFLICT` | 4 | Uploaded, but the origin now holds a *different* document: someone else published |
 | `UPLOADED, but the origin read-back failed` | 5 | Stored, but unconfirmed; check the dashboard |
 | `UNKNOWN` | 6 | The request didn't complete; it may or may not be stored |
+| `UPLOADED, but the origin still serves the previous publication` | 7 | Upload accepted, but after retrying the origin still shows the old document; read it back before publishing again |
+
+Right after an overwrite, Storage can briefly serve the previous object, so the tool retries the
+origin read-back (reads only; never the upload). All verification reads share one 30 s
+wall-clock deadline: a slow connect, trickled headers or a trickled success or error body is cut
+off and its connection closed. Our exact bytes mean success. Still failing, timed out, or the
+object missing is exit 5, and the message says which. Any *other* document (neither ours nor the one live before the upload) is
+`CONFLICT`: content we didn't write is live, and the tool can't tell who wrote it.
 
 **Concurrency is not protected.** Supabase Storage has no conditional (compare-and-swap) write,
 so the tool can't prevent two people overwriting each other. Its origin read-back (exit 4) catches

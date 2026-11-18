@@ -8,6 +8,7 @@ import copy
 import json
 import pathlib
 import re
+import time
 import unittest
 
 import validate_catalog as v
@@ -264,6 +265,146 @@ class StagingPublisherTests(unittest.TestCase):
         for code_message in (self.p.verification_outcome(ours, 200, ours, 404, b""),):
             self.assertNotIn("NOT PUBLISHED", code_message[0])
 
+    def _via_fetch(self, url, key=None, deadline=None, clock=None):
+        """Stand-in for bounded_fetch in mock-based tests: the same GET through the mocked urlopen."""
+        return self.p.fetch(url, key)
+
+    def readback(self, responses, ours, previous):
+        """read_back_origin over scripted origin responses; returns (status, body, fetch count)."""
+        replies, waits = list(responses), []
+        def fetch_origin(attempt_deadline):
+            status, body = replies.pop(0) if replies else responses[-1]
+            return status, body, {}
+        status, body = self.p.read_back_origin(fetch_origin, ours, previous,
+                                               deadline=time.monotonic() + 1000, sleep=waits.append)
+        return status, body, len(waits)
+
+    def test_stale_origin_then_ours_is_published_not_conflict(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(200, previous), (200, previous), (200, ours)], ours, previous)
+        self.assertEqual((status, body, fetches), (200, ours, 3))
+        message, code = self.p.verification_outcome(ours, status, body, 200, ours, previous)
+        self.assertEqual(code, 0)
+
+    def test_origin_stale_throughout_is_unconfirmed_not_conflict(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(200, previous)], ours, previous)
+        self.assertEqual(fetches, len(self.p.READBACK_DELAYS), "retried every attempt")
+        self.assertLessEqual(sum(self.p.READBACK_DELAYS), 15, "bounded wait")
+        message, code = self.p.verification_outcome(ours, status, body, 200, previous, previous)
+        self.assertEqual(code, 7)
+        self.assertTrue(message.startswith("UPLOADED"))
+        self.assertNotIn("CONFLICT", message)
+
+    def test_third_document_is_conflict_without_waiting(self):
+        ours, previous, theirs = b"ours", b"previous", b"theirs"
+        status, body, fetches = self.readback([(200, theirs)], ours, previous)
+        self.assertEqual((body, fetches), (theirs, 1))
+        message, code = self.p.verification_outcome(ours, status, body, 200, theirs, previous)
+        self.assertEqual(code, 4)
+        self.assertIn("CONFLICT", message)
+
+    def test_failed_origin_reads_are_retried(self):
+        ours, previous = b"ours", b"previous"
+        status, body, fetches = self.readback([(0, b"reset"), (503, b""), (200, ours)], ours, previous)
+        self.assertEqual((status, body, fetches), (200, ours, 3))
+        status, _, _ = self.readback([(0, b"reset")], ours, previous)
+        self.assertEqual(self.p.verification_outcome(ours, status, b"", 200, ours, previous)[1], 5)
+
+    def test_read_back_attempts_and_waits_stay_within_the_deadline(self):
+        now = [0.0]
+        allowances = []
+        def fetch_origin(attempt_deadline):  # every read hangs until its own deadline, then fails
+            allowances.append(attempt_deadline - now[0])
+            now[0] = attempt_deadline
+            return 0, self.p.DEADLINE_EXCEEDED, {}
+        def sleep(seconds):
+            now[0] += seconds
+        status, _ = self.p.read_back_origin(fetch_origin, b"ours", b"previous", deadline=20.0,
+                                            sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(status, 0)
+        self.assertLessEqual(now[0], 20.0, "attempts + waits stay within the deadline")
+        self.assertTrue(all(0 < a <= self.p.READBACK_REQUEST_TIMEOUT for a in allowances))
+        self.assertGreaterEqual(len(allowances), 2, "a hanging read still leaves time to retry")
+
+    def test_matching_requires_exact_bytes_not_just_the_revision(self):
+        ours = self.p.encode({"revision": "r1", "publishedAt": 5, "brands": []})
+        same_revision = self.p.encode({"revision": "r1", "publishedAt": 5, "brands": [{"id": "x"}]})
+        status, body, _ = self.readback([(200, same_revision)], ours, b"previous")
+        message, code = self.p.verification_outcome(ours, status, body, 200, same_revision, b"previous")
+        self.assertEqual(code, 4)
+
+    def test_exhausted_reads_name_missing_object_and_transport_failure_apart(self):
+        ours, previous = b"ours", b"previous"
+        missing = b'{"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}'
+        status, body, fetches = self.readback([(400, missing)], ours, previous)
+        self.assertEqual(fetches, len(self.p.READBACK_DELAYS))
+        message, code = self.p.verification_outcome(ours, status, body, 200, ours, previous)
+        self.assertEqual(code, 5)
+        self.assertIn("no object", message)
+        message, code = self.p.verification_outcome(ours, 0, b"reset", 200, ours, previous)
+        self.assertEqual(code, 5)
+        self.assertIn("could not connect", message)
+        self.assertNotIn("no object", message)
+        message, code = self.p.verification_outcome(ours, 200, previous, 200, previous, previous)
+        self.assertEqual(code, 7)
+
+    def test_conflict_reports_observed_content_without_claiming_a_publisher(self):
+        message, code = self.p.verification_outcome(b"ours", 200, b"theirs", 200, b"theirs", b"previous")
+        self.assertEqual(code, 4)
+        self.assertIn("neither our upload nor", message)
+        self.assertNotIn("replaced ours", message)
+
+    def test_key_is_never_printed_on_any_upload_error_path(self):
+        import contextlib, io, os, unittest.mock, urllib.error
+        key = "eyJ-test-service-role-never-print"
+        echo = f'{{"message":"bad token {key}"}}'.encode()
+
+        def run(script):
+            calls = list(script)
+            def fake_urlopen(request, timeout=None):
+                outcome = calls.pop(0) if calls else calls_tail[0]
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                status, body = outcome
+                if status != 200:
+                    raise urllib.error.HTTPError(request.full_url, status, "error", {}, io.BytesIO(body))
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = status
+                response.__enter__.return_value.read.return_value = body
+                response.__enter__.return_value.headers = {}
+                return response
+            calls_tail = [script[-1]]
+            out = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": key}), \
+                 unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+                 unittest.mock.patch.object(self.p.time, "sleep"), \
+                 unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
+                 contextlib.redirect_stdout(out):
+                code = self.p.main([self.a, "--upload"])
+            return code, out.getvalue()
+
+        paths = {
+            "live read refused": [(403, echo)],
+            "live read transport": [urllib.error.URLError(f"reset {key}")],
+            "upload refused": [self.missing_object, (403, echo)],
+            "upload transport": [self.missing_object, urllib.error.URLError(f"reset {key}")],
+            "origin read-back refused": [self.missing_object, (200, b"{}"), (403, echo)],
+            "origin read-back transport": [self.missing_object, (200, b"{}"), urllib.error.URLError(f"reset {key}")],
+            "conflict": [self.missing_object, (200, b"{}"), (200, echo)],
+        }
+        for name, script in paths.items():
+            with self.subTest(name):
+                code, output = run(script)
+                self.assertNotEqual(code, 0)
+                self.assertNotIn(key, output)
+
+    def test_first_publication_has_no_previous_to_mistake_for_staleness(self):
+        ours, theirs = b"ours", b"theirs"
+        status, body, fetches = self.readback([(200, theirs)], ours, None)
+        self.assertEqual(fetches, 1)
+        self.assertEqual(self.p.verification_outcome(ours, status, body, 200, theirs, None)[1], 4)
+
     def test_key_is_redacted_from_printed_server_text(self):
         key = "service-role-secret-value"
         self.assertEqual(self.p.redact(f"error near {key} here", key), "error near <redacted> here")
@@ -307,13 +448,16 @@ class StagingPublisherTests(unittest.TestCase):
         out = io.StringIO()
         with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
              unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             unittest.mock.patch.object(self.p.time, "sleep"), \
+             unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
              contextlib.redirect_stdout(out):
             code = self.p.main([self.a, "--upload"])
         return code, out.getvalue()
 
     def test_origin_read_back_transport_failure_reports_uploaded_unverified(self):
         import urllib.error
-        code, output = self._run_upload([urllib.error.URLError("connection reset"), (200, b"x", {})])
+        failures = [urllib.error.URLError("connection reset")] * len(self.p.READBACK_DELAYS)
+        code, output = self._run_upload([*failures, (200, b"x", {})])
         self.assertEqual(code, 5)
         self.assertIn("UPLOADED", output)
         self.assertNotIn("NOT PUBLISHED", output)
@@ -355,6 +499,7 @@ class StagingPublisherTests(unittest.TestCase):
         out = io.StringIO()
         with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
              unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
              contextlib.redirect_stdout(out):
             code = self.p.main([self.a, "--upload"])
         return code, out.getvalue()
@@ -441,6 +586,172 @@ class SeedParityTests(unittest.TestCase):
     def test_schema_file_is_valid_json_and_lists_kinds(self):
         schema = json.loads(SCHEMA.read_text())
         self.assertEqual(schema["properties"]["schemaVersion"]["const"], 1)
+
+
+class PublisherDeadlineServerTests(unittest.TestCase):
+    """main --upload against a REAL local HTTP server that stalls verification reads by trickling
+    bytes (headers, success body, error body). The deadline must hold anyway, the stalled
+    connections must be closed, the upload must happen exactly once, the outcome must be reported
+    as uncertain, and the key must never be printed."""
+
+    KEY = "eyJ-local-trickle-test-key-never-print"
+    BUDGET, RESERVE, ATTEMPT = 1.6, 0.6, 0.5
+    TOLERANCE = 1.5  # scheduling slack on a loaded machine; the budget itself is 1.6 s
+    MISSING = b'{"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}'
+
+    def setUp(self):
+        import http.server, threading
+        import publish_catalog
+        self.p = publish_catalog
+        test = self
+        self.lock = threading.Lock()
+        self.uploads, self.stored, self.origin_gets = 0, None, 0
+        self.trickles_started, self.trickles_closed = 0, 0
+        self.origin_mode, self.public_mode = "fast-ours", "fast-ours"
+        self.stopping = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                with test.lock:
+                    test.uploads += 1
+                    test.stored = body
+                self._send(200, b'{"Key":"recommended-gear/staging/catalog-v1.json"}')
+
+            def do_GET(self):
+                if "/object/authenticated/" in self.path:
+                    with test.lock:
+                        test.origin_gets += 1
+                        first = test.origin_gets == 1
+                    mode = "fast-missing" if first else test.origin_mode  # first GET: live read
+                else:
+                    mode = test.public_mode
+                if mode == "fast-ours":
+                    self._send(200, test.stored or b"")
+                elif mode == "fast-missing":
+                    self._send(400, test.MISSING)
+                elif mode == "trickle-200":
+                    self._trickle(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n", b"x")
+                elif mode == "trickle-503":
+                    head = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 100000\r\n\r\n"
+                    self._trickle(head + f'{{"message":"slow error {test.KEY}"'.encode(), b" ")
+                elif mode == "trickle-headers":
+                    self._trickle(b"HTTP/1.1 200 OK\r\nX-Slow: ", b"a")
+
+            def _send(self, status, body):
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _trickle(self, prefix, unit):
+                import time as clock
+                with test.lock:
+                    test.trickles_started += 1
+                try:
+                    self.wfile.write(prefix)
+                    self.wfile.flush()
+                    end = clock.monotonic() + 20
+                    while clock.monotonic() < end and not test.stopping.is_set():
+                        clock.sleep(0.05)
+                        self.wfile.write(unit)
+                        self.wfile.flush()
+                except OSError:  # the publisher closed the connection
+                    with test.lock:
+                        test.trickles_closed += 1
+                self.close_connection = True
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self):
+        self.stopping.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+    def run_upload(self):
+        import contextlib, io, os, time as clock, unittest.mock
+        p, base, path = self.p, self.base, f"{self.p.BUCKET}/{self.p.STAGING_PATH}"
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": self.KEY}), \
+             unittest.mock.patch.object(p, "origin_url", lambda: f"{base}/storage/v1/object/authenticated/{path}"), \
+             unittest.mock.patch.object(p, "public_url", lambda: f"{base}/storage/v1/object/public/{path}"), \
+             unittest.mock.patch.object(p, "upload_url", lambda: f"{base}/storage/v1/object/{path}"), \
+             unittest.mock.patch.object(p, "VERIFY_BUDGET", self.BUDGET), \
+             unittest.mock.patch.object(p, "PUBLIC_READ_RESERVE", self.RESERVE), \
+             unittest.mock.patch.object(p, "READBACK_REQUEST_TIMEOUT", self.ATTEMPT), \
+             unittest.mock.patch.object(p, "READBACK_DELAYS", (0, 0.05, 0.05, 0.05)), \
+             contextlib.redirect_stdout(out):
+            start = clock.monotonic()
+            code = p.main([str(ROOT / "docs/remote-gear/staging/publication-a.json"), "--upload"])
+            elapsed = clock.monotonic() - start
+        return code, out.getvalue(), elapsed
+
+    def assert_bounded_and_closed(self, elapsed, output):
+        import threading, time as clock
+        self.assertLessEqual(elapsed, self.BUDGET + self.TOLERANCE, f"took {elapsed:.2f} s")
+        self.assertEqual(self.uploads, 1, "exactly one upload; retries are reads only")
+        self.assertNotIn(self.KEY, output)
+        self.assertGreaterEqual(self.trickles_started, 1, "the stalling path was exercised")
+        settle = clock.monotonic() + 3
+        while clock.monotonic() < settle:
+            with self.lock:
+                closed = self.trickles_closed == self.trickles_started
+            workers = [t for t in threading.enumerate() if t.name == "publisher-bounded-fetch" and t.is_alive()]
+            if closed and not workers:
+                break
+            clock.sleep(0.05)
+        self.assertEqual(self.trickles_closed, self.trickles_started, "every stalled connection was closed")
+        self.assertEqual(workers, [], "no read is still running after the deadline")
+
+    def test_trickling_success_body_is_cut_off_and_reported_unconfirmed(self):
+        self.origin_mode, self.public_mode = "trickle-200", "fast-missing"
+        code, output, elapsed = self.run_upload()
+        self.assertEqual(code, 5, output)
+        self.assertIn("UPLOADED, but the origin read-back failed after retrying (timed out", output)
+        self.assertNotIn("NOT PUBLISHED", output)
+        self.assert_bounded_and_closed(elapsed, output)
+        self.assertGreaterEqual(self.origin_gets - 1, 2, "a stalled attempt still leaves time to retry")
+
+    def test_trickling_error_body_is_cut_off_and_reported_unconfirmed(self):
+        self.origin_mode, self.public_mode = "trickle-503", "fast-missing"
+        code, output, elapsed = self.run_upload()
+        self.assertEqual(code, 5, output)
+        self.assertIn("(timed out", output)
+        self.assert_bounded_and_closed(elapsed, output)
+
+    def test_trickling_headers_are_cut_off_and_reported_unconfirmed(self):
+        self.origin_mode, self.public_mode = "trickle-headers", "fast-missing"
+        code, output, elapsed = self.run_upload()
+        self.assertEqual(code, 5, output)
+        self.assertIn("(timed out", output)
+        self.assert_bounded_and_closed(elapsed, output)
+
+    def test_trickling_public_read_keeps_the_origin_verification(self):
+        self.origin_mode, self.public_mode = "fast-ours", "trickle-200"
+        code, output, elapsed = self.run_upload()
+        self.assertEqual(code, 3, output)
+        self.assertIn("PUBLISHED (origin verified)", output)
+        self.assertIn("timed out", output)
+        self.assert_bounded_and_closed(elapsed, output)
+
+    def test_fast_responses_pass_through_unchanged(self):
+        import time as clock
+        self.stored, self.origin_gets = b'{"ok":true}', 1  # past the live read
+        url = f"{self.base}/storage/v1/object/authenticated/x"
+        status, body, headers = self.p.bounded_fetch(url, self.KEY, clock.monotonic() + 2)
+        self.assertEqual((status, body), (200, b'{"ok":true}'))
+        self.origin_mode = "fast-missing"
+        status, body, _ = self.p.bounded_fetch(url, None, clock.monotonic() + 2)
+        self.assertEqual((status, body), (400, self.MISSING))
 
 
 if __name__ == "__main__":

@@ -15,8 +15,13 @@ Steps, in order:
      (the same rules the apps apply). Anything a device would reject stops here.
   4. --upload only: upload with Content-Type application/json and Cache-Control max-age=60. Then
      verify separately:
-       - ORIGIN read-back (authoritative): must hold exactly our bytes. If not, another
-         publication replaced ours: reported as CONFLICT, exit 4.
+       - ORIGIN read-back (authoritative): must hold exactly our bytes. Storage can briefly
+         serve the previous object after an overwrite, so a failed or still-previous read-back
+         is retried (reads only). All verification reads share one 30 s wall-clock deadline that
+         cuts off slow connects, headers and bodies, and closes the connection. Still the previous
+         document after that: exit 7 (unconfirmed, read back before publishing again). Still
+         failing or missing: exit 5. Any other document: CONFLICT, exit 4 (content we did not
+         write is live; the tool cannot tell who wrote it).
        - PUBLIC read-back (what devices see, through the CDN): may lag by up to max-age. A lag is
          reported as "PUBLISHED, CDN not yet updated", exit 3, never as "nothing published".
 
@@ -40,12 +45,16 @@ Production is deliberately not supported by this tool.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import pathlib
+import socket
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -82,22 +91,163 @@ def redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "<redacted>") if secret else text
 
 
+# Verification after an upload (origin read-back with retries, then the public read) runs under ONE
+# wall-clock deadline: VERIFY_BUDGET seconds in all, of which the last PUBLIC_READ_RESERVE seconds
+# are kept for the public read. Every read is a GET (the upload is never repeated) and is cut off
+# at its deadline whatever the server does: slow connect, trickled headers, or a trickled success
+# or error body. Storage can serve the previous object for a moment right after an overwrite, so
+# a read-back that fails or still shows the pre-upload document is retried within that budget.
+VERIFY_BUDGET = 30.0
+PUBLIC_READ_RESERVE = 10.0
+READBACK_DELAYS = (0, 1, 2, 3, 4)
+READBACK_REQUEST_TIMEOUT = 10.0
+DEADLINE_EXCEEDED = b"verification deadline reached"
+
+
+def request_headers(key: str | None) -> dict:
+    headers = {"Cache-Control": "no-cache"}
+    if key:
+        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
+    return headers
+
+
+def bounded_fetch(url: str, key: str | None, deadline: float, clock=None) -> tuple[int, bytes, dict]:
+    """GET `url`, returning by `deadline` (a `time.monotonic()` value) whatever the server does.
+
+    The request runs on a worker thread with its own connection. The caller waits only until the
+    deadline; if the worker is still busy (connecting, waiting for headers, or reading a success
+    or error body), the socket is shut down and the connection closed, which unblocks and ends
+    the worker, and (0, DEADLINE_EXCEEDED, {}) is returned. A transport failure returns status 0
+    with the reason as the body, like `fetch`. Only a DNS lookup cannot be interrupted; it is
+    abandoned (daemon thread) and never sends a request.
+    """
+    clock = clock or time.monotonic
+    parts = urllib.parse.urlsplit(url)
+    connection_class = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    target = parts.path + (f"?{parts.query}" if parts.query else "")
+    state = {"connection": None, "result": None}
+    stop = threading.Event()
+
+    def work():
+        connection = None
+        try:
+            remaining = deadline - clock()
+            if remaining <= 0 or stop.is_set():
+                return
+            connection = connection_class(parts.hostname, parts.port,
+                                          timeout=min(READBACK_REQUEST_TIMEOUT, remaining))
+            state["connection"] = connection
+            connection.connect()
+            if stop.is_set():
+                return
+            connection.request("GET", target, headers=request_headers(key))
+            response = connection.getresponse()
+            body = response.read()
+            if not stop.is_set():
+                state["result"] = (response.status, body, dict(response.getheaders()))
+        except Exception as error:  # noqa: BLE001 - socket timeouts, resets, HTTP errors, and
+            # whatever http.client raises once the caller has shut the socket down
+            if not stop.is_set():
+                state["result"] = (0, str(error).encode("utf-8", "replace"), {})
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    worker = threading.Thread(target=work, name="publisher-bounded-fetch", daemon=True)
+    worker.start()
+    worker.join(max(0.0, deadline - clock()))
+    if worker.is_alive() or state["result"] is None:
+        stop.set()
+        # Shutting the socket down unblocks a read in progress; the worker then closes its own
+        # connection. Closing it from here is only a fallback for a worker that did not exit.
+        connection = state["connection"]
+        sock = connection.sock if connection is not None else None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        worker.join(1.0)
+        if worker.is_alive() and connection is not None:
+            try:
+                connection.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return 0, DEADLINE_EXCEEDED, {}
+    return state["result"]
+
+
+def read_back_origin(fetch_origin, ours: bytes, previous: bytes | None, deadline: float,
+                     delays=None, sleep=None, clock=None) -> tuple[int, bytes]:
+    """(status, body) of the origin once it settles, by `deadline` (a `clock()` value).
+
+    `fetch_origin(attempt_deadline)` performs one read that must return by `attempt_deadline`
+    (see `bounded_fetch`) and returns (status, body, headers). Retries while the origin fails or
+    still serves `previous`; stops at once on our exact bytes or on any other 200 document. Each
+    attempt gets at most READBACK_REQUEST_TIMEOUT seconds, so one hanging read leaves time for a
+    retry, and no attempt or wait goes past `deadline`.
+    """
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    status, body = 0, b"no read-back attempted"
+    for delay in READBACK_DELAYS if delays is None else delays:
+        if clock() + delay >= deadline:
+            break
+        sleep(delay)
+        now = clock()
+        if now >= deadline:
+            break
+        status, body, _ = fetch_origin(min(deadline, now + READBACK_REQUEST_TIMEOUT))
+        if status == 200 and (body == ours or body != previous):
+            break
+    return status, body
+
+
+def origin_object_missing(status: int, body: bytes) -> bool:
+    if status not in (400, 404):
+        return False
+    try:
+        return classify_live_response(status, body) == "absent"
+    except PublishError:
+        return False
+
+
 def verification_outcome(ours: bytes, origin_status: int, origin_bytes: bytes,
-                         public_status: int, public_bytes: bytes) -> tuple[str, int]:
+                         public_status: int, public_bytes: bytes,
+                         previous: bytes | None = None) -> tuple[str, int]:
     """Classifies the post-upload checks. Returns (message, exit code).
 
     The upload already succeeded when this is called; nothing here may say otherwise.
+    `previous` is the live document read before the upload (None for a first publication).
     """
     if origin_status != 200:
-        failure = "could not connect" if origin_status == 0 else f"HTTP {origin_status}"
-        return (f"UPLOADED, but the origin read-back failed ({failure}); "
+        if origin_object_missing(origin_status, origin_bytes):
+            failure = "the origin reports no object at this path"
+        elif origin_status == 0 and origin_bytes == DEADLINE_EXCEEDED:
+            failure = "timed out: verification deadline reached"
+        elif origin_status == 0:
+            failure = "could not connect"
+        else:
+            failure = f"HTTP {origin_status}"
+        return (f"UPLOADED, but the origin read-back failed after retrying ({failure}); "
                 "check the object in the Supabase dashboard before publishing again", 5)
+    if origin_bytes != ours and previous is not None and origin_bytes == previous:
+        return ("UPLOADED, but the origin still serves the previous publication after retrying; "
+                "Storage may not be consistent yet. Read the object back before publishing again", 7)
     if origin_bytes != ours:
-        return ("CONFLICT: uploaded, but the origin now holds a different document: another "
-                "publication replaced ours. Do not publish again until you know which is live", 4)
+        return ("CONFLICT: uploaded, but the origin serves content that is neither our upload nor "
+                "the publication live before it. The cause is not known (possibly another "
+                "publisher). Do not publish again until you know which document is live", 4)
     if public_status == 200 and public_bytes == ours:
         return ("PUBLISHED and verified: origin and public URL serve the new document", 0)
-    public = "could not connect" if public_status == 0 else f"HTTP {public_status}"
+    if public_status == 0 and public_bytes == DEADLINE_EXCEEDED:
+        public = "timed out: verification deadline reached"
+    elif public_status == 0:
+        public = "could not connect"
+    else:
+        public = f"HTTP {public_status}"
     return (f"PUBLISHED (origin verified). The public URL does not serve it yet ({public}); "
             f"the CDN may keep the previous copy for up to {CACHE_CONTROL}", 3)
 
@@ -139,16 +289,13 @@ def encode(document: dict) -> bytes:
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def fetch(url: str, key: str | None = None) -> tuple[int, bytes, dict]:
+def fetch(url: str, key: str | None = None, timeout: float = 20) -> tuple[int, bytes, dict]:
     """(HTTP status, body, headers). A transport failure (no connection, reset, timeout) returns
     status 0 with the reason as the body, so callers report it instead of crashing; after a
     successful upload that keeps "uploaded but unverified" distinct from "not published"."""
-    headers = {"Cache-Control": "no-cache"}
-    if key:
-        headers.update({"Authorization": f"Bearer {key}", "apikey": key})
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(url, headers=request_headers(key))
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as error:
         return error.code, error.read(), dict(error.headers)
@@ -222,9 +369,14 @@ def main(argv: list[str]) -> int:
               "it may or may not have been stored. Check the origin before retrying")
         return 6
 
-    origin_status, origin_bytes, _ = fetch(origin_url(), key)
-    public_status, public_bytes, headers = fetch(public_url())
-    message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes)
+    previous = body if live is not None else None
+    verify_deadline = time.monotonic() + VERIFY_BUDGET
+    origin_status, origin_bytes = read_back_origin(
+        lambda attempt_deadline: bounded_fetch(origin_url(), key, attempt_deadline),
+        raw, previous, deadline=verify_deadline - PUBLIC_READ_RESERVE)
+    public_status, public_bytes, headers = bounded_fetch(public_url(), None, verify_deadline)
+    message, code = verification_outcome(raw, origin_status, origin_bytes, public_status, public_bytes,
+                                         previous)
     print(message)
     if code == 0:
         print(f"public headers: Cache-Control={headers.get('Cache-Control')} ETag={headers.get('ETag')}")
