@@ -28,12 +28,17 @@ CloudKit/SwiftData sync is a **core 85Blends capability available to every user,
 
 ## Xcode Cloud Workflows
 
-Workflows and their start conditions live in App Store Connect, not this repo. Only what has been observed is recorded here; don't infer other trigger rules or settings.
+Workflows and their start conditions live in App Store Connect, not this repo. The table below is confirmed from the workflow settings (both last modified Oct 9, 2026); if they change in App Store Connect, this table is stale. Don't infer other trigger rules or settings.
 
-| Workflow | What is known |
-|---|---|
-| **Default** | Archives the normal app (`EightyFiveBlends` scheme, `Release`, `com.e85blends.app.ios`) and delivers it to TestFlight. Build 293 archived and completed TestFlight delivery from `main` commit `0955482`. This is the path to TestFlight. |
-| **85Blends Internal** | Manual start, test-only: no Archive action and no post-actions, so it delivers nothing. |
+| | **85Blends Internal** | **Default** |
+|---|---|---|
+| Start condition | **Manual start only** (any branch or pull request). No automatic branch, pull request or tag trigger | **Manual start only** (any branch). Pull request and tag not enabled |
+| Action | Test - iOS, `EightyFiveBlends Internal` scheme | Archive - iOS, `EightyFiveBlends` scheme (`Release`, production bundle `com.e85blends.app.ios`), distribution preparation App Store Connect |
+| Archive / upload | **None**: no archive, no post-actions, delivers nothing | Uploads the archive to App Store Connect |
+| TestFlight | None | Post-action **TestFlight Internal Testing**, group **Test** |
+| Purpose | Running the test suite on demand | The path to TestFlight (e.g. Build 293 from `main` commit `0955482`) |
+
+Pushes and pull requests start neither workflow; every run is started by hand in App Store Connect.
 
 Configuration notes (from the project file): `PRODUCT_BUNDLE_IDENTIFIER` is set **per configuration** on the single `EightyFiveBlends` target (`Internal` → `.internal`, `Debug`/`Release` → production), and each shared scheme pins its Archive action to one configuration.
 
