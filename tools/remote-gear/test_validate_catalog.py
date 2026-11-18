@@ -405,6 +405,87 @@ class StagingPublisherTests(unittest.TestCase):
         self.assertEqual(fetches, 1)
         self.assertEqual(self.p.verification_outcome(ours, status, body, 200, theirs, None)[1], 4)
 
+    def test_secret_key_is_sent_only_as_apikey_and_legacy_jwt_keeps_bearer(self):
+        self.assertEqual(self.p.auth_headers("sb_secret_abc"), {"apikey": "sb_secret_abc"})
+        self.assertEqual(self.p.auth_headers("eyJlegacy"),
+                         {"apikey": "eyJlegacy", "Authorization": "Bearer eyJlegacy"})
+        for wrong in ("sb_publishable_abc", "random-token"):
+            with self.assertRaises(self.p.PublishError) as raised:
+                self.p.auth_headers(wrong)
+            self.assertNotIn(wrong, str(raised.exception))
+
+    def test_secret_key_variable_takes_precedence_over_legacy_name(self):
+        self.assertEqual(self.p.read_key({"SUPABASE_SECRET_KEY": " sb_secret_new ",
+                                          "SUPABASE_SERVICE_ROLE_KEY": "eyJold"}),
+                         ("sb_secret_new", "SUPABASE_SECRET_KEY"))
+        self.assertEqual(self.p.read_key({"SUPABASE_SERVICE_ROLE_KEY": "eyJold"}),
+                         ("eyJold", "SUPABASE_SERVICE_ROLE_KEY"))
+        self.assertEqual(self.p.read_key({}), (None, None))
+
+    def _run_with_key(self, env, argv, statuses):
+        """main() with `env` and scripted GET statuses; returns (code, output, requests seen)."""
+        import contextlib, io, os, unittest.mock, urllib.error
+        seen, replies = [], list(statuses)
+        def fake_urlopen(request, timeout=None):
+            seen.append(request)
+            if request.get_method() == "POST":
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.status = 200
+                return response
+            status, body = replies.pop(0) if replies else statuses[-1]
+            if status != 200:
+                raise urllib.error.HTTPError(request.full_url, status, "error", {}, io.BytesIO(body))
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.status = 200
+            response.__enter__.return_value.read.return_value = body
+            response.__enter__.return_value.headers = {}
+            return response
+        clean = {k: v for k, v in os.environ.items() if k not in self.p.KEY_ENV_VARS}
+        out = io.StringIO()
+        with unittest.mock.patch.dict(os.environ, {**clean, **env}, clear=True), \
+             unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             unittest.mock.patch.object(self.p.time, "sleep"), \
+             unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
+             contextlib.redirect_stdout(out):
+            code = self.p.main(argv)
+        return code, out.getvalue(), seen
+
+    def test_upload_with_secret_key_never_sends_it_as_bearer(self):
+        key = "sb_secret_upload-test-key"
+        code, output, seen = self._run_with_key({"SUPABASE_SECRET_KEY": key}, [self.a, "--upload"],
+                                                [self.missing_object, (200, b"not ours")])
+        self.assertTrue(seen, "requests were made")
+        for request in seen:
+            self.assertIsNone(request.get_header("Authorization"), request.get_method())
+            if "/object/public/" in request.full_url:
+                self.assertIsNone(request.get_header("Apikey"), "public reads carry no credentials")
+            else:
+                self.assertEqual(request.get_header("Apikey"), key, request.full_url)
+        self.assertIn("POST", [r.get_method() for r in seen])
+        self.assertNotIn(key, output)
+
+    def test_publishable_key_is_refused_before_any_request(self):
+        key = "sb_publishable_should-not-write"
+        for argv in ([self.a, "--upload"], [self.a, "--verify-key"]):
+            code, output, seen = self._run_with_key({"SUPABASE_SECRET_KEY": key}, argv, [(200, b"{}")])
+            self.assertEqual((code, seen), (1, []))
+            self.assertIn("publishable", output)
+            self.assertNotIn(key, output)
+
+    def test_verify_key_reads_origin_only_and_reports_acceptance(self):
+        key = "sb_secret_verify-test-key"
+        missing = self.missing_object
+        for statuses, expected in (([(200, b"{}")], 0), ([missing], 0), ([(401, b"")], 1),
+                                   ([(403, b'{"message":"Invalid Compact JWS"}')], 1)):
+            code, output, seen = self._run_with_key({"SUPABASE_SECRET_KEY": key},
+                                                    [self.a, "--verify-key"], statuses)
+            with self.subTest(statuses=statuses[0][0]):
+                self.assertEqual(code, expected)
+                self.assertEqual([r.get_method() for r in seen], ["GET"], "one read, never an upload")
+                self.assertIn("/object/authenticated/", seen[0].full_url)
+                self.assertIn("accepted" if expected == 0 else "NOT accepted", output)
+                self.assertNotIn(key, output)
+
     def test_key_is_redacted_from_printed_server_text(self):
         key = "service-role-secret-value"
         self.assertEqual(self.p.redact(f"error near {key} here", key), "error near <redacted> here")
@@ -446,7 +527,7 @@ class StagingPublisherTests(unittest.TestCase):
             return response
 
         out = io.StringIO()
-        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sb_secret_test"}), \
              unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
              unittest.mock.patch.object(self.p.time, "sleep"), \
              unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
@@ -497,7 +578,7 @@ class StagingPublisherTests(unittest.TestCase):
             raise public_failure  # public read-back: transport failure
 
         out = io.StringIO()
-        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test"}), \
+        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sb_secret_test"}), \
              unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
              unittest.mock.patch.object(self.p, "bounded_fetch", side_effect=self._via_fetch), \
              contextlib.redirect_stdout(out):
@@ -515,7 +596,7 @@ class StagingPublisherTests(unittest.TestCase):
                     raise failure
                 raise urllib.error.HTTPError(request.full_url, 400, "error", {}, io.BytesIO(self.missing_object[1]))
             out = io.StringIO()
-            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sk-test-secret"}), \
+            with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": "sb_secret_test-secret"}), \
                  unittest.mock.patch.object(self.p.urllib.request, "urlopen", side_effect=fake_urlopen), \
                  contextlib.redirect_stdout(out):
                 code = self.p.main([self.a, "--upload"])
@@ -523,7 +604,7 @@ class StagingPublisherTests(unittest.TestCase):
                 self.assertEqual(code, 6)
                 self.assertIn("UNKNOWN", out.getvalue())
                 self.assertNotIn("NOT PUBLISHED", out.getvalue())
-                self.assertNotIn("sk-test-secret", out.getvalue())
+                self.assertNotIn("sb_secret_test-secret", out.getvalue())
 
     def test_pre_upload_transport_failure_stops_without_a_traceback(self):
         import contextlib, io, unittest.mock, urllib.error
@@ -606,6 +687,8 @@ class PublisherDeadlineServerTests(unittest.TestCase):
         test = self
         self.lock = threading.Lock()
         self.uploads, self.stored, self.origin_gets = 0, None, 0
+        self.requests = []  # (method, path, apikey header, Authorization header)
+        self.env = {"SUPABASE_SERVICE_ROLE_KEY": self.KEY}
         self.trickles_started, self.trickles_closed = 0, 0
         self.origin_mode, self.public_mode = "fast-ours", "fast-ours"
         self.stopping = threading.Event()
@@ -617,6 +700,7 @@ class PublisherDeadlineServerTests(unittest.TestCase):
                 pass
 
             def do_POST(self):
+                test.requests.append(("POST", self.path, self.headers.get("apikey"), self.headers.get("Authorization")))
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 with test.lock:
                     test.uploads += 1
@@ -624,6 +708,7 @@ class PublisherDeadlineServerTests(unittest.TestCase):
                 self._send(200, b'{"Key":"recommended-gear/staging/catalog-v1.json"}')
 
             def do_GET(self):
+                test.requests.append(("GET", self.path, self.headers.get("apikey"), self.headers.get("Authorization")))
                 if "/object/authenticated/" in self.path:
                     with test.lock:
                         test.origin_gets += 1
@@ -681,7 +766,8 @@ class PublisherDeadlineServerTests(unittest.TestCase):
         import contextlib, io, os, time as clock, unittest.mock
         p, base, path = self.p, self.base, f"{self.p.BUCKET}/{self.p.STAGING_PATH}"
         out = io.StringIO()
-        with unittest.mock.patch.dict(os.environ, {"SUPABASE_SERVICE_ROLE_KEY": self.KEY}), \
+        clean = {k: v for k, v in os.environ.items() if k not in p.KEY_ENV_VARS}
+        with unittest.mock.patch.dict(os.environ, {**clean, **self.env}, clear=True), \
              unittest.mock.patch.object(p, "origin_url", lambda: f"{base}/storage/v1/object/authenticated/{path}"), \
              unittest.mock.patch.object(p, "public_url", lambda: f"{base}/storage/v1/object/public/{path}"), \
              unittest.mock.patch.object(p, "upload_url", lambda: f"{base}/storage/v1/object/{path}"), \
@@ -742,6 +828,23 @@ class PublisherDeadlineServerTests(unittest.TestCase):
         self.assertIn("PUBLISHED (origin verified)", output)
         self.assertIn("timed out", output)
         self.assert_bounded_and_closed(elapsed, output)
+
+    def test_secret_key_is_sent_only_as_apikey_on_every_privileged_request(self):
+        key = "sb_secret_local-header-test-key"
+        self.env = {"SUPABASE_SECRET_KEY": key}
+        self.origin_mode, self.public_mode = "fast-ours", "fast-ours"
+        code, output, _ = self.run_upload()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.uploads, 1)
+        privileged = [r for r in self.requests if "/object/public/" not in r[1]]
+        public = [r for r in self.requests if "/object/public/" in r[1]]
+        self.assertGreaterEqual(len(privileged), 3, "live read, upload, origin read-back")
+        for method, path, apikey, authorization in privileged:
+            self.assertEqual(apikey, key, f"{method} {path}")
+            self.assertIsNone(authorization, f"{method} {path}: a secret key is never a Bearer token")
+        for method, path, apikey, authorization in public:
+            self.assertEqual((apikey, authorization), (None, None), "public reads carry no credentials")
+        self.assertNotIn(key, output)
 
     def test_fast_responses_pass_through_unchanged(self):
         import time as clock
