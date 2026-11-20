@@ -304,10 +304,9 @@ enum FeaturedGearPage: Identifiable {
     static let brandBadgeTitle = "Featured Brand"
     static let sponsorBadgeTitle = "Sponsor"
 
-    /// Exactly two pages: eFlexFuel (neutral Featured Brand, with its approved promotion) then RVP
-    /// Supply (sponsor).
+    /// The bundled defaults: RVP Supply (sponsor) only. eFlexFuel is pending partner approval
+    /// (`GearPartnerApproval`), so it is not bundled; an approved publication can still show it.
     static let catalog: [FeaturedGearPage] = [
-        .brand(.eFlexFuel),
         .sponsor(.rvpSupplyWheels)
     ]
 }

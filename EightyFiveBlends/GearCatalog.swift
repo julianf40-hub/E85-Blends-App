@@ -84,6 +84,9 @@ struct GearCatalog: Decodable {
         let accessibilityDescription: String?
         /// Withdrawn from every screen without deleting its content from the document.
         let hidden: Bool?
+        /// Partner sign-off for a brand listed in `GearPartnerApproval.pendingBrandIDs`. Such a brand
+        /// (and its offer) is shown only when this is `true`; it is ignored for every other brand.
+        let approved: Bool?
         /// Present = also placed on the More screen (a Featured Brand card for `brand`, the
         /// "Sponsored by" banner for `rvp_wheels`).
         let more: MorePlacement?
@@ -371,6 +374,20 @@ enum GearBundledArtwork {
     }
 }
 
+// MARK: - Partner approval
+
+/// Brands whose placement and offer are still awaiting partner approval. A pending brand is kept off
+/// both screens, whatever the bundled defaults, a previously cached publication or a refresh says,
+/// until a publication explicitly marks its entry `"approved": true`. Its content, artwork and
+/// offer styling stay in the app so an approved catalog can turn it on without an app update.
+nonisolated enum GearPartnerApproval {
+    static let pendingBrandIDs: Set<String> = ["eflexfuel"]
+
+    static func isCleared(brandID: String, approved: Bool?) -> Bool {
+        pendingBrandIDs.contains(brandID) == false || approved == true
+    }
+}
+
 // MARK: - Resolved presentation content
 
 /// The More screen's sponsor banner. The "Sponsored by" disclosure is fixed app copy; only the
@@ -407,7 +424,8 @@ struct GearContent {
                 subtitle: "Performance parts & gear",
                 homepageURL: RVPSupplyDestination.homepage
             ),
-            moreFeaturedBrands: [.eFlexFuel]
+            // eFlexFuel is pending partner approval (GearPartnerApproval), so nothing is bundled here.
+            moreFeaturedBrands: []
         )
     }
 
@@ -422,7 +440,8 @@ struct GearContent {
 extension GearCatalog {
     var supportedBrands: [Brand] {
         brands.compactMap { entry in
-            guard case .supported(let brand) = entry, brand.hidden != true else { return nil }
+            guard case .supported(let brand) = entry, brand.hidden != true,
+                  GearPartnerApproval.isCleared(brandID: brand.id, approved: brand.approved) else { return nil }
             return brand
         }
     }

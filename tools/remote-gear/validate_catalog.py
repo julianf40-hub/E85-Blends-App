@@ -27,6 +27,8 @@ from urllib.parse import urlsplit
 SUPPORTED_SCHEMA_VERSION = 1
 MAXIMUM_BYTES = 512_000
 RVP_SPONSOR_ID = "rvp-supply-oem-beadlocks"
+# Mirrors GearPartnerApproval.pendingBrandIDs: shown only when the entry sets "approved": true.
+PENDING_APPROVAL_IDS = {"eflexfuel"}
 
 # Wheel IDs with bundled artwork on BOTH clients (iOS asset catalog, Android drawables). Any other
 # wheel needs imageURL. Keep in sync with RVPWheelProduct.catalog and the README mapping table.
@@ -104,6 +106,14 @@ def validate_shared(brand: dict) -> None:
         raise Invalid(f"{bid}: destinationURL must be https")
     if not optional(brand, "hidden", lambda v: isinstance(v, bool)):
         raise Invalid(f"{bid}: hidden must be a boolean")
+    if not optional(brand, "approved", lambda v: isinstance(v, bool)):
+        raise Invalid(f"{bid}: approved must be a boolean")
+
+
+def is_visible(brand: dict) -> bool:
+    if brand.get("hidden"):
+        return False
+    return brand.get("id") not in PENDING_APPROVAL_IDS or brand.get("approved") is True
 
 
 def validate_neutral(brand: dict) -> None:
@@ -278,7 +288,7 @@ def main(argv: list[str]) -> int:
         return 1
     for warning in warnings:
         print(f"warning: {warning}")
-    brands = [b for b in document["brands"] if not b.get("hidden")]
+    brands = [b for b in document["brands"] if is_visible(b)]
     note = " (identical to the live publication: devices treat it as unchanged)" if ordering == "unchanged" else ""
     print(f"OK: revision {document['revision']}, {len(brands)} visible brand(s){note}")
     return 0

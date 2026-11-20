@@ -664,6 +664,22 @@ class SeedParityTests(unittest.TestCase):
             self.assertIn(f'static let {name} = URL(string: "{rvp[key]}")', self.swift)
         self.assertEqual(rvp["more"]["subtitle"], "Performance parts & gear")
 
+    def test_seed_eflexfuel_is_pending_so_bundled_parity_is_rvp_only(self):
+        ef, rvp = self.seed["brands"]
+        self.assertIn(ef["id"], v.PENDING_APPROVAL_IDS)
+        self.assertNotIn("approved", ef, "eFlexFuel stays off both screens until an approved publication")
+        self.assertEqual([b["id"] for b in self.seed["brands"] if v.is_visible(b)], [rvp["id"]])
+        self.assertIn('moreFeaturedBrands: []', (ROOT / "EightyFiveBlends/GearCatalog.swift").read_text())
+
+    def test_approved_flag_is_boolean_and_enables_pending_brand(self):
+        ef = copy.deepcopy(self.seed["brands"][0])
+        ef["approved"] = "yes"
+        with self.assertRaises(v.Invalid):
+            v.validate(doc(ef))
+        ef["approved"] = True
+        v.validate(doc(ef))
+        self.assertTrue(v.is_visible(ef))
+
     def test_schema_file_is_valid_json_and_lists_kinds(self):
         schema = json.loads(SCHEMA.read_text())
         self.assertEqual(schema["properties"]["schemaVersion"]["const"], 1)

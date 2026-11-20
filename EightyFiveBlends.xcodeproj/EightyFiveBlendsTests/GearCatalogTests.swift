@@ -246,7 +246,7 @@ struct GearCatalogTests {
         #expect(store.source == .bundled)
         #expect(Self.pageIDs(store.content) == FeaturedGearPage.catalog.map(\.id))
         #expect(store.content.moreSponsor?.title == "Sponsored by RVP Supply")
-        #expect(store.content.moreFeaturedBrands.map(\.id) == ["eflexfuel"])
+        #expect(store.content.moreFeaturedBrands.isEmpty, "eFlexFuel is pending approval and not bundled")
     }
 
     @Test func publishingTheBundledEquivalentChangesNothingVisible() throws {
@@ -260,18 +260,77 @@ struct GearCatalogTests {
         #expect(published.configuratorURL == bundled.configuratorURL)
         #expect(published.moreSponsor?.homepageURL == bundled.moreSponsor?.homepageURL)
         #expect(published.moreSponsor?.subtitle == bundled.moreSponsor?.subtitle)
-        #expect(published.moreFeaturedBrands.map(\.id) == ["eflexfuel"])
-        guard case .brand(let eflex) = published.pages[0], case .sponsor(let rvp) = published.pages[1] else {
-            Issue.record("Expected eFlexFuel brand then RVP sponsor")
+        // The seed still lists eFlexFuel, without "approved": it stays off both screens.
+        #expect(published.moreFeaturedBrands.isEmpty)
+        #expect(Self.pageIDs(published) == ["rvp-supply-oem-beadlocks"])
+        guard case .sponsor(let rvp) = published.pages[0] else {
+            Issue.record("Expected the RVP sponsor card only")
+            return
+        }
+        #expect(rvp.sponsorHeaderAccessibilityLabel(position: 1, total: 1)
+                == FeaturedBrand.rvpSupplyWheels.sponsorHeaderAccessibilityLabel(position: 1, total: 1))
+    }
+
+    // MARK: - Partner approval (eFlexFuel pending)
+
+    @Test func pendingBrandWithoutApprovalIsHiddenWithItsOffer() throws {
+        for extra: [String: Any] in [[:], ["approved": false]] {
+            let catalog = try GearCatalog.decode(Self.document([Self.eFlexFuel(extra), Self.rvpSponsor()]))
+            let content = catalog.content(at: Date(timeIntervalSince1970: 1_800_000_000))
+            #expect(Self.pageIDs(content) == ["rvp-supply-oem-beadlocks"])
+            #expect(content.moreFeaturedBrands.isEmpty)
+            #expect(catalog.nextOfferTransition(after: Date(timeIntervalSince1970: 0)) == nil)
+        }
+    }
+
+    @Test func approvedCatalogEnablesEFlexFuelWithItsArtworkAndOffer() throws {
+        let catalog = try GearCatalog.decode(Self.document([Self.eFlexFuel(["approved": true]), Self.rvpSponsor()]))
+        let content = catalog.content(at: Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(Self.pageIDs(content) == ["eflexfuel", "rvp-supply-oem-beadlocks"])
+        #expect(content.moreFeaturedBrands.map(\.id) == ["eflexfuel"])
+        guard case .brand(let eflex) = content.pages[0] else {
+            Issue.record("Expected the eFlexFuel brand card first")
             return
         }
         #expect(eflex.offer == FeaturedOffer.eFlexFuel)
         #expect(eflex.wordmarkAssetName == FeaturedBrand.eFlexFuel.wordmarkAssetName)
         #expect(eflex.heroAssetName == FeaturedBrand.eFlexFuel.heroAssetName)
-        #expect(eflex.brandCardAccessibilityLabel(position: 1, total: 2)
-                == FeaturedBrand.eFlexFuel.brandCardAccessibilityLabel(position: 1, total: 2))
-        #expect(rvp.sponsorHeaderAccessibilityLabel(position: 2, total: 2)
-                == FeaturedBrand.rvpSupplyWheels.sponsorHeaderAccessibilityLabel(position: 2, total: 2))
+    }
+
+    @Test func approvalIsIgnoredForBrandsThatAreNotPending() throws {
+        let content = try GearCatalog.decode(Self.document([Self.neutralBrand(["approved": false])])).content(at: Date())
+        #expect(Self.pageIDs(content) == ["new-brand"])
+    }
+
+    /// Upgrade path: a device that cached an unapproved eFlexFuel publication before updating shows
+    /// RVP only after relaunch, offline included.
+    @Test func previouslyCachedUnapprovedCatalogStaysRVPOnlyAfterUpgrade() throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        try harness.makeStore().accept(Self.parityDocument)
+
+        let relaunched = harness.makeStore()
+        #expect(relaunched.source == .published)
+        #expect(Self.pageIDs(relaunched.content) == ["rvp-supply-oem-beadlocks"])
+        #expect(relaunched.content.moreFeaturedBrands.isEmpty)
+        #expect(relaunched.content.moreSponsor?.homepageURL == RVPSupplyDestination.homepage)
+        #expect(relaunched.content.products.map(\.id) == RVPWheelProduct.catalog.map(\.id))
+    }
+
+    @Test func refreshKeepsEFlexFuelOffUntilAnApprovedPublication() async throws {
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let store = harness.makeStore()
+        harness.server.replies = [
+            .status(200, Self.document([Self.eFlexFuel(), Self.rvpSponsor()], revision: "r1", publishedAt: 1_000), ["ETag": "\"r1\""]),
+            .status(200, Self.document([Self.eFlexFuel(["approved": true]), Self.rvpSponsor()], revision: "r2", publishedAt: 2_000), ["ETag": "\"r2\""])
+        ]
+        #expect(await store.refresh(force: true) == .updated)
+        #expect(Self.pageIDs(store.content) == ["rvp-supply-oem-beadlocks"])
+        #expect(store.content.moreFeaturedBrands.isEmpty)
+        #expect(await store.refresh(force: true) == .updated)
+        #expect(Self.pageIDs(store.content) == ["eflexfuel", "rvp-supply-oem-beadlocks"])
+        #expect(store.content.moreFeaturedBrands.map(\.id) == ["eflexfuel"])
     }
 
     @Test func emptyPublicationIsAuthoritativeAcrossRestart() throws {
@@ -447,12 +506,12 @@ struct GearCatalogTests {
     // MARK: - Ordering, removal and hiding across both screens
 
     @Test func orderAndRemovalApplyToBothScreens() throws {
-        let catalog = try GearCatalog.decode(Self.document([Self.rvpSponsor(), Self.neutralBrand(["more": [String: Any]()]), Self.eFlexFuel()]))
+        let catalog = try GearCatalog.decode(Self.document([Self.rvpSponsor(), Self.neutralBrand(["more": [String: Any]()]), Self.eFlexFuel(["approved": true])]))
         let content = catalog.content(at: Date())
         #expect(Self.pageIDs(content) == ["rvp-supply-oem-beadlocks", "new-brand", "eflexfuel"])
         #expect(content.moreFeaturedBrands.map(\.id) == ["new-brand", "eflexfuel"])
 
-        let withoutRVP = try GearCatalog.decode(Self.document([Self.eFlexFuel()])).content(at: Date())
+        let withoutRVP = try GearCatalog.decode(Self.document([Self.eFlexFuel(["approved": true])])).content(at: Date())
         #expect(withoutRVP.moreSponsor == nil)
         #expect(withoutRVP.products.isEmpty)
         #expect(withoutRVP.configuratorURL == nil)

@@ -25,7 +25,7 @@ enum ReleaseNotes {
     /// users in both AboutView and the What's New popup.
     static let currentHighlights: [String] = [
         "Improved Nearby E85 Widgets — refresh nearby stations without opening the app, with improved location handling, freshness information, and better readability in tinted Home Screen layouts.",
-        "Refreshed Recommended Gear — explore featured eFlexFuel products and RVP Supply wheels, including access to the custom-wheel configurator.",
+        "Refreshed Recommended Gear — explore RVP Supply wheels, including access to the custom-wheel configurator.",
         "Easier Pro Activation — use Activate Pro after redeeming an Offer Code outside the app, with clearer purchase and Restore Purchases feedback.",
         "More Accurate Fill-Up Logging — E85 and gasoline prices entered in At The Pump now carry into your Fuel Log.",
         "Clearer Calculator Validation — blank or invalid numeric inputs now show a warning instead of being treated as zero.",
