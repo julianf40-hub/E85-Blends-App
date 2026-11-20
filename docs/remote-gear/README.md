@@ -42,6 +42,7 @@ Brand (all kinds)
   id, kind, name, tagline, description, ctaTitle, destinationURL (https)
   accessibilityDescription?   VoiceOver/TalkBack text (defaults to description)
   hidden?                     true = withdrawn from EVERY screen
+  approved?                   partner sign-off; required (true) for a pending-approval brand
   more?: { subtitle? }        present = also placed on More (default subtitle: tagline)
 
 kind "brand"        neutral Featured Brand card (never a sponsor)
@@ -120,6 +121,11 @@ rest of the document (including withdrawals) still applies to them.
 - **Removal.** Omitting an entry or setting `hidden: true` removes it from Recommended Gear **and**
   More at the same time. If the card a user is viewing disappears, the carousel moves to the first
   card. An empty `brands` array is a valid, authoritative "show nothing".
+- **Pending partner approval.** A brand ID listed in `GearPartnerApproval.pendingBrandIDs`
+  (currently `eflexfuel`) is shown on neither screen, and its offer is never shown, unless its
+  entry sets `"approved": true`. This applies to cached publications too, so an entry published
+  before approval (including the seed) stays hidden after the app updates. To enable eFlexFuel
+  once approved, publish a new revision whose `eflexfuel` entry adds `"approved": true`.
 - **Branding isolation.** Bundled artwork is chosen from stable IDs, never from asset names in
   the JSON. eFlexFuel's wordmark, hero photo and orange offer styling apply only to id
   `eflexfuel`; RVP Supply's logo plate applies only to the sponsor card. Every other brand gets

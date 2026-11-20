@@ -111,21 +111,14 @@ struct FeaturedGearTests {
 
     // MARK: - Carousel catalog
 
-    @Test("The carousel is exactly eFlexFuel (Featured Brand) then RVP Supply (sponsor)")
-    func catalog_isEFlexFuelThenRVPSupply() {
+    @Test("The bundled carousel is RVP Supply (sponsor) only while eFlexFuel is pending approval")
+    func catalog_isRVPSupplyOnly() {
         let pages = FeaturedGearPage.catalog
-        #expect(pages.count == 2)
+        #expect(pages.count == 1)
+        #expect(GearPartnerApproval.pendingBrandIDs.contains(FeaturedBrand.eFlexFuel.id))
 
-        guard case .brand(let brand) = pages[0] else {
-            Issue.record("The first page must be the neutral eFlexFuel Featured Brand card")
-            return
-        }
-        #expect(brand.id == "eflexfuel")
-        #expect(brand.name == "eFlexFuel")
-        #expect(brand.ctaTitle == "View eFlexFuel Products")
-
-        guard case .sponsor(let sponsor) = pages[1] else {
-            Issue.record("The second page must be the RVP Supply sponsor card")
+        guard case .sponsor(let sponsor) = pages[0] else {
+            Issue.record("The only page must be the RVP Supply sponsor card")
             return
         }
         #expect(sponsor.id == "rvp-supply-oem-beadlocks")
@@ -139,7 +132,7 @@ struct FeaturedGearTests {
     func catalog_idsAreUniqueAndStable() {
         let ids = FeaturedGearPage.catalog.map { $0.id }
         #expect(Set(ids).count == ids.count)
-        #expect(ids == ["eflexfuel", "rvp-supply-oem-beadlocks"])
+        #expect(ids == ["rvp-supply-oem-beadlocks"])
     }
 
     @Test("Only RVP Supply is presented as a sponsor; eFlexFuel never is")
@@ -153,15 +146,15 @@ struct FeaturedGearTests {
         #expect(sponsorIDs == ["rvp-supply-oem-beadlocks"])
     }
 
-    @Test("Only eFlexFuel carries an offer; RVP Supply, the sponsor, carries none")
-    func catalog_onlyEFlexFuelHasAnOffer() {
+    @Test("No bundled page carries an offer; eFlexFuel keeps its offer for an approved catalog")
+    func catalog_bundledPagesCarryNoOffer() {
         let withOffer = FeaturedGearPage.catalog.compactMap { page -> String? in
             switch page {
             case .brand(let brand), .sponsor(let brand):
                 return brand.offer == nil ? nil : brand.id
             }
         }
-        #expect(withOffer == ["eflexfuel"])
+        #expect(withOffer.isEmpty)
         #expect(FeaturedBrand.rvpSupplyWheels.offer == nil)
         #expect(FeaturedBrand.eFlexFuel.offer == FeaturedOffer.eFlexFuel)
     }
@@ -462,7 +455,7 @@ struct FeaturedGearTests {
 
     // MARK: - Every destination
 
-    @Test("Every destination the carousel can open (2 brand pages + 9 products) passes the https link gate")
+    @Test("Every destination the bundled carousel can open (1 sponsor page + 9 products) passes the https link gate")
     func everyDestination_passesLinkGate() {
         let brandURLs: [URL?] = FeaturedGearPage.catalog.map { page in
             switch page {
@@ -473,7 +466,7 @@ struct FeaturedGearTests {
         let all = brandURLs
             + [RVPSupplyDestination.homepage, RVPSupplyDestination.configurator]
             + RVPWheelProduct.catalog.map { $0.productURL }
-        #expect(all.count == 13)
+        #expect(all.count == 12)
         #expect(all.allSatisfy { FeaturedBrandLink.validatedURL($0) != nil })
         // The app's own scheme would be routed back into the app by ContentView's .onOpenURL.
         #expect(all.allSatisfy { $0?.scheme?.lowercased() != "e85blends" })

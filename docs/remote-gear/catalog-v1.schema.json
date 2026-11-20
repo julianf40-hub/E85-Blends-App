@@ -41,6 +41,7 @@
         "ctaTitle": { "type": "string", "minLength": 1, "maxLength": 60 },
         "destinationURL": { "$ref": "#/$defs/https" },
         "hidden": { "type": "boolean" },
+        "approved": { "type": "boolean" },
         "more": {
           "type": "object",
           "properties": { "subtitle": { "type": "string", "minLength": 1, "maxLength": 120 } }
